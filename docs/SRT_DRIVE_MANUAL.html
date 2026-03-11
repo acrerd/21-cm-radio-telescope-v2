@@ -1,0 +1,1021 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SRT Drive Controller - Operations Manual</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+            line-height: 1.6;
+            max-width: 900px;
+            margin: 0 auto;
+            padding: 20px;
+            color: #333;
+        }
+        h1, h2, h3 { color: #2c3e50; }
+        h1 { border-bottom: 2px solid #3498db; padding-bottom: 10px; }
+        h2 { border-bottom: 1px solid #bdc3c7; padding-bottom: 5px; margin-top: 30px; }
+        table {
+            border-collapse: collapse;
+            width: 100%;
+            margin: 15px 0;
+        }
+        th, td {
+            border: 1px solid #ddd;
+            padding: 8px 12px;
+            text-align: left;
+        }
+        th { background-color: #3498db; color: white; }
+        tr:nth-child(even) { background-color: #f9f9f9; }
+        tr:hover { background-color: #f1f1f1; }
+        code {
+            background-color: #f4f4f4;
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-family: 'Consolas', 'Monaco', monospace;
+        }
+        pre {
+            background-color: #2c3e50;
+            color: #ecf0f1;
+            padding: 15px;
+            border-radius: 5px;
+            overflow-x: auto;
+        }
+        pre code {
+            background-color: transparent;
+            color: inherit;
+            padding: 0;
+        }
+        hr { border: none; border-top: 1px solid #ddd; margin: 30px 0; }
+        a { color: #3498db; }
+        ul, ol { padding-left: 25px; }
+        .warning { background-color: #fff3cd; border-left: 4px solid #ffc107; padding: 10px 15px; margin: 15px 0; }
+        .info { background-color: #d1ecf1; border-left: 4px solid #17a2b8; padding: 10px 15px; margin: 15px 0; }
+    </style>
+</head>
+<body>
+<h1>SRT Drive Controller - Operations Manual</h1>
+<p><strong>Version 1.0</strong><br>
+<strong>Acre Road Observatory, Glasgow</strong></p>
+<hr>
+<h2>Table of Contents</h2>
+<ol>
+<li><a href="#1-overview">Overview</a></li>
+<li><a href="#2-hardware-connections">Hardware Connections</a></li>
+<li><a href="#3-serial-communication">Serial Communication</a></li>
+<li><a href="#4-status-messages">Status Messages</a></li>
+<li><a href="#5-commands">Commands</a></li>
+<li><a href="#6-system-states">System States</a></li>
+<li><a href="#7-fault-conditions">Fault Conditions</a></li>
+<li><a href="#8-startup-sequence">Startup Sequence</a></li>
+<li><a href="#9-configuration">Configuration</a></li>
+<li><a href="#10-troubleshooting">Troubleshooting</a></li>
+</ol>
+<hr>
+<h2 id="1-overview">1. Overview</h2>
+<p>The SRT Drive Controller manages the alt-azimuth drive system for the Small Radio Telescope. It provides:</p>
+<ul>
+<li>Automatic homing on startup</li>
+<li>Position tracking via reed switch encoders (0.5 degree resolution)</li>
+<li>Smooth motion with acceleration/deceleration ramps</li>
+<li>Overcurrent and fault protection</li>
+<li>Serial interface for control and monitoring</li>
+</ul>
+<h3>Specifications</h3>
+<table>
+<thead>
+<tr>
+<th>Parameter</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Microcontroller</td>
+<td>Arduino Due (ARM Cortex-M3)</td>
+</tr>
+<tr>
+<td>Position Resolution</td>
+<td>0.5 degrees (2 pulses per degree)</td>
+</tr>
+<tr>
+<td>Altitude Range</td>
+<td>0 to 90 degrees</td>
+</tr>
+<tr>
+<td>Azimuth Range</td>
+<td>0 to 355 degrees</td>
+</tr>
+<tr>
+<td>Home Position</td>
+<td>Alt: 0, Az: 180 degrees</td>
+</tr>
+<tr>
+<td>Current Limit</td>
+<td>5 Amps (configurable)</td>
+</tr>
+<tr>
+<td>Serial Baud Rate</td>
+<td>9600</td>
+</tr>
+</tbody></table>
+<hr>
+<h2 id="2-hardware-connections">2. Hardware Connections</h2>
+<h3>2.1 Arduino Due Pinout</h3>
+<table>
+<thead>
+<tr>
+<th>Function</th>
+<th>Pin</th>
+<th>Wire Color</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><strong>Fault Flags</strong></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td>Az Fault Flag 1</td>
+<td>5</td>
+<td>Blue</td>
+<td>Motor driver status</td>
+</tr>
+<tr>
+<td>Az Fault Flag 2</td>
+<td>4</td>
+<td>Purple</td>
+<td>Motor driver status</td>
+</tr>
+<tr>
+<td>Alt Fault Flag 1</td>
+<td>7</td>
+<td>Blue</td>
+<td>Motor driver status</td>
+</tr>
+<tr>
+<td>Alt Fault Flag 2</td>
+<td>6</td>
+<td>Purple</td>
+<td>Motor driver status</td>
+</tr>
+<tr>
+<td><strong>Motor Control</strong></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td>Az PWM</td>
+<td>8</td>
+<td>Green</td>
+<td>Speed control (inverted)</td>
+</tr>
+<tr>
+<td>Az Direction</td>
+<td>9</td>
+<td>Yellow</td>
+<td>LOW=West, HIGH=East</td>
+</tr>
+<tr>
+<td>Alt PWM</td>
+<td>10</td>
+<td>Green</td>
+<td>Speed control (inverted)</td>
+</tr>
+<tr>
+<td>Alt Direction</td>
+<td>11</td>
+<td>Yellow</td>
+<td>LOW=Down, HIGH=Up</td>
+</tr>
+<tr>
+<td><strong>Driver Reset</strong></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td>Az Reset</td>
+<td>22</td>
+<td>Black</td>
+<td>HIGH=enabled</td>
+</tr>
+<tr>
+<td>Alt Reset</td>
+<td>24</td>
+<td>White</td>
+<td>HIGH=enabled</td>
+</tr>
+<tr>
+<td><strong>Position Encoders</strong></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td>Az Pulses</td>
+<td>12</td>
+<td>Blue</td>
+<td>Reed switch, falling edge</td>
+</tr>
+<tr>
+<td>Alt Pulses</td>
+<td>13</td>
+<td>Orange</td>
+<td>Reed switch, falling edge</td>
+</tr>
+<tr>
+<td><strong>Current Sensors</strong></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td>Az Current</td>
+<td>A1</td>
+<td>Black</td>
+<td>Analog input</td>
+</tr>
+<tr>
+<td>Alt Current</td>
+<td>A0</td>
+<td>White</td>
+<td>Analog input</td>
+</tr>
+</tbody></table>
+<h3>2.2 USB Ports</h3>
+<p>The Arduino Due has two USB ports:</p>
+<table>
+<thead>
+<tr>
+<th>Port</th>
+<th>Location</th>
+<th>Use</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><strong>Programming Port</strong></td>
+<td>Near DC jack</td>
+<td>Programming + serial terminal</td>
+</tr>
+<tr>
+<td><strong>Native USB Port</strong></td>
+<td>Near reset button</td>
+<td>Not used</td>
+</tr>
+</tbody></table>
+<p><strong>Use the Programming Port</strong> for both uploading firmware and serial communication.</p>
+<h3>2.3 ESP32 Interface (Serial1)</h3>
+<p>For external microcontroller connections (e.g., ESP32), use the hardware UART:</p>
+<table>
+<thead>
+<tr>
+<th>Due Pin</th>
+<th>Function</th>
+<th>Connect to ESP32</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>18</td>
+<td>TX1 (transmit)</td>
+<td>RX (via level shifter)</td>
+</tr>
+<tr>
+<td>19</td>
+<td>RX1 (receive)</td>
+<td>TX (via level shifter)</td>
+</tr>
+<tr>
+<td>GND</td>
+<td>Ground</td>
+<td>GND</td>
+</tr>
+</tbody></table>
+<p><strong>Important:</strong> The Due operates at 3.3V logic. If your ESP32 is also 3.3V, direct connection is possible. Otherwise, use a level shifter.</p>
+<hr>
+<h2 id="3-serial-communication">3. Serial Communication</h2>
+<h3>3.1 Connection Settings</h3>
+<table>
+<thead>
+<tr>
+<th>Parameter</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Baud Rate</td>
+<td>9600</td>
+</tr>
+<tr>
+<td>Data Bits</td>
+<td>8</td>
+</tr>
+<tr>
+<td>Stop Bits</td>
+<td>1</td>
+</tr>
+<tr>
+<td>Parity</td>
+<td>None</td>
+</tr>
+<tr>
+<td>Line Ending</td>
+<td>CR or LF or CRLF</td>
+</tr>
+</tbody></table>
+<h3>3.2 Output Format</h3>
+<p>The controller outputs a status line once per second:</p>
+<pre><code>Alt:45.0 Az:180.0 Ialt:0.52A Iaz:0.38A Status:Ready</code></pre>
+<p><strong>Fields:</strong></p>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Description</th>
+<th>Units</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>Alt</code></td>
+<td>Current altitude position</td>
+<td>Degrees</td>
+</tr>
+<tr>
+<td><code>Az</code></td>
+<td>Current azimuth position</td>
+<td>Degrees</td>
+</tr>
+<tr>
+<td><code>Ialt</code></td>
+<td>Altitude motor current</td>
+<td>Amps</td>
+</tr>
+<tr>
+<td><code>Iaz</code></td>
+<td>Azimuth motor current</td>
+<td>Amps</td>
+</tr>
+<tr>
+<td><code>Status</code></td>
+<td>System state</td>
+<td>See section 6</td>
+</tr>
+</tbody></table>
+<p><strong>Additional fields when slewing:</strong></p>
+<pre><code>Alt:30.0 Az:150.0 Ialt:2.10A Iaz:1.85A Status:Slewing -&gt; Alt:45.0 Az:180.0</code></pre>
+<p>The <code>-&gt; Alt:xx Az:xx</code> shows the target position.</p>
+<p><strong>Additional fields in fault state:</strong></p>
+<pre><code>Alt:30.0 Az:150.0 Ialt:5.20A Iaz:0.00A Status:FAULT [Altitude motor overcurrent]</code></pre>
+<p>The fault description appears in square brackets.</p>
+<hr>
+<h2 id="4-status-messages">4. Status Messages</h2>
+<h3>4.1 System Status Values</h3>
+<table>
+<thead>
+<tr>
+<th>Status</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>Initializing</code></td>
+<td>System is starting up</td>
+</tr>
+<tr>
+<td><code>Homing</code></td>
+<td>Finding limit switches and moving to home position</td>
+</tr>
+<tr>
+<td><code>Ready</code></td>
+<td>Idle, waiting for commands</td>
+</tr>
+<tr>
+<td><code>Slewing</code></td>
+<td>Moving to target position</td>
+</tr>
+<tr>
+<td><code>Reversing</code></td>
+<td>Decelerating before changing direction</td>
+</tr>
+<tr>
+<td><code>FAULT</code></td>
+<td>Error condition - motors stopped</td>
+</tr>
+</tbody></table>
+<h3>4.2 Startup Messages</h3>
+<p>On power-up, you will see:</p>
+<pre><code>=================================
+SRT Drive Controller v1.0
+Acre Road Observatory, Glasgow
+=================================
+
+Starting homing sequence...
+Homing: Driving to limit switches...
+Homing: Altitude limit switch reached
+Homing: Azimuth limit switch reached
+Homing: At limit switches, moving to home position...
+
+Homing complete. Position: Alt=0.0 Az=180.0
+Ready to receive commands. Send: &lt;altitude&gt; &lt;azimuth&gt;</code></pre>
+<h3>4.3 Command Acknowledgments</h3>
+<p>When a valid command is received:</p>
+<pre><code>Slewing to Alt:45.0 Az:200.0</code></pre>
+<h3>4.4 Error Messages</h3>
+<table>
+<thead>
+<tr>
+<th>Message</th>
+<th>Cause</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>ERROR: Cannot slew while in FAULT state. Power cycle to reset.</code></td>
+<td>Fault has occurred</td>
+</tr>
+<tr>
+<td><code>ERROR: Cannot slew while homing in progress.</code></td>
+<td>Command sent during homing</td>
+</tr>
+<tr>
+<td><code>ERROR: Altitude xx.x is out of range. Valid: 0 to 90 degrees</code></td>
+<td>Alt out of bounds</td>
+</tr>
+<tr>
+<td><code>ERROR: Azimuth xx.x is out of range. Valid: 0 to 355 degrees</code></td>
+<td>Az out of bounds</td>
+</tr>
+<tr>
+<td><code>ERROR: Invalid command '...'. Send: &lt;altitude&gt; &lt;azimuth&gt;</code></td>
+<td>Parse error</td>
+</tr>
+</tbody></table>
+<hr>
+<h2 id="5-commands">5. Commands</h2>
+<p>All commands are case-insensitive.</p>
+<h3>5.1 Motion Commands</h3>
+<table>
+<thead>
+<tr>
+<th>Command</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>&lt;alt&gt; &lt;az&gt;</code></td>
+<td>Slew to position (e.g., <code>45.0 180.0</code>)</td>
+</tr>
+<tr>
+<td><code>DRIVE &lt;alt&gt; &lt;az&gt;</code></td>
+<td>Slew to position (explicit form)</td>
+</tr>
+<tr>
+<td><code>HOME</code></td>
+<td>Run homing sequence</td>
+</tr>
+<tr>
+<td><code>STOP</code></td>
+<td>Emergency stop both motors</td>
+</tr>
+<tr>
+<td><code>RESET</code></td>
+<td>Clear fault and re-home</td>
+</tr>
+</tbody></table>
+<p><strong>Examples:</strong></p>
+<pre><code>45 180           Slew to Alt=45, Az=180
+DRIVE 45.5 200   Slew to Alt=45.5, Az=200
+HOME             Re-run homing sequence
+STOP             Immediate stop
+RESET            Clear fault, then re-home</code></pre>
+<h3>5.2 Information Commands</h3>
+<table>
+<thead>
+<tr>
+<th>Command</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>STATUS</code></td>
+<td>Show current position and status</td>
+</tr>
+<tr>
+<td><code>CONFIG</code></td>
+<td>Show all configuration parameters</td>
+</tr>
+<tr>
+<td><code>HELP</code></td>
+<td>Show command help</td>
+</tr>
+</tbody></table>
+<h3>5.3 Configuration Commands</h3>
+<table>
+<thead>
+<tr>
+<th>Command</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>SET &lt;param&gt; &lt;value&gt;</code></td>
+<td>Set a configuration parameter</td>
+</tr>
+<tr>
+<td><code>SAVE</code></td>
+<td>Save configuration to flash memory</td>
+</tr>
+<tr>
+<td><code>LOAD</code></td>
+<td>Load configuration from flash memory</td>
+</tr>
+<tr>
+<td><code>DEFAULTS</code></td>
+<td>Reset to factory defaults</td>
+</tr>
+</tbody></table>
+<p><strong>SET Parameters:</strong></p>
+<table>
+<thead>
+<tr>
+<th>Parameter</th>
+<th>Description</th>
+<th>Default</th>
+<th>Units</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>ALTMIN</code></td>
+<td>Altitude minimum limit</td>
+<td>0</td>
+<td>degrees</td>
+</tr>
+<tr>
+<td><code>ALTMAX</code></td>
+<td>Altitude maximum limit</td>
+<td>90</td>
+<td>degrees</td>
+</tr>
+<tr>
+<td><code>AZMIN</code></td>
+<td>Azimuth minimum limit</td>
+<td>0</td>
+<td>degrees</td>
+</tr>
+<tr>
+<td><code>AZMAX</code></td>
+<td>Azimuth maximum limit</td>
+<td>355</td>
+<td>degrees</td>
+</tr>
+<tr>
+<td><code>HOMEALT</code></td>
+<td>Home altitude position</td>
+<td>0</td>
+<td>degrees</td>
+</tr>
+<tr>
+<td><code>HOMEAZ</code></td>
+<td>Home azimuth position</td>
+<td>180</td>
+<td>degrees</td>
+</tr>
+<tr>
+<td><code>RAMPUP</code></td>
+<td>Acceleration time</td>
+<td>500</td>
+<td>ms</td>
+</tr>
+<tr>
+<td><code>RAMPDOWN</code></td>
+<td>Deceleration distance</td>
+<td>7</td>
+<td>degrees</td>
+</tr>
+<tr>
+<td><code>STOPRAMP</code></td>
+<td>Reversal deceleration time</td>
+<td>300</td>
+<td>ms</td>
+</tr>
+<tr>
+<td><code>CURRENT</code></td>
+<td>Overcurrent threshold</td>
+<td>5.0</td>
+<td>Amps</td>
+</tr>
+<tr>
+<td><code>STALL</code></td>
+<td>Stall detection timeout</td>
+<td>2000</td>
+<td>ms</td>
+</tr>
+</tbody></table>
+<p><strong>Examples:</strong></p>
+<pre><code>SET AZMAX 350        Set azimuth upper limit to 350 degrees
+SET CURRENT 4.5      Set current limit to 4.5 Amps
+SET HOMEAZ 175       Set home azimuth to 175 degrees
+SAVE                 Save changes to flash
+CONFIG               Verify settings</code></pre>
+<h3>5.4 Motion Profile</h3>
+<p>The system uses smooth motion profiles to prevent structural oscillation:</p>
+<ul>
+<li><strong>Acceleration:</strong> Linear ramp over configured time (default 500ms)</li>
+<li><strong>Cruise:</strong> Full speed</li>
+<li><strong>Deceleration:</strong> Quadratic ramp over configured distance (default 7 degrees)</li>
+<li><strong>Reversal:</strong> If direction change needed, decelerates over configured time (default 300ms), then reverses</li>
+</ul>
+<p>Commands can be sent at any time, even while moving. This enables smooth tracking of celestial sources with continuous position updates.</p>
+<h3>5.5 Position Limits</h3>
+<p>Default limits (adjustable via SET commands):</p>
+<table>
+<thead>
+<tr>
+<th>Axis</th>
+<th>Minimum</th>
+<th>Maximum</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Altitude</td>
+<td>0 degrees (horizon)</td>
+<td>90 degrees (zenith)</td>
+</tr>
+<tr>
+<td>Azimuth</td>
+<td>0 degrees (North)</td>
+<td>355 degrees</td>
+</tr>
+</tbody></table>
+<hr>
+<h2 id="6-system-states">6. System States</h2>
+<pre><code>                    +--------+
+                    |  INIT  |
+                    +---+----+
+                        |
+                        v
+                    +--------+
+                    | HOMING |-------&gt; FAULT
+                    +---+----+
+                        |
+                        v
+          +-------&gt; +-------+ &lt;-------+
+          |         | READY |         |
+          |         +---+---+         |
+          |             |             |
+          |   command   |             |
+          |             v             |
+          |         +--------+        |
+          +---------|SLEWING |--------+
+             done   +---+----+
+                        |
+                        v fault
+                    +-------+
+                    | FAULT |
+                    +-------+</code></pre>
+<h3>State Descriptions</h3>
+<table>
+<thead>
+<tr>
+<th>State</th>
+<th>Description</th>
+<th>LED Pattern</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><strong>INIT</strong></td>
+<td>Power-on initialization</td>
+<td>N/A</td>
+</tr>
+<tr>
+<td><strong>HOMING</strong></td>
+<td>Finding limits and moving to home</td>
+<td>Motors running</td>
+</tr>
+<tr>
+<td><strong>READY</strong></td>
+<td>Idle, accepting commands</td>
+<td>Motors stopped</td>
+</tr>
+<tr>
+<td><strong>SLEWING</strong></td>
+<td>Moving to commanded position</td>
+<td>Motors running</td>
+</tr>
+<tr>
+<td><strong>FAULT</strong></td>
+<td>Error condition, motors disabled</td>
+<td>Stopped</td>
+</tr>
+</tbody></table>
+<hr>
+<h2 id="7-fault-conditions">7. Fault Conditions</h2>
+<p>When a fault occurs, the system immediately stops both motors and enters the FAULT state. The fault is reported in the status output.</p>
+<h3>7.1 Motor Driver Faults</h3>
+<p>These are detected via the motor driver's fault flag pins:</p>
+<table>
+<thead>
+<tr>
+<th>Fault</th>
+<th>Description</th>
+<th>Likely Cause</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>Azimuth motor short circuit</code></td>
+<td>FF1=LOW, FF2=HIGH</td>
+<td>Wiring short, motor failure</td>
+</tr>
+<tr>
+<td><code>Altitude motor short circuit</code></td>
+<td>FF1=LOW, FF2=HIGH</td>
+<td>Wiring short, motor failure</td>
+</tr>
+<tr>
+<td><code>Azimuth motor overheating</code></td>
+<td>FF1=HIGH, FF2=LOW</td>
+<td>Prolonged high-current operation</td>
+</tr>
+<tr>
+<td><code>Altitude motor overheating</code></td>
+<td>FF1=HIGH, FF2=LOW</td>
+<td>Prolonged high-current operation</td>
+</tr>
+<tr>
+<td><code>Azimuth motor undervoltage</code></td>
+<td>FF1=HIGH, FF2=HIGH</td>
+<td>Power supply issue</td>
+</tr>
+<tr>
+<td><code>Altitude motor undervoltage</code></td>
+<td>FF1=HIGH, FF2=HIGH</td>
+<td>Power supply issue</td>
+</tr>
+</tbody></table>
+<h3>7.2 Current Faults</h3>
+<table>
+<thead>
+<tr>
+<th>Fault</th>
+<th>Description</th>
+<th>Threshold</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>Azimuth motor overcurrent</code></td>
+<td>Motor drawing too much current</td>
+<td>&gt; 5.0 Amps</td>
+</tr>
+<tr>
+<td><code>Altitude motor overcurrent</code></td>
+<td>Motor drawing too much current</td>
+<td>&gt; 5.0 Amps</td>
+</tr>
+</tbody></table>
+<p><strong>Possible causes:</strong></p>
+<ul>
+<li>Mechanical obstruction</li>
+<li>Binding in gears or drive train</li>
+<li>Motor failure</li>
+<li>Overloaded drive</li>
+</ul>
+<h3>7.3 Stall Faults</h3>
+<table>
+<thead>
+<tr>
+<th>Fault</th>
+<th>Description</th>
+<th>Detection</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>Azimuth motor stalled</code></td>
+<td>No encoder pulses while driving</td>
+<td>2 seconds timeout</td>
+</tr>
+<tr>
+<td><code>Altitude motor stalled</code></td>
+<td>No encoder pulses while driving</td>
+<td>2 seconds timeout</td>
+</tr>
+</tbody></table>
+<p><strong>Possible causes:</strong></p>
+<ul>
+<li>Motor not turning</li>
+<li>Encoder failure</li>
+<li>Belt/coupling slipped</li>
+<li>Mechanical jam</li>
+</ul>
+<h3>7.4 Recovery from Faults</h3>
+<p><strong>Option A: Use the RESET command</strong></p>
+<ol>
+<li>Investigate and resolve the fault cause</li>
+<li>Send <code>RESET</code> via serial</li>
+<li>The system will clear the fault and re-home</li>
+</ol>
+<p><strong>Option B: Power cycle</strong></p>
+<ol>
+<li>Turn off the controller</li>
+<li>Investigate and resolve the fault cause</li>
+<li>Turn on the controller</li>
+<li>The system will re-home automatically</li>
+</ol>
+<hr>
+<h2 id="8-startup-sequence">8. Startup Sequence</h2>
+<p>On power-up, the system performs the following sequence:</p>
+<ol>
+<li><p><strong>Initialize hardware</strong></p>
+<ul>
+<li>Configure all GPIO pins</li>
+<li>Enable motor drivers</li>
+<li>Set motors to stopped state</li>
+</ul>
+</li>
+<li><p><strong>Initialize serial ports</strong></p>
+<ul>
+<li>Programming port (USB) at 9600 baud</li>
+<li>Serial1 (pins 18/19) at 9600 baud (if enabled)</li>
+</ul>
+</li>
+<li><p><strong>Homing sequence</strong></p>
+<ul>
+<li>Drive both motors toward limit switches (Az West, Alt Down)</li>
+<li>Wait for each motor to stop (2 second timeout = at limit)</li>
+<li>Reset position counters to 0</li>
+<li>Drive to home position (Az: 180 degrees)</li>
+<li>Set position to home coordinates</li>
+</ul>
+</li>
+<li><p><strong>Enter READY state</strong></p>
+<ul>
+<li>Begin 1Hz status output</li>
+<li>Accept commands</li>
+</ul>
+</li>
+</ol>
+<p><strong>Note:</strong> The homing sequence takes approximately 30-60 seconds depending on the starting position.</p>
+<hr>
+<h2 id="9-configuration">9. Configuration</h2>
+<p>All configurable parameters are in <code>include/config.h</code>. The most commonly adjusted parameters:</p>
+<h3>9.1 Position Limits</h3>
+<pre><code>#define ALT_MIN_DEG         0.0     // Altitude lower limit
+#define ALT_MAX_DEG         90.0    // Altitude upper limit
+#define AZ_MIN_DEG          0.0     // Azimuth lower limit
+#define AZ_MAX_DEG          355.0   // Azimuth upper limit</code></pre>
+<h3>9.2 Home Position</h3>
+<pre><code>#define HOME_ALT_DEG        0.0     // Altitude home position
+#define HOME_AZ_DEG         180.0   // Azimuth home position
+
+// Pulses to drive from limits to home
+#define HOME_ALT_OFFSET_PULSES  0       // (0 - 0) * 2 = 0
+#define HOME_AZ_OFFSET_PULSES   360     // (180 - 0) * 2 = 360</code></pre>
+<h3>9.3 Safety Limits</h3>
+<pre><code>#define CURRENT_LIMIT_AMPS  5.0     // Stop if current exceeds this
+#define STALL_TIMEOUT_MS    2000    // No pulses = stalled</code></pre>
+<h3>9.4 Motion Profile</h3>
+<pre><code>#define RAMP_UP_TIME_MS     500     // Acceleration time
+#define RAMP_DOWN_PULSES    14      // Start decelerating at this distance</code></pre>
+<h3>9.5 Serial1 Enable</h3>
+<pre><code>#define ENABLE_SERIAL1      1       // Set to 0 to disable Serial1</code></pre>
+<p>After changing any configuration, rebuild and upload:</p>
+<pre><code>pio run --target upload</code></pre>
+<hr>
+<h2 id="10-troubleshooting">10. Troubleshooting</h2>
+<h3>10.1 System Does Not Start</h3>
+<table>
+<thead>
+<tr>
+<th>Symptom</th>
+<th>Check</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>No serial output</td>
+<td>USB cable, correct port selected</td>
+</tr>
+<tr>
+<td>Stuck in homing</td>
+<td>Motor connections, encoder connections</td>
+</tr>
+<tr>
+<td>Immediate fault</td>
+<td>Motor driver power, fault flag wiring</td>
+</tr>
+</tbody></table>
+<h3>10.2 Motors Do Not Move</h3>
+<table>
+<thead>
+<tr>
+<th>Symptom</th>
+<th>Check</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>PWM output but no motion</td>
+<td>Motor driver reset pins (should be HIGH)</td>
+</tr>
+<tr>
+<td>No PWM output</td>
+<td>PWM pin connections (pins 8, 10)</td>
+</tr>
+<tr>
+<td>Motors run backwards</td>
+<td>Direction pin wiring (pins 9, 11)</td>
+</tr>
+</tbody></table>
+<h3>10.3 Position Errors</h3>
+<table>
+<thead>
+<tr>
+<th>Symptom</th>
+<th>Check</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Wrong position after homing</td>
+<td>HOME_AZ_OFFSET_PULSES, HOME_ALT_OFFSET_PULSES</td>
+</tr>
+<tr>
+<td>Position drifts</td>
+<td>Encoder debounce (increase DEBOUNCE_MS)</td>
+</tr>
+<tr>
+<td>Overshoots target</td>
+<td>RAMP_DOWN_PULSES (increase value)</td>
+</tr>
+<tr>
+<td>Jerky motion</td>
+<td>RAMP_UP_TIME_MS (increase value)</td>
+</tr>
+</tbody></table>
+<h3>10.4 False Overcurrent Faults</h3>
+<table>
+<thead>
+<tr>
+<th>Symptom</th>
+<th>Check</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Faults with low actual current</td>
+<td>Current sensor calibration in config.h</td>
+</tr>
+<tr>
+<td>Faults only at startup</td>
+<td>Normal - motor inrush current</td>
+</tr>
+</tbody></table>
+<h3>10.5 Serial Communication Issues</h3>
+<table>
+<thead>
+<tr>
+<th>Symptom</th>
+<th>Check</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>No response to commands</td>
+<td>Line ending settings (need CR or LF)</td>
+</tr>
+<tr>
+<td>Garbled output</td>
+<td>Baud rate (must be 9600)</td>
+</tr>
+<tr>
+<td>ESP32 not receiving</td>
+<td>Level shifter, TX/RX swapped</td>
+</tr>
+</tbody></table>
+<hr>
+<h2>Appendix A: Quick Reference</h2>
+<h3>Commands</h3>
+<table>
+<thead>
+<tr>
+<th>Command</th>
+<th>Example</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Go to position</td>
+<td><code>45 180</code></td>
+<td>Move to Alt=45, Az=180</td>
+</tr>
+</tbody></table>
+<h3>Status Output</h3>
+<pre><code>Alt:&lt;deg&gt; Az:&lt;deg&gt; Ialt:&lt;A&gt;A Iaz:&lt;A&gt;A Status:&lt;state&gt; [&lt;fault&gt;] [-&gt; Alt:&lt;deg&gt; Az:&lt;deg&gt;]</code></pre>
+<h3>Pin Summary</h3>
+<pre><code>Motor Control:  8(PWM-Az), 9(DIR-Az), 10(PWM-Alt), 11(DIR-Alt)
+Driver Reset:   22(Az), 24(Alt)
+Encoders:       12(Az), 13(Alt)
+Fault Flags:    4,5(Az), 6,7(Alt)
+Current Sense:  A0(Alt), A1(Az)
+Serial1:        18(TX), 19(RX)</code></pre>
+<hr>
+<p><em>Document revision: 1.0</em><br>
+<em>Generated: March 2026</em></p>
+</body>
+</html>
