@@ -28,6 +28,12 @@ DueFlashStorage flashStorage;
 Config cfg;
 
 // =============================================================================
+// FORWARD DECLARATIONS
+// =============================================================================
+
+const char* getFaultString();
+
+// =============================================================================
 // STATE DEFINITIONS
 // =============================================================================
 
@@ -320,14 +326,14 @@ int calculatePWM(int32_t pulsesRemaining, unsigned long driveStartTime) {
 
 float readCurrentAz() {
     int adcValue = analogRead(PIN_CURRENT_AZ);
-    float voltage = (ADC_REFERENCE_V / ADC_RESOLUTION) * adcValue;
+    float voltage = (ADC_REFERENCE_V / ADC_RESOLUTION_BITS) * adcValue;
     float current = (voltage - CURRENT_SENSOR_OFFSET_V) / CURRENT_SENSOR_SENSITIVITY;
     return current;
 }
 
 float readCurrentAlt() {
     int adcValue = analogRead(PIN_CURRENT_ALT);
-    float voltage = (ADC_REFERENCE_V / ADC_RESOLUTION) * adcValue;
+    float voltage = (ADC_REFERENCE_V / ADC_RESOLUTION_BITS) * adcValue;
     float current = (voltage - CURRENT_SENSOR_OFFSET_V) / CURRENT_SENSOR_SENSITIVITY;
     return current;
 }
@@ -981,7 +987,7 @@ void processCommand(const char* buffer) {
             printAllLn("No fault to reset.");
         } else {
             printAllLn("Clearing fault and re-homing...");
-            faultMessage[0] = '\0';
+            faultCode = FAULT_NONE;
             systemState = STATE_HOMING;
             performHoming();
         }

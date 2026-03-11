@@ -83,7 +83,7 @@
 #define CURRENT_SENSOR_OFFSET_V     2.5     // Zero-current voltage
 #define CURRENT_SENSOR_SENSITIVITY  0.066   // V/A (66mV/A)
 #define ADC_REFERENCE_V             5.0     // Scaled to match old code
-#define ADC_RESOLUTION              4096    // 12-bit ADC
+#define ADC_RESOLUTION_BITS         4096    // 12-bit ADC (2^12)
 
 // =============================================================================
 // CONFIGURATION STRUCTURE - Stored in flash
