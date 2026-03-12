@@ -13,7 +13,7 @@ Firmware for the Small Radio Telescope alt-azimuth drive system at Acre Road Obs
 
 - Automatic homing on startup
 - Smooth motion with acceleration/deceleration ramps
-- Real-time position and current reporting (1 Hz)
+- Real-time position and current reporting (on change)
 - Overcurrent and stall protection
 - Persistent configuration storage in flash
 - Dual serial interface (USB + UART for ESP32)

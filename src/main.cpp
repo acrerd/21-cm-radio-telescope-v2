@@ -92,6 +92,9 @@ Config cfg;
 // =============================================================================
 
 const char* getFaultString();
+void outputStatus();
+void outputStatusIfChanged();
+void updatePrevStatus();
 
 // =============================================================================
 // STATE DEFINITIONS
@@ -166,14 +169,21 @@ int stopStartPwmAlt = PWM_STOP;
 // Serial input buffers (one for each port)
 char serialBuffer[64];
 int serialIndex = 0;
+char lastLineEndChar = 0;  // Track CR/LF to handle CRLF pairs
 
 #if ENABLE_SERIAL1
 char serial1Buffer[64];
 int serial1Index = 0;
+char lastLineEndChar1 = 0;  // Track CR/LF for Serial1
 #endif
 
-// Timing
-unsigned long lastStatusTime = 0;
+// Previous state tracking (for change detection)
+int32_t prevPositionAz = 0;
+int32_t prevPositionAlt = 0;
+int32_t prevTargetAz = 0;
+int32_t prevTargetAlt = 0;
+SystemState prevSystemState = STATE_INIT;
+FaultCode prevFaultCode = FAULT_NONE;
 
 // =============================================================================
 // DUAL SERIAL OUTPUT HELPER
@@ -206,6 +216,10 @@ void printAllInt(int val) {
     #if ENABLE_SERIAL1
     Serial1.print(val);
     #endif
+}
+
+void printPrompt() {
+    printAll("> ");
 }
 
 // =============================================================================
@@ -614,6 +628,9 @@ void performHoming() {
     while (!azAtLimit || !altAtLimit) {
         unsigned long now = millis();
 
+        // Output status when it changes
+        outputStatusIfChanged();
+
         // Check if Az has stopped (at limit)
         if (!azAtLimit && (now - lastPulseAz) > cfg.stallTimeoutMs) {
             stopMotorAz();
@@ -682,6 +699,9 @@ void performHoming() {
     motionStateAlt = (homeAltOffset > 0) ? MOTION_DRIVING : MOTION_IDLE;
 
     while (motionStateAz != MOTION_IDLE || motionStateAlt != MOTION_IDLE) {
+        // Output status when it changes
+        outputStatusIfChanged();
+
         // Update Az motor
         if (motionStateAz == MOTION_DRIVING) {
             int32_t remaining = homeAzOffset - positionAz;
@@ -744,9 +764,12 @@ void performHoming() {
     printAllFloat(cfg.homeAz, 1);
     printAllLn("");
     printAllLn("Ready. Type HELP for commands.");
-    printAllLn("");
 
+    // Set state before updating prev status to avoid spurious status output
     systemState = STATE_IDLE;
+    updatePrevStatus();
+
+    printPrompt();
 }
 
 // =============================================================================
@@ -922,6 +945,34 @@ const char* getFaultString() {
     }
 }
 
+// Check if status has changed since last output
+bool statusChanged() {
+    // Check position change (round to 0.5 degree to avoid noise)
+    int32_t posAzRounded = positionAz / (PULSES_PER_DEGREE / 2);
+    int32_t posAltRounded = positionAlt / (PULSES_PER_DEGREE / 2);
+    int32_t prevAzRounded = prevPositionAz / (PULSES_PER_DEGREE / 2);
+    int32_t prevAltRounded = prevPositionAlt / (PULSES_PER_DEGREE / 2);
+
+    if (posAzRounded != prevAzRounded) return true;
+    if (posAltRounded != prevAltRounded) return true;
+    if (systemState != prevSystemState) return true;
+    if (faultCode != prevFaultCode) return true;
+    if (targetAz != prevTargetAz) return true;
+    if (targetAlt != prevTargetAlt) return true;
+
+    return false;
+}
+
+// Update previous state after outputting status
+void updatePrevStatus() {
+    prevPositionAz = positionAz;
+    prevPositionAlt = positionAlt;
+    prevTargetAz = targetAz;
+    prevTargetAlt = targetAlt;
+    prevSystemState = systemState;
+    prevFaultCode = faultCode;
+}
+
 void outputStatus() {
     float altDeg = (float)positionAlt / PULSES_PER_DEGREE;
     float azDeg = (float)positionAz / PULSES_PER_DEGREE;
@@ -954,6 +1005,15 @@ void outputStatus() {
     }
 
     printAllLn("");
+
+    updatePrevStatus();
+}
+
+// Output status only if something changed
+void outputStatusIfChanged() {
+    if (statusChanged()) {
+        outputStatus();
+    }
 }
 
 // Show help message
@@ -982,20 +1042,20 @@ void showHelp() {
     printAllLn("  STALL            - Stall timeout (ms)");
 }
 
-// Show current configuration
+// Show current configuration with SET parameter names
 void showConfig() {
-    printAllLn("Configuration:");
-    printAll("  Alt limits: "); printAllFloat(cfg.altMin, 1);
-    printAll(" to "); printAllFloat(cfg.altMax, 1); printAllLn(" deg");
-    printAll("  Az limits:  "); printAllFloat(cfg.azMin, 1);
-    printAll(" to "); printAllFloat(cfg.azMax, 1); printAllLn(" deg");
-    printAll("  Home pos:   Alt="); printAllFloat(cfg.homeAlt, 1);
-    printAll(" Az="); printAllFloat(cfg.homeAz, 1); printAllLn(" deg");
-    printAll("  Ramp up:    "); printAllInt(cfg.rampUpMs); printAllLn(" ms");
-    printAll("  Ramp down:  "); printAllFloat(cfg.rampDownDeg, 1); printAllLn(" deg");
-    printAll("  Stop ramp:  "); printAllInt(cfg.stopRampMs); printAllLn(" ms");
-    printAll("  Current lim:"); printAllFloat(cfg.currentLimit, 1); printAllLn(" A");
-    printAll("  Stall time: "); printAllInt(cfg.stallTimeoutMs); printAllLn(" ms");
+    printAllLn("Configuration (use SET <param> <value>):");
+    printAll("  ALTMIN="); printAllFloat(cfg.altMin, 1);
+    printAll("  ALTMAX="); printAllFloat(cfg.altMax, 1); printAllLn(" (deg)");
+    printAll("  AZMIN="); printAllFloat(cfg.azMin, 1);
+    printAll("   AZMAX="); printAllFloat(cfg.azMax, 1); printAllLn(" (deg)");
+    printAll("  HOMEALT="); printAllFloat(cfg.homeAlt, 1);
+    printAll(" HOMEAZ="); printAllFloat(cfg.homeAz, 1); printAllLn(" (deg)");
+    printAll("  RAMPUP="); printAllInt(cfg.rampUpMs); printAllLn(" (ms)");
+    printAll("  RAMPDOWN="); printAllFloat(cfg.rampDownDeg, 1); printAllLn(" (deg)");
+    printAll("  STOPRAMP="); printAllInt(cfg.stopRampMs); printAllLn(" (ms)");
+    printAll("  CURRENT="); printAllFloat(cfg.currentLimit, 1); printAllLn(" (A)");
+    printAll("  STALL="); printAllInt(cfg.stallTimeoutMs); printAllLn(" (ms)");
 }
 
 // Execute a drive command
@@ -1172,13 +1232,40 @@ void processSerialInput() {
         char c = Serial.read();
 
         if (c == '\n' || c == '\r') {
+            // Skip second char of CRLF or LFCR pair
+            if ((lastLineEndChar == '\r' && c == '\n') ||
+                (lastLineEndChar == '\n' && c == '\r')) {
+                lastLineEndChar = 0;
+                continue;
+            }
+            lastLineEndChar = c;
+
             if (serialIndex > 0) {
+                printAllLn("");  // Echo newline
                 serialBuffer[serialIndex] = '\0';
                 processCommand(serialBuffer);
                 serialIndex = 0;
+                printPrompt();
+            } else {
+                // Empty line - just print new prompt
+                printAllLn("");
+                printPrompt();
+            }
+        } else if (c == '\b' || c == 127) {
+            lastLineEndChar = 0;
+            // Handle backspace
+            if (serialIndex > 0) {
+                serialIndex--;
+                printAll("\b \b");  // Erase character on screen
             }
         } else if (serialIndex < (int)(sizeof(serialBuffer) - 1)) {
+            lastLineEndChar = 0;
             serialBuffer[serialIndex++] = c;
+            // Echo character
+            Serial.print(c);
+            #if ENABLE_SERIAL1
+            Serial1.print(c);
+            #endif
         }
     }
 
@@ -1188,13 +1275,40 @@ void processSerialInput() {
         char c = Serial1.read();
 
         if (c == '\n' || c == '\r') {
+            // Skip second char of CRLF or LFCR pair
+            if ((lastLineEndChar1 == '\r' && c == '\n') ||
+                (lastLineEndChar1 == '\n' && c == '\r')) {
+                lastLineEndChar1 = 0;
+                continue;
+            }
+            lastLineEndChar1 = c;
+
             if (serial1Index > 0) {
+                printAllLn("");  // Echo newline
                 serial1Buffer[serial1Index] = '\0';
                 processCommand(serial1Buffer);
                 serial1Index = 0;
+                printPrompt();
+            } else {
+                // Empty line - just print new prompt
+                printAllLn("");
+                printPrompt();
+            }
+        } else if (c == '\b' || c == 127) {
+            lastLineEndChar1 = 0;
+            // Handle backspace
+            if (serial1Index > 0) {
+                serial1Index--;
+                printAll("\b \b");
             }
         } else if (serial1Index < (int)(sizeof(serial1Buffer) - 1)) {
+            lastLineEndChar1 = 0;
             serial1Buffer[serial1Index++] = c;
+            // Echo character
+            Serial.print(c);
+            #if ENABLE_SERIAL1
+            Serial1.print(c);
+            #endif
         }
     }
     #endif
@@ -1276,8 +1390,6 @@ void setup() {
     // Begin homing sequence
     systemState = STATE_HOMING;
     performHoming();
-
-    lastStatusTime = millis();
 }
 
 void loop() {
@@ -1296,12 +1408,8 @@ void loop() {
     simulatePulses();
     #endif
 
-    // Output status at 1Hz
-    unsigned long now = millis();
-    if (now - lastStatusTime >= STATUS_INTERVAL_MS) {
-        outputStatus();
-        lastStatusTime = now;
-    }
+    // Output status only when something changes
+    outputStatusIfChanged();
 
     delay(MAIN_LOOP_DELAY_MS);
 }

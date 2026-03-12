@@ -43,7 +43,7 @@ The SRT Drive Controller manages the alt-azimuth drive system for the Small Radi
 | Azimuth Range | 0 to 355 degrees |
 | Home Position | Alt: 0, Az: 180 degrees |
 | Current Limit | 5 Amps (configurable) |
-| Serial Baud Rate | 9600 |
+| Serial Baud Rate | 115200 |
 
 ---
 
@@ -156,7 +156,7 @@ For external microcontroller connections (e.g., ESP32), use the hardware UART:
 
 | Parameter | Value |
 |-----------|-------|
-| Baud Rate | 9600 |
+| Baud Rate | 115200 |
 | Data Bits | 8 |
 | Stop Bits | 1 |
 | Parity | None |
@@ -164,7 +164,7 @@ For external microcontroller connections (e.g., ESP32), use the hardware UART:
 
 ### 4.2 Output Format
 
-The controller outputs a status line once per second:
+The controller outputs a status line whenever position, state, or fault changes:
 
 ```
 Alt:45.0 Az:180.0 Ialt:0.52A Iaz:0.38A Status:Ready
@@ -459,8 +459,8 @@ On power-up, the system performs the following sequence:
    - Set motors to stopped state
 
 2. **Initialize serial ports**
-   - Programming port (USB) at 9600 baud
-   - Serial1 (pins 18/19) at 9600 baud (if enabled)
+   - Programming port (USB) at 115200 baud
+   - Serial1 (pins 18/19) at 115200 baud (if enabled)
 
 3. **Homing sequence**
    - Drive both motors toward limit switches (Az West, Alt Down)
@@ -470,7 +470,7 @@ On power-up, the system performs the following sequence:
    - Set position to home coordinates
 
 4. **Enter READY state**
-   - Begin 1Hz status output
+   - Output status on position/state changes
    - Accept commands
 
 **Note:** The homing sequence takes approximately 30-60 seconds depending on the starting position.
@@ -588,11 +588,11 @@ These are defined in `include/config.h` under the `SIMULATION_MODE` guard:
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| `SIM_MAX_SPEED_DEG_S` | 6.0 | Maximum simulated motor speed in degrees/second at full PWM |
+| `SIM_MAX_SPEED_DEG_S` | 18.0 | Maximum simulated motor speed in degrees/second at full PWM |
 | `SIM_INITIAL_AZ_DEG` | 180.0 | Simulated starting azimuth before homing (degrees) |
 | `SIM_INITIAL_ALT_DEG` | 45.0 | Simulated starting altitude before homing (degrees) |
 
-The initial position values determine how far the simulated telescope must "drive" during the homing sequence before hitting the limits. With the defaults (Az=180, Alt=45), homing takes about 30 seconds at the default speed of 6 deg/s. Setting them closer to 0 will make homing faster; setting them further away gives a longer, more realistic homing test.
+The initial position values determine how far the simulated telescope must "drive" during the homing sequence before hitting the limits. With the defaults (Az=180, Alt=45), homing takes about 10 seconds at the default speed of 18 deg/s. Setting them closer to 0 will make homing faster; setting them further away gives a longer, more realistic homing test.
 
 ### 11.3 What Is Tested vs. What Is Not
 
@@ -676,7 +676,7 @@ Alt:45.0 Az:270.0 Ialt:0.00A Iaz:0.00A Status:Ready
 | Symptom | Check |
 |---------|-------|
 | No response to commands | Line ending settings (need CR or LF) |
-| Garbled output | Baud rate (must be 9600) |
+| Garbled output | Baud rate (must be 115200) |
 | ESP32 not receiving | Level shifter, TX/RX swapped |
 
 ---

@@ -120,7 +120,7 @@ typedef struct {
 // SERIAL COMMUNICATION
 // =============================================================================
 
-#define SERIAL_BAUD         9600
+#define SERIAL_BAUD         115200
 #define STATUS_INTERVAL_MS  1000    // Status output every 1 second
 
 // Serial1 pins for ESP32 connection (active LOW logic levels - use level shifter!)
@@ -139,7 +139,7 @@ typedef struct {
 
 #ifdef SIMULATION_MODE
 
-#define SIM_MAX_SPEED_DEG_S     6.0     // Simulated max motor speed (degrees/second)
+#define SIM_MAX_SPEED_DEG_S     18.0    // Simulated max motor speed (degrees/second)
 #define SIM_INITIAL_AZ_DEG      180.0   // Starting azimuth before homing (degrees)
 #define SIM_INITIAL_ALT_DEG     45.0    // Starting altitude before homing (degrees)
 
