@@ -21,6 +21,66 @@
 #include <DueFlashStorage.h>
 #include "config.h"
 
+// =============================================================================
+// SIMULATION MODE - Override hardware I/O with software stubs
+// =============================================================================
+//
+// When SIMULATION_MODE is defined, all motor control I/O is intercepted by
+// shadow variables. simulatePulses() generates position feedback based on
+// the commanded PWM speed, closing the control loop without real hardware.
+//
+// Build with: pio run -e simulation
+// =============================================================================
+
+#ifdef SIMULATION_MODE
+
+// Shadow state for motor control outputs
+static int simPwmAz = PWM_STOP;
+static int simPwmAlt = PWM_STOP;
+static bool simDirAz = true;    // true = HIGH (East/Up)
+static bool simDirAlt = true;
+
+// Fractional pulse accumulators
+static float simAccumAz = 0.0f;
+static float simAccumAlt = 0.0f;
+static unsigned long simLastUpdateMs = 0;
+
+// Override analogWrite - capture PWM values instead of hitting hardware
+static void simAnalogWrite(uint32_t pin, uint32_t val) {
+    if (pin == PIN_PWM_AZ)       simPwmAz = val;
+    else if (pin == PIN_PWM_ALT) simPwmAlt = val;
+}
+#define analogWrite(pin, val) simAnalogWrite(pin, val)
+
+// Override digitalWrite - capture direction state
+static void simDigitalWrite(uint32_t pin, uint32_t val) {
+    if (pin == PIN_DIR_AZ)       simDirAz = (val == HIGH);
+    else if (pin == PIN_DIR_ALT) simDirAlt = (val == HIGH);
+}
+#define digitalWrite(pin, val) simDigitalWrite(pin, val)
+
+// Override digitalRead - return no-fault state for all pins
+static int simDigitalRead(uint32_t pin) {
+    (void)pin;
+    return LOW;  // Both fault flags LOW = no fault
+}
+#define digitalRead(pin) simDigitalRead(pin)
+
+// Override analogRead - return zero-current ADC value
+static int simAnalogRead(uint32_t pin) {
+    (void)pin;
+    // Return ADC value corresponding to 2.5V offset (zero current)
+    return (int)((CURRENT_SENSOR_OFFSET_V / ADC_REFERENCE_V) * ADC_RESOLUTION_BITS);
+}
+#define analogRead(pin) simAnalogRead(pin)
+
+// No-op hardware setup functions
+#define pinMode(pin, mode)          ((void)0)
+#define attachInterrupt(a, b, c)    ((void)0)
+#define analogReadResolution(x)     ((void)0)
+
+#endif // SIMULATION_MODE
+
 // Flash storage for configuration
 DueFlashStorage flashStorage;
 
@@ -250,6 +310,74 @@ void pulseAltISR() {
     }
     lastPulseAlt = now;
 }
+
+// =============================================================================
+// SIMULATION - Pulse Generation
+// =============================================================================
+
+#ifdef SIMULATION_MODE
+/**
+ * Generate simulated encoder pulses based on current motor PWM output.
+ * Must be called every loop iteration (including inside performHoming loops).
+ *
+ * Converts the shadow PWM value to a speed fraction, accumulates fractional
+ * pulses over real elapsed time, and updates the volatile position counters.
+ * Simulates physical hard stops at the configured position limits - when
+ * position reaches a limit, pulses stop (just like a real stalled motor),
+ * which naturally triggers the stall detection logic.
+ */
+void simulatePulses() {
+    unsigned long now = millis();
+    if (simLastUpdateMs == 0) {
+        simLastUpdateMs = now;
+        return;
+    }
+
+    float dt = (float)(now - simLastUpdateMs) / 1000.0f;
+    simLastUpdateMs = now;
+    if (dt <= 0.0f || dt > 0.5f) return;  // Guard against timing glitches
+
+    float maxPulseRate = SIM_MAX_SPEED_DEG_S * PULSES_PER_DEGREE;
+
+    // Simulated hard stops at configured position limits
+    int32_t azLimitLow  = (int32_t)(cfg.azMin * PULSES_PER_DEGREE);
+    int32_t azLimitHigh = (int32_t)(cfg.azMax * PULSES_PER_DEGREE);
+    int32_t altLimitLow  = (int32_t)(cfg.altMin * PULSES_PER_DEGREE);
+    int32_t altLimitHigh = (int32_t)(cfg.altMax * PULSES_PER_DEGREE);
+
+    // --- Azimuth axis ---
+    float speedAz = (float)(PWM_STOP - simPwmAz) / (float)(PWM_STOP - PWM_FULL_SPEED);
+    if (speedAz > 0.0f) {
+        simAccumAz += speedAz * maxPulseRate * dt;
+        while (simAccumAz >= 1.0f) {
+            int32_t nextPos = simDirAz ? (positionAz + 1) : (positionAz - 1);
+            if (nextPos < azLimitLow || nextPos > azLimitHigh) {
+                simAccumAz = 0.0f;  // Hit simulated hard stop
+                break;
+            }
+            simAccumAz -= 1.0f;
+            positionAz = nextPos;
+            lastPulseAz = now;
+        }
+    }
+
+    // --- Altitude axis ---
+    float speedAlt = (float)(PWM_STOP - simPwmAlt) / (float)(PWM_STOP - PWM_FULL_SPEED);
+    if (speedAlt > 0.0f) {
+        simAccumAlt += speedAlt * maxPulseRate * dt;
+        while (simAccumAlt >= 1.0f) {
+            int32_t nextPos = simDirAlt ? (positionAlt + 1) : (positionAlt - 1);
+            if (nextPos < altLimitLow || nextPos > altLimitHigh) {
+                simAccumAlt = 0.0f;
+                break;
+            }
+            simAccumAlt -= 1.0f;
+            positionAlt = nextPos;
+            lastPulseAlt = now;
+        }
+    }
+}
+#endif // SIMULATION_MODE
 
 // =============================================================================
 // MOTOR CONTROL FUNCTIONS
@@ -523,6 +651,9 @@ void performHoming() {
         }
 
         delay(10);
+        #ifdef SIMULATION_MODE
+        simulatePulses();
+        #endif
     }
 
     // At limit switches - reset position counters
@@ -595,6 +726,9 @@ void performHoming() {
         }
 
         delay(MAIN_LOOP_DELAY_MS);
+        #ifdef SIMULATION_MODE
+        simulatePulses();
+        #endif
     }
 
     // Now at home position - set position to home coordinates
@@ -1123,10 +1257,20 @@ void setup() {
     printAllLn("=================================");
     printAllLn("SRT Drive Controller v1.1");
     printAllLn("Acre Road Observatory, Glasgow");
+    #ifdef SIMULATION_MODE
+    printAllLn("*** SIMULATION MODE ***");
+    #endif
     printAllLn("=================================");
     printAllLn("");
     printAllLn("Type HELP for commands.");
     printAllLn("");
+    #ifdef SIMULATION_MODE
+    // Set initial simulated position (as if telescope is at an arbitrary position)
+    positionAz = (int32_t)(SIM_INITIAL_AZ_DEG * PULSES_PER_DEGREE);
+    positionAlt = (int32_t)(SIM_INITIAL_ALT_DEG * PULSES_PER_DEGREE);
+    simLastUpdateMs = millis();
+    #endif
+
     printAllLn("Starting homing sequence...");
 
     // Begin homing sequence
@@ -1147,6 +1291,10 @@ void loop() {
     if (systemState != STATE_FAULT && systemState != STATE_HOMING) {
         updateMotion();
     }
+
+    #ifdef SIMULATION_MODE
+    simulatePulses();
+    #endif
 
     // Output status at 1Hz
     unsigned long now = millis();

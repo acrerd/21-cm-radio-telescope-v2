@@ -133,4 +133,16 @@ typedef struct {
 
 #define MAIN_LOOP_DELAY_MS  10      // Main loop period
 
+// =============================================================================
+// SIMULATION MODE CONFIGURATION
+// =============================================================================
+
+#ifdef SIMULATION_MODE
+
+#define SIM_MAX_SPEED_DEG_S     6.0     // Simulated max motor speed (degrees/second)
+#define SIM_INITIAL_AZ_DEG      180.0   // Starting azimuth before homing (degrees)
+#define SIM_INITIAL_ALT_DEG     45.0    // Starting altitude before homing (degrees)
+
+#endif // SIMULATION_MODE
+
 #endif // CONFIG_H
