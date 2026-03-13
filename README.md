@@ -365,7 +365,8 @@ new_SRT_drive/
 
 ## Documentation
 
-- [SRT Drive Manual](docs/SRT_DRIVE_MANUAL.md) - Complete operations manual
+- [SRT Drive Manual](docs/SRT_DRIVE_MANUAL.md) - Arduino Due firmware manual
+- [ESP32 Controller Manual](docs/ESP32_CONTROLLER.md) - ESP32-S3 MicroPython controller manual
 
 ## License
 
