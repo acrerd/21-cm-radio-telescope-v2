@@ -155,8 +155,8 @@ class GNURadioFlowgraph(gr.top_block):
         # Complex to mag squared
         self.complex_to_mag_sq = blocks.complex_to_mag_squared(self.fft_size)
 
-        # Moving average for integration
-        avg_length = max(1, int(self.sample_rate / self.fft_size * 0.5))
+        # Moving average for integration (match INTEGRATION_TIME for consistent SNR)
+        avg_length = max(1, int(self.sample_rate / self.fft_size * INTEGRATION_TIME))
         self.moving_avg = blocks.moving_average_ff(
             avg_length,
             1.0 / avg_length,
