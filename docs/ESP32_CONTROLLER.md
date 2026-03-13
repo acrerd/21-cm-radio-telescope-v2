@@ -436,6 +436,81 @@ GET /track/radec?ra=12&dec=30
 | `/wifi/connect` | `ssid`, `password` | Connect to network |
 | `/wifi/forget` | (none) | Forget saved network |
 
+### External Scheduling
+
+Any scheduler can control the telescope via HTTP. All control endpoints return `{"ok": true}` on success.
+
+**Python example:**
+
+```python
+import requests
+
+ESP32_IP = "192.168.4.1"  # Or your network IP
+
+def track_source(ra_hours, dec_deg):
+    """Start tracking an RA/Dec position (J2000)"""
+    r = requests.get(f"http://{ESP32_IP}/track/radec",
+                     params={"ra": ra_hours, "dec": dec_deg})
+    return r.json()
+
+def track_galactic(l_deg, b_deg):
+    """Track galactic coordinates"""
+    r = requests.get(f"http://{ESP32_IP}/track/galactic",
+                     params={"l": l_deg, "b": b_deg})
+    return r.json()
+
+def stop_tracking():
+    requests.get(f"http://{ESP32_IP}/track", params={"enable": 0})
+
+def get_status():
+    return requests.get(f"http://{ESP32_IP}/status").json()
+
+# Example: observe Cygnus A
+track_source(ra_hours=19.991, dec_deg=40.734)
+```
+
+**Cron + curl example:**
+
+```bash
+# Track galactic center at midnight
+0 0 * * * curl "http://192.168.4.1/track/galactic?l=0&b=0"
+
+# Stop tracking at 2am
+0 2 * * * curl "http://192.168.4.1/track?enable=0"
+
+# Track the Sun during the day
+0 9 * * * curl "http://192.168.4.1/track/sun"
+0 17 * * * curl "http://192.168.4.1/track?enable=0"
+```
+
+**Observing schedule script:**
+
+```python
+import requests
+import time
+from datetime import datetime
+
+ESP32_IP = "192.168.4.1"
+SCHEDULE = [
+    {"hour": 22, "ra": 19.991, "dec": 40.734, "name": "Cyg A"},
+    {"hour": 23, "l": 0, "b": 0, "name": "Galactic Center"},
+    {"hour": 0, "ra": 5.576, "dec": 22.014, "name": "Crab Nebula"},
+]
+
+for obs in SCHEDULE:
+    # Wait for scheduled hour (simplified)
+    while datetime.now().hour != obs["hour"]:
+        time.sleep(60)
+
+    if "l" in obs:
+        requests.get(f"http://{ESP32_IP}/track/galactic",
+                    params={"l": obs["l"], "b": obs["b"]})
+    else:
+        requests.get(f"http://{ESP32_IP}/track/radec",
+                    params={"ra": obs["ra"], "dec": obs["dec"]})
+    print(f"Now observing: {obs['name']}")
+```
+
 ---
 
 ## 6. Stellarium Protocol
