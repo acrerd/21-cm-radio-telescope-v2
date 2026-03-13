@@ -656,9 +656,6 @@ void runSafetyChecks() {
 // Exceeding software limits by more than TOLERANCE, or any hardware limit, is rejected.
 
 bool isValidTarget(float altDeg, float azDeg) {
-    bool valid = true;
-    bool warned = false;
-
     // Check HARDWARE limits first (absolute - never exceed)
     if (altDeg < cfg.altHwMin || altDeg > cfg.altHwMax) {
         printAll("ERROR: Altitude ");
@@ -727,7 +724,6 @@ bool isValidTarget(float altDeg, float azDeg) {
         printAll(" to ");
         printAllFloat(cfg.altMax, 1);
         printAllLn(" deg)");
-        warned = true;
     }
 
     if (azDeg < cfg.azMin || azDeg > cfg.azMax) {
@@ -738,7 +734,6 @@ bool isValidTarget(float altDeg, float azDeg) {
         printAll(" to ");
         printAllFloat(cfg.azMax, 1);
         printAllLn(" deg)");
-        warned = true;
     }
 
     return true;
