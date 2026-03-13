@@ -33,9 +33,20 @@ STELLARIUM_PORT = 10001
 # Web server
 WEB_PORT = 80
 
-# Observer location (set to your location)
-OBSERVER_LAT = 55.9    # Glasgow, degrees
-OBSERVER_LON = -4.3    # Glasgow, degrees
+# Observer location (Acre Road Observatory, Glasgow)
+OBSERVER_LAT = 55.902426   # Latitude (degrees)
+OBSERVER_LON = -4.307865   # Longitude (degrees)
 
 # NTP server
 NTP_SERVER = "pool.ntp.org"
+
+# Mount software limits (degrees)
+# These should match the Arduino Due config (operational limits inside hardware)
+MOUNT_AZ_MIN = 2.0     # Azimuth minimum (2 deg inside hardware limit)
+MOUNT_AZ_MAX = 353.0   # Azimuth maximum (2 deg inside hardware limit)
+MOUNT_ALT_MIN = 0.0    # Altitude minimum
+MOUNT_ALT_MAX = 90.0   # Altitude maximum
+
+# Home position (degrees) - telescope parks here when waiting
+HOME_ALT = 0.0
+HOME_AZ = 180.0

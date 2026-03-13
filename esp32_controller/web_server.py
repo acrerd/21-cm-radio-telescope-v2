@@ -296,8 +296,16 @@ HTML_PAGE = """<!DOCTYPE html>
                     if (d.enabled) {
                         let info = d.target_name || 'RA/Dec';
                         info += ': ' + formatRA(d.ra) + ' ' + formatDec(d.dec);
+                        if (d.waiting_for_rise) {
+                            info += ' [WAITING - Below horizon]';
+                            document.getElementById('tracking_target').className = 'value disconnected';
+                        } else if (d.waiting_for_wrap) {
+                            info += ' [WAITING - Az limits]';
+                            document.getElementById('tracking_target').className = 'value disconnected';
+                        } else {
+                            document.getElementById('tracking_target').className = 'value tracking';
+                        }
                         document.getElementById('tracking_target').textContent = info;
-                        document.getElementById('tracking_target').className = 'value tracking';
                     } else {
                         document.getElementById('tracking_target').textContent = 'Off';
                         document.getElementById('tracking_target').className = 'value idle';
@@ -612,7 +620,9 @@ def handle_http_request(client, srt):
                 "enabled": app.tracking_enabled,
                 "ra": app.current_ra,
                 "dec": app.current_dec,
-                "target_name": getattr(app, 'target_name', None)
+                "target_name": getattr(app, 'target_name', None),
+                "waiting_for_wrap": getattr(app, 'waiting_for_wrap', False),
+                "waiting_for_rise": getattr(app, 'waiting_for_rise', False)
             }
             send_response(client, json.dumps(result), 'application/json')
 
@@ -632,6 +642,8 @@ def handle_http_request(client, srt):
             app.current_ra = ra
             app.current_dec = dec
             app.target_name = None
+            app.waiting_for_wrap = False
+            app.waiting_for_rise = False
             app.tracking_enabled = True
             send_response(client, '{"ok":true}', 'application/json')
 
@@ -642,6 +654,8 @@ def handle_http_request(client, srt):
             app.current_ra = ra
             app.current_dec = dec
             app.target_name = f"Gal l={l:.1f} b={b:.1f}"
+            app.waiting_for_wrap = False
+            app.waiting_for_rise = False
             app.tracking_enabled = True
             result = {"ok": True, "ra": ra, "dec": dec}
             send_response(client, json.dumps(result), 'application/json')
@@ -651,6 +665,8 @@ def handle_http_request(client, srt):
             app.tracking_enabled = enable
             if not enable:
                 app.target_name = None
+                app.waiting_for_wrap = False
+                app.waiting_for_rise = False
             send_response(client, '{"ok":true}', 'application/json')
 
         elif path == '/track/sun':
@@ -658,6 +674,8 @@ def handle_http_request(client, srt):
             app.current_ra = ra
             app.current_dec = dec
             app.target_name = "Sun"
+            app.waiting_for_wrap = False
+            app.waiting_for_rise = False
             app.tracking_enabled = True
             send_response(client, '{"ok":true}', 'application/json')
 
@@ -666,6 +684,8 @@ def handle_http_request(client, srt):
             app.current_ra = ra
             app.current_dec = dec
             app.target_name = "Moon"
+            app.waiting_for_wrap = False
+            app.waiting_for_rise = False
             app.tracking_enabled = True
             send_response(client, '{"ok":true}', 'application/json')
 
@@ -675,6 +695,8 @@ def handle_http_request(client, srt):
             app.current_ra = ra
             app.current_dec = dec
             app.target_name = None
+            app.waiting_for_wrap = False
+            app.waiting_for_rise = False
             app.tracking_enabled = True
             send_response(client, '{"ok":true}', 'application/json')
 
@@ -685,6 +707,8 @@ def handle_http_request(client, srt):
             app.current_ra = ra
             app.current_dec = dec
             app.target_name = f"Gal l={l:.1f} b={b:.1f}"
+            app.waiting_for_wrap = False
+            app.waiting_for_rise = False
             app.tracking_enabled = True
             result = {"ok": True, "ra": ra, "dec": dec}
             send_response(client, json.dumps(result), 'application/json')
@@ -710,6 +734,8 @@ def handle_http_request(client, srt):
             app.target_az = az
             app.tracking_enabled = False
             app.target_name = None
+            app.waiting_for_wrap = False
+            app.waiting_for_rise = False
             srt.send_target(alt, az)
             send_response(client, '{"ok":true}', 'application/json')
 

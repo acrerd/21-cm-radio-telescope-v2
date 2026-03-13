@@ -238,6 +238,12 @@ uint32_t calculateChecksum(const Config* c) {
 
 void loadDefaults() {
     cfg.magic = CONFIG_MAGIC;
+    // Hardware limits (physical limit switches)
+    cfg.altHwMin = DEFAULT_ALT_HW_MIN;
+    cfg.altHwMax = DEFAULT_ALT_HW_MAX;
+    cfg.azHwMin = DEFAULT_AZ_HW_MIN;
+    cfg.azHwMax = DEFAULT_AZ_HW_MAX;
+    // Software limits (operational, inside hardware limits)
     cfg.altMin = DEFAULT_ALT_MIN;
     cfg.altMax = DEFAULT_ALT_MAX;
     cfg.azMin = DEFAULT_AZ_MIN;
@@ -353,11 +359,11 @@ void simulatePulses() {
 
     float maxPulseRate = SIM_MAX_SPEED_DEG_S * PULSES_PER_DEGREE;
 
-    // Simulated hard stops at configured position limits
-    int32_t azLimitLow  = (int32_t)(cfg.azMin * PULSES_PER_DEGREE);
-    int32_t azLimitHigh = (int32_t)(cfg.azMax * PULSES_PER_DEGREE);
-    int32_t altLimitLow  = (int32_t)(cfg.altMin * PULSES_PER_DEGREE);
-    int32_t altLimitHigh = (int32_t)(cfg.altMax * PULSES_PER_DEGREE);
+    // Simulated hard stops at HARDWARE limits (physical limit switches)
+    int32_t azLimitLow  = (int32_t)(cfg.azHwMin * PULSES_PER_DEGREE);
+    int32_t azLimitHigh = (int32_t)(cfg.azHwMax * PULSES_PER_DEGREE);
+    int32_t altLimitLow  = (int32_t)(cfg.altHwMin * PULSES_PER_DEGREE);
+    int32_t altLimitHigh = (int32_t)(cfg.altHwMax * PULSES_PER_DEGREE);
 
     // --- Azimuth axis ---
     float speedAz = (float)(PWM_STOP - simPwmAz) / (float)(PWM_STOP - PWM_FULL_SPEED);
@@ -573,27 +579,98 @@ void runSafetyChecks() {
 // POSITION VALIDATION
 // =============================================================================
 
+// Two-tier limit system:
+// 1. Hardware limits - absolute physical stops, never exceeded
+// 2. Software limits - operational limits, can be exceeded by up to TOLERANCE
+//
+// Normal operation stays within software limits.
+// Exceeding software limits by up to TOLERANCE triggers a warning but is allowed.
+// Exceeding software limits by more than TOLERANCE, or any hardware limit, is rejected.
+
 bool isValidTarget(float altDeg, float azDeg) {
-    if (altDeg < cfg.altMin || altDeg > cfg.altMax) {
+    bool valid = true;
+    bool warned = false;
+
+    // Check HARDWARE limits first (absolute - never exceed)
+    if (altDeg < cfg.altHwMin || altDeg > cfg.altHwMax) {
         printAll("ERROR: Altitude ");
         printAllFloat(altDeg, 1);
-        printAll(" is out of range. Valid: ");
-        printAllFloat(cfg.altMin, 1);
+        printAll(" exceeds hardware limits (");
+        printAllFloat(cfg.altHwMin, 1);
         printAll(" to ");
-        printAllFloat(cfg.altMax, 1);
-        printAllLn(" degrees");
+        printAllFloat(cfg.altHwMax, 1);
+        printAllLn(" deg)");
         return false;
     }
 
-    if (azDeg < cfg.azMin || azDeg > cfg.azMax) {
+    if (azDeg < cfg.azHwMin || azDeg > cfg.azHwMax) {
         printAll("ERROR: Azimuth ");
         printAllFloat(azDeg, 1);
-        printAll(" is out of range. Valid: ");
+        printAll(" exceeds hardware limits (");
+        printAllFloat(cfg.azHwMin, 1);
+        printAll(" to ");
+        printAllFloat(cfg.azHwMax, 1);
+        printAllLn(" deg)");
+        return false;
+    }
+
+    // Check SOFTWARE limits with tolerance
+    float altTolMin = cfg.altMin - SOFTWARE_LIMIT_TOLERANCE;
+    float altTolMax = cfg.altMax + SOFTWARE_LIMIT_TOLERANCE;
+    float azTolMin = cfg.azMin - SOFTWARE_LIMIT_TOLERANCE;
+    float azTolMax = cfg.azMax + SOFTWARE_LIMIT_TOLERANCE;
+
+    // Clamp tolerance limits to hardware limits
+    if (altTolMin < cfg.altHwMin) altTolMin = cfg.altHwMin;
+    if (altTolMax > cfg.altHwMax) altTolMax = cfg.altHwMax;
+    if (azTolMin < cfg.azHwMin) azTolMin = cfg.azHwMin;
+    if (azTolMax > cfg.azHwMax) azTolMax = cfg.azHwMax;
+
+    // Check altitude against software limits + tolerance
+    if (altDeg < altTolMin || altDeg > altTolMax) {
+        printAll("ERROR: Altitude ");
+        printAllFloat(altDeg, 1);
+        printAll(" exceeds software limits + tolerance (");
+        printAllFloat(altTolMin, 1);
+        printAll(" to ");
+        printAllFloat(altTolMax, 1);
+        printAllLn(" deg)");
+        return false;
+    }
+
+    // Check azimuth against software limits + tolerance
+    if (azDeg < azTolMin || azDeg > azTolMax) {
+        printAll("ERROR: Azimuth ");
+        printAllFloat(azDeg, 1);
+        printAll(" exceeds software limits + tolerance (");
+        printAllFloat(azTolMin, 1);
+        printAll(" to ");
+        printAllFloat(azTolMax, 1);
+        printAllLn(" deg)");
+        return false;
+    }
+
+    // Warn if exceeding software limits (but within tolerance)
+    if (altDeg < cfg.altMin || altDeg > cfg.altMax) {
+        printAll("WARNING: Altitude ");
+        printAllFloat(altDeg, 1);
+        printAll(" outside software limits (");
+        printAllFloat(cfg.altMin, 1);
+        printAll(" to ");
+        printAllFloat(cfg.altMax, 1);
+        printAllLn(" deg)");
+        warned = true;
+    }
+
+    if (azDeg < cfg.azMin || azDeg > cfg.azMax) {
+        printAll("WARNING: Azimuth ");
+        printAllFloat(azDeg, 1);
+        printAll(" outside software limits (");
         printAllFloat(cfg.azMin, 1);
         printAll(" to ");
         printAllFloat(cfg.azMax, 1);
-        printAllLn(" degrees");
-        return false;
+        printAllLn(" deg)");
+        warned = true;
     }
 
     return true;
@@ -1032,9 +1109,11 @@ void showHelp() {
     printAllLn("  DEFAULTS         - Reset to factory defaults");
     printAllLn("");
     printAllLn("SET parameters:");
-    printAllLn("  ALTMIN, ALTMAX   - Altitude limits (deg)");
-    printAllLn("  AZMIN, AZMAX     - Azimuth limits (deg)");
-    printAllLn("  HOMEALT, HOMEAZ  - Home position (deg)");
+    printAllLn("  ALTHWMIN, ALTHWMAX - Altitude hardware limits (deg)");
+    printAllLn("  AZHWMIN, AZHWMAX   - Azimuth hardware limits (deg)");
+    printAllLn("  ALTMIN, ALTMAX     - Altitude software limits (deg)");
+    printAllLn("  AZMIN, AZMAX       - Azimuth software limits (deg)");
+    printAllLn("  HOMEALT, HOMEAZ    - Home position (deg)");
     printAllLn("  RAMPUP           - Accel time (ms)");
     printAllLn("  RAMPDOWN         - Decel distance (deg)");
     printAllLn("  STOPRAMP         - Reversal decel time (ms)");
@@ -1045,10 +1124,17 @@ void showHelp() {
 // Show current configuration with SET parameter names
 void showConfig() {
     printAllLn("Configuration (use SET <param> <value>):");
+    printAllLn("Hardware limits (physical limit switches):");
+    printAll("  ALTHWMIN="); printAllFloat(cfg.altHwMin, 1);
+    printAll("  ALTHWMAX="); printAllFloat(cfg.altHwMax, 1); printAllLn(" (deg)");
+    printAll("  AZHWMIN="); printAllFloat(cfg.azHwMin, 1);
+    printAll("   AZHWMAX="); printAllFloat(cfg.azHwMax, 1); printAllLn(" (deg)");
+    printAllLn("Software limits (operational, inside hardware limits):");
     printAll("  ALTMIN="); printAllFloat(cfg.altMin, 1);
-    printAll("  ALTMAX="); printAllFloat(cfg.altMax, 1); printAllLn(" (deg)");
+    printAll("   ALTMAX="); printAllFloat(cfg.altMax, 1); printAllLn(" (deg)");
     printAll("  AZMIN="); printAllFloat(cfg.azMin, 1);
-    printAll("   AZMAX="); printAllFloat(cfg.azMax, 1); printAllLn(" (deg)");
+    printAll("    AZMAX="); printAllFloat(cfg.azMax, 1); printAllLn(" (deg)");
+    printAllLn("Other settings:");
     printAll("  HOMEALT="); printAllFloat(cfg.homeAlt, 1);
     printAll(" HOMEAZ="); printAllFloat(cfg.homeAz, 1); printAllLn(" (deg)");
     printAll("  RAMPUP="); printAllInt(cfg.rampUpMs); printAllLn(" (ms)");
@@ -1088,18 +1174,33 @@ bool strEqualsIgnoreCase(const char* a, const char* b) {
 
 // Process SET command
 void processSetCommand(const char* param, float value) {
-    if (strEqualsIgnoreCase(param, "ALTMIN")) {
+    // Hardware limits
+    if (strEqualsIgnoreCase(param, "ALTHWMIN")) {
+        cfg.altHwMin = value;
+        printAll("Alt hardware min set to "); printAllFloat(value, 1); printAllLn(" deg");
+    } else if (strEqualsIgnoreCase(param, "ALTHWMAX")) {
+        cfg.altHwMax = value;
+        printAll("Alt hardware max set to "); printAllFloat(value, 1); printAllLn(" deg");
+    } else if (strEqualsIgnoreCase(param, "AZHWMIN")) {
+        cfg.azHwMin = value;
+        printAll("Az hardware min set to "); printAllFloat(value, 1); printAllLn(" deg");
+    } else if (strEqualsIgnoreCase(param, "AZHWMAX")) {
+        cfg.azHwMax = value;
+        printAll("Az hardware max set to "); printAllFloat(value, 1); printAllLn(" deg");
+    }
+    // Software limits
+    else if (strEqualsIgnoreCase(param, "ALTMIN")) {
         cfg.altMin = value;
-        printAll("Alt min set to "); printAllFloat(value, 1); printAllLn(" deg");
+        printAll("Alt software min set to "); printAllFloat(value, 1); printAllLn(" deg");
     } else if (strEqualsIgnoreCase(param, "ALTMAX")) {
         cfg.altMax = value;
-        printAll("Alt max set to "); printAllFloat(value, 1); printAllLn(" deg");
+        printAll("Alt software max set to "); printAllFloat(value, 1); printAllLn(" deg");
     } else if (strEqualsIgnoreCase(param, "AZMIN")) {
         cfg.azMin = value;
-        printAll("Az min set to "); printAllFloat(value, 1); printAllLn(" deg");
+        printAll("Az software min set to "); printAllFloat(value, 1); printAllLn(" deg");
     } else if (strEqualsIgnoreCase(param, "AZMAX")) {
         cfg.azMax = value;
-        printAll("Az max set to "); printAllFloat(value, 1); printAllLn(" deg");
+        printAll("Az software max set to "); printAllFloat(value, 1); printAllLn(" deg");
     } else if (strEqualsIgnoreCase(param, "HOMEALT")) {
         cfg.homeAlt = value;
         printAll("Home alt set to "); printAllFloat(value, 1); printAllLn(" deg");

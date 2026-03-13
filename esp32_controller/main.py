@@ -7,7 +7,9 @@ from machine import UART, Pin, RTC
 
 from config import (
     DUE_UART_TX, DUE_UART_RX, DUE_BAUD_RATE,
-    NTP_SERVER, OBSERVER_LAT, OBSERVER_LON
+    NTP_SERVER, OBSERVER_LAT, OBSERVER_LON,
+    MOUNT_AZ_MIN, MOUNT_AZ_MAX, MOUNT_ALT_MIN, MOUNT_ALT_MAX,
+    HOME_ALT, HOME_AZ
 )
 from coordinates import ra_dec_to_alt_az, get_sun_position, get_moon_position
 from web_server import start_web_server
@@ -23,6 +25,8 @@ tracking_enabled = False
 target_name = None     # "Sun", "Moon", "Gal l=x b=y", or None for manual RA/Dec
 time_synced = False    # True if time has been set (NTP or browser)
 time_source = None     # "NTP", "browser", or None
+waiting_for_wrap = False  # True when target is outside az limits
+waiting_for_rise = False  # True when target is below horizon
 
 
 def sync_time_ntp():
@@ -80,16 +84,26 @@ def get_time_status():
     }
 
 
+def is_az_within_limits(az):
+    """Check if azimuth is within software limits"""
+    return MOUNT_AZ_MIN <= az <= MOUNT_AZ_MAX
+
+
 def tracking_loop(srt):
-    """Background thread: update Alt/Az from RA/Dec and send to Due"""
+    """Background thread: update Alt/Az from RA/Dec and send to Due
+
+    Handles two waiting conditions:
+    - Below horizon: parks at home, waits for target to rise
+    - Azimuth wrap: waits for circumpolar target to reappear in limits
+    """
     global target_alt, target_az, current_ra, current_dec
+    global waiting_for_wrap, waiting_for_rise
 
     ephemeris_counter = 0
 
     while True:
         if tracking_enabled:
             # For Sun/Moon, refresh their positions periodically
-            # (they move relative to stars)
             if target_name == "Sun":
                 if ephemeris_counter == 0:
                     current_ra, current_dec = get_sun_position()
@@ -108,11 +122,35 @@ def tracking_loop(srt):
             target_alt = alt
             target_az = az
 
-            # Only send if above horizon
-            if alt > 0:
-                srt.send_target(alt, az)
+            # Check if below horizon - go to home and wait
+            if alt < MOUNT_ALT_MIN:
+                if not waiting_for_rise:
+                    waiting_for_rise = True
+                    print(f"Target below horizon: Alt={alt:.1f}")
+                    print("Parking at home, waiting for target to rise...")
+                    srt.send_target(HOME_ALT, HOME_AZ)
+                # Continue waiting
+            # Check if above zenith limit
+            elif alt > MOUNT_ALT_MAX:
+                print(f"Target above altitude limit: Alt={alt:.1f}")
+            # Check azimuth limits (circumpolar wrap-around handling)
+            elif not is_az_within_limits(az):
+                if not waiting_for_wrap:
+                    waiting_for_wrap = True
+                    print(f"Target outside az limits: Az={az:.1f}")
+                    print("Waiting for circumpolar wrap-around...")
+                # Continue waiting
             else:
-                print(f"Target below horizon: Alt={alt:.1f}")
+                # Target is within all limits
+                if waiting_for_rise:
+                    waiting_for_rise = False
+                    print(f"Target risen: Alt={alt:.1f} Az={az:.1f}")
+                    print("Resuming tracking...")
+                if waiting_for_wrap:
+                    waiting_for_wrap = False
+                    print(f"Target back in az limits: Alt={alt:.1f} Az={az:.1f}")
+                    print("Repositioning to resume tracking...")
+                srt.send_target(alt, az)
 
         time.sleep(1)
 

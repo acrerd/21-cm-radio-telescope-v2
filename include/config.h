@@ -42,11 +42,22 @@
 // DEFAULT VALUES - These are loaded into config struct at startup
 // =============================================================================
 
-// Position limits (degrees)
-#define DEFAULT_ALT_MIN         0.0     // Altitude lower limit (at limit switch)
-#define DEFAULT_ALT_MAX         90.0    // Altitude upper limit (zenith)
-#define DEFAULT_AZ_MIN          0.0     // Azimuth lower limit (at limit switch)
-#define DEFAULT_AZ_MAX          355.0   // Azimuth upper limit (at limit switch)
+// Hardware limits (degrees) - physical limit switches
+#define DEFAULT_ALT_HW_MIN      0.0     // Altitude lower hardware limit (limit switch)
+#define DEFAULT_ALT_HW_MAX      90.0    // Altitude upper hardware limit (zenith)
+#define DEFAULT_AZ_HW_MIN       0.0     // Azimuth lower hardware limit (limit switch)
+#define DEFAULT_AZ_HW_MAX       355.0   // Azimuth upper hardware limit (limit switch)
+
+// Software limits (degrees) - operational limits, inside hardware limits
+// Normal operation stays within these. They provide safety margin from hardware stops.
+#define DEFAULT_ALT_MIN         0.0     // Altitude lower software limit
+#define DEFAULT_ALT_MAX         90.0    // Altitude upper software limit
+#define DEFAULT_AZ_MIN          2.0     // Azimuth lower software limit (2 deg inside HW)
+#define DEFAULT_AZ_MAX          353.0   // Azimuth upper software limit (2 deg inside HW)
+
+// Software limit tolerance (degrees) - how far past software limits before hard stop
+// Allows brief excursions up to 4 degrees beyond software limits (but not beyond hardware)
+#define SOFTWARE_LIMIT_TOLERANCE 4.0
 
 // Home position (degrees)
 #define DEFAULT_HOME_ALT        0.0     // Altitude home position
@@ -94,7 +105,13 @@
 typedef struct {
     uint32_t magic;             // Magic number to validate config
 
-    // Position limits (degrees)
+    // Hardware limits (degrees) - physical limit switches
+    float altHwMin;
+    float altHwMax;
+    float azHwMin;
+    float azHwMax;
+
+    // Software limits (degrees) - operational limits, inside hardware limits
     float altMin;
     float altMax;
     float azMin;

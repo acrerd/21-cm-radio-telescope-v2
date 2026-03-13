@@ -183,6 +183,23 @@ WEB_PORT = 80            # HTTP web interface
 NTP_SERVER = "pool.ntp.org"
 ```
 
+### Mount Software Limits
+
+These must match the Arduino Due software limits for proper operation:
+
+```python
+MOUNT_AZ_MIN = 2.0      # Azimuth minimum (degrees)
+MOUNT_AZ_MAX = 353.0    # Azimuth maximum (degrees)
+MOUNT_ALT_MIN = 0.0     # Altitude minimum (degrees)
+MOUNT_ALT_MAX = 90.0    # Altitude maximum (degrees)
+
+# Home position - telescope parks here when waiting
+HOME_ALT = 0.0          # Home altitude (degrees)
+HOME_AZ = 180.0         # Home azimuth (degrees)
+```
+
+The ESP32 uses these limits for tracking control. When a target is below horizon, the telescope parks at home. When a circumpolar target exits azimuth limits, tracking waits for wrap-around.
+
 ---
 
 ## 4. Module Reference
@@ -203,6 +220,8 @@ Main application entry point and tracking loop.
 | `target_name` | str | "Sun", "Moon", "Gal l=x b=y", or None |
 | `time_synced` | bool | True if time has been set |
 | `time_source` | str | "NTP", "browser", or None |
+| `waiting_for_rise` | bool | True when target is below horizon |
+| `waiting_for_wrap` | bool | True when target is outside az limits |
 
 **Key Functions:**
 
@@ -216,7 +235,32 @@ Main application entry point and tracking loop.
 1. Runs every 1 second when `tracking_enabled` is True
 2. For Sun/Moon targets, refreshes ephemeris every 30 seconds
 3. Converts current RA/Dec to Alt/Az using current time
-4. Sends position to Due if altitude > 0 (above horizon)
+4. Checks mount software limits before sending commands:
+   - **Altitude**: Must be within `MOUNT_ALT_MIN` to `MOUNT_ALT_MAX`
+   - **Azimuth**: Must be within `MOUNT_AZ_MIN` to `MOUNT_AZ_MAX`
+5. Sends position to Due if within all limits
+
+**Below-Horizon Handling:**
+
+When a tracked target is below the horizon (altitude < 0°):
+
+1. The telescope parks at the home position (Alt=0°, Az=180°)
+2. Tracking enters "waiting for rise" state
+3. The controller continues computing the target position each second
+4. When the target rises above 0°, tracking resumes automatically
+
+The web interface shows `[WAITING - Below horizon]` when in this state.
+
+**Circumpolar Wrap-Around Handling:**
+
+For circumpolar sources (declination > 90° - latitude), the azimuth will eventually exceed the mount limits when tracking through lower culmination (near the northern horizon). The controller handles this automatically:
+
+1. When azimuth exits the valid range (e.g., passes 353°), tracking enters "waiting" state
+2. The controller continues computing the target position but does not send commands
+3. When the source reappears within valid azimuth range (e.g., after passing through 0° and reaching 2°), tracking resumes
+4. The telescope repositions to the new azimuth and continues tracking
+
+The web interface shows `[WAITING - Az limits]` when in this state.
 
 ### coordinates.py
 

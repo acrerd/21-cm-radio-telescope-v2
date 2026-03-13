@@ -303,12 +303,28 @@ RESET            Clear fault, then re-home
 
 **SET Parameters:**
 
+*Hardware Limits (physical limit switches):*
+
 | Parameter | Description | Default | Units |
 |-----------|-------------|---------|-------|
-| `ALTMIN` | Altitude minimum limit | 0 | degrees |
-| `ALTMAX` | Altitude maximum limit | 90 | degrees |
-| `AZMIN` | Azimuth minimum limit | 0 | degrees |
-| `AZMAX` | Azimuth maximum limit | 355 | degrees |
+| `ALTHWMIN` | Altitude hardware minimum | 0 | degrees |
+| `ALTHWMAX` | Altitude hardware maximum | 90 | degrees |
+| `AZHWMIN` | Azimuth hardware minimum | 0 | degrees |
+| `AZHWMAX` | Azimuth hardware maximum | 355 | degrees |
+
+*Software Limits (operational, inside hardware limits):*
+
+| Parameter | Description | Default | Units |
+|-----------|-------------|---------|-------|
+| `ALTMIN` | Altitude software minimum | 0 | degrees |
+| `ALTMAX` | Altitude software maximum | 90 | degrees |
+| `AZMIN` | Azimuth software minimum | 2 | degrees |
+| `AZMAX` | Azimuth software maximum | 353 | degrees |
+
+*Other Parameters:*
+
+| Parameter | Description | Default | Units |
+|-----------|-------------|---------|-------|
 | `HOMEALT` | Home altitude position | 0 | degrees |
 | `HOMEAZ` | Home azimuth position | 180 | degrees |
 | `RAMPUP` | Acceleration time | 500 | ms |
@@ -319,7 +335,7 @@ RESET            Clear fault, then re-home
 
 **Examples:**
 ```
-SET AZMAX 350        Set azimuth upper limit to 350 degrees
+SET AZMAX 350        Set azimuth upper software limit to 350 degrees
 SET CURRENT 4.5      Set current limit to 4.5 Amps
 SET HOMEAZ 175       Set home azimuth to 175 degrees
 SAVE                 Save changes to flash
@@ -337,14 +353,31 @@ The system uses smooth motion profiles to prevent structural oscillation:
 
 Commands can be sent at any time, even while moving. This enables smooth tracking of celestial sources with continuous position updates.
 
-### 6.5 Position Limits
+### 6.5 Position Limits (Two-Tier System)
 
-Default limits (adjustable via SET commands):
+The controller uses a two-tier limit system for safe operation:
+
+**Hardware Limits** (physical limit switches):
 
 | Axis | Minimum | Maximum |
 |------|---------|---------|
 | Altitude | 0 degrees (horizon) | 90 degrees (zenith) |
 | Azimuth | 0 degrees (North) | 355 degrees |
+
+These are absolute limits where physical limit switches stop the motor. The system cannot drive beyond these.
+
+**Software Limits** (operational, inside hardware limits):
+
+| Axis | Minimum | Maximum |
+|------|---------|---------|
+| Altitude | 0 degrees | 90 degrees |
+| Azimuth | 2 degrees | 353 degrees |
+
+Normal operation stays within software limits. They provide a 2-degree safety margin from hardware stops.
+
+**Software Limit Tolerance** (4 degrees):
+
+The system allows brief excursions up to 4 degrees beyond software limits, but never beyond hardware limits. Commands that would exceed software limits + tolerance are rejected.
 
 ---
 
