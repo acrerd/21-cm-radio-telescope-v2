@@ -155,8 +155,10 @@ class GNURadioFlowgraph(gr.top_block):
         # Complex to mag squared
         self.complex_to_mag_sq = blocks.complex_to_mag_squared(self.fft_size)
 
-        # Moving average for integration (match INTEGRATION_TIME for consistent SNR)
-        avg_length = max(1, int(self.sample_rate / self.fft_size * INTEGRATION_TIME))
+        # Short moving average for display smoothing only (0.5s)
+        # Longer integration is done in Python for unlimited duration
+        display_avg_time = 0.5  # seconds
+        avg_length = max(1, int(self.sample_rate / self.fft_size * display_avg_time))
         self.moving_avg = blocks.moving_average_ff(
             avg_length,
             1.0 / avg_length,
@@ -193,17 +195,23 @@ class GNURadioFlowgraph(gr.top_block):
 class H1ReceiverWindow(QtWidgets.QMainWindow):
     """Main window with PyQtGraph displays for integrated spectrum."""
 
-    def __init__(self, sdr_type='b210', sample_rate=None, gain=None):
+    def __init__(self, sdr_type='b210', sample_rate=None, gain=None, show_controls=False):
         super().__init__()
 
         self.sdr_type = sdr_type
         self.center_freq = CENTER_FREQ
         self.fft_size = FFT_SIZE
+        self.integration_time = INTEGRATION_TIME
+        self.show_controls = show_controls
 
         # Get defaults
         defaults = SDR_DEFAULTS.get(sdr_type, SDR_DEFAULTS['demo'])
         self.sample_rate = sample_rate if sample_rate else defaults['sample_rate']
         self.gain = gain if gain else defaults['gain']
+
+        # Display settings
+        self.waterfall_min = -70
+        self.waterfall_max = -30
 
         # Create flowgraph
         self.flowgraph = GNURadioFlowgraph(
@@ -219,6 +227,12 @@ class H1ReceiverWindow(QtWidgets.QMainWindow):
 
         # Waterfall history
         self.waterfall_data = deque(maxlen=WATERFALL_HISTORY)
+
+        # Python-side accumulator for long integration times
+        # GNU Radio does short averaging for display; Python accumulates for saves
+        self.accumulator = None  # Will hold sum of linear power spectra
+        self.accumulator_count = 0
+        self.accumulator_start_time = time.time()
 
         # HDF5 setup
         self.hf = self._init_hdf5()
@@ -236,7 +250,7 @@ class H1ReceiverWindow(QtWidgets.QMainWindow):
         # HDF5 save timer
         self.save_timer = QtCore.QTimer()
         self.save_timer.timeout.connect(self._save_spectrum)
-        self.save_timer.start(int(INTEGRATION_TIME * 1000))
+        self.save_timer.start(int(self.integration_time * 1000))
 
     def _get_frequency_axis(self):
         """Generate frequency axis for the spectrum."""
@@ -255,7 +269,12 @@ class H1ReceiverWindow(QtWidgets.QMainWindow):
         # Central widget
         central = QtWidgets.QWidget()
         self.setCentralWidget(central)
-        layout = QtWidgets.QVBoxLayout(central)
+        main_layout = QtWidgets.QHBoxLayout(central)
+
+        # Left side: plots
+        plot_widget = QtWidgets.QWidget()
+        layout = QtWidgets.QVBoxLayout(plot_widget)
+        layout.setContentsMargins(0, 0, 0, 0)
 
         # Status bar
         gain_str = "N/A" if self.sdr_type == 'demo' else f"{self.gain} dB"
@@ -265,7 +284,7 @@ class H1ReceiverWindow(QtWidgets.QMainWindow):
             f"Center: {self.center_freq/1e6:.3f} MHz | "
             f"Span: {self.sample_rate/1e6:.2f} MHz | "
             f"Gain: {gain_str} | "
-            f"Integration: {INTEGRATION_TIME}s"
+            f"Integration: {self.integration_time}s"
         )
         self.status_label.setStyleSheet("font-family: monospace; font-size: 12px;")
         layout.addWidget(self.status_label)
@@ -278,7 +297,7 @@ class H1ReceiverWindow(QtWidgets.QMainWindow):
         self.spectrum_widget.setLabel('left', 'Power', units='dB')
         self.spectrum_widget.setLabel('bottom', 'Frequency', units='MHz')
         self.spectrum_widget.showGrid(x=True, y=True)
-        self.spectrum_widget.setYRange(-80, -20)
+        self.spectrum_widget.enableAutoRange()
 
         # H1 line marker
         h1_line = pg.InfiniteLine(pos=1420.405, angle=90, pen=pg.mkPen('r', style=QtCore.Qt.DashLine))
@@ -291,9 +310,9 @@ class H1ReceiverWindow(QtWidgets.QMainWindow):
         )
         layout.addWidget(self.spectrum_widget, stretch=2)
 
-        # Waterfall plot
-        self.waterfall_widget = pg.PlotWidget(title="Waterfall (Integrated Spectra)")
-        self.waterfall_widget.setLabel('left', 'Time', units='integrations')
+        # Waterfall plot (one row per saved integration)
+        self.waterfall_widget = pg.PlotWidget(title="Waterfall (Saved Integrations)")
+        self.waterfall_widget.setLabel('left', 'Integration', units='#')
         self.waterfall_widget.setLabel('bottom', 'Frequency', units='MHz')
 
         # Image item for waterfall
@@ -324,30 +343,388 @@ class H1ReceiverWindow(QtWidgets.QMainWindow):
         count_layout.addWidget(self.count_label)
         layout.addLayout(count_layout)
 
-    def _update_display(self):
-        """Update spectrum and waterfall displays."""
-        try:
-            spectrum = self.flowgraph.get_spectrum()
-            if len(spectrum) == self.fft_size:
-                # Update spectrum plot
-                self.spectrum_curve.setData(self.freq_axis_mhz, spectrum)
+        main_layout.addWidget(plot_widget, stretch=1)
 
-                # Update waterfall
-                self.waterfall_data.append(spectrum.copy())
-                if len(self.waterfall_data) > 0:
-                    waterfall_array = np.array(self.waterfall_data)
-                    self.waterfall_img.setImage(
-                        waterfall_array.T,
-                        autoLevels=False,
-                        levels=(-70, -30)
-                    )
-                    # Update transform for correct scaling
-                    freq_min = self.freq_axis_mhz[0]
-                    freq_max = self.freq_axis_mhz[-1]
-                    self.waterfall_img.setRect(
-                        freq_min, 0,
-                        freq_max - freq_min, len(self.waterfall_data)
-                    )
+        # Right side: control panel (only when run as main)
+        if self.show_controls:
+            self._build_control_panel(main_layout)
+
+    def _build_control_panel(self, parent_layout):
+        """Build the control panel for adjusting parameters."""
+        panel = QtWidgets.QWidget()
+        panel.setFixedWidth(280)
+        panel_layout = QtWidgets.QVBoxLayout(panel)
+        panel_layout.setContentsMargins(10, 5, 5, 5)
+
+        # SDR Info (read-only)
+        info_group = QtWidgets.QGroupBox("SDR Info")
+        info_layout = QtWidgets.QFormLayout(info_group)
+        info_layout.addRow("Type:", QtWidgets.QLabel(self.sdr_type.upper()))
+        self.resolution_label = QtWidgets.QLabel(f"{self.sample_rate/self.fft_size/1e3:.3f} kHz")
+        info_layout.addRow("Resolution:", self.resolution_label)
+        panel_layout.addWidget(info_group)
+
+        # RF Settings
+        rf_group = QtWidgets.QGroupBox("RF Settings")
+        rf_layout = QtWidgets.QFormLayout(rf_group)
+
+        self.freq_spin = QtWidgets.QDoubleSpinBox()
+        self.freq_spin.setRange(1400, 1440)
+        self.freq_spin.setDecimals(3)
+        self.freq_spin.setSuffix(" MHz")
+        self.freq_spin.setValue(self.center_freq / 1e6)
+        self.freq_spin.valueChanged.connect(self._on_freq_changed)
+        rf_layout.addRow("Center Freq:", self.freq_spin)
+
+        self.gain_spin = QtWidgets.QSpinBox()
+        self.gain_spin.setRange(0, 76)
+        self.gain_spin.setSuffix(" dB")
+        self.gain_spin.setValue(int(self.gain))
+        self.gain_spin.setEnabled(self.sdr_type != 'demo')
+        self.gain_spin.valueChanged.connect(self._on_gain_changed)
+        rf_layout.addRow("Gain:", self.gain_spin)
+
+        self.bw_combo = QtWidgets.QComboBox()
+        bw_options = [0.5, 1.0, 1.5, 2.0, 2.4, 3.0, 4.0, 5.0]
+        for bw in bw_options:
+            self.bw_combo.addItem(f"{bw} MHz", bw * 1e6)
+        # Select current bandwidth
+        current_bw_mhz = self.sample_rate / 1e6
+        idx = self.bw_combo.findText(f"{current_bw_mhz} MHz")
+        if idx >= 0:
+            self.bw_combo.setCurrentIndex(idx)
+        self.bw_combo.currentIndexChanged.connect(self._on_bandwidth_changed)
+        rf_layout.addRow("Bandwidth:", self.bw_combo)
+
+        self.fft_combo = QtWidgets.QComboBox()
+        fft_options = [128, 256, 512, 1024, 2048, 4096, 8192, 16384]
+        for fft_size in fft_options:
+            self.fft_combo.addItem(str(fft_size), fft_size)
+        idx = self.fft_combo.findData(self.fft_size)
+        if idx >= 0:
+            self.fft_combo.setCurrentIndex(idx)
+        self.fft_combo.currentIndexChanged.connect(self._on_fft_size_changed)
+        rf_layout.addRow("FFT Size:", self.fft_combo)
+
+        panel_layout.addWidget(rf_group)
+
+        # Integration Settings
+        int_group = QtWidgets.QGroupBox("Integration (Save)")
+        int_layout = QtWidgets.QFormLayout(int_group)
+
+        # No buffer limit - Python-side accumulation allows arbitrary duration
+        self.int_spin = QtWidgets.QDoubleSpinBox()
+        self.int_spin.setRange(1.0, 600.0)  # 1 second to 10 minutes
+        self.int_spin.setDecimals(1)
+        self.int_spin.setSuffix(" s")
+        self.int_spin.setValue(self.integration_time)
+        self.int_spin.valueChanged.connect(self._on_integration_changed)
+        int_layout.addRow("Integration:", self.int_spin)
+
+        # Show accumulator status
+        self.accum_label = QtWidgets.QLabel("0 samples")
+        int_layout.addRow("Accumulated:", self.accum_label)
+
+        panel_layout.addWidget(int_group)
+
+        # Spectrum Display Settings
+        spec_group = QtWidgets.QGroupBox("Spectrum Display")
+        spec_layout = QtWidgets.QFormLayout(spec_group)
+
+        self.autoscale_btn = QtWidgets.QPushButton("Auto Scale")
+        self.autoscale_btn.clicked.connect(self._on_autoscale_spectrum)
+        spec_layout.addRow(self.autoscale_btn)
+
+        panel_layout.addWidget(spec_group)
+
+        # Waterfall Settings
+        wf_group = QtWidgets.QGroupBox("Waterfall Display")
+        wf_layout = QtWidgets.QFormLayout(wf_group)
+
+        self.wf_min_spin = QtWidgets.QSpinBox()
+        self.wf_min_spin.setRange(-120, 0)
+        self.wf_min_spin.setSuffix(" dB")
+        self.wf_min_spin.setValue(self.waterfall_min)
+        self.wf_min_spin.valueChanged.connect(self._on_waterfall_range_changed)
+        wf_layout.addRow("Color Min:", self.wf_min_spin)
+
+        self.wf_max_spin = QtWidgets.QSpinBox()
+        self.wf_max_spin.setRange(-120, 0)
+        self.wf_max_spin.setSuffix(" dB")
+        self.wf_max_spin.setValue(self.waterfall_max)
+        self.wf_max_spin.valueChanged.connect(self._on_waterfall_range_changed)
+        wf_layout.addRow("Color Max:", self.wf_max_spin)
+
+        self.autoscale_wf_btn = QtWidgets.QPushButton("Auto Scale")
+        self.autoscale_wf_btn.clicked.connect(self._on_autoscale_waterfall)
+        wf_layout.addRow(self.autoscale_wf_btn)
+
+        self.clear_wf_btn = QtWidgets.QPushButton("Clear")
+        self.clear_wf_btn.clicked.connect(self._on_clear_waterfall)
+        wf_layout.addRow(self.clear_wf_btn)
+
+        panel_layout.addWidget(wf_group)
+
+        # Spacer
+        panel_layout.addStretch()
+
+        parent_layout.addWidget(panel)
+
+    def _on_freq_changed(self, value):
+        """Handle center frequency change."""
+        new_freq = value * 1e6
+        if self.sdr_type == 'b210':
+            try:
+                self.flowgraph.sdr_source.set_center_freq(new_freq, 0)
+                self.center_freq = self.flowgraph.sdr_source.get_center_freq(0)
+                self._update_freq_axis()
+                self._update_status()
+            except Exception as e:
+                print(f"Error setting frequency: {e}")
+        elif self.sdr_type == 'rtlsdr':
+            try:
+                self.flowgraph.sdr_source.set_center_freq(new_freq, 0)
+                self.center_freq = self.flowgraph.sdr_source.get_center_freq(0)
+                self._update_freq_axis()
+                self._update_status()
+            except Exception as e:
+                print(f"Error setting frequency: {e}")
+
+    def _on_gain_changed(self, value):
+        """Handle gain change."""
+        if self.sdr_type == 'b210':
+            try:
+                self.flowgraph.sdr_source.set_gain(value, 0)
+                self.gain = self.flowgraph.sdr_source.get_gain(0)
+                self._update_status()
+            except Exception as e:
+                print(f"Error setting gain: {e}")
+        elif self.sdr_type == 'rtlsdr':
+            try:
+                self.flowgraph.sdr_source.set_gain(value, 0)
+                self.gain = self.flowgraph.sdr_source.get_gain(0)
+                self._update_status()
+            except Exception as e:
+                print(f"Error setting gain: {e}")
+
+    def _on_bandwidth_changed(self, index):
+        """Handle bandwidth/sample rate change - requires flowgraph rebuild for demo mode."""
+        new_rate = self.bw_combo.currentData()
+        if new_rate == self.sample_rate:
+            return
+
+        try:
+            if self.sdr_type == 'b210':
+                self.flowgraph.sdr_source.set_samp_rate(new_rate)
+                self.sample_rate = self.flowgraph.sdr_source.get_samp_rate()
+                self.flowgraph.sample_rate = self.sample_rate
+                self._update_freq_axis()
+                self._reset_accumulator()
+                self._update_status()
+                print(f"Bandwidth changed to {self.sample_rate/1e6:.2f} MHz")
+            elif self.sdr_type == 'rtlsdr':
+                self.flowgraph.sdr_source.set_sample_rate(new_rate)
+                self.sample_rate = self.flowgraph.sdr_source.get_sample_rate()
+                self.flowgraph.sample_rate = self.sample_rate
+                self._update_freq_axis()
+                self._reset_accumulator()
+                self._update_status()
+                print(f"Bandwidth changed to {self.sample_rate/1e6:.2f} MHz")
+            elif self.sdr_type == 'demo':
+                # Demo mode requires full flowgraph rebuild
+                self._rebuild_flowgraph(new_rate, self.fft_size)
+        except Exception as e:
+            print(f"Error setting bandwidth: {e}")
+
+    def _on_fft_size_changed(self, index):
+        """Handle FFT size change - requires flowgraph rebuild."""
+        new_fft_size = self.fft_combo.currentData()
+        if new_fft_size == self.fft_size:
+            return
+        self._rebuild_flowgraph(self.sample_rate, new_fft_size)
+
+    def _rebuild_flowgraph(self, new_sample_rate, new_fft_size):
+        """Rebuild the entire flowgraph with new parameters."""
+        # Prevent re-entry during rebuild
+        if hasattr(self, '_rebuilding') and self._rebuilding:
+            return
+        self._rebuilding = True
+
+        # Store old values for rollback
+        old_sample_rate = self.sample_rate
+        old_fft_size = self.fft_size
+
+        try:
+            self.flowgraph.stop()
+            self.flowgraph.wait()
+
+            # Disconnect all existing connections
+            self.flowgraph.disconnect_all()
+
+            # Update values
+            self.sample_rate = new_sample_rate
+            self.fft_size = new_fft_size
+            self.flowgraph.sample_rate = new_sample_rate
+            self.flowgraph.fft_size = new_fft_size
+
+            # Recreate all blocks
+            if self.sdr_type == 'demo':
+                self.flowgraph.throttle = blocks.throttle(gr.sizeof_gr_complex, new_sample_rate, True)
+
+            self.flowgraph.stream_to_vector = blocks.stream_to_vector(
+                gr.sizeof_gr_complex, self.fft_size
+            )
+            self.flowgraph.fft_block = fft.fft_vcc(
+                self.fft_size, True,
+                window.blackmanharris(self.fft_size), True, 1
+            )
+            self.flowgraph.complex_to_mag_sq = blocks.complex_to_mag_squared(self.fft_size)
+
+            # Short moving average for display smoothing only (0.5s)
+            spectra_per_sec = self.sample_rate / self.fft_size
+            display_avg_time = 0.5
+            avg_length = max(1, int(spectra_per_sec * display_avg_time))
+            self.flowgraph.moving_avg = blocks.moving_average_ff(
+                avg_length, 1.0 / avg_length, 4000, self.fft_size
+            )
+            self.flowgraph.nlog10 = blocks.nlog10_ff(
+                10, self.fft_size, -10 * np.log10(self.fft_size)
+            )
+            self.flowgraph.probe = blocks.probe_signal_vf(self.fft_size)
+
+            # Reconnect everything
+            if self.flowgraph.throttle is not None:
+                self.flowgraph.connect((self.flowgraph.sdr_source, 0), (self.flowgraph.throttle, 0))
+                signal_source = self.flowgraph.throttle
+            else:
+                signal_source = self.flowgraph.sdr_source
+
+            self.flowgraph.connect((signal_source, 0), (self.flowgraph.stream_to_vector, 0))
+            self.flowgraph.connect((self.flowgraph.stream_to_vector, 0), (self.flowgraph.fft_block, 0))
+            self.flowgraph.connect((self.flowgraph.fft_block, 0), (self.flowgraph.complex_to_mag_sq, 0))
+            self.flowgraph.connect((self.flowgraph.complex_to_mag_sq, 0), (self.flowgraph.moving_avg, 0))
+            self.flowgraph.connect((self.flowgraph.moving_avg, 0), (self.flowgraph.nlog10, 0))
+            self.flowgraph.connect((self.flowgraph.nlog10, 0), (self.flowgraph.probe, 0))
+
+            # Update frequency axis and display
+            self.freq_axis_hz = self._get_frequency_axis()
+            self.freq_axis_mhz = self.freq_axis_hz / 1e6
+            self.spectrum_curve.setData(self.freq_axis_mhz, np.zeros(self.fft_size))
+            self.waterfall_data.clear()
+
+            # Reset Python-side accumulator
+            self._reset_accumulator()
+
+            self.flowgraph.start()
+            print(f"Flowgraph rebuilt: {self.sample_rate/1e6:.2f} MHz, FFT={self.fft_size}, resolution={self.sample_rate/self.fft_size/1e3:.3f} kHz")
+            self._update_status()
+
+        except Exception as e:
+            print(f"Error rebuilding flowgraph: {e}")
+            # Try to restore old values
+            self.sample_rate = old_sample_rate
+            self.fft_size = old_fft_size
+        finally:
+            self._rebuilding = False
+
+    def _on_integration_changed(self, value):
+        """Handle integration time change - restarts save timer."""
+        if value == self.integration_time:
+            return
+
+        self.integration_time = value
+
+        # Restart the save timer with new interval
+        self.save_timer.stop()
+        self.save_timer.setInterval(int(value * 1000))
+        self.save_timer.start()
+
+        # Reset accumulator to start fresh with new integration period
+        self._reset_accumulator()
+
+        print(f"Integration time changed to {value:.1f}s")
+        self._update_status()
+
+    def _on_waterfall_range_changed(self):
+        """Handle waterfall color range change."""
+        self.waterfall_min = self.wf_min_spin.value()
+        self.waterfall_max = self.wf_max_spin.value()
+
+    def _on_clear_waterfall(self):
+        """Clear the waterfall history."""
+        self.waterfall_data.clear()
+
+    def _on_autoscale_waterfall(self):
+        """Auto-scale waterfall color range to fit current data."""
+        if len(self.waterfall_data) == 0:
+            return
+        waterfall_array = np.array(self.waterfall_data)
+        data_min = int(np.floor(np.min(waterfall_array)))
+        data_max = int(np.ceil(np.max(waterfall_array)))
+        # Update spinboxes (which triggers _on_waterfall_range_changed)
+        self.wf_min_spin.setValue(data_min)
+        self.wf_max_spin.setValue(data_max)
+
+    def _on_autoscale_spectrum(self):
+        """Auto-scale the spectrum plot to fit current data."""
+        self.spectrum_widget.enableAutoRange()
+        self.spectrum_widget.autoRange()
+
+    def _reset_accumulator(self):
+        """Reset the Python-side spectrum accumulator."""
+        self.accumulator = None
+        self.accumulator_count = 0
+        self.accumulator_start_time = time.time()
+
+    def _update_freq_axis(self):
+        """Update frequency axis after center frequency change."""
+        self.freq_axis_hz = self._get_frequency_axis()
+        self.freq_axis_mhz = self.freq_axis_hz / 1e6
+        freq_min = self.freq_axis_mhz[0]
+        freq_max = self.freq_axis_mhz[-1]
+        self.waterfall_widget.setXRange(freq_min, freq_max)
+
+    def _update_status(self):
+        """Update status label and resolution display."""
+        gain_str = "N/A" if self.sdr_type == 'demo' else f"{self.gain:.0f} dB"
+        sdr_str = f"{self.sdr_type.upper()}" + (" (simulated)" if self.sdr_type == 'demo' else "")
+        self.status_label.setText(
+            f"SDR: {sdr_str} | "
+            f"Center: {self.center_freq/1e6:.3f} MHz | "
+            f"Span: {self.sample_rate/1e6:.2f} MHz | "
+            f"Gain: {gain_str} | "
+            f"Integration: {self.integration_time}s"
+        )
+        # Update resolution label if control panel exists
+        if hasattr(self, 'resolution_label'):
+            self.resolution_label.setText(f"{self.sample_rate/self.fft_size/1e3:.3f} kHz")
+
+    def _update_display(self):
+        """Update spectrum display and accumulate for integration."""
+        try:
+            spectrum_db = self.flowgraph.get_spectrum()
+            if len(spectrum_db) == self.fft_size:
+                # Accumulate for Python-side integration (in linear power domain)
+                # Convert dB back to linear for proper averaging
+                linear_power = 10 ** (spectrum_db / 10)
+                if self.accumulator is None:
+                    self.accumulator = linear_power.copy()
+                else:
+                    self.accumulator += linear_power
+                self.accumulator_count += 1
+
+                # Calculate integrated spectrum for display
+                avg_linear = self.accumulator / self.accumulator_count
+                integrated_db = 10 * np.log10(avg_linear)
+
+                # Update spectrum plot with integrated data (shows true SNR)
+                self.spectrum_curve.setData(self.freq_axis_mhz, integrated_db)
+
+                # Update accumulator display if control panel exists
+                if hasattr(self, 'accum_label'):
+                    elapsed = time.time() - self.accumulator_start_time
+                    self.accum_label.setText(f"{self.accumulator_count} samples ({elapsed:.1f}s)")
+
         except Exception as e:
             print(f"Display update error: {e}")
 
@@ -386,27 +763,55 @@ class H1ReceiverWindow(QtWidgets.QMainWindow):
         return hf
 
     def _save_spectrum(self):
-        """Save current spectrum to HDF5."""
+        """Save accumulated spectrum to HDF5 and update waterfall."""
         try:
-            spectrum = self.flowgraph.get_spectrum()
+            if self.accumulator is None or self.accumulator_count == 0:
+                return
 
-            if len(spectrum) == self.fft_size:
-                timestamp = time.time()
-                integration_time = timestamp - self.last_save_time
-                self.last_save_time = timestamp
+            # Calculate average in linear domain, convert back to dB
+            avg_linear = self.accumulator / self.accumulator_count
+            spectrum_db = 10 * np.log10(avg_linear)
 
-                n = self.hf['spectra_db'].shape[0]
-                self.hf['spectra_db'].resize((n + 1, self.fft_size))
-                self.hf['timestamps'].resize((n + 1,))
-                self.hf['integration_times'].resize((n + 1,))
+            timestamp = time.time()
+            integration_time = timestamp - self.accumulator_start_time
 
-                self.hf['spectra_db'][n, :] = spectrum.astype(np.float32)
-                self.hf['timestamps'][n] = timestamp
-                self.hf['integration_times'][n] = integration_time
-                self.hf.flush()
+            # Save to HDF5
+            n = self.hf['spectra_db'].shape[0]
+            self.hf['spectra_db'].resize((n + 1, self.fft_size))
+            self.hf['timestamps'].resize((n + 1,))
+            self.hf['integration_times'].resize((n + 1,))
 
-                self.spectrum_count += 1
-                self.count_label.setText(f"Spectra saved: {self.spectrum_count}")
+            self.hf['spectra_db'][n, :] = spectrum_db.astype(np.float32)
+            self.hf['timestamps'][n] = timestamp
+            self.hf['integration_times'][n] = integration_time
+            self.hf.flush()
+
+            # Add to waterfall (one row per integration)
+            self.waterfall_data.append(spectrum_db.copy())
+            if len(self.waterfall_data) > 0:
+                waterfall_array = np.array(self.waterfall_data)
+                self.waterfall_img.setImage(
+                    waterfall_array.T,
+                    autoLevels=False,
+                    levels=(self.waterfall_min, self.waterfall_max)
+                )
+                freq_min = self.freq_axis_mhz[0]
+                freq_max = self.freq_axis_mhz[-1]
+                self.waterfall_img.setRect(
+                    freq_min, 0,
+                    freq_max - freq_min, len(self.waterfall_data)
+                )
+
+            self.spectrum_count += 1
+            self.count_label.setText(
+                f"Spectra saved: {self.spectrum_count} "
+                f"(last: {self.accumulator_count} samples, {integration_time:.1f}s)"
+            )
+
+            # Reset accumulator for next integration period
+            self.accumulator = None
+            self.accumulator_count = 0
+            self.accumulator_start_time = time.time()
 
         except Exception as e:
             print(f"Error saving spectrum: {e}")
@@ -464,11 +869,12 @@ Examples:
     # Create Qt application
     app = QtWidgets.QApplication([])
 
-    # Create and show receiver
+    # Create and show receiver (with control panel when run as main)
     receiver = H1ReceiverWindow(
         sdr_type=args.sdr,
         sample_rate=args.sample_rate,
-        gain=args.gain
+        gain=args.gain,
+        show_controls=True
     )
     receiver.show()
 
