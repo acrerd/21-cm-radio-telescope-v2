@@ -425,6 +425,18 @@ class H1ReceiverWindow(QtWidgets.QMainWindow):
         self.accum_label = QtWidgets.QLabel("0 samples")
         int_layout.addRow("Accumulated:", self.accum_label)
 
+        # Recording control
+        self.record_btn = QtWidgets.QPushButton("Stop Recording")
+        self.record_btn.setCheckable(True)
+        self.record_btn.setChecked(True)  # Start recording by default
+        self.record_btn.setStyleSheet("""
+            QPushButton { background-color: #aa0000; color: white; font-weight: bold; }
+            QPushButton:checked { background-color: #00aa00; }
+        """)
+        self.record_btn.clicked.connect(self._on_record_toggle)
+        int_layout.addRow(self.record_btn)
+        self.recording = True
+
         panel_layout.addWidget(int_group)
 
         # Spectrum Display Settings
@@ -436,6 +448,50 @@ class H1ReceiverWindow(QtWidgets.QMainWindow):
         spec_layout.addRow(self.autoscale_btn)
 
         panel_layout.addWidget(spec_group)
+
+        # Total Power Display
+        power_group = QtWidgets.QGroupBox("Total Power")
+        power_layout = QtWidgets.QFormLayout(power_group)
+
+        self.power_min = -80
+        self.power_max = -20
+
+        self.power_bar = QtWidgets.QProgressBar()
+        self.power_bar.setRange(self.power_min, self.power_max)
+        self.power_bar.setValue(-50)
+        self.power_bar.setTextVisible(False)
+        self.power_bar.setStyleSheet("""
+            QProgressBar {
+                border: 1px solid grey;
+                border-radius: 2px;
+                background-color: #1a1a1a;
+            }
+            QProgressBar::chunk {
+                background-color: #00aa00;
+            }
+        """)
+        power_layout.addRow(self.power_bar)
+
+        self.power_label = QtWidgets.QLabel("--.-- dB")
+        self.power_label.setStyleSheet("font-family: monospace; font-size: 14px; font-weight: bold;")
+        self.power_label.setAlignment(QtCore.Qt.AlignCenter)
+        power_layout.addRow(self.power_label)
+
+        self.power_min_spin = QtWidgets.QSpinBox()
+        self.power_min_spin.setRange(-120, 50)
+        self.power_min_spin.setSuffix(" dB")
+        self.power_min_spin.setValue(self.power_min)
+        self.power_min_spin.valueChanged.connect(self._on_power_range_changed)
+        power_layout.addRow("Min:", self.power_min_spin)
+
+        self.power_max_spin = QtWidgets.QSpinBox()
+        self.power_max_spin.setRange(-120, 50)
+        self.power_max_spin.setSuffix(" dB")
+        self.power_max_spin.setValue(self.power_max)
+        self.power_max_spin.valueChanged.connect(self._on_power_range_changed)
+        power_layout.addRow("Max:", self.power_max_spin)
+
+        panel_layout.addWidget(power_group)
 
         # Waterfall Settings
         wf_group = QtWidgets.QGroupBox("Waterfall Display")
@@ -645,6 +701,12 @@ class H1ReceiverWindow(QtWidgets.QMainWindow):
         print(f"Integration time changed to {value:.1f}s")
         self._update_status()
 
+    def _on_power_range_changed(self):
+        """Handle power bar range change."""
+        self.power_min = self.power_min_spin.value()
+        self.power_max = self.power_max_spin.value()
+        self.power_bar.setRange(self.power_min, self.power_max)
+
     def _on_waterfall_range_changed(self):
         """Handle waterfall color range change."""
         self.waterfall_min = self.wf_min_spin.value()
@@ -664,6 +726,19 @@ class H1ReceiverWindow(QtWidgets.QMainWindow):
         # Update spinboxes (which triggers _on_waterfall_range_changed)
         self.wf_min_spin.setValue(data_min)
         self.wf_max_spin.setValue(data_max)
+
+    def _on_record_toggle(self):
+        """Toggle recording on/off."""
+        self.recording = self.record_btn.isChecked()
+        if self.recording:
+            self.record_btn.setText("Stop Recording")
+            self._reset_accumulator()
+            self.save_timer.start()
+            print("Recording started")
+        else:
+            self.record_btn.setText("Start Recording")
+            self.save_timer.stop()
+            print("Recording stopped")
 
     def _on_autoscale_spectrum(self):
         """Auto-scale the spectrum plot to fit current data."""
@@ -724,6 +799,16 @@ class H1ReceiverWindow(QtWidgets.QMainWindow):
                 if hasattr(self, 'accum_label'):
                     elapsed = time.time() - self.accumulator_start_time
                     self.accum_label.setText(f"{self.accumulator_count} samples ({elapsed:.1f}s)")
+
+                # Update total power display
+                if hasattr(self, 'power_bar'):
+                    # Sum power in linear domain, convert to dB
+                    total_linear = np.sum(avg_linear)
+                    total_db = 10 * np.log10(total_linear)
+                    self.power_label.setText(f"{total_db:.2f} dB")
+                    # Clamp to bar range
+                    bar_val = int(np.clip(total_db, self.power_min, self.power_max))
+                    self.power_bar.setValue(bar_val)
 
         except Exception as e:
             print(f"Display update error: {e}")
