@@ -1,44 +1,71 @@
 # SRT Drive Controller
 
-A complete control system for a Small Radio Telescope (SRT) alt-azimuth mount at Acre Road Observatory, Glasgow.
+A complete control system for a Small Radio Telescope (SRT) for 21cm hydrogen line observations at Acre Road Observatory, Glasgow.
 
 ## System Overview
 
-The system consists of two controllers:
+The system consists of four integrated components:
 
 1. **Arduino Due** - Low-level motor control, position tracking, limit switches, current sensing
-2. **ESP32-S3** - WiFi interface, web UI, Stellarium integration, RA/Dec to Alt/Az coordinate transforms
+2. **ESP32-S3** - Network interface, web UI, Stellarium integration, RA/Dec to Alt/Az coordinate transforms
+3. **H1 Receiver** - GNU Radio SDR application for 21cm hydrogen line data acquisition
+4. **Observation Scheduler** - Web-based scheduler that coordinates telescope pointing and data recording
 
 ```
-                                    +------------------+
-                                    |   Stellarium     |
-                                    |   (TCP:10001)    |
-                                    +--------+---------+
-                                             |
-+----------------+                  +--------+---------+
-|  Web Browser   +----------------->|                  |
-|  (HTTP:80)     |                  |    ESP32-S3      |
-+----------------+                  |                  |
-                                    |  - WiFi AP/STA   |
-                                    |  - Web server    |
-                                    |  - RA/Dec->Alt/Az|
-                                    |  - NTP time sync |
-                                    +--------+---------+
-                                             |
-                                        UART (Serial)
-                                             |
-                                    +--------+---------+
-                                    |                  |
-                                    |   Arduino Due    |
-                                    |                  |
-                                    |  - Motor PWM     |
-                                    |  - Encoders      |
-                                    |  - Limit switches|
-                                    |  - Current sense |
-                                    +--------+---------+
-                                             |
-                                        Motors/Mount
++------------------+     +----------------------+
+|   Stellarium     |     |  Observation         |
+|   (TCP:10001)    |     |  Scheduler           |
++--------+---------+     |  (HTTP:5000)         |
+         |               |                      |
+         |               |  - Schedule obs      |
+         |               |  - Point telescope   |
+         |               |  - Start/stop SDR    |
+         |               +----------+-----------+
+         |                          |
+         |    HTTP API              | Subprocess
+         |    (point telescope)     | (start receiver)
+         |                          |
++--------+----------+      +--------+-----------+
+|                   |      |                    |
+|    ESP32-S3       |      |   H1 Receiver      |
+|    Controller     |      |   (GNU Radio)      |
+|                   |      |                    |
+|  - WiFi/Ethernet  |      |  - Ettus B210 SDR  |
+|  - Web UI (:80)   |      |  - FFT processing  |
+|  - Coord convert  |      |  - HDF5 output     |
+|  - NTP time sync  |      |  - Live display    |
++--------+----------+      +--------------------+
+         |
+    UART (Serial)
+         |
++--------+----------+
+|                   |
+|   Arduino Due     |
+|                   |
+|  - Motor PWM      |
+|  - Encoders       |
+|  - Limit switches |
+|  - Current sense  |
++--------+----------+
+         |
+    Motors/Mount
+         |
++--------+----------+
+|                   |
+|   3.7m Dish       |
+|   1420 MHz Feed   |
+|                   |
++-------------------+
 ```
+
+### Data Flow
+
+1. **Scheduling**: User creates observation schedule via web UI (target coordinates, time, duration, SDR settings)
+2. **Telescope Control**: At scheduled time, scheduler sends HTTP request to ESP32 to point telescope
+3. **Coordinate Conversion**: ESP32 converts RA/Dec or Galactic coordinates to Alt/Az
+4. **Motor Control**: ESP32 sends target to Arduino Due, which drives motors to position
+5. **Data Acquisition**: Scheduler launches GNU Radio receiver to capture 21cm spectrum data
+6. **Storage**: Integrated spectra saved to HDF5 files with timestamps and metadata
 
 ## Hardware
 
@@ -328,6 +355,111 @@ When **Track** is enabled:
 
 ---
 
+## H1 Receiver & Observation Scheduler
+
+The `receiver_scheduler/` folder contains the data acquisition system for 21 cm hydrogen line observations.
+
+### Receiver Prerequisites
+
+The receiver requires **radioconda** (or a GNU Radio installation with UHD support):
+
+```bash
+# Install radioconda (recommended)
+# Download from: https://github.com/ryanvolz/radioconda
+
+# Or install dependencies manually:
+conda install gnuradio gnuradio-uhd pyqtgraph h5py flask
+```
+
+### Receiver Components
+
+#### H1 Receiver (`b210_h1_receiver.py`)
+
+GNU Radio-based spectrum analyzer for 21 cm observations:
+
+- **SDR Support:** Ettus B210, RTL-SDR, or demo mode (simulated data)
+- **Processing:** Real-time FFT with configurable integration time
+- **Display:** Live spectrum plot and waterfall display (PyQtGraph)
+- **Output:** HDF5 files with integrated spectra, timestamps, and metadata
+
+```bash
+# Run standalone receiver
+cd receiver_scheduler
+python b210_h1_receiver.py --sdr b210 --gain 40
+
+# Or use demo mode without hardware
+python b210_h1_receiver.py --sdr demo
+```
+
+#### Observation Scheduler (`h1_web_scheduler.py`)
+
+Web-based scheduler that coordinates telescope pointing and data recording:
+
+- **Web UI:** Schedule observations with coordinates, time, duration, SDR settings
+- **Telescope Integration:** Automatically commands ESP32 to point telescope before each observation
+- **Coordinate Systems:** Supports Alt/Az, RA/Dec (J2000), and Galactic coordinates
+- **Background Scheduler:** Starts observations automatically at scheduled times
+
+```bash
+# Start the scheduler
+cd receiver_scheduler
+python h1_web_scheduler.py --host 0.0.0.0 --port 5000
+
+# Open browser to http://localhost:5000
+```
+
+### Scheduler Configuration
+
+Edit `receiver_scheduler/h1_web_scheduler.py` to set the ESP32 controller URL:
+
+```python
+# SRT Controller URL - set to ESP32's IP address
+SRT_CONTROLLER_URL = "http://192.168.4.1"  # Default AP IP
+
+# Or use Ethernet IP
+SRT_CONTROLLER_URL = "http://192.168.1.100"
+
+# Set to None to disable telescope control (receiver only)
+SRT_CONTROLLER_URL = None
+```
+
+### Observation Workflow
+
+1. **Open Scheduler:** Browse to `http://localhost:5000`
+2. **Add Observation:** Click "+ Add Observation"
+   - Enter target name and coordinates (RA/Dec, Galactic, or Alt/Az)
+   - Set start date/time and duration
+   - Configure SDR settings (frequency, bandwidth, gain, channels)
+3. **Save Schedule:** Schedule is auto-saved and persists across restarts
+4. **Automatic Execution:** At scheduled time:
+   - Scheduler sends HTTP request to ESP32: `/track/radec?ra=X&dec=Y`
+   - ESP32 converts coordinates and commands Arduino Due
+   - Telescope slews to target position
+   - Scheduler launches GNU Radio receiver
+   - Data saved to HDF5 file
+5. **Monitor:** Web UI shows telescope status, current observation, time remaining
+
+### Output Data Format
+
+HDF5 files contain:
+
+```
+h1_observation_20240313_143000.h5
+├── frequency_hz          # Frequency axis (Hz)
+├── spectra_db            # Integrated spectra (dB), shape: [n_spectra, n_channels]
+├── timestamps            # Unix timestamps for each spectrum
+├── integration_times     # Actual integration time per spectrum
+└── attrs:
+    ├── sdr_type          # "b210", "rtlsdr", or "demo"
+    ├── center_freq_hz    # Center frequency
+    ├── sample_rate_hz    # Sample rate / bandwidth
+    ├── fft_size          # Number of FFT channels
+    ├── gain_db           # RF gain setting
+    └── created           # ISO timestamp
+```
+
+---
+
 ## Troubleshooting
 
 | Problem | Solution |
@@ -344,29 +476,45 @@ When **Track** is enabled:
 
 ```
 new_SRT_drive/
-├── platformio.ini
-├── src/
-│   ├── main.cpp            # Arduino Due firmware
-│   └── config.h
-├── docs/
-│   └── SRT_DRIVE_MANUAL.md
-└── esp32_controller/       # ESP32-S3 MicroPython
-    ├── boot.py             # WiFi startup
-    ├── main.py             # Main application
-    ├── config.py           # Settings
-    ├── wifi_manager.py     # WiFi management
-    ├── web_server.py       # HTTP server & UI
-    ├── srt_serial.py       # Due serial protocol
-    ├── coordinates.py      # RA/Dec <-> Alt/Az
-    └── stellarium.py       # Stellarium protocol
+├── platformio.ini          # PlatformIO build config
+├── README.md               # This file
+│
+├── src/                    # Arduino Due firmware
+│   └── main.cpp            # Motor control, encoders, limits
+│
+├── include/
+│   └── config.h            # Due pin assignments, defaults
+│
+├── esp32_controller/       # ESP32-S3 MicroPython
+│   ├── boot.py             # WiFi/Ethernet startup
+│   ├── main.py             # Main application, tracking loop
+│   ├── config.py           # Settings (location, pins, limits)
+│   ├── wifi_manager.py     # WiFi AP/STA management
+│   ├── ethernet.py         # W5500 Ethernet support
+│   ├── web_server.py       # HTTP server & web UI
+│   ├── srt_serial.py       # Serial protocol to Due
+│   ├── coordinates.py      # RA/Dec/Galactic <-> Alt/Az
+│   ├── stellarium.py       # Stellarium telescope protocol
+│   └── help.html           # Full documentation page
+│
+├── receiver_scheduler/     # Observation scheduling & data acquisition
+│   ├── h1_web_scheduler.py # Flask web scheduler with ESP32 integration
+│   ├── b210_h1_receiver.py # GNU Radio 21cm receiver (B210/RTL-SDR)
+│   ├── h1_schedule.json    # Saved observation schedule
+│   └── README.md           # Receiver/scheduler documentation
+│
+└── docs/
+    ├── SRT_DRIVE_MANUAL.md     # Arduino Due firmware manual
+    └── ESP32_CONTROLLER.md     # ESP32 controller manual
 ```
 
 ---
 
 ## Documentation
 
-- [SRT Drive Manual](docs/SRT_DRIVE_MANUAL.md) - Arduino Due firmware manual
-- [ESP32 Controller Manual](docs/ESP32_CONTROLLER.md) - ESP32-S3 MicroPython controller manual
+- [SRT Drive Manual](docs/SRT_DRIVE_MANUAL.md) - Arduino Due firmware reference
+- [ESP32 Controller Manual](docs/ESP32_CONTROLLER.md) - ESP32-S3 controller and API reference
+- [Receiver & Scheduler](receiver_scheduler/README.md) - H1 receiver and observation scheduler
 
 ## License
 
