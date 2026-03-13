@@ -87,6 +87,7 @@ HTML_PAGE = """<!DOCTYPE html>
                 <div class="status-row"><span class="label">Az Motor:</span><span class="value" id="az_a">-- A</span></div>
                 <div class="status-row"><span class="label">Status:</span><span class="value" id="status">--</span></div>
                 <div class="status-row"><span class="label">Tracking:</span><span class="value" id="tracking_target">--</span></div>
+                <div class="status-row"><span class="label">Time:</span><span class="value" id="time_status">--</span></div>
             </div>
 
             <div class="box">
@@ -259,6 +260,45 @@ HTML_PAGE = """<!DOCTYPE html>
                         document.getElementById('tracking_target').className = 'value idle';
                     }
                 });
+
+            // Get time status
+            fetch('/time/status')
+                .then(r => r.json())
+                .then(d => {
+                    let timeStr = d.utc + ' UTC';
+                    if (d.synced) {
+                        timeStr += ' (' + d.source + ')';
+                        document.getElementById('time_status').className = 'value connected';
+                    } else {
+                        timeStr = 'NOT SYNCED';
+                        document.getElementById('time_status').className = 'value disconnected';
+                    }
+                    document.getElementById('time_status').textContent = timeStr;
+                });
+        }
+
+        function syncBrowserTime() {
+            // Send browser's current time to ESP32 as Unix timestamp
+            const timestamp = Math.floor(Date.now() / 1000);
+            fetch('/time/set?timestamp=' + timestamp)
+                .then(r => r.json())
+                .then(d => {
+                    if (d.ok) {
+                        console.log('Browser time synced to ESP32');
+                    }
+                });
+        }
+
+        function checkAndSyncTime() {
+            // Check if time needs syncing, if so send browser time
+            fetch('/time/status')
+                .then(r => r.json())
+                .then(d => {
+                    if (!d.synced) {
+                        console.log('ESP32 time not synced, sending browser time...');
+                        syncBrowserTime();
+                    }
+                });
         }
 
         function updateEphemeris() {
@@ -422,6 +462,9 @@ HTML_PAGE = """<!DOCTYPE html>
         setInterval(updateEphemeris, 10000);
         updateStatus();
         updateEphemeris();
+
+        // Check and sync time on page load
+        checkAndSyncTime();
     </script>
 </body>
 </html>
@@ -592,6 +635,20 @@ def handle_http_request(client, srt):
             app.target_name = f"Gal l={l:.1f} b={b:.1f}"
             app.tracking_enabled = True
             result = {"ok": True, "ra": ra, "dec": dec}
+            send_response(client, json.dumps(result), 'application/json')
+
+        # Time endpoints
+        elif path == '/time/status':
+            status = app.get_time_status()
+            send_response(client, json.dumps(status), 'application/json')
+
+        elif path == '/time/set':
+            timestamp = int(params.get('timestamp', 0))
+            if timestamp > 0:
+                ok = app.set_time_from_timestamp(timestamp)
+                result = {"ok": ok}
+            else:
+                result = {"ok": False, "error": "Invalid timestamp"}
             send_response(client, json.dumps(result), 'application/json')
 
         elif path == '/direct':

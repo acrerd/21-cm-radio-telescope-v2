@@ -270,7 +270,16 @@ Alt:45.0 Az:180.0 Ialt:0.00A Iaz:0.00A Status:FAULT [Motor stalled]
 1. Power on both controllers
 2. Arduino Due homes automatically (drives to limit switches)
 3. ESP32 starts WiFi AP and connects to saved network (if any)
-4. System ready when Due status shows "Ready"
+4. ESP32 syncs time via NTP (if internet available)
+5. System ready when Due status shows "Ready"
+
+### Time Synchronization
+Accurate time is required for coordinate calculations. The ESP32 syncs time automatically:
+
+1. **NTP (primary):** If connected to the internet, time syncs from NTP servers
+2. **Browser fallback:** If NTP fails, the web interface automatically sends your browser's time to the ESP32 when you open the page
+
+Time status is shown on the Control tab (e.g., "2024-03-13 14:30:00 UTC (NTP)").
 
 ### Tracking Mode
 When **Track** is enabled:

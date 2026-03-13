@@ -3,7 +3,7 @@
 import time
 import ntptime
 import _thread
-from machine import UART, Pin
+from machine import UART, Pin, RTC
 
 from config import (
     DUE_UART_TX, DUE_UART_RX, DUE_BAUD_RATE,
@@ -21,18 +21,63 @@ target_alt = 0.0       # degrees
 target_az = 0.0        # degrees
 tracking_enabled = False
 target_name = None     # "Sun", "Moon", "Gal l=x b=y", or None for manual RA/Dec
+time_synced = False    # True if time has been set (NTP or browser)
+time_source = None     # "NTP", "browser", or None
 
 
-def sync_time():
+def sync_time_ntp():
     """Sync time from NTP server"""
+    global time_synced, time_source
     try:
         ntptime.host = NTP_SERVER
         ntptime.settime()
+        time_synced = True
+        time_source = "NTP"
         print("NTP time synced")
         return True
     except Exception as e:
         print(f"NTP sync failed: {e}")
         return False
+
+
+def set_time_from_timestamp(unix_timestamp):
+    """Set RTC from Unix timestamp (seconds since 1970-01-01 UTC)
+
+    Called by web server when browser sends its time.
+    """
+    global time_synced, time_source
+    try:
+        # Convert Unix timestamp to time tuple
+        # MicroPython's time epoch is 2000-01-01, so adjust
+        # Unix epoch: 1970-01-01, MicroPython epoch: 2000-01-01
+        # Difference: 946684800 seconds
+        mp_timestamp = unix_timestamp - 946684800
+
+        # Get time tuple from timestamp
+        tm = time.gmtime(mp_timestamp)
+
+        # Set RTC: (year, month, day, weekday, hours, minutes, seconds, subseconds)
+        rtc = RTC()
+        rtc.datetime((tm[0], tm[1], tm[2], tm[6], tm[3], tm[4], tm[5], 0))
+
+        time_synced = True
+        time_source = "browser"
+        print(f"Time set from browser: {tm[0]}-{tm[1]:02d}-{tm[2]:02d} {tm[3]:02d}:{tm[4]:02d}:{tm[5]:02d} UTC")
+        return True
+    except Exception as e:
+        print(f"Failed to set time: {e}")
+        return False
+
+
+def get_time_status():
+    """Return current time status"""
+    t = time.gmtime()
+    return {
+        "synced": time_synced,
+        "source": time_source,
+        "utc": f"{t[0]}-{t[1]:02d}-{t[2]:02d} {t[3]:02d}:{t[4]:02d}:{t[5]:02d}",
+        "timestamp": time.time() + 946684800  # Convert to Unix timestamp
+    }
 
 
 def tracking_loop(srt):
@@ -77,11 +122,14 @@ def main():
 
     print("SRT Controller starting...")
 
-    # Sync time (retry a few times)
+    # Try NTP sync (retry a few times)
     for i in range(3):
-        if sync_time():
+        if sync_time_ntp():
             break
         time.sleep(2)
+
+    if not time_synced:
+        print("NTP failed - waiting for browser time sync")
 
     # Initialize serial to Due
     srt = SRTSerial(DUE_UART_TX, DUE_UART_RX, DUE_BAUD_RATE)
