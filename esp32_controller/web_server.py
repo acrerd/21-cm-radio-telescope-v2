@@ -3,10 +3,19 @@
 import socket
 import json
 
-from config import WEB_PORT
+from config import WEB_PORT, ETH_ENABLED
 from wifi_manager import wifi
 from coordinates import get_sun_position, get_moon_position, galactic_to_equatorial
 import main as app  # Access global state
+
+# Import ethernet if enabled
+if ETH_ENABLED:
+    try:
+        from ethernet import ethernet
+    except ImportError:
+        ethernet = None
+else:
+    ethernet = None
 
 
 HTML_PAGE = """<!DOCTYPE html>
@@ -66,7 +75,7 @@ HTML_PAGE = """<!DOCTYPE html>
 
         <div class="tab-bar">
             <div class="tab active" onclick="showTab('control')">Control</div>
-            <div class="tab" onclick="showTab('wifi')">WiFi</div>
+            <div class="tab" onclick="showTab('network')">Network</div>
         </div>
 
         <div id="tab-control" class="tab-content active">
@@ -132,9 +141,25 @@ HTML_PAGE = """<!DOCTYPE html>
             </div>
         </div>
 
-        <div id="tab-wifi" class="tab-content">
+        <div id="tab-network" class="tab-content">
             <div class="box">
-                <h3>WiFi Status</h3>
+                <h3>Ethernet</h3>
+                <div class="status-row">
+                    <span class="label">Status:</span>
+                    <span class="value" id="eth_status">--</span>
+                </div>
+                <div class="status-row">
+                    <span class="label">IP Address:</span>
+                    <span class="value" id="eth_ip">--</span>
+                </div>
+                <div class="status-row">
+                    <span class="label">MAC:</span>
+                    <span class="value" id="eth_mac">--</span>
+                </div>
+            </div>
+
+            <div class="box">
+                <h3>WiFi</h3>
                 <div class="status-row">
                     <span class="label">Access Point:</span>
                     <span class="value" id="ap_status">--</span>
@@ -144,11 +169,11 @@ HTML_PAGE = """<!DOCTYPE html>
                     <span class="value" id="ap_ip">--</span>
                 </div>
                 <div class="status-row">
-                    <span class="label">Network:</span>
+                    <span class="label">Station:</span>
                     <span class="value" id="sta_status">--</span>
                 </div>
                 <div class="status-row">
-                    <span class="label">Network IP:</span>
+                    <span class="label">Station IP:</span>
                     <span class="value" id="sta_ip">--</span>
                 </div>
             </div>
@@ -190,7 +215,7 @@ HTML_PAGE = """<!DOCTYPE html>
             document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
             event.target.classList.add('active');
             document.getElementById('tab-' + name).classList.add('active');
-            if (name === 'wifi') updateWifiStatus();
+            if (name === 'network') updateNetworkStatus();
         }
 
         function formatRA(hours) {
@@ -247,7 +272,24 @@ HTML_PAGE = """<!DOCTYPE html>
                 });
         }
 
-        function updateWifiStatus() {
+        function updateNetworkStatus() {
+            // Update Ethernet status
+            fetch('/eth/status')
+                .then(r => r.json())
+                .then(d => {
+                    if (d.connected) {
+                        document.getElementById('eth_status').textContent = 'Connected';
+                        document.getElementById('eth_status').className = 'value connected';
+                        document.getElementById('eth_ip').textContent = d.ip || '--';
+                    } else {
+                        document.getElementById('eth_status').textContent = d.enabled ? 'Disconnected' : 'Disabled';
+                        document.getElementById('eth_status').className = 'value disconnected';
+                        document.getElementById('eth_ip').textContent = '--';
+                    }
+                    document.getElementById('eth_mac').textContent = d.mac || '--';
+                });
+
+            // Update WiFi status
             fetch('/wifi/status')
                 .then(r => r.json())
                 .then(d => {
@@ -305,7 +347,7 @@ HTML_PAGE = """<!DOCTYPE html>
                     if (d.ok) {
                         alert('Connected! New IP: ' + d.ip);
                         hideConnectForm();
-                        updateWifiStatus();
+                        updateNetworkStatus();
                     } else {
                         alert('Connection failed: ' + (d.error || 'Unknown error'));
                     }
@@ -315,7 +357,7 @@ HTML_PAGE = """<!DOCTYPE html>
         function forgetWifi() {
             if (confirm('Forget saved WiFi network?')) {
                 fetch('/wifi/forget')
-                    .then(() => updateWifiStatus());
+                    .then(() => updateNetworkStatus());
             }
         }
 
@@ -561,6 +603,15 @@ def handle_http_request(client, srt):
             app.target_name = None
             srt.send_target(alt, az)
             send_response(client, '{"ok":true}', 'application/json')
+
+        # Ethernet endpoint
+        elif path == '/eth/status':
+            if ethernet:
+                status = ethernet.get_status()
+                status['enabled'] = True
+            else:
+                status = {"enabled": False, "connected": False, "ip": None, "mac": None}
+            send_response(client, json.dumps(status), 'application/json')
 
         # WiFi endpoints
         elif path == '/wifi/status':

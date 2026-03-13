@@ -51,6 +51,7 @@ The system consists of two controllers:
 
 ### ESP32-S3
 - ESP32-S3 development board
+- W5500 Ethernet module (optional, recommended for fixed installations)
 - Connects to Due via UART serial
 
 ### Wiring: ESP32-S3 to Arduino Due
@@ -60,6 +61,18 @@ The system consists of two controllers:
 | GPIO17   | Pin 19 (RX1)| ESP32 TX -> Due RX |
 | GPIO18   | Pin 18 (TX1)| ESP32 RX <- Due TX |
 | GND      | GND         | Common ground |
+
+### Wiring: ESP32-S3 to W5500 Ethernet
+
+| W5500 | ESP32-S3 | Function |
+|-------|----------|----------|
+| MOSI  | GPIO11   | SPI data out |
+| MISO  | GPIO13   | SPI data in |
+| SCK   | GPIO12   | SPI clock |
+| CS    | GPIO10   | Chip select |
+| RST   | GPIO9    | Reset (or tie to 3.3V) |
+| 3.3V  | 3.3V     | Power |
+| GND   | GND      | Ground |
 
 ---
 
@@ -194,11 +207,13 @@ Credentials are saved and the ESP32 auto-reconnects on boot. The AP stays active
 - **Track**: Continuously update position as Earth rotates
 - **Sun/Moon**: Automatically updates coordinates as they move across the sky
 
-#### WiFi Tab
+#### Network Tab
 
-- View AP and network connection status
-- Scan and connect to WiFi networks
-- Forget saved credentials
+- **Ethernet**: Connection status, IP address, MAC address
+- **WiFi**: Access Point status, station connection status
+- **WiFi Config**: Scan and connect to WiFi networks, forget saved credentials
+
+**Network Priority:** Ethernet provides a stable wired connection for Stellarium. WiFi AP remains active for mobile configuration access.
 
 ### Stellarium Integration
 
