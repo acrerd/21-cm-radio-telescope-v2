@@ -474,17 +474,50 @@ int calculatePWM(int32_t pulsesRemaining, unsigned long driveStartTime) {
 // CURRENT SENSING
 // =============================================================================
 
+// Auto-calibrated zero-current offsets (set during startup)
+float currentOffsetAz = CURRENT_SENSOR_OFFSET_V;
+float currentOffsetAlt = CURRENT_SENSOR_OFFSET_V;
+
+void calibrateCurrentSensors() {
+    // Average multiple readings with motors off to find true zero offset
+    const int samples = 50;
+    long sumAz = 0;
+    long sumAlt = 0;
+
+    printAllLn("Calibrating current sensors...");
+
+    for (int i = 0; i < samples; i++) {
+        sumAz += analogRead(PIN_CURRENT_AZ);
+        sumAlt += analogRead(PIN_CURRENT_ALT);
+        delay(10);
+    }
+
+    float avgAdcAz = (float)sumAz / samples;
+    float avgAdcAlt = (float)sumAlt / samples;
+
+    // Convert ADC readings to voltage - this is our zero-current offset
+    currentOffsetAz = (ADC_REFERENCE_V / ADC_RESOLUTION_BITS) * avgAdcAz;
+    currentOffsetAlt = (ADC_REFERENCE_V / ADC_RESOLUTION_BITS) * avgAdcAlt;
+
+    printAll("  Az offset: ");
+    printAllFloat(currentOffsetAz, 3);
+    printAllLn("V");
+    printAll("  Alt offset: ");
+    printAllFloat(currentOffsetAlt, 3);
+    printAllLn("V");
+}
+
 float readCurrentAz() {
     int adcValue = analogRead(PIN_CURRENT_AZ);
     float voltage = (ADC_REFERENCE_V / ADC_RESOLUTION_BITS) * adcValue;
-    float current = (voltage - CURRENT_SENSOR_OFFSET_V) / CURRENT_SENSOR_SENSITIVITY;
+    float current = (voltage - currentOffsetAz) / CURRENT_SENSOR_SENSITIVITY;
     return current;
 }
 
 float readCurrentAlt() {
     int adcValue = analogRead(PIN_CURRENT_ALT);
     float voltage = (ADC_REFERENCE_V / ADC_RESOLUTION_BITS) * adcValue;
-    float current = (voltage - CURRENT_SENSOR_OFFSET_V) / CURRENT_SENSOR_SENSITIVITY;
+    float current = (voltage - currentOffsetAlt) / CURRENT_SENSOR_SENSITIVITY;
     return current;
 }
 
@@ -1540,6 +1573,9 @@ void setup() {
     positionAlt = (int32_t)(SIM_INITIAL_ALT_DEG * PULSES_PER_DEGREE);
     simLastUpdateMs = millis();
     #endif
+
+    // Calibrate current sensors while motors are off
+    calibrateCurrentSensors();
 
     printAllLn("Starting homing sequence...");
 
