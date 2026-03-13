@@ -24,23 +24,24 @@ HTML_PAGE = """<!DOCTYPE html>
     <title>SRT Controller</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <style>
-        body { font-family: Arial, sans-serif; margin: 20px; background: #1a1a2e; color: #eee; }
-        .container { max-width: 600px; margin: 0 auto; }
-        h1 { color: #00d9ff; }
-        h3 { margin-top: 0; color: #aaa; }
-        .box { background: #16213e; padding: 15px; border-radius: 8px; margin: 10px 0; }
-        .status-row { display: flex; justify-content: space-between; margin: 5px 0; flex-wrap: wrap; }
+        * { box-sizing: border-box; }
+        body { font-family: Arial, sans-serif; margin: 0; padding: 15px; background: #1a1a2e; color: #eee; }
+        .container { max-width: 1000px; margin: 0 auto; }
+        h1 { color: #00d9ff; margin: 0 0 10px 0; font-size: 1.5em; }
+        h3 { margin: 0 0 10px 0; color: #aaa; font-size: 1em; }
+        .box { background: #16213e; padding: 12px; border-radius: 8px; margin-bottom: 10px; }
+        .status-row { display: flex; justify-content: space-between; margin: 4px 0; }
         .label { color: #888; }
-        .value { font-family: monospace; font-size: 1.2em; }
+        .value { font-family: monospace; font-size: 1.1em; }
         input[type="number"], input[type="text"], input[type="password"], select {
-            padding: 8px; background: #0f0f23; color: #fff; border: 1px solid #444;
+            padding: 6px; background: #0f0f23; color: #fff; border: 1px solid #444;
             border-radius: 4px; margin: 2px;
         }
-        input[type="number"] { width: 80px; }
-        input[type="text"], input[type="password"], select { width: 200px; }
+        input[type="number"] { width: 75px; }
+        input[type="text"], input[type="password"], select { width: 180px; }
         button {
             background: #00d9ff; color: #000; border: none;
-            padding: 10px 20px; cursor: pointer; margin: 5px; border-radius: 4px;
+            padding: 8px 16px; cursor: pointer; margin: 3px; border-radius: 4px; font-size: 0.9em;
         }
         button:hover { background: #00b8d4; }
         button.stop { background: #ff4444; color: #fff; }
@@ -55,18 +56,23 @@ HTML_PAGE = """<!DOCTYPE html>
         .idle { color: #888; }
         .connected { color: #00ff00; }
         .disconnected { color: #ff8800; }
-        .wifi-network { padding: 8px; margin: 4px 0; background: #0f0f23; border-radius: 4px; cursor: pointer; }
+        .wifi-network { padding: 6px; margin: 3px 0; background: #0f0f23; border-radius: 4px; cursor: pointer; }
         .wifi-network:hover { background: #1a1a3e; }
         .wifi-signal { float: right; color: #888; }
         .hidden { display: none; }
-        .tab-bar { display: flex; margin-bottom: 10px; flex-wrap: wrap; }
-        .tab { padding: 10px 20px; cursor: pointer; background: #16213e; border-radius: 8px 8px 0 0; margin-right: 2px; }
+        .tab-bar { display: flex; margin-bottom: 10px; }
+        .tab { padding: 8px 20px; cursor: pointer; background: #16213e; border-radius: 8px 8px 0 0; margin-right: 2px; }
         .tab.active { background: #00d9ff; color: #000; }
         .tab-content { display: none; }
         .tab-content.active { display: block; }
-        .target-info { font-size: 0.9em; color: #888; margin-top: 5px; }
-        .coord-section { margin: 10px 0; padding: 10px 0; border-top: 1px solid #333; }
-        .coord-section:first-child { border-top: none; padding-top: 0; }
+        .target-info { font-size: 0.85em; color: #888; margin-top: 5px; }
+        .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+        .coord-row { display: flex; gap: 10px; align-items: center; margin: 6px 0; flex-wrap: wrap; }
+        .coord-row label { white-space: nowrap; }
+        .btn-row { margin-top: 8px; }
+        @media (max-width: 800px) {
+            .two-col { grid-template-columns: 1fr; }
+        }
     </style>
 </head>
 <body>
@@ -80,180 +86,167 @@ HTML_PAGE = """<!DOCTYPE html>
         </div>
 
         <div id="tab-control" class="tab-content active">
-            <div class="box">
-                <h3>Current Position</h3>
-                <div class="status-row"><span class="label">Altitude:</span><span class="value" id="alt">--</span></div>
-                <div class="status-row"><span class="label">Azimuth:</span><span class="value" id="az">--</span></div>
-                <div class="status-row"><span class="label">Alt Motor:</span><span class="value" id="alt_a">-- A</span></div>
-                <div class="status-row"><span class="label">Az Motor:</span><span class="value" id="az_a">-- A</span></div>
-                <div class="status-row"><span class="label">Status:</span><span class="value" id="status">--</span></div>
-                <div class="status-row"><span class="label">Tracking:</span><span class="value" id="tracking_target">--</span></div>
-                <div class="status-row"><span class="label">Time:</span><span class="value" id="time_status">--</span></div>
-            </div>
-
-            <div class="box">
-                <h3>Quick Targets</h3>
-                <button class="solar" onclick="trackSun()">Track Sun</button>
-                <button class="lunar" onclick="trackMoon()">Track Moon</button>
-                <button class="stop" onclick="stopTracking()">Stop Tracking</button>
-                <div class="target-info">
-                    Sun: <span id="sun_pos">--</span> | Moon: <span id="moon_pos">--</span>
-                </div>
-            </div>
-
-            <div class="box">
-                <h3>Target Coordinates</h3>
-
-                <div class="coord-section">
-                    <strong>Equatorial (RA/Dec)</strong>
-                    <div style="margin-top: 8px;">
-                        <label>RA (hours): <input type="number" id="ra" step="0.001" min="0" max="24" value="0"></label>
-                        <label>Dec (deg): <input type="number" id="dec" step="0.1" min="-90" max="90" value="0"></label>
+            <div class="two-col">
+                <div class="left-col">
+                    <div class="box">
+                        <h3>Current Position</h3>
+                        <div class="status-row"><span class="label">Altitude:</span><span class="value" id="alt">--</span></div>
+                        <div class="status-row"><span class="label">Azimuth:</span><span class="value" id="az">--</span></div>
+                        <div class="status-row"><span class="label">Alt Motor:</span><span class="value" id="alt_a">-- A</span></div>
+                        <div class="status-row"><span class="label">Az Motor:</span><span class="value" id="az_a">-- A</span></div>
+                        <div class="status-row"><span class="label">Status:</span><span class="value" id="status">--</span></div>
+                        <div class="status-row"><span class="label">Tracking:</span><span class="value" id="tracking_target">--</span></div>
+                        <div class="status-row"><span class="label">Time:</span><span class="value" id="time_status">--</span></div>
                     </div>
-                    <div style="margin-top: 10px;">
-                        <button onclick="goToRaDec()">Go To</button>
-                        <button onclick="trackRaDec()">Track</button>
+
+                    <div class="box">
+                        <h3>Quick Targets</h3>
+                        <button class="solar" onclick="trackSun()">Track Sun</button>
+                        <button class="lunar" onclick="trackMoon()">Track Moon</button>
+                        <button class="stop" onclick="stopTracking()">Stop</button>
+                        <div class="target-info">
+                            Sun: <span id="sun_pos">--</span><br>
+                            Moon: <span id="moon_pos">--</span>
+                        </div>
+                    </div>
+
+                    <div class="box">
+                        <h3>Direct Control (Alt/Az)</h3>
+                        <div class="coord-row">
+                            <label>Alt: <input type="number" id="direct_alt" step="0.5" min="0" max="90" value="45"></label>
+                            <label>Az: <input type="number" id="direct_az" step="0.5" min="0" max="355" value="180"></label>
+                        </div>
+                        <div class="btn-row">
+                            <button onclick="goDirect()">Go Direct</button>
+                            <button onclick="goHome()">Home</button>
+                        </div>
                     </div>
                 </div>
 
-                <div class="coord-section">
-                    <strong>Galactic (l/b)</strong>
-                    <div style="margin-top: 8px;">
-                        <label>l (deg): <input type="number" id="gal_l" step="0.1" min="0" max="360" value="0"></label>
-                        <label>b (deg): <input type="number" id="gal_b" step="0.1" min="-90" max="90" value="0"></label>
+                <div class="right-col">
+                    <div class="box">
+                        <h3>Equatorial (RA/Dec) - J2000</h3>
+                        <div class="coord-row">
+                            <label>RA (h): <input type="number" id="ra" step="0.001" min="0" max="24" value="0"></label>
+                            <label>Dec (&deg;): <input type="number" id="dec" step="0.1" min="-90" max="90" value="0"></label>
+                        </div>
+                        <div class="btn-row">
+                            <button onclick="goToRaDec()">Go To</button>
+                            <button onclick="trackRaDec()">Track</button>
+                        </div>
                     </div>
-                    <div style="margin-top: 10px;">
-                        <button onclick="goToGalactic()">Go To</button>
-                        <button onclick="trackGalactic()">Track</button>
-                    </div>
-                    <div class="target-info" id="galactic_radec"></div>
-                </div>
-            </div>
 
-            <div class="box">
-                <h3>Direct Control (Alt/Az)</h3>
-                <div>
-                    <label>Alt (deg): <input type="number" id="direct_alt" step="0.5" min="0" max="90" value="45"></label>
-                    <label>Az (deg): <input type="number" id="direct_az" step="0.5" min="0" max="355" value="180"></label>
-                </div>
-                <div style="margin-top: 10px;">
-                    <button onclick="goDirect()">Go Direct</button>
-                    <button onclick="goHome()">Home (0,0)</button>
+                    <div class="box">
+                        <h3>Galactic (l/b) - J2000</h3>
+                        <div class="coord-row">
+                            <label>l (&deg;): <input type="number" id="gal_l" step="0.1" min="0" max="360" value="0"></label>
+                            <label>b (&deg;): <input type="number" id="gal_b" step="0.1" min="-90" max="90" value="0"></label>
+                        </div>
+                        <div class="btn-row">
+                            <button onclick="goToGalactic()">Go To</button>
+                            <button onclick="trackGalactic()">Track</button>
+                        </div>
+                        <div class="target-info" id="galactic_radec"></div>
+                    </div>
                 </div>
             </div>
         </div>
 
         <div id="tab-network" class="tab-content">
-            <div class="box">
-                <h3>Ethernet</h3>
-                <div class="status-row">
-                    <span class="label">Status:</span>
-                    <span class="value" id="eth_status">--</span>
-                </div>
-                <div class="status-row">
-                    <span class="label">IP Address:</span>
-                    <span class="value" id="eth_ip">--</span>
-                </div>
-                <div class="status-row">
-                    <span class="label">MAC:</span>
-                    <span class="value" id="eth_mac">--</span>
-                </div>
-            </div>
-
-            <div class="box">
-                <h3>WiFi</h3>
-                <div class="status-row">
-                    <span class="label">Access Point:</span>
-                    <span class="value" id="ap_status">--</span>
-                </div>
-                <div class="status-row">
-                    <span class="label">AP IP:</span>
-                    <span class="value" id="ap_ip">--</span>
-                </div>
-                <div class="status-row">
-                    <span class="label">Station:</span>
-                    <span class="value" id="sta_status">--</span>
-                </div>
-                <div class="status-row">
-                    <span class="label">Station IP:</span>
-                    <span class="value" id="sta_ip">--</span>
-                </div>
-            </div>
-
-            <div class="box">
-                <h3>Connect to Network</h3>
-                <div id="wifi-networks">
-                    <p style="color: #888;">Click Scan to find networks...</p>
-                </div>
-                <div style="margin-top: 10px;">
-                    <button onclick="scanWifi()">Scan</button>
-                </div>
-
-                <div id="wifi-connect-form" class="hidden" style="margin-top: 15px; padding-top: 15px; border-top: 1px solid #444;">
-                    <div style="margin-bottom: 10px;">
-                        <label>Network: <strong id="selected-ssid"></strong></label>
+            <div class="two-col">
+                <div>
+                    <div class="box">
+                        <h3>Ethernet</h3>
+                        <div class="status-row"><span class="label">Status:</span><span class="value" id="eth_status">--</span></div>
+                        <div class="status-row"><span class="label">IP:</span><span class="value" id="eth_ip">--</span></div>
+                        <div class="status-row"><span class="label">MAC:</span><span class="value" id="eth_mac">--</span></div>
                     </div>
-                    <div style="margin-bottom: 10px;">
-                        <label>Password: <input type="password" id="wifi-password"></label>
-                    </div>
-                    <button onclick="connectWifi()">Connect</button>
-                    <button class="secondary" onclick="hideConnectForm()">Cancel</button>
-                </div>
-            </div>
 
-            <div class="box">
-                <h3>Saved Network</h3>
-                <p id="saved-network" style="color: #888;">None</p>
-                <button class="secondary" onclick="forgetWifi()">Forget Saved Network</button>
+                    <div class="box">
+                        <h3>WiFi</h3>
+                        <div class="status-row"><span class="label">Access Point:</span><span class="value" id="ap_status">--</span></div>
+                        <div class="status-row"><span class="label">AP IP:</span><span class="value" id="ap_ip">--</span></div>
+                        <div class="status-row"><span class="label">Station:</span><span class="value" id="sta_status">--</span></div>
+                        <div class="status-row"><span class="label">Station IP:</span><span class="value" id="sta_ip">--</span></div>
+                    </div>
+
+                    <div class="box">
+                        <h3>Saved Network</h3>
+                        <p id="saved-network" style="color: #888; margin: 5px 0;">None</p>
+                        <button class="secondary" onclick="forgetWifi()">Forget</button>
+                    </div>
+                </div>
+
+                <div>
+                    <div class="box">
+                        <h3>Connect to Network</h3>
+                        <div id="wifi-networks" style="max-height: 200px; overflow-y: auto;">
+                            <p style="color: #888;">Click Scan to find networks...</p>
+                        </div>
+                        <div style="margin-top: 8px;">
+                            <button onclick="scanWifi()">Scan</button>
+                        </div>
+
+                        <div id="wifi-connect-form" class="hidden" style="margin-top: 10px; padding-top: 10px; border-top: 1px solid #444;">
+                            <div style="margin-bottom: 8px;">
+                                <label>Network: <strong id="selected-ssid"></strong></label>
+                            </div>
+                            <div style="margin-bottom: 8px;">
+                                <label>Password: <input type="password" id="wifi-password"></label>
+                            </div>
+                            <button onclick="connectWifi()">Connect</button>
+                            <button class="secondary" onclick="hideConnectForm()">Cancel</button>
+                        </div>
+                    </div>
+                </div>
             </div>
         </div>
 
         <div id="tab-help" class="tab-content">
-            <div class="box">
-                <h3>Quick Reference</h3>
-                <p><strong>Coordinate Systems (all J2000 epoch):</strong></p>
-                <ul style="margin: 10px 0; padding-left: 20px;">
-                    <li><strong>RA/Dec:</strong> Right Ascension (0-24h), Declination (-90 to +90 deg)</li>
-                    <li><strong>Galactic:</strong> l (0-360 deg), b (-90 to +90 deg)</li>
-                    <li><strong>Alt/Az:</strong> Altitude (0-90 deg), Azimuth (0-355 deg)</li>
-                </ul>
-                <p><strong>Tracking Modes:</strong></p>
-                <ul style="margin: 10px 0; padding-left: 20px;">
-                    <li><strong>Go To:</strong> Slew to position once</li>
-                    <li><strong>Track:</strong> Continuously follow as Earth rotates</li>
-                </ul>
-            </div>
+            <div class="two-col">
+                <div>
+                    <div class="box">
+                        <h3>Coordinate Systems (J2000)</h3>
+                        <table style="width: 100%; font-size: 0.9em;">
+                            <tr><td><strong>RA/Dec</strong></td><td>Right Ascension 0-24h, Dec -90 to +90&deg;</td></tr>
+                            <tr><td><strong>Galactic</strong></td><td>l: 0-360&deg;, b: -90 to +90&deg;</td></tr>
+                            <tr><td><strong>Alt/Az</strong></td><td>Altitude 0-90&deg;, Azimuth 0-355&deg;</td></tr>
+                        </table>
+                    </div>
 
-            <div class="box">
-                <h3>Stellarium Setup</h3>
-                <ol style="margin: 10px 0; padding-left: 20px;">
-                    <li>Configuration > Plugins > Telescope Control</li>
-                    <li>Enable and restart Stellarium</li>
-                    <li>Add telescope: Type "External", Host <code>192.168.4.1</code>, Port <code>10001</code></li>
-                    <li>Connect, then Ctrl+1 to slew to selected object</li>
-                </ol>
-            </div>
+                    <div class="box">
+                        <h3>Tracking Modes</h3>
+                        <p style="margin: 5px 0;"><strong>Go To:</strong> Slew to position once</p>
+                        <p style="margin: 5px 0;"><strong>Track:</strong> Continuously follow as Earth rotates</p>
+                    </div>
 
-            <div class="box">
-                <h3>Troubleshooting</h3>
-                <table style="width: 100%; font-size: 0.9em;">
-                    <tr><td style="padding: 5px; border-bottom: 1px solid #333;"><strong>Motors don't move</strong></td>
-                        <td style="padding: 5px; border-bottom: 1px solid #333;">Check Due serial for FAULT, verify homing</td></tr>
-                    <tr><td style="padding: 5px; border-bottom: 1px solid #333;"><strong>Wrong position</strong></td>
-                        <td style="padding: 5px; border-bottom: 1px solid #333;">Run HOME command, check limit switches</td></tr>
-                    <tr><td style="padding: 5px; border-bottom: 1px solid #333;"><strong>Stellarium fails</strong></td>
-                        <td style="padding: 5px; border-bottom: 1px solid #333;">Check IP and port 10001</td></tr>
-                    <tr><td style="padding: 5px;"><strong>Sky mismatch</strong></td>
-                        <td style="padding: 5px;">Verify observer lat/lon, check time sync</td></tr>
-                </table>
-            </div>
+                    <div class="box">
+                        <h3>Full Documentation</h3>
+                        <p><a href="/docs" style="color: #00d9ff;">View Complete Manual</a> - Hardware, serial commands, config</p>
+                    </div>
+                </div>
 
-            <div class="box">
-                <h3>Full Documentation</h3>
-                <p><a href="/docs" style="color: #00d9ff;">View Complete Manual</a></p>
-                <p style="color: #888; font-size: 0.9em; margin-top: 10px;">
-                    Hardware setup, serial commands, configuration options, and more.
-                </p>
+                <div>
+                    <div class="box">
+                        <h3>Stellarium Setup</h3>
+                        <ol style="margin: 5px 0; padding-left: 20px; font-size: 0.9em;">
+                            <li>Configuration &gt; Plugins &gt; Telescope Control</li>
+                            <li>Enable and restart Stellarium</li>
+                            <li>Add telescope: Type "External", Host <code>192.168.4.1</code>, Port <code>10001</code></li>
+                            <li>Connect, then Ctrl+1 to slew to selected object</li>
+                        </ol>
+                    </div>
+
+                    <div class="box">
+                        <h3>Troubleshooting</h3>
+                        <table style="width: 100%; font-size: 0.85em;">
+                            <tr><td style="padding: 3px;"><strong>Motors don't move</strong></td><td style="padding: 3px;">Check Due for FAULT, verify homing</td></tr>
+                            <tr><td style="padding: 3px;"><strong>Wrong position</strong></td><td style="padding: 3px;">Run HOME, check limit switches</td></tr>
+                            <tr><td style="padding: 3px;"><strong>Stellarium fails</strong></td><td style="padding: 3px;">Check IP and port 10001</td></tr>
+                            <tr><td style="padding: 3px;"><strong>Sky mismatch</strong></td><td style="padding: 3px;">Check lat/lon, verify time sync</td></tr>
+                        </table>
+                    </div>
+                </div>
             </div>
         </div>
     </div>
