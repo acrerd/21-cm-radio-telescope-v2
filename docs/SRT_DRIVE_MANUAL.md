@@ -465,7 +465,22 @@ These are detected via the motor driver's fault flag pins:
 - Belt/coupling slipped
 - Mechanical jam
 
-### 8.4 Recovery from Faults
+### 8.4 Position Bounds Faults
+
+| Fault | Description | Detection |
+|-------|-------------|-----------|
+| `Azimuth position out of bounds` | Position exceeds physical limits | > 5 deg beyond hardware limit |
+| `Altitude position out of bounds` | Position exceeds physical limits | > 5 deg beyond hardware limit |
+
+**Possible causes:**
+- Encoder noise adding false pulses
+- Mechanical hard stop broken
+- Encoder missed pulses accumulating over time
+- Motor drove past limit (overcurrent didn't trigger)
+
+This is a sanity check: if the counted position exceeds what is physically possible, something is wrong and the system stops immediately.
+
+### 8.5 Recovery from Faults
 
 **Option A: Use the RESET command**
 

@@ -9,7 +9,7 @@ from config import (
     DUE_UART_TX, DUE_UART_RX, DUE_BAUD_RATE,
     NTP_SERVER, OBSERVER_LAT, OBSERVER_LON,
     MOUNT_AZ_MIN, MOUNT_AZ_MAX, MOUNT_ALT_MIN, MOUNT_ALT_MAX,
-    HOME_ALT, HOME_AZ
+    HOME_ALT, HOME_AZ, POSITION_DEADBAND
 )
 from coordinates import ra_dec_to_alt_az, get_sun_position, get_moon_position
 from web_server import start_web_server
@@ -100,6 +100,8 @@ def tracking_loop(srt):
     global waiting_for_wrap, waiting_for_rise
 
     ephemeris_counter = 0
+    last_sent_alt = None  # Track last sent position for deadband
+    last_sent_az = None
 
     while True:
         if tracking_enabled:
@@ -129,6 +131,8 @@ def tracking_loop(srt):
                     print(f"Target below horizon: Alt={alt:.1f}")
                     print("Parking at home, waiting for target to rise...")
                     srt.send_target(HOME_ALT, HOME_AZ)
+                    last_sent_alt = HOME_ALT
+                    last_sent_az = HOME_AZ
                 # Continue waiting
             # Check if above zenith limit
             elif alt > MOUNT_ALT_MAX:
@@ -146,11 +150,22 @@ def tracking_loop(srt):
                     waiting_for_rise = False
                     print(f"Target risen: Alt={alt:.1f} Az={az:.1f}")
                     print("Resuming tracking...")
+                    last_sent_alt = None  # Force send after state change
+                    last_sent_az = None
                 if waiting_for_wrap:
                     waiting_for_wrap = False
                     print(f"Target back in az limits: Alt={alt:.1f} Az={az:.1f}")
                     print("Repositioning to resume tracking...")
-                srt.send_target(alt, az)
+                    last_sent_alt = None  # Force send after state change
+                    last_sent_az = None
+
+                # Apply deadband - only send if moved more than threshold
+                if (last_sent_alt is None or last_sent_az is None or
+                    abs(alt - last_sent_alt) >= POSITION_DEADBAND or
+                    abs(az - last_sent_az) >= POSITION_DEADBAND):
+                    srt.send_target(alt, az)
+                    last_sent_alt = alt
+                    last_sent_az = az
 
         time.sleep(1)
 

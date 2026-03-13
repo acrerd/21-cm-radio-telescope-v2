@@ -119,7 +119,9 @@ typedef enum {
     FAULT_AZ_OVERCURRENT,
     FAULT_ALT_OVERCURRENT,
     FAULT_AZ_STALL,
-    FAULT_ALT_STALL
+    FAULT_ALT_STALL,
+    FAULT_AZ_POSITION_BOUNDS,
+    FAULT_ALT_POSITION_BOUNDS
 } FaultCode;
 
 // =============================================================================
@@ -542,8 +544,41 @@ FaultCode checkStall() {
     return FAULT_NONE;
 }
 
+// Position bounds tolerance - if position exceeds hardware limits by this much,
+// something is seriously wrong (encoder noise, broken stop, etc.)
+#define POSITION_BOUNDS_TOLERANCE 5.0  // degrees beyond hardware limits = fault
+
+FaultCode checkPositionBounds() {
+    // Convert pulse counts to degrees
+    float azDeg = positionAz / (float)PULSES_PER_DEGREE;
+    float altDeg = positionAlt / (float)PULSES_PER_DEGREE;
+
+    // Check if position exceeds hardware limits + tolerance
+    // This catches encoder miscounts, broken hard stops, etc.
+    if (azDeg < cfg.azHwMin - POSITION_BOUNDS_TOLERANCE ||
+        azDeg > cfg.azHwMax + POSITION_BOUNDS_TOLERANCE) {
+        return FAULT_AZ_POSITION_BOUNDS;
+    }
+
+    if (altDeg < cfg.altHwMin - POSITION_BOUNDS_TOLERANCE ||
+        altDeg > cfg.altHwMax + POSITION_BOUNDS_TOLERANCE) {
+        return FAULT_ALT_POSITION_BOUNDS;
+    }
+
+    return FAULT_NONE;
+}
+
 void runSafetyChecks() {
     FaultCode fault;
+
+    // Check position bounds first (catches encoder/mechanical failures)
+    fault = checkPositionBounds();
+    if (fault != FAULT_NONE) {
+        stopAllMotors();
+        faultCode = fault;
+        systemState = STATE_FAULT;
+        return;
+    }
 
     // Check fault flags from motor drivers
     fault = checkFaultFlags();
@@ -1016,9 +1051,11 @@ const char* getFaultString() {
         case FAULT_ALT_UNDERVOLT:   return "Altitude motor undervoltage";
         case FAULT_AZ_OVERCURRENT:  return "Azimuth motor overcurrent";
         case FAULT_ALT_OVERCURRENT: return "Altitude motor overcurrent";
-        case FAULT_AZ_STALL:        return "Azimuth motor stalled";
-        case FAULT_ALT_STALL:       return "Altitude motor stalled";
-        default:                    return "Unknown fault";
+        case FAULT_AZ_STALL:            return "Azimuth motor stalled";
+        case FAULT_ALT_STALL:           return "Altitude motor stalled";
+        case FAULT_AZ_POSITION_BOUNDS:  return "Azimuth position out of bounds";
+        case FAULT_ALT_POSITION_BOUNDS: return "Altitude position out of bounds";
+        default:                        return "Unknown fault";
     }
 }
 

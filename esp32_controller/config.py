@@ -50,3 +50,7 @@ MOUNT_ALT_MAX = 90.0   # Altitude maximum
 # Home position (degrees) - telescope parks here when waiting
 HOME_ALT = 0.0
 HOME_AZ = 180.0
+
+# Position deadband (degrees) - don't command moves smaller than this
+# Prevents motor hunting when target is very close to current position
+POSITION_DEADBAND = 0.25
