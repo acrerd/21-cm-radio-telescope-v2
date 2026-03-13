@@ -74,6 +74,37 @@ The system consists of two controllers:
 | 3.3V  | 3.3V     | Power |
 | GND   | GND      | Ground |
 
+### Ethernet Options
+
+The W5500 is the default Ethernet option, but alternatives exist depending on your requirements.
+
+#### SPI-Based Options (ESP32-S3 compatible)
+
+| Chip | Speed | MicroPython | Notes |
+|------|-------|-------------|-------|
+| **W5500** | 10/100 Mbps | `network.WIZNET5K` | Recommended. Hardware TCP/IP stack, 8 sockets |
+| W5100S | 10/100 Mbps | `network.WIZNET5K` | Older variant, 4 sockets |
+| ENC28J60 | 10 Mbps | Limited | Cheaper but slower, software TCP/IP stack |
+
+The W5500 is preferred for its hardware TCP/IP offloading and reliable MicroPython support.
+
+#### Native Ethernet (Original ESP32 only)
+
+The **original ESP32** (not S3) has a built-in RMII Ethernet MAC, enabling use of PHY chips like:
+
+| Option | Notes |
+|--------|-------|
+| **LAN8720 PHY module** | ~$3, requires specific RMII GPIO pins |
+| **Olimex ESP32-POE** | All-in-one board with Ethernet + Power over Ethernet |
+| **Olimex ESP32-Gateway** | ESP32 + Ethernet + WiFi gateway board |
+
+Native Ethernet advantages:
+- Faster and more reliable than SPI
+- Fewer GPIO pins used (dedicated RMII interface)
+- Native `network.LAN()` support in MicroPython
+
+**Trade-off:** The ESP32-S3 has more RAM and faster CPU than the original ESP32, but lacks native Ethernet. For fixed observatory installations where Ethernet reliability is critical (e.g., Stellarium connection), consider using an Olimex ESP32-POE instead. The controller code requires only minor changes to `ethernet.py` to use `network.LAN()`.
+
 ---
 
 ## Installation
