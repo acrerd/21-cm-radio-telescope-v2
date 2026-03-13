@@ -811,6 +811,8 @@ void performHoming() {
     motionStateAlt = (homeAltOffset > 0) ? MOTION_DRIVING : MOTION_IDLE;
 
     while (motionStateAz != MOTION_IDLE || motionStateAlt != MOTION_IDLE) {
+        unsigned long now = millis();
+
         // Output status when it changes
         outputStatusIfChanged();
 
@@ -854,6 +856,22 @@ void performHoming() {
             systemState = STATE_FAULT;
             printAll("Homing ABORTED: ");
             printAllLn(getFaultString());
+            return;
+        }
+
+        // Stall detection - if driving but no pulses, motors aren't connected
+        if (motionStateAz == MOTION_DRIVING && (now - lastPulseAz) > cfg.stallTimeoutMs) {
+            stopAllMotors();
+            faultCode = FAULT_AZ_STALL;
+            systemState = STATE_FAULT;
+            printAllLn("Homing ABORTED: Azimuth motor not responding");
+            return;
+        }
+        if (motionStateAlt == MOTION_DRIVING && (now - lastPulseAlt) > cfg.stallTimeoutMs) {
+            stopAllMotors();
+            faultCode = FAULT_ALT_STALL;
+            systemState = STATE_FAULT;
+            printAllLn("Homing ABORTED: Altitude motor not responding");
             return;
         }
 
