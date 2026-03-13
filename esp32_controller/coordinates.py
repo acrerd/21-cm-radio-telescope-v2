@@ -20,19 +20,128 @@ def julian_date(year, month, day, hour, minute, second):
 
 
 def gmst(jd):
-    """Calculate Greenwich Mean Sidereal Time in hours from Julian Date"""
-    T = (jd - 2451545.0) / 36525.0
+    """Calculate Greenwich Mean Sidereal Time in hours from Julian Date.
 
-    # GMST at 0h UT in seconds
-    gmst_sec = 24110.54841 + 8640184.812866 * T + 0.093104 * T**2 - 6.2e-6 * T**3
+    Uses the IAU 1982 formula for GMST.
+    """
+    # Calculate JD at 0h UT (midnight) for this day
+    jd0 = math.floor(jd - 0.5) + 0.5
 
-    # Add rotation since 0h UT
-    gmst_sec += 86400 * 1.00273790935 * ((jd - 0.5) % 1)
+    # Hours since 0h UT
+    H = (jd - jd0) * 24.0
 
-    # Convert to hours and normalize to 0-24
-    gmst_hours = (gmst_sec / 3600) % 24
+    # Days since J2000.0 at 0h UT
+    D0 = jd0 - 2451545.0
+    T = D0 / 36525.0
+
+    # GMST at 0h UT in hours (IAU 1982 formula)
+    gmst0 = 6.697374558 + 0.06570982441908 * D0 + 1.00273790935 * H + 0.000026 * T**2
+
+    # Normalize to 0-24 hours
+    gmst_hours = gmst0 % 24
 
     return gmst_hours
+
+
+def precess_j2000_to_date(ra_hours, dec_deg, jd):
+    """
+    Precess J2000.0 coordinates to the given Julian Date.
+
+    Uses the IAU 1976 precession model (Lieske et al.).
+    Accurate to ~1 arcsec for dates within a few centuries of J2000.
+
+    Args:
+        ra_hours: Right Ascension in hours (J2000)
+        dec_deg: Declination in degrees (J2000)
+        jd: Target Julian Date
+
+    Returns:
+        (ra_hours, dec_deg) at the target epoch
+    """
+    # Julian centuries from J2000.0
+    T = (jd - 2451545.0) / 36525.0
+
+    # Precession angles in arcseconds (IAU 1976)
+    zeta_A = (2306.2181 + 1.39656 * T - 0.000139 * T**2) * T + \
+             (0.30188 - 0.000344 * T) * T**2 + 0.017998 * T**3
+    z_A = (2306.2181 + 1.39656 * T - 0.000139 * T**2) * T + \
+          (1.09468 + 0.000066 * T) * T**2 + 0.018203 * T**3
+    theta_A = (2004.3109 - 0.85330 * T - 0.000217 * T**2) * T - \
+              (0.42665 + 0.000217 * T) * T**2 - 0.041833 * T**3
+
+    # Convert to radians
+    zeta = math.radians(zeta_A / 3600)
+    z = math.radians(z_A / 3600)
+    theta = math.radians(theta_A / 3600)
+
+    # Original coordinates in radians
+    ra0 = math.radians(ra_hours * 15)
+    dec0 = math.radians(dec_deg)
+
+    # Apply precession rotation
+    A = math.cos(dec0) * math.sin(ra0 + zeta)
+    B = math.cos(theta) * math.cos(dec0) * math.cos(ra0 + zeta) - math.sin(theta) * math.sin(dec0)
+    C = math.sin(theta) * math.cos(dec0) * math.cos(ra0 + zeta) + math.cos(theta) * math.sin(dec0)
+
+    # New coordinates
+    ra_rad = math.atan2(A, B) + z
+    dec_rad = math.asin(C)
+
+    # Convert back to hours and degrees
+    ra_new = (math.degrees(ra_rad) / 15) % 24
+    dec_new = math.degrees(dec_rad)
+
+    return ra_new, dec_new
+
+
+def precess_date_to_j2000(ra_hours, dec_deg, jd):
+    """
+    Precess coordinates from the given Julian Date back to J2000.0.
+
+    This is the inverse of precess_j2000_to_date.
+
+    Args:
+        ra_hours: Right Ascension in hours (at date)
+        dec_deg: Declination in degrees (at date)
+        jd: Source Julian Date
+
+    Returns:
+        (ra_hours, dec_deg) at J2000.0
+    """
+    # Julian centuries from J2000.0
+    T = (jd - 2451545.0) / 36525.0
+
+    # Precession angles in arcseconds (IAU 1976)
+    zeta_A = (2306.2181 + 1.39656 * T - 0.000139 * T**2) * T + \
+             (0.30188 - 0.000344 * T) * T**2 + 0.017998 * T**3
+    z_A = (2306.2181 + 1.39656 * T - 0.000139 * T**2) * T + \
+          (1.09468 + 0.000066 * T) * T**2 + 0.018203 * T**3
+    theta_A = (2004.3109 - 0.85330 * T - 0.000217 * T**2) * T - \
+              (0.42665 + 0.000217 * T) * T**2 - 0.041833 * T**3
+
+    # Convert to radians
+    zeta = math.radians(zeta_A / 3600)
+    z = math.radians(z_A / 3600)
+    theta = math.radians(theta_A / 3600)
+
+    # Current coordinates in radians
+    ra = math.radians(ra_hours * 15)
+    dec = math.radians(dec_deg)
+
+    # Apply inverse precession rotation (swap zeta and z, negate angles)
+    A = math.cos(dec) * math.sin(ra - z)
+    B = math.cos(theta) * math.cos(dec) * math.cos(ra - z) + math.sin(theta) * math.sin(dec)
+    C = -math.sin(theta) * math.cos(dec) * math.cos(ra - z) + math.cos(theta) * math.sin(dec)
+
+    # J2000 coordinates
+    ra0_rad = math.atan2(A, B) - zeta
+    dec0_rad = math.asin(C)
+
+    # Convert back to hours and degrees
+    ra0 = (math.degrees(ra0_rad) / 15) % 24
+    dec0 = math.degrees(dec0_rad)
+
+    return ra0, dec0
 
 
 def local_sidereal_time(jd, longitude):
@@ -43,11 +152,11 @@ def local_sidereal_time(jd, longitude):
 
 def ra_dec_to_alt_az(ra_hours, dec_deg, lat_deg, lon_deg):
     """
-    Convert RA/Dec to Alt/Az
+    Convert RA/Dec (J2000) to Alt/Az
 
     Args:
-        ra_hours: Right Ascension in hours (0-24)
-        dec_deg: Declination in degrees (-90 to +90)
+        ra_hours: Right Ascension in hours (0-24), J2000 epoch
+        dec_deg: Declination in degrees (-90 to +90), J2000 epoch
         lat_deg: Observer latitude in degrees
         lon_deg: Observer longitude in degrees (west negative)
 
@@ -58,13 +167,16 @@ def ra_dec_to_alt_az(ra_hours, dec_deg, lat_deg, lon_deg):
     t = time.gmtime()
     jd = julian_date(t[0], t[1], t[2], t[3], t[4], t[5])
 
+    # Precess from J2000 to current date
+    ra_now, dec_now = precess_j2000_to_date(ra_hours, dec_deg, jd)
+
     # Calculate hour angle
     lst = local_sidereal_time(jd, lon_deg)
-    ha_hours = lst - ra_hours
+    ha_hours = lst - ra_now
     ha_rad = math.radians(ha_hours * 15)  # Convert to radians
 
     # Convert to radians
-    dec_rad = math.radians(dec_deg)
+    dec_rad = math.radians(dec_now)
     lat_rad = math.radians(lat_deg)
 
     # Calculate altitude
@@ -92,7 +204,7 @@ def ra_dec_to_alt_az(ra_hours, dec_deg, lat_deg, lon_deg):
 
 def alt_az_to_ra_dec(alt_deg, az_deg, lat_deg, lon_deg):
     """
-    Convert Alt/Az to RA/Dec (for Stellarium feedback)
+    Convert Alt/Az to RA/Dec (J2000) for Stellarium feedback
 
     Args:
         alt_deg: Altitude in degrees
@@ -101,14 +213,14 @@ def alt_az_to_ra_dec(alt_deg, az_deg, lat_deg, lon_deg):
         lon_deg: Observer longitude in degrees
 
     Returns:
-        (ra_hours, dec_deg)
+        (ra_hours, dec_deg) in J2000 coordinates
     """
     # Convert to radians
     alt_rad = math.radians(alt_deg)
     az_rad = math.radians(az_deg)
     lat_rad = math.radians(lat_deg)
 
-    # Calculate declination
+    # Calculate declination (at current epoch)
     sin_dec = (math.sin(alt_rad) * math.sin(lat_rad) +
                math.cos(alt_rad) * math.cos(lat_rad) * math.cos(az_rad))
     dec_rad = math.asin(sin_dec)
@@ -122,26 +234,28 @@ def alt_az_to_ra_dec(alt_deg, az_deg, lat_deg, lon_deg):
     if math.sin(az_rad) > 0:
         ha_rad = 2 * math.pi - ha_rad
 
-    # Get current LST and calculate RA
+    # Get current LST and calculate RA (at current epoch)
     t = time.gmtime()
     jd = julian_date(t[0], t[1], t[2], t[3], t[4], t[5])
     lst = local_sidereal_time(jd, lon_deg)
 
-    ra_hours = lst - math.degrees(ha_rad) / 15
-    ra_hours = ra_hours % 24
+    ra_now = lst - math.degrees(ha_rad) / 15
+    ra_now = ra_now % 24
+    dec_now = math.degrees(dec_rad)
 
-    dec_deg = math.degrees(dec_rad)
+    # Precess back to J2000
+    ra_j2000, dec_j2000 = precess_date_to_j2000(ra_now, dec_now, jd)
 
-    return ra_hours, dec_deg
+    return ra_j2000, dec_j2000
 
 
 def get_sun_position():
     """
-    Calculate the Sun's RA/Dec for the current time.
+    Calculate the Sun's RA/Dec (J2000) for the current time.
     Based on Meeus "Astronomical Algorithms" - accurate to ~0.01 degree.
 
     Returns:
-        (ra_hours, dec_deg)
+        (ra_hours, dec_deg) in J2000 coordinates
     """
     t = time.gmtime()
     jd = julian_date(t[0], t[1], t[2], t[3], t[4], t[5])
@@ -183,19 +297,22 @@ def get_sun_position():
     )
     dec_rad = math.asin(math.sin(eps_rad) * math.sin(sun_lon_rad))
 
-    ra_hours = (math.degrees(ra_rad) / 15) % 24
-    dec_deg = math.degrees(dec_rad)
+    ra_apparent = (math.degrees(ra_rad) / 15) % 24
+    dec_apparent = math.degrees(dec_rad)
 
-    return ra_hours, dec_deg
+    # Precess from apparent (equinox of date) back to J2000
+    ra_j2000, dec_j2000 = precess_date_to_j2000(ra_apparent, dec_apparent, jd)
+
+    return ra_j2000, dec_j2000
 
 
 def get_moon_position():
     """
-    Calculate the Moon's RA/Dec for the current time.
+    Calculate the Moon's RA/Dec (J2000) for the current time.
     Based on Meeus "Astronomical Algorithms" Ch. 47 - accurate to ~0.3 degree.
 
     Returns:
-        (ra_hours, dec_deg)
+        (ra_hours, dec_deg) in J2000 coordinates
     """
     t = time.gmtime()
     jd = julian_date(t[0], t[1], t[2], t[3], t[4], t[5])
@@ -330,10 +447,13 @@ def get_moon_position():
     ra_rad = math.atan2(y_eq, x_eq)
     dec_rad = math.asin(z_eq)
 
-    ra_hours = (math.degrees(ra_rad) / 15) % 24
-    dec_deg = math.degrees(dec_rad)
+    ra_apparent = (math.degrees(ra_rad) / 15) % 24
+    dec_apparent = math.degrees(dec_rad)
 
-    return ra_hours, dec_deg
+    # Precess from apparent (equinox of date) back to J2000
+    ra_j2000, dec_j2000 = precess_date_to_j2000(ra_apparent, dec_apparent, jd)
+
+    return ra_j2000, dec_j2000
 
 
 def galactic_to_equatorial(l_deg, b_deg):

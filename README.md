@@ -229,9 +229,11 @@ Credentials are saved and the ESP32 auto-reconnects on boot. The AP stays active
 | **Direct Control** | Enter Alt/Az directly, Go Direct / Home |
 
 **Coordinate Systems:**
-- **RA/Dec**: Right Ascension (0-24 hours), Declination (-90 to +90 degrees)
-- **Galactic**: Galactic longitude l (0-360°), latitude b (-90 to +90°)
+- **RA/Dec**: Right Ascension (0-24 hours), Declination (-90 to +90 degrees), **J2000 epoch**
+- **Galactic**: Galactic longitude l (0-360°), latitude b (-90 to +90°), **J2000 epoch**
 - **Alt/Az**: Altitude (0-90°), Azimuth (0-355°)
+
+All equatorial (RA/Dec) coordinates use the **J2000 reference frame**, which is the standard epoch for modern star catalogs and planetarium software like Stellarium. The controller automatically handles precession when converting to Alt/Az for telescope pointing.
 
 **Tracking Modes:**
 - **Go To**: Slew to position once (no tracking)
