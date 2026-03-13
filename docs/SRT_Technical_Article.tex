@@ -96,7 +96,7 @@ This document provides comprehensive technical documentation for the Small Radio
 \section{Introduction}
 %==============================================================================
 
-\subsection{Purpose and Scope}
+\subsection{Purpose and scope}
 
 The SRT Drive Controller is a complete control system for an alt-azimuth mounted radio telescope operating at 1420.405\,MHz (the hydrogen line). The system enables both manual and automated observations, supporting:
 
@@ -108,7 +108,7 @@ The SRT Drive Controller is a complete control system for an alt-azimuth mounted
     \item Sun and Moon tracking capabilities
 \end{itemize}
 
-\subsection{System Overview}
+\subsection{System overview}
 
 The telescope control system employs a layered architecture separating concerns across multiple processing units:
 
@@ -119,16 +119,16 @@ The telescope control system employs a layered architecture separating concerns 
     \item \textbf{Observation Scheduler} --- Web-based automation coordinating telescope pointing and data recording
 \end{enumerate}
 
-\subsection{Document Organisation}
+\subsection{Document organisation}
 
 This document is organised as follows: Section~\ref{sec:architecture} presents the system architecture; Section~\ref{sec:hardware} details the hardware components; Section~\ref{sec:due-firmware} describes the Arduino Due firmware; Section~\ref{sec:esp32} covers the ESP32 controller; Section~\ref{sec:coordinates} explains the coordinate transformation algorithms; Section~\ref{sec:receiver} describes the receiver and scheduler; Section~\ref{sec:installation} provides installation procedures; Section~\ref{sec:operation} covers operational procedures; and Section~\ref{sec:troubleshooting} addresses common issues.
 
 %==============================================================================
-\section{System Architecture}
+\section{System architecture}
 \label{sec:architecture}
 %==============================================================================
 
-\subsection{Architectural Overview}
+\subsection{Architectural overview}
 
 The system architecture follows a hierarchical design principle, with each layer responsible for specific functionality. Figure~\ref{fig:architecture} illustrates the component relationships and communication paths.
 
@@ -181,7 +181,7 @@ The system architecture follows a hierarchical design principle, with each layer
 \label{fig:architecture}
 \end{figure}
 
-\subsection{Data Flow}
+\subsection{Data flow}
 
 The primary data flow for a typical observation proceeds as follows:
 
@@ -196,7 +196,7 @@ The primary data flow for a typical observation proceeds as follows:
     \item Receiver captures spectrum data once telescope is on target
 \end{enumerate}
 
-\subsection{Communication Interfaces}
+\subsection{Communication interfaces}
 
 Table~\ref{tab:interfaces} summarises the communication interfaces employed throughout the system.
 
@@ -219,11 +219,11 @@ ESP32 Ethernet & 10/100 Mbps & W5500 SPI & Wired network \\
 \end{table}
 
 %==============================================================================
-\section{Hardware Configuration}
+\section{Hardware configuration}
 \label{sec:hardware}
 %==============================================================================
 
-\subsection{Arduino Due Microcontroller}
+\subsection{Arduino Due microcontroller}
 
 The Arduino Due serves as the real-time motor control platform, selected for its:
 
@@ -235,7 +235,7 @@ The Arduino Due serves as the real-time motor control platform, selected for its
     \item 3.3\,V logic levels compatible with the ESP32
 \end{itemize}
 
-\subsubsection{Pin Assignments}
+\subsubsection{Pin assignments}
 
 Table~\ref{tab:due-pins} details the complete pin assignment for the Arduino Due.
 
@@ -278,9 +278,9 @@ RX1 & 19 & --- & From ESP32 TX \\
 \end{tabular}
 \end{table}
 
-\subsection{Motor Drive System}
+\subsection{Motor drive system}
 
-\subsubsection{H-Bridge Motor Drivers}
+\subsubsection{H-bridge motor drivers}
 
 The system employs H-bridge motor drivers with the following characteristics:
 
@@ -296,7 +296,7 @@ The system employs H-bridge motor drivers with the following characteristics:
     \item Direction control input
 \end{itemize}
 
-\subsubsection{Position Encoders}
+\subsubsection{Position encoders}
 
 Position feedback is provided by reed switch encoders mounted on each axis:
 
@@ -306,7 +306,7 @@ Position feedback is provided by reed switch encoders mounted on each axis:
     \item Debouncing: 15\,ms minimum interval between valid pulses
 \end{itemize}
 
-\subsubsection{Current Sensing}
+\subsubsection{Current sensing}
 
 Motor current is monitored using ACS712 hall-effect current sensors:
 
@@ -318,11 +318,11 @@ Motor current is monitored using ACS712 hall-effect current sensors:
 
 The current reading is computed as:
 \begin{equation}
-I = \frac{V_{ADC} - V_{offset}}{S}
+I = \frac{V_{\text{ADC}} - V_{\text{offset}}}{S}
 \end{equation}
-where $V_{ADC}$ is the measured voltage, $V_{offset} = 2.5$\,V, and $S = 0.066$\,V/A.
+where $V_{\text{ADC}}$ is the measured voltage, $V_{\text{offset}} = 2.5$\,V, and $S = 0.066$\,V/A.
 
-\subsection{ESP32-S3 Controller}
+\subsection{ESP32-S3 controller}
 
 The ESP32-S3 provides the network interface and computational resources for coordinate transformations:
 
@@ -333,7 +333,7 @@ The ESP32-S3 provides the network interface and computational resources for coor
     \item MicroPython runtime environment
 \end{itemize}
 
-\subsubsection{ESP32 to Arduino Due Wiring}
+\subsubsection{ESP32 to Arduino Due wiring}
 
 \begin{table}[H]
 \centering
@@ -349,7 +349,7 @@ GND & GND & Common ground \\
 \end{tabular}
 \end{table}
 
-\subsubsection{W5500 Ethernet Module (Optional)}
+\subsubsection{W5500 Ethernet module (optional)}
 
 For installations requiring wired network connectivity:
 
@@ -371,7 +371,7 @@ GND & GND & Ground \\
 \end{tabular}
 \end{table}
 
-\subsection{Operational Limits}
+\subsection{Operational limits}
 
 \begin{table}[H]
 \centering
@@ -392,11 +392,11 @@ Azimuth (software) & 2$^\circ$ & 353$^\circ$ \\
 The two-tier limit system provides a 2$^\circ$ safety margin between software limits and physical stops.
 
 %==============================================================================
-\section{Arduino Due Firmware}
+\section{Arduino Due firmware}
 \label{sec:due-firmware}
 %==============================================================================
 
-\subsection{Firmware Overview}
+\subsection{Firmware overview}
 
 The Arduino Due firmware (\texttt{src/main.cpp}) implements a state machine-based motor controller with the following responsibilities:
 
@@ -409,30 +409,36 @@ The Arduino Due firmware (\texttt{src/main.cpp}) implements a state machine-base
     \item Configuration persistence to flash memory
 \end{itemize}
 
-\subsection{State Machine}
+\subsection{State machine}
 
 The controller operates as a finite state machine with five primary states:
 
 \begin{figure}[H]
 \centering
 \begin{tikzpicture}[
-    node distance=2cm,
-    state/.style={circle, draw, minimum size=1.5cm, align=center, fill=blue!10},
+    node distance=2.2cm,
+    state/.style={circle, draw, minimum size=1.6cm, align=center, fill=blue!10},
     arrow/.style={->, thick}
 ]
 
+% Nodes arranged in a cleaner layout
 \node[state] (init) {INIT};
 \node[state, below=of init] (homing) {HOMING};
 \node[state, below=of homing] (ready) {READY};
-\node[state, right=of ready] (slewing) {SLEWING};
-\node[state, below=of ready] (fault) {FAULT};
+\node[state, right=3cm of ready] (slewing) {SLEWING};
+\node[state, below right=1.5cm and 1.5cm of ready] (fault) {FAULT};
 
+% Main flow
 \draw[arrow] (init) -- (homing);
 \draw[arrow] (homing) -- (ready);
-\draw[arrow] (homing) -| node[above,pos=0.2] {error} (fault);
+
+% Ready to Slewing and back
 \draw[arrow] (ready) -- node[above] {command} (slewing);
-\draw[arrow] (slewing) -- node[right] {complete} (ready);
-\draw[arrow] (slewing) |- node[above,pos=0.8] {error} (fault);
+\draw[arrow] (slewing) to[bend right=30] node[below] {complete} (ready);
+
+% Error transitions to Fault
+\draw[arrow] (homing) -- node[pos=0.3, right] {error} (fault);
+\draw[arrow] (slewing) -- node[pos=0.5, right] {error} (fault);
 
 \end{tikzpicture}
 \caption{Controller state machine diagram}
@@ -447,7 +453,7 @@ The controller operates as a finite state machine with five primary states:
     \item[FAULT] Error condition, motors disabled
 \end{description}
 
-\subsection{Homing Sequence}
+\subsection{Homing sequence}
 
 The homing procedure establishes the absolute position reference:
 
@@ -459,35 +465,35 @@ The homing procedure establishes the absolute position reference:
     \item System transitions to READY state
 \end{enumerate}
 
-\subsection{Motion Profiles}
+\subsection{Motion profiles}
 
 Smooth motion profiles prevent structural oscillation and mechanical stress:
 
-\subsubsection{Acceleration Ramp}
+\subsubsection{Acceleration ramp}
 
 The PWM value ramps linearly from minimum speed to full speed over the configured ramp-up time (default 500\,ms):
 
 \begin{equation}
-PWM(t) = PWM_{min} + \frac{(PWM_{full} - PWM_{min}) \cdot t}{T_{ramp}}
+\text{PWM}(t) = \text{PWM}_{\text{min}} + \frac{(\text{PWM}_{\text{full}} - \text{PWM}_{\text{min}}) \cdot t}{T_{\text{ramp}}}
 \end{equation}
 
-where $PWM_{min} = 220$ (minimum speed), $PWM_{full} = 0$ (full speed), and $T_{ramp}$ is the ramp-up time.
+where $\text{PWM}_{\text{min}} = 220$ (minimum speed), $\text{PWM}_{\text{full}} = 0$ (full speed), and $T_{\text{ramp}}$ is the ramp-up time.
 
-\subsubsection{Deceleration Ramp}
+\subsubsection{Deceleration ramp}
 
 Deceleration uses a quadratic profile based on remaining distance to target (default 7$^\circ$):
 
 \begin{equation}
-PWM(d) = PWM_{full} + (PWM_{min} - PWM_{full}) \cdot \left(1 - \frac{d}{d_{ramp}}\right)^2
+\text{PWM}(d) = \text{PWM}_{\text{full}} + (\text{PWM}_{\text{min}} - \text{PWM}_{\text{full}}) \cdot \left(1 - \frac{d}{d_{\text{ramp}}}\right)^2
 \end{equation}
 
-where $d$ is the remaining distance and $d_{ramp}$ is the deceleration distance.
+where $d$ is the remaining distance and $d_{\text{ramp}}$ is the deceleration distance.
 
-\subsection{Serial Command Interface}
+\subsection{Serial command interface}
 
 The firmware accepts commands via USB serial (Programming Port) and Serial1 (ESP32 connection) at 115200 baud.
 
-\subsubsection{Motion Commands}
+\subsubsection{Motion commands}
 
 \begin{table}[H]
 \centering
@@ -505,7 +511,7 @@ The firmware accepts commands via USB serial (Programming Port) and Serial1 (ESP
 \end{tabular}
 \end{table}
 
-\subsubsection{Configuration Commands}
+\subsubsection{Configuration commands}
 
 \begin{table}[H]
 \centering
@@ -525,7 +531,7 @@ The firmware accepts commands via USB serial (Programming Port) and Serial1 (ESP
 \end{tabular}
 \end{table}
 
-\subsubsection{Configurable Parameters}
+\subsubsection{Configurable parameters}
 
 \begin{table}[H]
 \centering
@@ -549,7 +555,7 @@ STALL & Stall detection timeout & 2000 & ms \\
 \end{tabular}
 \end{table}
 
-\subsection{Status Output Format}
+\subsection{Status output format}
 
 The controller outputs status in a machine-parseable format:
 
@@ -559,7 +565,7 @@ Alt:30.0 Az:150.0 Ialt:2.10A Iaz:1.85A Status:Slewing -> Alt:45.0 Az:180.0
 Alt:30.0 Az:150.0 Ialt:5.20A Iaz:0.00A Status:FAULT [Altitude motor overcurrent]
 \end{lstlisting}
 
-\subsection{Fault Detection}
+\subsection{Fault detection}
 
 The system monitors multiple fault conditions:
 
@@ -580,7 +586,7 @@ Position bounds & Exceeds limits & Encoder error \\
 \end{tabular}
 \end{table}
 
-\subsection{Simulation Mode}
+\subsection{Simulation mode}
 
 For testing without hardware, the firmware can be built with the \texttt{SIMULATION\_MODE} flag:
 
@@ -613,11 +619,11 @@ Simulation parameters (configurable in \texttt{config.h}):
 \end{table}
 
 %==============================================================================
-\section{ESP32 Controller}
+\section{ESP32 controller}
 \label{sec:esp32}
 %==============================================================================
 
-\subsection{Software Architecture}
+\subsection{Software architecture}
 
 The ESP32 controller runs MicroPython with a modular architecture:
 
@@ -672,7 +678,7 @@ MOUNT_ALT_MAX = 90.0
 
 \subsection{Networking}
 
-\subsubsection{Network Priority}
+\subsubsection{Network priority}
 
 The ESP32 supports multiple network interfaces with the following priority:
 
@@ -682,7 +688,7 @@ The ESP32 supports multiple network interfaces with the following priority:
     \item \textbf{WiFi Access Point} (always active at 192.168.4.1)
 \end{enumerate}
 
-\subsubsection{Default Network Settings}
+\subsubsection{Default network settings}
 
 \begin{table}[H]
 \centering
@@ -704,7 +710,7 @@ Stellarium Port & 10001 \\
 
 The ESP32 provides a RESTful HTTP API for telescope control.
 
-\subsubsection{Status Endpoints}
+\subsubsection{Status endpoints}
 
 \begin{table}[H]
 \centering
@@ -722,7 +728,7 @@ The ESP32 provides a RESTful HTTP API for telescope control.
 \end{tabular}
 \end{table}
 
-\subsubsection{Control Endpoints}
+\subsubsection{Control endpoints}
 
 \begin{table}[H]
 \centering
@@ -743,7 +749,7 @@ The ESP32 provides a RESTful HTTP API for telescope control.
 \end{tabular}
 \end{table}
 
-\subsubsection{Example API Usage}
+\subsubsection{Example API usage}
 
 \begin{lstlisting}[language=Python,caption={Python API client example}]
 import requests
@@ -769,18 +775,18 @@ def get_status():
 track_source(ra_hours=19.991, dec_deg=40.734)
 \end{lstlisting}
 
-\subsection{Stellarium Protocol}
+\subsection{Stellarium protocol}
 
 The ESP32 implements the Stellarium telescope control protocol on TCP port 10001.
 
-\subsubsection{Protocol Format}
+\subsubsection{Protocol format}
 
 \begin{description}
     \item[Goto Command (from Stellarium):] 20 bytes with message type 0, RA/Dec as unsigned 32-bit integers
     \item[Position Report (to Stellarium):] 24 bytes with current position in same format
 \end{description}
 
-\subsubsection{Stellarium Configuration}
+\subsubsection{Stellarium configuration}
 
 \begin{enumerate}
     \item Open \textbf{Configuration $\rightarrow$ Plugins $\rightarrow$ Telescope Control}
@@ -795,7 +801,7 @@ The ESP32 implements the Stellarium telescope control protocol on TCP port 10001
     \item Select any object and press Ctrl+1 to slew
 \end{enumerate}
 
-\subsection{Tracking Mode}
+\subsection{Tracking mode}
 
 When tracking is enabled, the ESP32:
 
@@ -807,7 +813,7 @@ When tracking is enabled, the ESP32:
     \item Sends updated position to Arduino Due
 \end{enumerate}
 
-\subsubsection{Below-Horizon Handling}
+\subsubsection{Below-horizon handling}
 
 When a tracked target drops below the horizon (altitude $< 0^\circ$):
 
@@ -818,7 +824,7 @@ When a tracked target drops below the horizon (altitude $< 0^\circ$):
     \item When target rises above $0^\circ$, tracking resumes automatically
 \end{enumerate}
 
-\subsubsection{Azimuth Wrap-Around}
+\subsubsection{Azimuth wrap-around}
 
 For circumpolar sources that exit the azimuth limits:
 
@@ -829,11 +835,11 @@ For circumpolar sources that exit the azimuth limits:
 \end{enumerate}
 
 %==============================================================================
-\section{Coordinate Transformations}
+\section{Coordinate transformations}
 \label{sec:coordinates}
 %==============================================================================
 
-\subsection{Reference Frame}
+\subsection{Reference frame}
 
 All equatorial coordinates use the \textbf{J2000.0 reference frame}:
 
@@ -845,7 +851,7 @@ All equatorial coordinates use the \textbf{J2000.0 reference frame}:
     \item Equivalent to ICRS to within milliarcseconds
 \end{itemize}
 
-\subsection{Coordinate Conversion Pipeline}
+\subsection{Coordinate conversion pipeline}
 
 The transformation from celestial to horizontal coordinates proceeds:
 
@@ -853,30 +859,30 @@ The transformation from celestial to horizontal coordinates proceeds:
 \text{RA/Dec (J2000)} \xrightarrow{\text{precess}} \text{RA/Dec (date)} \xrightarrow{\text{HA}} \text{Alt/Az}
 \end{equation}
 
-\subsubsection{Julian Date Calculation}
+\subsubsection{Julian date calculation}
 
 The Julian Date is computed from the UTC calendar date:
 
 \begin{equation}
-JD = \lfloor 365.25(Y + 4716) \rfloor + \lfloor 30.6001(M + 1) \rfloor + D + B - 1524.5 + \frac{h + m/60 + s/3600}{24}
+\text{JD} = \lfloor 365.25(Y + 4716) \rfloor + \lfloor 30.6001(M + 1) \rfloor + D + B - 1524.5 + \frac{h + m/60 + s/3600}{24}
 \end{equation}
 
 where $Y$ is the year, $M$ is the month (with January and February counted as months 13 and 14 of the previous year), $D$ is the day, $B = 2 - \lfloor Y/100 \rfloor + \lfloor Y/400 \rfloor$, and $h$, $m$, $s$ are UTC hours, minutes, seconds.
 
-\subsubsection{Greenwich Mean Sidereal Time}
+\subsubsection{Greenwich mean sidereal time}
 
 GMST in hours (IAU 1982 formula):
 
 \begin{equation}
-GMST = 6.697374558 + 0.06570982441908 D_0 + 1.00273790935 H + 0.000026 T^2
+\text{GMST} = 6.697374558 + 0.06570982441908 D_0 + 1.00273790935 H + 0.000026 T^2
 \end{equation}
 
 where $D_0$ is the number of days since J2000.0 at 0h UT, $H$ is the hours since 0h UT, and $T = D_0/36525$.
 
-\subsubsection{Local Sidereal Time}
+\subsubsection{Local sidereal time}
 
 \begin{equation}
-LST = GMST + \frac{\lambda}{15}
+\text{LST} = \text{GMST} + \frac{\lambda}{15}
 \end{equation}
 
 where $\lambda$ is the observer's longitude in degrees (east positive).
@@ -891,7 +897,7 @@ z_A &= (2306.2181 + 1.39656T)T + 1.09468T^2 + 0.018203T^3 \\
 \theta_A &= (2004.3109 - 0.85330T)T - 0.42665T^2 - 0.041833T^3
 \end{align}
 
-where $T = (JD - 2451545.0)/36525$ is the Julian centuries from J2000.0.
+where $T = (\text{JD} - 2451545.0)/36525$ is the Julian centuries from J2000.0.
 
 The precession rotation is then applied:
 \begin{align}
@@ -906,18 +912,18 @@ with new coordinates:
 \delta &= \arcsin(C)
 \end{align}
 
-\subsection{Horizontal Coordinates}
+\subsection{Horizontal coordinates}
 
 The hour angle is computed:
 \begin{equation}
-HA = LST - \alpha
+\text{HA} = \text{LST} - \alpha
 \end{equation}
 
 where $\alpha$ is the right ascension in hours.
 
 The altitude is:
 \begin{equation}
-\sin h = \sin\delta\sin\phi + \cos\delta\cos\phi\cos HA
+\sin h = \sin\delta\sin\phi + \cos\delta\cos\phi\cos\text{HA}
 \end{equation}
 
 The azimuth is:
@@ -925,33 +931,33 @@ The azimuth is:
 \cos A = \frac{\sin\delta - \sin h\sin\phi}{\cos h\cos\phi}
 \end{equation}
 
-with quadrant correction based on $\sin HA$:
+with quadrant correction based on $\sin\text{HA}$:
 \begin{equation}
 A = \begin{cases}
-\arccos(A) & \text{if } \sin HA \leq 0 \\
-2\pi - \arccos(A) & \text{if } \sin HA > 0
+\arccos(A) & \text{if } \sin\text{HA} \leq 0 \\
+2\pi - \arccos(A) & \text{if } \sin\text{HA} > 0
 \end{cases}
 \end{equation}
 
 where $\phi$ is the observer's latitude.
 
-\subsection{Galactic Coordinates}
+\subsection{Galactic coordinates}
 
 Galactic to equatorial conversion uses the J2000 galactic coordinate system constants:
 
 \begin{align}
-\alpha_{NGP} &= 192.85948^\circ & \text{(RA of North Galactic Pole)} \\
-\delta_{NGP} &= 27.12825^\circ & \text{(Dec of North Galactic Pole)} \\
-l_{NCP} &= 122.93192^\circ & \text{(Galactic longitude of North Celestial Pole)}
+\alpha_{\text{NGP}} &= 192.85948^\circ & \text{(RA of North Galactic Pole)} \\
+\delta_{\text{NGP}} &= 27.12825^\circ & \text{(Dec of North Galactic Pole)} \\
+l_{\text{NCP}} &= 122.93192^\circ & \text{(Galactic longitude of North Celestial Pole)}
 \end{align}
 
 The conversion equations:
 \begin{align}
-\sin\delta &= \sin\delta_{NGP}\sin b + \cos\delta_{NGP}\cos b\cos(l_{NCP} - l) \\
-\alpha &= \alpha_{NGP} + \arctan2(\cos b\sin(l_{NCP} - l), \cos\delta_{NGP}\sin b - \sin\delta_{NGP}\cos b\cos(l_{NCP} - l))
+\sin\delta &= \sin\delta_{\text{NGP}}\sin b + \cos\delta_{\text{NGP}}\cos b\cos(l_{\text{NCP}} - l) \\
+\alpha &= \alpha_{\text{NGP}} + \arctan2(\cos b\sin(l_{\text{NCP}} - l), \cos\delta_{\text{NGP}}\sin b - \sin\delta_{\text{NGP}}\cos b\cos(l_{\text{NCP}} - l))
 \end{align}
 
-\subsection{Solar Position}
+\subsection{Solar position}
 
 The Sun's position is calculated using the algorithm from Meeus ``Astronomical Algorithms'':
 
@@ -966,7 +972,7 @@ The Sun's position is calculated using the algorithm from Meeus ``Astronomical A
 
 Accuracy: approximately 1 arcminute.
 
-\subsection{Lunar Position}
+\subsection{Lunar position}
 
 The Moon's position uses a simplified version of the ELP/MPP02 theory:
 
@@ -979,7 +985,7 @@ The Moon's position uses a simplified version of the ELP/MPP02 theory:
 
 Accuracy: approximately 5--10 arcminutes (adequate for pointing a radio telescope with 0.5$^\circ$ resolution).
 
-\subsection{Pointing Accuracy}
+\subsection{Pointing accuracy}
 
 The coordinate transformations achieve $<0.5$ arcminute RMS error compared to ERFA/astropy for typical observing scenarios. Larger errors may occur:
 
@@ -990,11 +996,11 @@ The coordinate transformations achieve $<0.5$ arcminute RMS error compared to ER
 \end{itemize}
 
 %==============================================================================
-\section{H1 Receiver and Observation Scheduler}
+\section{H1 receiver and observation scheduler}
 \label{sec:receiver}
 %==============================================================================
 
-\subsection{Receiver Overview}
+\subsection{Receiver overview}
 
 The H1 receiver (\texttt{b210\_h1\_receiver.py}) is a GNU Radio-based spectrum analyser for 21\,cm hydrogen line observations:
 
@@ -1005,7 +1011,7 @@ The H1 receiver (\texttt{b210\_h1\_receiver.py}) is a GNU Radio-based spectrum a
     \item Support for Ettus B210, RTL-SDR, or demo mode
 \end{itemize}
 
-\subsection{Supported Hardware}
+\subsection{Supported hardware}
 
 \begin{table}[H]
 \centering
@@ -1021,7 +1027,7 @@ Demo mode & --- & --- & Simulated data \\
 \end{tabular}
 \end{table}
 
-\subsection{Command Line Options}
+\subsection{Command line options}
 
 \begin{lstlisting}[language=bash,caption={Receiver command line usage}]
 python b210_h1_receiver.py --sdr b210 --gain 40 --sample-rate 2.4e6
@@ -1029,7 +1035,7 @@ python b210_h1_receiver.py --sdr rtlsdr --gain 45
 python b210_h1_receiver.py --sdr demo
 \end{lstlisting}
 
-\subsection{HDF5 Output Format}
+\subsection{HDF5 output format}
 
 The receiver outputs data in HDF5 format with the following structure:
 
@@ -1040,17 +1046,17 @@ The receiver outputs data in HDF5 format with the following structure:
 \toprule
 \textbf{Dataset} & \textbf{Shape} & \textbf{Description} \\
 \midrule
-\texttt{frequency\_hz} & $(N_{fft},)$ & Frequency axis in Hz \\
-\texttt{spectra\_db} & $(N_{spectra}, N_{fft})$ & Power spectra in dB \\
-\texttt{timestamps} & $(N_{spectra},)$ & Unix timestamps \\
-\texttt{integration\_times} & $(N_{spectra},)$ & Actual integration per spectrum \\
+\texttt{frequency\_hz} & $(N_{\text{fft}},)$ & Frequency axis in Hz \\
+\texttt{spectra\_db} & $(N_{\text{spectra}}, N_{\text{fft}})$ & Power spectra in dB \\
+\texttt{timestamps} & $(N_{\text{spectra}},)$ & Unix timestamps \\
+\texttt{integration\_times} & $(N_{\text{spectra}},)$ & Actual integration per spectrum \\
 \bottomrule
 \end{tabular}
 \end{table}
 
 File attributes include SDR type, centre frequency, sample rate, FFT size, gain, and creation timestamp.
 
-\subsection{Observation Scheduler}
+\subsection{Observation scheduler}
 
 The web scheduler (\texttt{h1\_web\_scheduler.py}) coordinates telescope pointing and data acquisition:
 
@@ -1061,7 +1067,7 @@ The web scheduler (\texttt{h1\_web\_scheduler.py}) coordinates telescope pointin
     \item Persistent schedule storage (JSON)
 \end{itemize}
 
-\subsubsection{Starting the Scheduler}
+\subsubsection{Starting the scheduler}
 
 \begin{lstlisting}[language=bash]
 python h1_web_scheduler.py --host 0.0.0.0 --port 5000
@@ -1069,7 +1075,7 @@ python h1_web_scheduler.py --host 0.0.0.0 --port 5000
 
 Then open \texttt{http://localhost:5000} in a browser.
 
-\subsubsection{Observation Parameters}
+\subsubsection{Observation parameters}
 
 \begin{table}[H]
 \centering
@@ -1092,7 +1098,7 @@ SDR Type & B210, RTL-SDR, or Demo \\
 \end{tabular}
 \end{table}
 
-\subsubsection{Automated Workflow}
+\subsubsection{Automated workflow}
 
 \begin{enumerate}
     \item User creates observation via web interface
@@ -1122,7 +1128,7 @@ pip install platformio esptool mpremote
 
 \subsection{Arduino Due Firmware}
 
-\subsubsection{Building and Uploading}
+\subsubsection{Building and uploading}
 
 \begin{lstlisting}[language=bash]
 cd new_SRT_drive
@@ -1137,7 +1143,7 @@ pio run -e due -t upload
 pio device monitor -b 115200
 \end{lstlisting}
 
-\subsubsection{Simulation Mode}
+\subsubsection{Simulation mode}
 
 \begin{lstlisting}[language=bash]
 # Build for simulation
@@ -1147,9 +1153,9 @@ pio run -e simulation
 pio run -e simulation -t upload
 \end{lstlisting}
 
-\subsection{ESP32-S3 Controller}
+\subsection{ESP32-S3 controller}
 
-\subsubsection{Flash MicroPython}
+\subsubsection{Flashing MicroPython}
 
 Download firmware from \url{https://micropython.org/download/ESP32_GENERIC_S3/}
 
@@ -1161,7 +1167,7 @@ esptool.py --chip esp32s3 --port COM5 erase_flash
 esptool.py --chip esp32s3 --port COM5 write_flash -z 0 ESP32_GENERIC_S3-*.bin
 \end{lstlisting}
 
-\subsubsection{Upload Controller Code}
+\subsubsection{Uploading controller code}
 
 \begin{lstlisting}[language=bash]
 cd new_SRT_drive/esp32_controller
@@ -1178,7 +1184,7 @@ mpremote connect COM5 reset
 
 \subsection{Configuration}
 
-\subsubsection{Observer Location}
+\subsubsection{Observer location}
 
 Edit \texttt{esp32\_controller/config.py} before uploading:
 
@@ -1188,7 +1194,7 @@ OBSERVER_LAT = 55.9    # Latitude (degrees, north positive)
 OBSERVER_LON = -4.3    # Longitude (degrees, west negative)
 \end{lstlisting}
 
-\subsubsection{Receiver Prerequisites}
+\subsubsection{Receiver prerequisites}
 
 \begin{lstlisting}[language=bash]
 # Install Radioconda from:
@@ -1203,7 +1209,7 @@ conda install gnuradio gnuradio-uhd pyqtgraph h5py flask
 \label{sec:operation}
 %==============================================================================
 
-\subsection{Startup Sequence}
+\subsection{Startup sequence}
 
 \begin{enumerate}
     \item Power on both controllers (Arduino Due and ESP32)
@@ -1220,9 +1226,9 @@ conda install gnuradio gnuradio-uhd pyqtgraph h5py flask
 
 The homing sequence takes approximately 30--60 seconds depending on starting position.
 
-\subsection{Web Interface Access}
+\subsection{Web interface access}
 
-\subsubsection{Direct WiFi Connection}
+\subsubsection{Direct WiFi connection}
 
 \begin{enumerate}
     \item Connect to WiFi network: \texttt{SRT\_Controller}
@@ -1230,7 +1236,7 @@ The homing sequence takes approximately 30--60 seconds depending on starting pos
     \item Browse to: \texttt{http://192.168.4.1}
 \end{enumerate}
 
-\subsubsection{Network Connection}
+\subsubsection{Network connection}
 
 \begin{enumerate}
     \item Connect to AP first
@@ -1241,7 +1247,7 @@ The homing sequence takes approximately 30--60 seconds depending on starting pos
     \item Browse to the new IP address
 \end{enumerate}
 
-\subsection{Tracking Observations}
+\subsection{Tracking observations}
 
 \begin{enumerate}
     \item Enter coordinates in the appropriate format:
@@ -1254,7 +1260,7 @@ The homing sequence takes approximately 30--60 seconds depending on starting pos
     \item Monitor status display for position and tracking state
 \end{enumerate}
 
-\subsection{Quick Targets}
+\subsection{Quick targets}
 
 The web interface provides one-click tracking for:
 \begin{itemize}
@@ -1263,7 +1269,7 @@ The web interface provides one-click tracking for:
     \item \textbf{Home} --- Return to home position
 \end{itemize}
 
-\subsection{Time Synchronisation}
+\subsection{Time synchronisation}
 
 Accurate time is required for coordinate calculations:
 
@@ -1274,7 +1280,7 @@ Accurate time is required for coordinate calculations:
 
 Time status is displayed on the Control tab.
 
-\subsection{Safety Features}
+\subsection{Safety features}
 
 \begin{itemize}
     \item \textbf{Position limits:} Software and hardware limits prevent over-travel
@@ -1288,7 +1294,7 @@ Time status is displayed on the Control tab.
 \label{sec:troubleshooting}
 %==============================================================================
 
-\subsection{System Does Not Start}
+\subsection{System does not start}
 
 \begin{table}[H]
 \centering
@@ -1303,7 +1309,7 @@ Immediate fault & Motor driver power, fault flag wiring \\
 \end{tabular}
 \end{table}
 
-\subsection{Motors Do Not Move}
+\subsection{Motors do not move}
 
 \begin{table}[H]
 \centering
@@ -1318,7 +1324,7 @@ Motors run backwards & Direction pin wiring (pins 9, 11) \\
 \end{tabular}
 \end{table}
 
-\subsection{Position Errors}
+\subsection{Position errors}
 
 \begin{table}[H]
 \centering
@@ -1334,7 +1340,7 @@ Jerky motion & RAMPUP value (increase) \\
 \end{tabular}
 \end{table}
 
-\subsection{Web Interface Issues}
+\subsection{Web interface issues}
 
 \begin{table}[H]
 \centering
@@ -1349,7 +1355,7 @@ Buttons don't respond & Browser console for JavaScript errors \\
 \end{tabular}
 \end{table}
 
-\subsection{Coordinate Issues}
+\subsection{Coordinate issues}
 
 \begin{table}[H]
 \centering
@@ -1364,7 +1370,7 @@ Sun/Moon wrong by $\sim$20 arcmin & Normal for simplified ephemeris \\
 \end{tabular}
 \end{table}
 
-\subsection{Stellarium Connection Issues}
+\subsection{Stellarium connection issues}
 
 \begin{table}[H]
 \centering
@@ -1399,7 +1405,7 @@ The system is designed for educational and amateur radio astronomy applications,
 
 %==============================================================================
 \appendix
-\section{Pin Quick Reference}
+\section{Pin quick reference}
 %==============================================================================
 
 \begin{lstlisting}[language=bash,caption={Arduino Due pin summary}]
@@ -1411,7 +1417,7 @@ Current Sense:  A0(Alt), A1(Az)
 Serial1:        18(TX), 19(RX)
 \end{lstlisting}
 
-\section{Command Quick Reference}
+\section{Command quick reference}
 %==============================================================================
 
 \begin{lstlisting}[language=bash,caption={Common serial commands}]
@@ -1426,7 +1432,7 @@ SAVE             # Save to flash
 HELP             # Show all commands
 \end{lstlisting}
 
-\section{HTTP API Quick Reference}
+\section{HTTP API quick reference}
 %==============================================================================
 
 \begin{lstlisting}[language=bash,caption={HTTP API examples}]
