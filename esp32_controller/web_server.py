@@ -76,6 +76,7 @@ HTML_PAGE = """<!DOCTYPE html>
         <div class="tab-bar">
             <div class="tab active" onclick="showTab('control')">Control</div>
             <div class="tab" onclick="showTab('network')">Network</div>
+            <div class="tab" onclick="showTab('help')">Help</div>
         </div>
 
         <div id="tab-control" class="tab-content active">
@@ -204,6 +205,55 @@ HTML_PAGE = """<!DOCTYPE html>
                 <h3>Saved Network</h3>
                 <p id="saved-network" style="color: #888;">None</p>
                 <button class="secondary" onclick="forgetWifi()">Forget Saved Network</button>
+            </div>
+        </div>
+
+        <div id="tab-help" class="tab-content">
+            <div class="box">
+                <h3>Quick Reference</h3>
+                <p><strong>Coordinate Systems (all J2000 epoch):</strong></p>
+                <ul style="margin: 10px 0; padding-left: 20px;">
+                    <li><strong>RA/Dec:</strong> Right Ascension (0-24h), Declination (-90 to +90 deg)</li>
+                    <li><strong>Galactic:</strong> l (0-360 deg), b (-90 to +90 deg)</li>
+                    <li><strong>Alt/Az:</strong> Altitude (0-90 deg), Azimuth (0-355 deg)</li>
+                </ul>
+                <p><strong>Tracking Modes:</strong></p>
+                <ul style="margin: 10px 0; padding-left: 20px;">
+                    <li><strong>Go To:</strong> Slew to position once</li>
+                    <li><strong>Track:</strong> Continuously follow as Earth rotates</li>
+                </ul>
+            </div>
+
+            <div class="box">
+                <h3>Stellarium Setup</h3>
+                <ol style="margin: 10px 0; padding-left: 20px;">
+                    <li>Configuration > Plugins > Telescope Control</li>
+                    <li>Enable and restart Stellarium</li>
+                    <li>Add telescope: Type "External", Host <code>192.168.4.1</code>, Port <code>10001</code></li>
+                    <li>Connect, then Ctrl+1 to slew to selected object</li>
+                </ol>
+            </div>
+
+            <div class="box">
+                <h3>Troubleshooting</h3>
+                <table style="width: 100%; font-size: 0.9em;">
+                    <tr><td style="padding: 5px; border-bottom: 1px solid #333;"><strong>Motors don't move</strong></td>
+                        <td style="padding: 5px; border-bottom: 1px solid #333;">Check Due serial for FAULT, verify homing</td></tr>
+                    <tr><td style="padding: 5px; border-bottom: 1px solid #333;"><strong>Wrong position</strong></td>
+                        <td style="padding: 5px; border-bottom: 1px solid #333;">Run HOME command, check limit switches</td></tr>
+                    <tr><td style="padding: 5px; border-bottom: 1px solid #333;"><strong>Stellarium fails</strong></td>
+                        <td style="padding: 5px; border-bottom: 1px solid #333;">Check IP and port 10001</td></tr>
+                    <tr><td style="padding: 5px;"><strong>Sky mismatch</strong></td>
+                        <td style="padding: 5px;">Verify observer lat/lon, check time sync</td></tr>
+                </table>
+            </div>
+
+            <div class="box">
+                <h3>Full Documentation</h3>
+                <p><a href="/docs" style="color: #00d9ff;">View Complete Manual</a></p>
+                <p style="color: #888; font-size: 0.9em; margin-top: 10px;">
+                    Hardware setup, serial commands, configuration options, and more.
+                </p>
             </div>
         </div>
     </div>
@@ -548,6 +598,15 @@ def handle_http_request(client, srt):
         # Route requests
         if path in ('/', '/index.html'):
             send_response(client, HTML_PAGE, 'text/html')
+
+        elif path == '/docs':
+            # Serve full documentation from help.html file
+            try:
+                with open('help.html', 'r') as f:
+                    html = f.read()
+                send_response(client, html, 'text/html')
+            except Exception:
+                send_response(client, 'Documentation not found', 'text/plain', 404)
 
         elif path == '/status':
             srt.read_status()
