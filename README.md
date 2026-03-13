@@ -1,66 +1,143 @@
 # SRT Drive Controller
 
-Firmware for the Small Radio Telescope alt-azimuth drive system at Acre Road Observatory, Glasgow.
+A complete control system for a Small Radio Telescope (SRT) alt-azimuth mount at Acre Road Observatory, Glasgow.
+
+## System Overview
+
+The system consists of two controllers:
+
+1. **Arduino Due** - Low-level motor control, position tracking, limit switches, current sensing
+2. **ESP32-S3** - WiFi interface, web UI, Stellarium integration, RA/Dec to Alt/Az coordinate transforms
+
+```
+                                    +------------------+
+                                    |   Stellarium     |
+                                    |   (TCP:10001)    |
+                                    +--------+---------+
+                                             |
++----------------+                  +--------+---------+
+|  Web Browser   +----------------->|                  |
+|  (HTTP:80)     |                  |    ESP32-S3      |
++----------------+                  |                  |
+                                    |  - WiFi AP/STA   |
+                                    |  - Web server    |
+                                    |  - RA/Dec->Alt/Az|
+                                    |  - NTP time sync |
+                                    +--------+---------+
+                                             |
+                                        UART (Serial)
+                                             |
+                                    +--------+---------+
+                                    |                  |
+                                    |   Arduino Due    |
+                                    |                  |
+                                    |  - Motor PWM     |
+                                    |  - Encoders      |
+                                    |  - Limit switches|
+                                    |  - Current sense |
+                                    +--------+---------+
+                                             |
+                                        Motors/Mount
+```
 
 ## Hardware
 
+### Arduino Due
 - **Microcontroller:** Arduino Due (ARM Cortex-M3)
 - **Motors:** DC motors with H-bridge drivers
 - **Position sensing:** Reed switch encoders (0.5° resolution)
 - **Current sensing:** ACS712 hall-effect sensors
+- **Limit switches:** Altitude ~0°, Azimuth ~0° and ~355°
 
-## Features
+### ESP32-S3
+- ESP32-S3 development board
+- Connects to Due via UART serial
 
-- Automatic homing on startup
-- Smooth motion with acceleration/deceleration ramps
-- Real-time position and current reporting (on change)
-- Overcurrent and stall protection
-- Persistent configuration storage in flash
-- Dual serial interface (USB + UART for ESP32)
+### Wiring: ESP32-S3 to Arduino Due
 
-## Quick Start
+| ESP32-S3 | Arduino Due | Function |
+|----------|-------------|----------|
+| GPIO17   | Pin 19 (RX1)| ESP32 TX -> Due RX |
+| GPIO18   | Pin 18 (TX1)| ESP32 RX <- Due TX |
+| GND      | GND         | Common ground |
 
-### Build and Upload
+---
+
+## Installation
+
+### Prerequisites
+
+- [PlatformIO](https://platformio.org/) (VS Code extension or CLI)
+- Python 3.x with `esptool` and `mpremote`:
+  ```bash
+  pip install platformio esptool mpremote
+  ```
+
+### 1. Arduino Due Firmware
 
 ```bash
-# Install PlatformIO CLI if needed
-pip install platformio
+cd new_SRT_drive
 
-# Build
-pio run
+# Build and upload
+pio run -e due -t upload
 
-# Upload to Arduino Due
-pio run --target upload
-
-# Open serial monitor
-pio device monitor
+# Monitor serial output
+pio device monitor -b 115200
 ```
 
-### Basic Commands
+### 2. ESP32-S3 MicroPython
 
-| Command | Description |
-|---------|-------------|
-| `45 180` | Slew to Alt=45°, Az=180° |
-| `home` | Run homing sequence |
-| `stop` | Emergency stop |
-| `reset` | Clear fault and re-home |
-| `status` | Show current position |
-| `config` | Show configuration |
-| `help` | List all commands |
+#### Flash MicroPython (one-time)
 
-### Configuration
+Download firmware from [micropython.org/download/ESP32_GENERIC_S3](https://micropython.org/download/ESP32_GENERIC_S3/)
 
-```
-set current 4.5    # Set current limit to 4.5A
-set homeaz 175     # Set home azimuth to 175°
-save               # Save to flash
+```bash
+# Erase flash (hold BOOT button while connecting if needed)
+esptool.py --chip esp32s3 --port COM5 erase_flash
+
+# Flash MicroPython
+esptool.py --chip esp32s3 --port COM5 write_flash -z 0 ESP32_GENERIC_S3-*.bin
 ```
 
-## Documentation
+Replace `COM5` with your port (`/dev/ttyUSB0` on Linux, `/dev/tty.usbserial-*` on Mac).
 
-See [docs/SRT_DRIVE_MANUAL.md](docs/SRT_DRIVE_MANUAL.md) for the complete operations manual.
+#### Upload Controller Code
 
-## Pin Assignments
+```bash
+cd new_SRT_drive/esp32_controller
+
+# Upload all files
+mpremote connect COM5 cp *.py :
+
+# Reset to run
+mpremote connect COM5 reset
+```
+
+Or use **MicroPico** VS Code extension for easier development.
+
+---
+
+## Configuration
+
+### ESP32-S3 Settings
+
+Edit `esp32_controller/config.py` before uploading:
+
+```python
+# WiFi Access Point
+WIFI_AP_SSID = "SRT_Controller"
+WIFI_AP_PASSWORD = "radio1420"
+
+# Serial pins to Arduino Due
+DUE_UART_TX = 17
+DUE_UART_RX = 18
+
+# Observer location (for coordinate conversion)
+OBSERVER_LAT = 55.9    # Latitude (degrees)
+OBSERVER_LON = -4.3    # Longitude (west negative)
+```
+
+### Arduino Due Pin Assignments
 
 | Function | Pin |
 |----------|-----|
@@ -74,6 +151,164 @@ See [docs/SRT_DRIVE_MANUAL.md](docs/SRT_DRIVE_MANUAL.md) for the complete operat
 | Alt Current | A0 |
 | Serial1 TX | 18 |
 | Serial1 RX | 19 |
+
+---
+
+## Usage
+
+### Connecting to the Web Interface
+
+#### Option 1: Direct WiFi (always available)
+1. Connect to WiFi: `SRT_Controller` (password: `radio1420`)
+2. Browse to: `http://192.168.4.1`
+
+#### Option 2: Your Network
+1. Connect to the AP first
+2. Go to **WiFi** tab, click **Scan**
+3. Select your network and enter password
+4. Note the new IP address
+5. Connect your computer to same network
+6. Browse to the new IP
+
+Credentials are saved and the ESP32 auto-reconnects on boot. The AP stays active as fallback.
+
+### Web Interface
+
+#### Control Tab
+
+| Section | Controls |
+|---------|----------|
+| **Current Position** | Shows Alt, Az, motor currents, status, current tracking target |
+| **Quick Targets** | Track Sun, Track Moon, Stop Tracking |
+| **Equatorial (RA/Dec)** | Enter RA (hours) and Dec (degrees), Go To or Track |
+| **Galactic (l/b)** | Enter galactic longitude/latitude, Go To or Track |
+| **Direct Control** | Enter Alt/Az directly, Go Direct / Home |
+
+**Coordinate Systems:**
+- **RA/Dec**: Right Ascension (0-24 hours), Declination (-90 to +90 degrees)
+- **Galactic**: Galactic longitude l (0-360°), latitude b (-90 to +90°)
+- **Alt/Az**: Altitude (0-90°), Azimuth (0-355°)
+
+**Tracking Modes:**
+- **Go To**: Slew to position once (no tracking)
+- **Track**: Continuously update position as Earth rotates
+- **Sun/Moon**: Automatically updates coordinates as they move across the sky
+
+#### WiFi Tab
+
+- View AP and network connection status
+- Scan and connect to WiFi networks
+- Forget saved credentials
+
+### Stellarium Integration
+
+1. In Stellarium: **Configuration > Plugins > Telescope Control**
+2. Enable and restart Stellarium
+3. **Add** telescope:
+   - Type: External software or remote computer
+   - Host: `192.168.4.1` (or network IP)
+   - Port: `10001`
+4. Click **Connect**
+5. Select any object and press `Ctrl+1` to slew
+
+### Serial Commands (Arduino Due)
+
+Connect via USB at 115200 baud.
+
+#### Motion
+| Command | Description |
+|---------|-------------|
+| `45 180` | Slew to Alt=45°, Az=180° |
+| `HOME` | Run homing sequence |
+| `STOP` | Emergency stop |
+| `RESET` | Clear fault and re-home |
+
+#### Status
+| Command | Description |
+|---------|-------------|
+| `STATUS` | Show current position |
+| `CONFIG` | Show configuration |
+| `HELP` | List all commands |
+
+#### Configuration
+| Command | Description |
+|---------|-------------|
+| `SET ALTMIN 0` | Minimum altitude (degrees) |
+| `SET ALTMAX 90` | Maximum altitude (degrees) |
+| `SET CURRENT 4.5` | Current limit (Amps) |
+| `SET RAMPUP 1000` | Acceleration time (ms) |
+| `SAVE` | Save to flash |
+| `DEFAULTS` | Reset to defaults |
+
+#### Status Output Format
+```
+Alt:45.0 Az:180.0 Ialt:0.15A Iaz:0.20A Status:Ready
+Alt:45.0 Az:180.0 Ialt:0.25A Iaz:0.30A Status:Slewing -> Alt:60.0 Az:200.0
+Alt:45.0 Az:180.0 Ialt:0.00A Iaz:0.00A Status:FAULT [Motor stalled]
+```
+
+---
+
+## Operation
+
+### Startup Sequence
+1. Power on both controllers
+2. Arduino Due homes automatically (drives to limit switches)
+3. ESP32 starts WiFi AP and connects to saved network (if any)
+4. System ready when Due status shows "Ready"
+
+### Tracking Mode
+When **Track** is enabled:
+- ESP32 continuously converts RA/Dec to Alt/Az using current time
+- Updates sent to Due every second
+- Mount follows object as Earth rotates
+
+### Safety Features
+- **Position limits:** Alt 0-90°, Az 0-355°
+- **Limit switches:** Physical stops at extremes
+- **Current limiting:** Motors stop on overcurrent
+- **Stall detection:** Motors stop if position doesn't change
+
+---
+
+## Troubleshooting
+
+| Problem | Solution |
+|---------|----------|
+| Can't connect to web UI | Check WiFi connection, try AP mode at 192.168.4.1 |
+| Motors don't move | Check Due serial for FAULT status, verify homing completed |
+| Position incorrect | Run `HOME` command, check limit switches |
+| Stellarium won't connect | Verify IP and port 10001, check ESP32 is running |
+| Coordinates don't match sky | Check observer lat/lon, verify NTP time sync |
+
+---
+
+## File Structure
+
+```
+new_SRT_drive/
+├── platformio.ini
+├── src/
+│   ├── main.cpp            # Arduino Due firmware
+│   └── config.h
+├── docs/
+│   └── SRT_DRIVE_MANUAL.md
+└── esp32_controller/       # ESP32-S3 MicroPython
+    ├── boot.py             # WiFi startup
+    ├── main.py             # Main application
+    ├── config.py           # Settings
+    ├── wifi_manager.py     # WiFi management
+    ├── web_server.py       # HTTP server & UI
+    ├── srt_serial.py       # Due serial protocol
+    ├── coordinates.py      # RA/Dec <-> Alt/Az
+    └── stellarium.py       # Stellarium protocol
+```
+
+---
+
+## Documentation
+
+- [SRT Drive Manual](docs/SRT_DRIVE_MANUAL.md) - Complete operations manual
 
 ## License
 
