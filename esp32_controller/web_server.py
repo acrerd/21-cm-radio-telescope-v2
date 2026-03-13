@@ -665,9 +665,9 @@ def handle_http_request(client, srt):
         elif path == '/eth/status':
             if ethernet:
                 status = ethernet.get_status()
-                status['enabled'] = True
+                status['enabled'] = ETH_ENABLED
             else:
-                status = {"enabled": False, "connected": False, "ip": None, "mac": None}
+                status = {"enabled": False, "available": False, "connected": False, "ip": None, "mac": None}
             send_response(client, json.dumps(status), 'application/json')
 
         # WiFi endpoints
