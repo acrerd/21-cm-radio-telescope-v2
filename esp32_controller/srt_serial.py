@@ -56,16 +56,25 @@ class SRTSerial:
 
     def read_status(self):
         """Read status line from Due, returns True if new data received"""
-        if self.uart.any():
+        # Drain all available data to stay current (prevents buffer buildup)
+        last_valid_line = None
+        while self.uart.any():
             try:
                 line = self.uart.readline()
                 if line:
                     line = line.decode().strip()
-                    if line.startswith("Alt:"):
-                        self._parse_status(line)
-                        return True
+                    # Validate line format - should have exactly one "Alt:" and one " Az:"
+                    if (line.startswith("Alt:") and
+                        line.count("Alt:") == 1 and
+                        line.count(" Az:") == 1):
+                        last_valid_line = line
             except Exception as e:
                 print(f"Serial read error: {e}")
+
+        # Parse the most recent valid line
+        if last_valid_line:
+            self._parse_status(last_valid_line)
+            return True
         return False
 
     def _parse_status(self, line):

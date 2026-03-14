@@ -786,9 +786,14 @@ def send_response(client, body, content_type, status=200):
     """Send an HTTP response"""
     status_text = 'OK' if status == 200 else 'Not Found'
     response = f"HTTP/1.1 {status} {status_text}\r\n"
-    response += f"Content-Type: {content_type}\r\n"
-    response += f"Content-Length: {len(body)}\r\n"
+    # Add charset for text types
+    if content_type.startswith('text/') or content_type == 'application/json':
+        response += f"Content-Type: {content_type}; charset=utf-8\r\n"
+    else:
+        response += f"Content-Type: {content_type}\r\n"
+    body_bytes = body.encode('utf-8')
+    response += f"Content-Length: {len(body_bytes)}\r\n"
     response += "Connection: close\r\n"
     response += "\r\n"
-    response += body
-    client.send(response.encode())
+    client.send(response.encode('utf-8'))
+    client.send(body_bytes)

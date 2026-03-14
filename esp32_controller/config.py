@@ -5,14 +5,21 @@ WIFI_AP_SSID = "SRT_Controller"
 WIFI_AP_PASSWORD = "radio1420"
 
 # Serial connection to Arduino Due (UART1)
-# ESP32-S3 pins - adjust to match your wiring
 # Avoid GPIO19/20 (USB), GPIO26-32 (not exposed on most boards)
-DUE_UART_TX = 17  # ESP32-S3 GPIO pin -> Due RX
-DUE_UART_RX = 18  # ESP32-S3 GPIO pin -> Due TX
+
+# Standard ESP32-S3 dev board:
+# DUE_UART_TX = 17  # ESP32-S3 GPIO pin -> Due RX
+# DUE_UART_RX = 18  # ESP32-S3 GPIO pin -> Due TX
+
+# ESP32-S3 Super Mini (GPIO 17/18 not exposed):
+DUE_UART_TX = 5   # ESP32-S3 GPIO pin -> Due RX (pin 19)
+DUE_UART_RX = 6   # ESP32-S3 GPIO pin <- Due TX (pin 18)
+
 DUE_BAUD_RATE = 115200
 
 # W5500 Ethernet (SPI connection)
-ETH_ENABLED = True
+# Disabled for ESP32-S3 Super Mini (WiFi only)
+ETH_ENABLED = False
 ETH_SPI_ID = 1        # SPI bus (1 or 2)
 ETH_SCK = 12          # SPI clock
 ETH_MOSI = 11         # SPI data out

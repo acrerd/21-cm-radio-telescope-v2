@@ -102,9 +102,30 @@ def tracking_loop(srt):
     ephemeris_counter = 0
     last_sent_alt = None  # Track last sent position for deadband
     last_sent_az = None
+    was_tracking = False  # Track state transitions
 
+    debug_counter = 0
+    status_request_counter = 0
     while True:
+        # Read any available status from Due
+        got_status = srt.read_status()
+
+        # If no status received and it's been a while, request it
+        if not got_status:
+            status_request_counter += 1
+            if status_request_counter >= 2:  # Request every 2 seconds if idle
+                srt.request_status()
+                status_request_counter = 0
+        else:
+            status_request_counter = 0
+
         if tracking_enabled:
+            # Detect tracking just enabled - force immediate send
+            if not was_tracking:
+                last_sent_alt = None
+                last_sent_az = None
+                print("Tracking enabled - sending initial position")
+            was_tracking = True
             # For Sun/Moon, refresh their positions periodically
             if target_name == "Sun":
                 if ephemeris_counter == 0:
@@ -121,6 +142,8 @@ def tracking_loop(srt):
                 current_ra, current_dec,
                 OBSERVER_LAT, OBSERVER_LON
             )
+
+            debug_counter += 1
             target_alt = alt
             target_az = az
 
@@ -163,9 +186,12 @@ def tracking_loop(srt):
                 if (last_sent_alt is None or last_sent_az is None or
                     abs(alt - last_sent_alt) >= POSITION_DEADBAND or
                     abs(az - last_sent_az) >= POSITION_DEADBAND):
+                    print(f"Tracking {target_name}: sending Alt={alt:.1f} Az={az:.1f}")
                     srt.send_target(alt, az)
                     last_sent_alt = alt
                     last_sent_az = az
+        else:
+            was_tracking = False
 
         time.sleep(1)
 

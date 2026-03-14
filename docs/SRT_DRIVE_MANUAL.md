@@ -119,8 +119,8 @@ Or use the VS Code PlatformIO serial monitor button.
 | Az Reset | 22 | Black | HIGH=enabled |
 | Alt Reset | 24 | White | HIGH=enabled |
 | **Position Encoders** |
-| Az Pulses | 12 | Blue | Reed switch, falling edge |
-| Alt Pulses | 13 | Orange | Reed switch, falling edge |
+| Az Pulses | 12 | Yellow | Reed switch, falling edge |
+| Alt Pulses | 13 | Blue | Reed switch, falling edge |
 | **Current Sensors** |
 | Az Current | A1 | Black | Analog input |
 | Alt Current | A0 | White | Analog input |

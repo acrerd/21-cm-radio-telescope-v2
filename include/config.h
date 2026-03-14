@@ -31,8 +31,8 @@
 #define PIN_DIR_ALT     11      // Altitude direction (yellow)
 
 // Position encoder pulse inputs (2 pulses per degree, FALLING edge)
-#define PIN_PULSE_AZ    12      // Azimuth encoder (blue)
-#define PIN_PULSE_ALT   13      // Altitude encoder (orange)
+#define PIN_PULSE_AZ    12      // Azimuth encoder (yellow)
+#define PIN_PULSE_ALT   13      // Altitude encoder (blue)
 
 // Current sensing (analog inputs, 12-bit ADC)
 #define PIN_CURRENT_AZ  A1      // Azimuth current sensor (black)

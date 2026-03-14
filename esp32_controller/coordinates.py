@@ -13,22 +13,30 @@ def julian_date(year, month, day, hour, minute, second):
     A = int(year / 100)
     B = 2 - A + int(A / 4)
 
-    jd = int(365.25 * (year + 4716)) + int(30.6001 * (month + 1)) + day + B - 1524.5
-    jd += (hour + minute / 60 + second / 3600) / 24
+    jd_base = int(365.25 * (year + 4716)) + int(30.6001 * (month + 1)) + day + B - 1524.5
+    time_frac = (float(hour) + float(minute) / 60.0 + float(second) / 3600.0) / 24.0
+    jd = jd_base + time_frac
 
     return jd
 
 
-def gmst(jd):
+def gmst(jd, hours_ut=None):
     """Calculate Greenwich Mean Sidereal Time in hours from Julian Date.
 
     Uses the IAU 1982 formula for GMST.
+
+    Args:
+        jd: Julian Date (can be at 0h UT for better precision)
+        hours_ut: If provided, hours since 0h UT (avoids float precision issues)
     """
     # Calculate JD at 0h UT (midnight) for this day
     jd0 = math.floor(jd - 0.5) + 0.5
 
-    # Hours since 0h UT
-    H = (jd - jd0) * 24.0
+    # Hours since 0h UT - use provided value if available (better precision)
+    if hours_ut is not None:
+        H = hours_ut
+    else:
+        H = (jd - jd0) * 24.0
 
     # Days since J2000.0 at 0h UT
     D0 = jd0 - 2451545.0
@@ -144,9 +152,9 @@ def precess_date_to_j2000(ra_hours, dec_deg, jd):
     return ra0, dec0
 
 
-def local_sidereal_time(jd, longitude):
+def local_sidereal_time(jd, longitude, hours_ut=None):
     """Calculate Local Sidereal Time in hours"""
-    lst = gmst(jd) + longitude / 15.0
+    lst = gmst(jd, hours_ut) + longitude / 15.0
     return lst % 24
 
 
@@ -165,13 +173,17 @@ def ra_dec_to_alt_az(ra_hours, dec_deg, lat_deg, lon_deg):
     """
     # Get current time from RTC
     t = time.gmtime()
+
+    # Compute hours since midnight with full precision (avoids float JD issues)
+    hours_ut = float(t[3]) + float(t[4]) / 60.0 + float(t[5]) / 3600.0
+
     jd = julian_date(t[0], t[1], t[2], t[3], t[4], t[5])
 
     # Precess from J2000 to current date
     ra_now, dec_now = precess_j2000_to_date(ra_hours, dec_deg, jd)
 
-    # Calculate hour angle
-    lst = local_sidereal_time(jd, lon_deg)
+    # Calculate hour angle - pass hours_ut separately for precision
+    lst = local_sidereal_time(jd, lon_deg, hours_ut)
     ha_hours = lst - ra_now
     ha_rad = math.radians(ha_hours * 15)  # Convert to radians
 
@@ -236,8 +248,9 @@ def alt_az_to_ra_dec(alt_deg, az_deg, lat_deg, lon_deg):
 
     # Get current LST and calculate RA (at current epoch)
     t = time.gmtime()
+    hours_ut = float(t[3]) + float(t[4]) / 60.0 + float(t[5]) / 3600.0
     jd = julian_date(t[0], t[1], t[2], t[3], t[4], t[5])
-    lst = local_sidereal_time(jd, lon_deg)
+    lst = local_sidereal_time(jd, lon_deg, hours_ut)
 
     ra_now = lst - math.degrees(ha_rad) / 15
     ra_now = ra_now % 24

@@ -16,3 +16,7 @@ if ETH_ENABLED:
             print("Ethernet: no link, continuing with WiFi only")
     except Exception as e:
         print(f"Ethernet init error: {e}")
+
+# Start main application
+import main
+main.main()
