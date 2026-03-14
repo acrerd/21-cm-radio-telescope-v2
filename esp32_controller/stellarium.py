@@ -7,7 +7,7 @@ import _thread
 
 from config import STELLARIUM_PORT, OBSERVER_LAT, OBSERVER_LON
 from coordinates import alt_az_to_ra_dec
-import main as app  # Access global state
+import state  # Shared global state
 
 
 def start_stellarium_server():
@@ -43,21 +43,24 @@ def handle_stellarium_client(client):
                 msg_len, msg_type = struct.unpack('<HH', data[0:4])
 
                 if msg_type == 0:  # Goto command
-                    # Stellarium sends RA/Dec as unsigned 32-bit values
-                    # RA: 0x00000000 to 0x100000000 = 0h to 24h
-                    # Dec: 0x00000000 to 0x100000000 = -90° to +90° (with 0x80000000 = 0°)
-                    ra_raw, dec_raw = struct.unpack('<II', data[12:20])
+                    # Stellarium telescope protocol:
+                    # RA: unsigned 32-bit, 0x100000000 = 24h
+                    # Dec: signed 32-bit, 0x40000000 = +90°, 0xC0000000 = -90°
+                    ra_raw, dec_signed = struct.unpack('<Ii', data[12:20])
 
                     # Convert to hours and degrees
                     ra_hours = ra_raw * 24.0 / 0x100000000
-                    dec_deg = (dec_raw * 180.0 / 0x100000000) - 90.0
+                    dec_deg = dec_signed * 90.0 / 0x40000000
 
                     print(f"Stellarium goto: RA={ra_hours:.4f}h, Dec={dec_deg:.4f}°")
 
                     # Update global target
-                    app.current_ra = ra_hours
-                    app.current_dec = dec_deg
-                    app.tracking_enabled = True
+                    state.current_ra = ra_hours
+                    state.current_dec = dec_deg
+                    state.target_name = None
+                    state.waiting_for_wrap = False
+                    state.waiting_for_rise = False
+                    state.tracking_enabled = True
 
             # Send current position back to Stellarium
             send_position_to_stellarium(client)
@@ -75,23 +78,23 @@ def send_position_to_stellarium(client):
     """Send current telescope position to Stellarium"""
     # Convert current Alt/Az back to RA/Dec for Stellarium
     ra_hours, dec_deg = alt_az_to_ra_dec(
-        app.target_alt, app.target_az,
+        state.target_alt, state.target_az,
         OBSERVER_LAT, OBSERVER_LON
     )
 
     # Convert to Stellarium format
     ra_raw = int((ra_hours / 24.0) * 0x100000000) & 0xFFFFFFFF
-    dec_raw = int(((dec_deg + 90.0) / 180.0) * 0x100000000) & 0xFFFFFFFF
+    dec_signed = int((dec_deg / 90.0) * 0x40000000)
 
     # Build response message
     # Length: 24 bytes, Type: 0, Time: current microseconds, RA, Dec, Status
     current_time = time.ticks_us()
-    msg = struct.pack('<HHQIIi',
+    msg = struct.pack('<HHQIii',
         24,           # message length
         0,            # message type
         current_time, # timestamp (microseconds)
-        ra_raw,       # RA
-        dec_raw,      # Dec
+        ra_raw,       # RA (unsigned)
+        dec_signed,   # Dec (signed)
         0             # status
     )
 

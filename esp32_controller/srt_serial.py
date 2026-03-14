@@ -113,9 +113,9 @@ class SRTSerial:
             else:
                 self.fault_str = ""
 
-            # Check if slewing with target
-            self.is_slewing = " -> " in line
-            if self.is_slewing:
+            # Check if slewing - either by " -> " or Status:Slewing
+            self.is_slewing = " -> " in line or self.status_str == "Slewing"
+            if " -> " in line:
                 # Extract target position from "-> Alt:50.0 Az:200.0"
                 target_match = re.search(r'-> Alt:([-\d.]+) Az:([-\d.]+)', line)
                 if target_match:

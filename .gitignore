@@ -3,3 +3,8 @@
 .vscode/c_cpp_properties.json
 .vscode/launch.json
 .vscode/ipch
+
+# ESP32 runtime files (credentials, etc.)
+wifi_creds.json
+*.pyc
+__pycache__/

@@ -65,7 +65,8 @@ class WiFiManager:
         self.ap.config(
             essid=WIFI_AP_SSID,
             password=WIFI_AP_PASSWORD,
-            authmode=network.AUTH_WPA2_PSK
+            authmode=network.AUTH_WPA2_PSK,
+            channel=6
         )
 
         while not self.ap.active():
@@ -101,23 +102,27 @@ class WiFiManager:
     def startup(self):
         """
         Startup sequence:
-        1. Try to connect to saved network
-        2. If that fails, start AP mode
-        3. Always keep AP running for configuration access
+        1. Try to connect to saved network (STA mode)
+        2. If that fails, start AP mode instead
+        Note: AP+STA simultaneous mode doesn't work on this board
         """
-        # Always start AP for config access
-        self.start_ap()
+        # Ensure AP is off initially
+        self.ap.active(False)
 
-        # Try saved credentials
+        # Try saved credentials first
         creds = self.load_credentials()
         if creds:
             ssid = creds.get("ssid")
             password = creds.get("password")
             if ssid:
                 if self.connect_sta(ssid, password):
+                    print("Connected to WiFi - AP mode disabled")
                     return True
 
-        print("No saved network or connection failed - AP mode only")
+        # STA failed or no credentials - use AP mode
+        self.sta.active(False)  # Disable STA before starting AP
+        self.start_ap()
+        print("AP mode active - connect to configure WiFi")
         return False
 
     def get_status(self):

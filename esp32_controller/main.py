@@ -3,7 +3,7 @@
 import time
 import ntptime
 import _thread
-from machine import UART, Pin, RTC
+from machine import RTC
 
 from config import (
     DUE_UART_TX, DUE_UART_RX, DUE_BAUD_RATE,
@@ -12,31 +12,17 @@ from config import (
     HOME_ALT, HOME_AZ, POSITION_DEADBAND
 )
 from coordinates import ra_dec_to_alt_az, get_sun_position, get_moon_position
-from web_server import start_web_server
-from stellarium import start_stellarium_server
 from srt_serial import SRTSerial
-
-# Global state
-current_ra = 0.0       # hours
-current_dec = 0.0      # degrees
-target_alt = 0.0       # degrees
-target_az = 0.0        # degrees
-tracking_enabled = False
-target_name = None     # "Sun", "Moon", "Gal l=x b=y", or None for manual RA/Dec
-time_synced = False    # True if time has been set (NTP or browser)
-time_source = None     # "NTP", "browser", or None
-waiting_for_wrap = False  # True when target is outside az limits
-waiting_for_rise = False  # True when target is below horizon
+import state  # Shared global state
 
 
 def sync_time_ntp():
     """Sync time from NTP server"""
-    global time_synced, time_source
     try:
         ntptime.host = NTP_SERVER
         ntptime.settime()
-        time_synced = True
-        time_source = "NTP"
+        state.time_synced = True
+        state.time_source = "NTP"
         print("NTP time synced")
         return True
     except Exception as e:
@@ -49,7 +35,6 @@ def set_time_from_timestamp(unix_timestamp):
 
     Called by web server when browser sends its time.
     """
-    global time_synced, time_source
     try:
         # Convert Unix timestamp to time tuple
         # MicroPython's time epoch is 2000-01-01, so adjust
@@ -64,8 +49,8 @@ def set_time_from_timestamp(unix_timestamp):
         rtc = RTC()
         rtc.datetime((tm[0], tm[1], tm[2], tm[6], tm[3], tm[4], tm[5], 0))
 
-        time_synced = True
-        time_source = "browser"
+        state.time_synced = True
+        state.time_source = "browser"
         print(f"Time set from browser: {tm[0]}-{tm[1]:02d}-{tm[2]:02d} {tm[3]:02d}:{tm[4]:02d}:{tm[5]:02d} UTC")
         return True
     except Exception as e:
@@ -77,8 +62,8 @@ def get_time_status():
     """Return current time status"""
     t = time.gmtime()
     return {
-        "synced": time_synced,
-        "source": time_source,
+        "synced": state.time_synced,
+        "source": state.time_source,
         "utc": f"{t[0]}-{t[1]:02d}-{t[2]:02d} {t[3]:02d}:{t[4]:02d}:{t[5]:02d}",
         "timestamp": time.time() + 946684800  # Convert to Unix timestamp
     }
@@ -96,15 +81,11 @@ def tracking_loop(srt):
     - Below horizon: parks at home, waits for target to rise
     - Azimuth wrap: waits for circumpolar target to reappear in limits
     """
-    global target_alt, target_az, current_ra, current_dec
-    global waiting_for_wrap, waiting_for_rise
-
     ephemeris_counter = 0
     last_sent_alt = None  # Track last sent position for deadband
     last_sent_az = None
     was_tracking = False  # Track state transitions
 
-    debug_counter = 0
     status_request_counter = 0
     while True:
         # Read any available status from Due
@@ -119,7 +100,7 @@ def tracking_loop(srt):
         else:
             status_request_counter = 0
 
-        if tracking_enabled:
+        if state.tracking_enabled:
             # Detect tracking just enabled - force immediate send
             if not was_tracking:
                 last_sent_alt = None
@@ -127,30 +108,29 @@ def tracking_loop(srt):
                 print("Tracking enabled - sending initial position")
             was_tracking = True
             # For Sun/Moon, refresh their positions periodically
-            if target_name == "Sun":
+            if state.target_name == "Sun":
                 if ephemeris_counter == 0:
-                    current_ra, current_dec = get_sun_position()
-            elif target_name == "Moon":
+                    state.current_ra, state.current_dec = get_sun_position()
+            elif state.target_name == "Moon":
                 if ephemeris_counter == 0:
-                    current_ra, current_dec = get_moon_position()
+                    state.current_ra, state.current_dec = get_moon_position()
 
             # Update ephemeris every 30 seconds for Sun/Moon
             ephemeris_counter = (ephemeris_counter + 1) % 30
 
             # Convert current RA/Dec to Alt/Az
             alt, az = ra_dec_to_alt_az(
-                current_ra, current_dec,
+                state.current_ra, state.current_dec,
                 OBSERVER_LAT, OBSERVER_LON
             )
 
-            debug_counter += 1
-            target_alt = alt
-            target_az = az
+            state.target_alt = alt
+            state.target_az = az
 
             # Check if below horizon - go to home and wait
             if alt < MOUNT_ALT_MIN:
-                if not waiting_for_rise:
-                    waiting_for_rise = True
+                if not state.waiting_for_rise:
+                    state.waiting_for_rise = True
                     print(f"Target below horizon: Alt={alt:.1f}")
                     print("Parking at home, waiting for target to rise...")
                     srt.send_target(HOME_ALT, HOME_AZ)
@@ -162,21 +142,21 @@ def tracking_loop(srt):
                 print(f"Target above altitude limit: Alt={alt:.1f}")
             # Check azimuth limits (circumpolar wrap-around handling)
             elif not is_az_within_limits(az):
-                if not waiting_for_wrap:
-                    waiting_for_wrap = True
+                if not state.waiting_for_wrap:
+                    state.waiting_for_wrap = True
                     print(f"Target outside az limits: Az={az:.1f}")
                     print("Waiting for circumpolar wrap-around...")
                 # Continue waiting
             else:
                 # Target is within all limits
-                if waiting_for_rise:
-                    waiting_for_rise = False
+                if state.waiting_for_rise:
+                    state.waiting_for_rise = False
                     print(f"Target risen: Alt={alt:.1f} Az={az:.1f}")
                     print("Resuming tracking...")
                     last_sent_alt = None  # Force send after state change
                     last_sent_az = None
-                if waiting_for_wrap:
-                    waiting_for_wrap = False
+                if state.waiting_for_wrap:
+                    state.waiting_for_wrap = False
                     print(f"Target back in az limits: Alt={alt:.1f} Az={az:.1f}")
                     print("Repositioning to resume tracking...")
                     last_sent_alt = None  # Force send after state change
@@ -186,7 +166,7 @@ def tracking_loop(srt):
                 if (last_sent_alt is None or last_sent_az is None or
                     abs(alt - last_sent_alt) >= POSITION_DEADBAND or
                     abs(az - last_sent_az) >= POSITION_DEADBAND):
-                    print(f"Tracking {target_name}: sending Alt={alt:.1f} Az={az:.1f}")
+                    print(f"Tracking {state.target_name}: sending Alt={alt:.1f} Az={az:.1f}")
                     srt.send_target(alt, az)
                     last_sent_alt = alt
                     last_sent_az = az
@@ -197,24 +177,28 @@ def tracking_loop(srt):
 
 
 def main():
-    global tracking_enabled
-
     print("SRT Controller starting...")
 
-    # Try NTP sync (retry a few times)
-    for i in range(3):
-        if sync_time_ntp():
-            break
-        time.sleep(2)
+    # Only try NTP if we have a WiFi connection (STA mode)
+    from wifi_manager import wifi
+    if wifi.sta.isconnected():
+        for i in range(3):
+            if sync_time_ntp():
+                break
+            time.sleep(2)
 
-    if not time_synced:
-        print("NTP failed - waiting for browser time sync")
+    if not state.time_synced:
+        print("NTP not synced - waiting for browser time sync")
 
     # Initialize serial to Due
     srt = SRTSerial(DUE_UART_TX, DUE_UART_RX, DUE_BAUD_RATE)
 
     # Start tracking thread
     _thread.start_new_thread(tracking_loop, (srt,))
+
+    # Import and start servers (imported here to avoid circular import)
+    from stellarium import start_stellarium_server
+    from web_server import start_web_server
 
     # Start Stellarium server (runs in background)
     _thread.start_new_thread(start_stellarium_server, ())
