@@ -2,6 +2,7 @@
 
 #include "web_server.h"
 #include "config.h"
+#include "settings.h"
 #include "state.h"
 #include "wifi_manager.h"
 #include "srt_serial.h"
@@ -62,8 +63,8 @@ void setupWebServer() {
         getMoonPosition(moonRA, moonDec);
 
         double sunAlt, sunAz, moonAlt, moonAz;
-        raDecToAltAz(sunRA, sunDec, OBSERVER_LAT, OBSERVER_LON, sunAlt, sunAz);
-        raDecToAltAz(moonRA, moonDec, OBSERVER_LAT, OBSERVER_LON, moonAlt, moonAz);
+        raDecToAltAz(sunRA, sunDec, settings.observerLat, settings.observerLon, sunAlt, sunAz);
+        raDecToAltAz(moonRA, moonDec, settings.observerLat, settings.observerLon, moonAlt, moonAz);
 
         char json[256];
         snprintf(json, sizeof(json),
@@ -226,7 +227,7 @@ void setupWebServer() {
         wifiManager.loadCredentials(savedSSID, savedPass);
         String json = "{";
         json += "\"ap_active\":" + String(wifiManager.isAPActive() ? "true" : "false") + ",";
-        json += "\"ap_ssid\":\"" WIFI_AP_SSID "\",";
+        json += "\"ap_ssid\":\"" + settings.apSSID + "\",";
         json += "\"ap_ip\":\"" + (wifiManager.isAPActive() ? wifiManager.getAPIP() : String("")) + "\",";
         json += "\"sta_connected\":" + String(wifiManager.isSTAConnected() ? "true" : "false") + ",";
         json += "\"sta_ssid\":\"" + (wifiManager.isSTAConnected() ? wifiManager.getConnectedSSID() : String("")) + "\",";
@@ -269,6 +270,76 @@ void setupWebServer() {
     webServer.on("/wifi/forget", HTTP_GET, [](AsyncWebServerRequest *request) {
         wifiManager.clearCredentials();
         request->send(200, "application/json", "{\"ok\":true}");
+    });
+
+    // Save settings (must be before /settings to avoid route conflict)
+    webServer.on("/settings/save", HTTP_GET, [](AsyncWebServerRequest *request) {
+        if (request->hasArg("observer_lat")) {
+            settings.observerLat = request->arg("observer_lat").toDouble();
+        }
+        if (request->hasArg("observer_lon")) {
+            settings.observerLon = request->arg("observer_lon").toDouble();
+        }
+        if (request->hasArg("mount_az_min")) {
+            settings.mountAzMin = request->arg("mount_az_min").toFloat();
+        }
+        if (request->hasArg("mount_az_max")) {
+            settings.mountAzMax = request->arg("mount_az_max").toFloat();
+        }
+        if (request->hasArg("mount_alt_min")) {
+            settings.mountAltMin = request->arg("mount_alt_min").toFloat();
+        }
+        if (request->hasArg("mount_alt_max")) {
+            settings.mountAltMax = request->arg("mount_alt_max").toFloat();
+        }
+        if (request->hasArg("home_alt")) {
+            settings.homeAlt = request->arg("home_alt").toFloat();
+        }
+        if (request->hasArg("home_az")) {
+            settings.homeAz = request->arg("home_az").toFloat();
+        }
+        if (request->hasArg("position_deadband")) {
+            settings.positionDeadband = request->arg("position_deadband").toFloat();
+        }
+        if (request->hasArg("ap_ssid")) {
+            settings.apSSID = request->arg("ap_ssid");
+        }
+        if (request->hasArg("ap_password")) {
+            settings.apPassword = request->arg("ap_password");
+        }
+        if (request->hasArg("page_name")) {
+            settings.pageName = request->arg("page_name");
+        }
+        settings.save();
+        request->send(200, "application/json", "{\"ok\":true}");
+    });
+
+    // Reset settings to defaults
+    webServer.on("/settings/reset", HTTP_GET, [](AsyncWebServerRequest *request) {
+        settings.resetToDefaults();
+        settings.save();
+        request->send(200, "application/json", "{\"ok\":true}");
+    });
+
+    // Get settings
+    webServer.on("/settings", HTTP_GET, [](AsyncWebServerRequest *request) {
+        char json[600];
+        snprintf(json, sizeof(json),
+            "{\"observer_lat\":%.6f,\"observer_lon\":%.6f,"
+            "\"mount_az_min\":%.1f,\"mount_az_max\":%.1f,"
+            "\"mount_alt_min\":%.1f,\"mount_alt_max\":%.1f,"
+            "\"home_alt\":%.1f,\"home_az\":%.1f,"
+            "\"position_deadband\":%.2f,"
+            "\"ap_ssid\":\"%s\",\"ap_password\":\"%s\","
+            "\"page_name\":\"%s\"}",
+            settings.observerLat, settings.observerLon,
+            settings.mountAzMin, settings.mountAzMax,
+            settings.mountAltMin, settings.mountAltMax,
+            settings.homeAlt, settings.homeAz,
+            settings.positionDeadband,
+            settings.apSSID.c_str(), settings.apPassword.c_str(),
+            settings.pageName.c_str());
+        request->send(200, "application/json", json);
     });
 
     // 404 handler

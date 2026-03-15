@@ -2,6 +2,7 @@
 
 #include "stellarium.h"
 #include "config.h"
+#include "settings.h"
 #include "state.h"
 #include "coordinates.h"
 #include <AsyncTCP.h>
@@ -17,7 +18,7 @@ void sendPositionToStellarium() {
 
     // Convert current Alt/Az back to RA/Dec for Stellarium
     double raHours, decDeg;
-    altAzToRaDec(state.targetAlt, state.targetAz, OBSERVER_LAT, OBSERVER_LON, raHours, decDeg);
+    altAzToRaDec(state.targetAlt, state.targetAz, settings.observerLat, settings.observerLon, raHours, decDeg);
 
     // Convert to Stellarium format
     uint32_t raRaw = (uint32_t)((raHours / 24.0) * 0x100000000ULL) & 0xFFFFFFFF;

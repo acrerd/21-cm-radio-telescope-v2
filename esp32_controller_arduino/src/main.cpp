@@ -6,6 +6,7 @@
 #include <time.h>
 
 #include "config.h"
+#include "settings.h"
 #include "state.h"
 #include "wifi_manager.h"
 #include "srt_serial.h"
@@ -51,7 +52,7 @@ void syncTimeNTP() {
 
 // Check if azimuth is within limits
 bool isAzWithinLimits(float az) {
-    return az >= MOUNT_AZ_MIN && az <= MOUNT_AZ_MAX;
+    return az >= settings.mountAzMin && az <= settings.mountAzMax;
 }
 
 // Tracking update - called from loop
@@ -97,24 +98,24 @@ void updateTracking() {
 
         // Convert current RA/Dec to Alt/Az
         double alt, az;
-        raDecToAltAz(state.currentRA, state.currentDec, OBSERVER_LAT, OBSERVER_LON, alt, az);
+        raDecToAltAz(state.currentRA, state.currentDec, settings.observerLat, settings.observerLon, alt, az);
 
         state.targetAlt = alt;
         state.targetAz = az;
 
         // Check if below horizon
-        if (alt < MOUNT_ALT_MIN) {
+        if (alt < settings.mountAltMin) {
             if (!state.waitingForRise) {
                 state.waitingForRise = true;
                 Serial.printf("Target below horizon: Alt=%.1f\n", alt);
                 Serial.println("Parking at home, waiting for target to rise...");
-                srtSerial.sendTarget(HOME_ALT, HOME_AZ);
-                lastSentAlt = HOME_ALT;
-                lastSentAz = HOME_AZ;
+                srtSerial.sendTarget(settings.homeAlt, settings.homeAz);
+                lastSentAlt = settings.homeAlt;
+                lastSentAz = settings.homeAz;
             }
         }
         // Check if above zenith limit
-        else if (alt > MOUNT_ALT_MAX) {
+        else if (alt > settings.mountAltMax) {
             Serial.printf("Target above altitude limit: Alt=%.1f\n", alt);
         }
         // Check azimuth limits
@@ -144,8 +145,8 @@ void updateTracking() {
 
             // Apply deadband
             if (lastSentAlt < -900 || lastSentAz < -900 ||
-                fabs(alt - lastSentAlt) >= POSITION_DEADBAND ||
-                fabs(az - lastSentAz) >= POSITION_DEADBAND) {
+                fabs(alt - lastSentAlt) >= settings.positionDeadband ||
+                fabs(az - lastSentAz) >= settings.positionDeadband) {
                 Serial.printf("Tracking %s: sending Alt=%.1f Az=%.1f\n",
                               state.targetName.c_str(), alt, az);
                 srtSerial.sendTarget(alt, az);
@@ -165,6 +166,9 @@ void setup() {
     delay(3000);  // Give USB time to enumerate
 
     Serial.println("\n\nSRT Controller starting...");
+
+    // Load settings from NVS
+    settings.load();
 
     // Initialize serial to Due
     srtSerial.begin(DUE_UART_TX, DUE_UART_RX, DUE_BAUD_RATE);

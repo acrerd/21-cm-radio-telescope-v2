@@ -2,6 +2,7 @@
 
 #include "wifi_manager.h"
 #include "config.h"
+#include "settings.h"
 #include <Preferences.h>
 #include <esp_task_wdt.h>
 
@@ -78,7 +79,7 @@ void WiFiManager::startAP() {
     WiFi.softAPConfig(local_IP, gateway, subnet);
 
     // Try channel 6 (often less congested)
-    bool result = WiFi.softAP(WIFI_AP_SSID, WIFI_AP_PASSWORD, 6, false, 4);
+    bool result = WiFi.softAP(settings.apSSID.c_str(), settings.apPassword.c_str(), 6, false, 4);
 
     if (result) {
         Serial.println("softAP started successfully");
@@ -89,7 +90,7 @@ void WiFiManager::startAP() {
     apActive = true;
     delay(1000);  // Let AP stabilize
 
-    Serial.printf("AP SSID: %s\n", WIFI_AP_SSID);
+    Serial.printf("AP SSID: %s\n", settings.apSSID.c_str());
     Serial.printf("AP IP: %s\n", WiFi.softAPIP().toString().c_str());
     Serial.printf("AP MAC: %s\n", WiFi.softAPmacAddress().c_str());
     Serial.printf("AP Channel: %d\n", WiFi.channel());

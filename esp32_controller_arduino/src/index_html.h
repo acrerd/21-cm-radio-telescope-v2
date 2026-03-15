@@ -59,10 +59,11 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
 </head>
 <body>
     <div class="container">
-        <h1>SRT Controller</h1>
+        <h1 id="page-title">SRT Controller</h1>
         <div class="tab-bar">
             <div class="tab active" onclick="showTab('control')">Control</div>
             <div class="tab" onclick="showTab('network')">Network</div>
+            <div class="tab" onclick="showTab('settings')">Settings</div>
             <div class="tab" onclick="showTab('help')">Help</div>
         </div>
         <div id="tab-control" class="tab-content active">
@@ -157,6 +158,71 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
                 </div>
             </div>
         </div>
+        <div id="tab-settings" class="tab-content">
+            <div class="two-col">
+                <div>
+                    <div class="box">
+                        <h3>Observer Location</h3>
+                        <div class="coord-row">
+                            <label>Latitude: <input type="number" id="set_lat" step="0.000001" min="-90" max="90"></label>
+                        </div>
+                        <div class="coord-row">
+                            <label>Longitude: <input type="number" id="set_lon" step="0.000001" min="-180" max="180"></label>
+                        </div>
+                    </div>
+                    <div class="box">
+                        <h3>Software Limits</h3>
+                        <div class="coord-row">
+                            <label>Az Min: <input type="number" id="set_az_min" step="0.5" min="0" max="360"></label>
+                            <label>Az Max: <input type="number" id="set_az_max" step="0.5" min="0" max="360"></label>
+                        </div>
+                        <div class="coord-row">
+                            <label>Alt Min: <input type="number" id="set_alt_min" step="0.5" min="0" max="90"></label>
+                            <label>Alt Max: <input type="number" id="set_alt_max" step="0.5" min="0" max="90"></label>
+                        </div>
+                    </div>
+                    <div class="box">
+                        <h3>Home Position</h3>
+                        <div class="coord-row">
+                            <label>Home Alt: <input type="number" id="set_home_alt" step="0.5" min="0" max="90"></label>
+                            <label>Home Az: <input type="number" id="set_home_az" step="0.5" min="0" max="360"></label>
+                        </div>
+                    </div>
+                </div>
+                <div>
+                    <div class="box">
+                        <h3>Update Tolerance</h3>
+                        <div class="coord-row">
+                            <label>Degrees: <input type="number" id="set_deadband" step="0.05" min="0.05" max="5"></label>
+                        </div>
+                    </div>
+                    <div class="box">
+                        <h3>Display</h3>
+                        <div class="coord-row">
+                            <label>Page Name: <input type="text" id="set_page_name" maxlength="31"></label>
+                        </div>
+                    </div>
+                    <div class="box">
+                        <h3>WiFi Access Point</h3>
+                        <div class="coord-row">
+                            <label>AP SSID: <input type="text" id="set_ap_ssid" maxlength="31"></label>
+                        </div>
+                        <div class="coord-row">
+                            <label>AP Password: <input type="text" id="set_ap_pass" maxlength="63"></label>
+                        </div>
+                        <p class="target-info">Changes take effect after reboot</p>
+                    </div>
+                    <div class="box">
+                        <div class="btn-row">
+                            <button onclick="saveSettings()">Save Settings</button>
+                            <button class="secondary" onclick="loadSettings()">Reload</button>
+                            <button class="stop" onclick="resetSettings()">Reset to Defaults</button>
+                        </div>
+                        <p id="settings-status" class="target-info"></p>
+                    </div>
+                </div>
+            </div>
+        </div>
         <div id="tab-help" class="tab-content">
             <div class="two-col">
                 <div>
@@ -188,7 +254,7 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
     </div>
 <script>
 let selectedSsid='';
-function showTab(name){document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));document.querySelectorAll('.tab-content').forEach(t=>t.classList.remove('active'));event.target.classList.add('active');document.getElementById('tab-'+name).classList.add('active');if(name==='network')updateNetworkStatus();}
+function showTab(name){document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));document.querySelectorAll('.tab-content').forEach(t=>t.classList.remove('active'));event.target.classList.add('active');document.getElementById('tab-'+name).classList.add('active');if(name==='network')updateNetworkStatus();if(name==='settings')loadSettings();}
 function formatRA(h){const hh=Math.floor(h);const m=Math.floor((h-hh)*60);const s=Math.floor(((h-hh)*60-m)*60);return hh+'h'+String(m).padStart(2,'0')+'m'+String(s).padStart(2,'0')+'s';}
 function formatDec(d){const sign=d>=0?'+':'-';d=Math.abs(d);const dd=Math.floor(d);const m=Math.floor((d-dd)*60);return sign+dd+'\u00b0'+String(m).padStart(2,'0')+"'";}
 function parseRA(s){s=s.trim().toLowerCase();let m=s.match(/^(\d+(?:\.\d+)?)\s*h\s*(?:(\d+(?:\.\d+)?)\s*m?\s*)?(?:(\d+(?:\.\d+)?)\s*s?\s*)?$/);if(m)return(parseFloat(m[1])||0)+(parseFloat(m[2])||0)/60+(parseFloat(m[3])||0)/3600;m=s.match(/^(\d+(?:\.\d+)?)[\s:]+(\d+(?:\.\d+)?)(?:[\s:]+(\d+(?:\.\d+)?))?$/);if(m)return(parseFloat(m[1])||0)+(parseFloat(m[2])||0)/60+(parseFloat(m[3])||0)/3600;return parseFloat(s)||0;}
@@ -214,7 +280,11 @@ function goHome(){fetch('/direct?alt=0&az=0');}
 let isSlewing=false;let refreshInterval=null;
 function scheduleRefresh(){if(refreshInterval)clearInterval(refreshInterval);refreshInterval=setInterval(updateStatus,isSlewing?500:1000);}
 function updateStatus(){fetch('/status').then(r=>r.json()).then(d=>{document.getElementById('alt').textContent=d.alt.toFixed(2)+'\u00b0';document.getElementById('az').textContent=d.az.toFixed(2)+'\u00b0';document.getElementById('alt_a').textContent=d.alt_current_a.toFixed(2)+' A';document.getElementById('az_a').textContent=d.az_current_a.toFixed(2)+' A';document.getElementById('status').textContent=d.status+(d.fault?' ['+d.fault+']':'');document.getElementById('status').className='value '+(d.is_slewing?'tracking':'idle');if(d.is_slewing!==isSlewing){isSlewing=d.is_slewing;scheduleRefresh();}});fetch('/tracking').then(r=>r.json()).then(d=>{if(d.enabled){let info=d.target_name||'RA/Dec';info+=': '+formatRA(d.ra)+' '+formatDec(d.dec);if(d.waiting_for_rise){info+=' [Below horizon]';document.getElementById('tracking_target').className='value disconnected';}else if(d.waiting_for_wrap){info+=' [Az limits]';document.getElementById('tracking_target').className='value disconnected';}else{document.getElementById('tracking_target').className='value tracking';}document.getElementById('tracking_target').textContent=info;}else{document.getElementById('tracking_target').textContent='Off';document.getElementById('tracking_target').className='value idle';}});fetch('/time/status').then(r=>r.json()).then(d=>{let ts=d.utc+' UTC';if(d.synced){ts+=' ('+d.source+')';document.getElementById('time_status').className='value connected';}else{ts='NOT SYNCED';document.getElementById('time_status').className='value disconnected';}document.getElementById('time_status').textContent=ts;});}
-setInterval(updateEphemeris,10000);scheduleRefresh();updateStatus();updateEphemeris();checkAndSyncTime();
+function loadSettings(){fetch('/settings').then(r=>r.json()).then(d=>{document.getElementById('set_lat').value=d.observer_lat;document.getElementById('set_lon').value=d.observer_lon;document.getElementById('set_az_min').value=d.mount_az_min;document.getElementById('set_az_max').value=d.mount_az_max;document.getElementById('set_alt_min').value=d.mount_alt_min;document.getElementById('set_alt_max').value=d.mount_alt_max;document.getElementById('set_home_alt').value=d.home_alt;document.getElementById('set_home_az').value=d.home_az;document.getElementById('set_deadband').value=d.position_deadband;document.getElementById('set_ap_ssid').value=d.ap_ssid;document.getElementById('set_ap_pass').value=d.ap_password;document.getElementById('set_page_name').value=d.page_name;document.getElementById('page-title').textContent=d.page_name;document.title=d.page_name;document.getElementById('settings-status').textContent='';});}
+function saveSettings(){const params=new URLSearchParams();params.append('observer_lat',document.getElementById('set_lat').value);params.append('observer_lon',document.getElementById('set_lon').value);params.append('mount_az_min',document.getElementById('set_az_min').value);params.append('mount_az_max',document.getElementById('set_az_max').value);params.append('mount_alt_min',document.getElementById('set_alt_min').value);params.append('mount_alt_max',document.getElementById('set_alt_max').value);params.append('home_alt',document.getElementById('set_home_alt').value);params.append('home_az',document.getElementById('set_home_az').value);params.append('position_deadband',document.getElementById('set_deadband').value);params.append('ap_ssid',document.getElementById('set_ap_ssid').value);params.append('ap_password',document.getElementById('set_ap_pass').value);params.append('page_name',document.getElementById('set_page_name').value);fetch('/settings/save?'+params.toString()).then(r=>r.json()).then(d=>{document.getElementById('settings-status').textContent=d.ok?'Settings saved!':'Save failed';document.getElementById('settings-status').style.color=d.ok?'#00ff00':'#ff4444';if(d.ok){document.getElementById('page-title').textContent=document.getElementById('set_page_name').value;document.title=document.getElementById('set_page_name').value;}});}
+function resetSettings(){if(confirm('Reset all settings to defaults?')){fetch('/settings/reset').then(r=>r.json()).then(d=>{if(d.ok){loadSettings();document.getElementById('settings-status').textContent='Reset to defaults';document.getElementById('settings-status').style.color='#ffaa00';}});}}
+function loadPageName(){fetch('/settings').then(r=>r.json()).then(d=>{document.getElementById('page-title').textContent=d.page_name;document.title=d.page_name;});}
+setInterval(updateEphemeris,10000);scheduleRefresh();updateStatus();updateEphemeris();checkAndSyncTime();loadPageName();
 </script>
 </body>
 </html>)rawliteral";

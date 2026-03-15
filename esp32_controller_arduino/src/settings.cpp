@@ -1,0 +1,72 @@
+// settings.cpp - Runtime configurable settings with NVS persistence
+
+#include "settings.h"
+#include "config.h"
+#include <Preferences.h>
+
+Settings settings;
+
+void Settings::resetToDefaults() {
+    observerLat = OBSERVER_LAT;
+    observerLon = OBSERVER_LON;
+    mountAzMin = MOUNT_AZ_MIN;
+    mountAzMax = MOUNT_AZ_MAX;
+    mountAltMin = MOUNT_ALT_MIN;
+    mountAltMax = MOUNT_ALT_MAX;
+    homeAlt = HOME_ALT;
+    homeAz = HOME_AZ;
+    positionDeadband = POSITION_DEADBAND;
+    apSSID = WIFI_AP_SSID;
+    apPassword = WIFI_AP_PASSWORD;
+    pageName = "SRT Controller";
+}
+
+void Settings::load() {
+    // Start with defaults
+    resetToDefaults();
+
+    // Override with saved values if they exist
+    Preferences prefs;
+    prefs.begin("settings", true);  // read-only
+
+    if (prefs.isKey("obsLat")) {
+        observerLat = prefs.getDouble("obsLat", OBSERVER_LAT);
+        observerLon = prefs.getDouble("obsLon", OBSERVER_LON);
+        mountAzMin = prefs.getFloat("azMin", MOUNT_AZ_MIN);
+        mountAzMax = prefs.getFloat("azMax", MOUNT_AZ_MAX);
+        mountAltMin = prefs.getFloat("altMin", MOUNT_ALT_MIN);
+        mountAltMax = prefs.getFloat("altMax", MOUNT_ALT_MAX);
+        homeAlt = prefs.getFloat("homeAlt", HOME_ALT);
+        homeAz = prefs.getFloat("homeAz", HOME_AZ);
+        positionDeadband = prefs.getFloat("deadband", POSITION_DEADBAND);
+        apSSID = prefs.getString("apSSID", WIFI_AP_SSID);
+        apPassword = prefs.getString("apPass", WIFI_AP_PASSWORD);
+        pageName = prefs.getString("pageName", "SRT Controller");
+        Serial.println("Settings loaded from NVS");
+    } else {
+        Serial.println("Using default settings");
+    }
+
+    prefs.end();
+}
+
+void Settings::save() {
+    Preferences prefs;
+    prefs.begin("settings", false);  // read-write
+
+    prefs.putDouble("obsLat", observerLat);
+    prefs.putDouble("obsLon", observerLon);
+    prefs.putFloat("azMin", mountAzMin);
+    prefs.putFloat("azMax", mountAzMax);
+    prefs.putFloat("altMin", mountAltMin);
+    prefs.putFloat("altMax", mountAltMax);
+    prefs.putFloat("homeAlt", homeAlt);
+    prefs.putFloat("homeAz", homeAz);
+    prefs.putFloat("deadband", positionDeadband);
+    prefs.putString("apSSID", apSSID);
+    prefs.putString("apPass", apPassword);
+    prefs.putString("pageName", pageName);
+
+    prefs.end();
+    Serial.println("Settings saved to NVS");
+}
