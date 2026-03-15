@@ -5,6 +5,9 @@
 #include <WiFi.h>
 #include <time.h>
 
+// Debug print macros - only print if USB CDC is connected
+#define DBG(x) if (Serial) { x; }
+
 #include "config.h"
 #include "settings.h"
 #include "state.h"
@@ -76,7 +79,7 @@ void updateTracking() {
         if (!wasTracking) {
             lastSentAlt = -999;
             lastSentAz = -999;
-            Serial.println("Tracking enabled - sending initial position");
+            DBG(Serial.println("Tracking enabled - sending initial position"));
         }
         wasTracking = true;
 
@@ -107,8 +110,8 @@ void updateTracking() {
         if (alt < settings.mountAltMin) {
             if (!state.waitingForRise) {
                 state.waitingForRise = true;
-                Serial.printf("Target below horizon: Alt=%.1f\n", alt);
-                Serial.println("Parking at home, waiting for target to rise...");
+                DBG(Serial.printf("Target below horizon: Alt=%.1f\n", alt));
+                DBG(Serial.println("Parking at home, waiting for target to rise..."));
                 srtSerial.sendTarget(settings.homeAlt, settings.homeAz);
                 lastSentAlt = settings.homeAlt;
                 lastSentAz = settings.homeAz;
@@ -116,29 +119,29 @@ void updateTracking() {
         }
         // Check if above zenith limit
         else if (alt > settings.mountAltMax) {
-            Serial.printf("Target above altitude limit: Alt=%.1f\n", alt);
+            DBG(Serial.printf("Target above altitude limit: Alt=%.1f\n", alt));
         }
         // Check azimuth limits
         else if (!isAzWithinLimits(az)) {
             if (!state.waitingForWrap) {
                 state.waitingForWrap = true;
-                Serial.printf("Target outside az limits: Az=%.1f\n", az);
-                Serial.println("Waiting for circumpolar wrap-around...");
+                DBG(Serial.printf("Target outside az limits: Az=%.1f\n", az));
+                DBG(Serial.println("Waiting for circumpolar wrap-around..."));
             }
         }
         else {
             // Target is within all limits
             if (state.waitingForRise) {
                 state.waitingForRise = false;
-                Serial.printf("Target risen: Alt=%.1f Az=%.1f\n", alt, az);
-                Serial.println("Resuming tracking...");
+                DBG(Serial.printf("Target risen: Alt=%.1f Az=%.1f\n", alt, az));
+                DBG(Serial.println("Resuming tracking..."));
                 lastSentAlt = -999;
                 lastSentAz = -999;
             }
             if (state.waitingForWrap) {
                 state.waitingForWrap = false;
-                Serial.printf("Target back in az limits: Alt=%.1f Az=%.1f\n", alt, az);
-                Serial.println("Repositioning to resume tracking...");
+                DBG(Serial.printf("Target back in az limits: Alt=%.1f Az=%.1f\n", alt, az));
+                DBG(Serial.println("Repositioning to resume tracking..."));
                 lastSentAlt = -999;
                 lastSentAz = -999;
             }
@@ -147,8 +150,8 @@ void updateTracking() {
             if (lastSentAlt < -900 || lastSentAz < -900 ||
                 fabs(alt - lastSentAlt) >= settings.positionDeadband ||
                 fabs(az - lastSentAz) >= settings.positionDeadband) {
-                Serial.printf("Tracking %s: sending Alt=%.1f Az=%.1f\n",
-                              state.targetName.c_str(), alt, az);
+                DBG(Serial.printf("Tracking %s: sending Alt=%.1f Az=%.1f\n",
+                              state.targetName.c_str(), alt, az));
                 srtSerial.sendTarget(alt, az);
                 lastSentAlt = alt;
                 lastSentAz = az;
