@@ -330,7 +330,7 @@ The ESP32-S3 provides the network interface and computational resources for coor
     \item Dual-core Xtensa LX7 processor
     \item WiFi 802.11 b/g/n (2.4\,GHz)
     \item 4\,MB flash, 512\,KB SRAM
-    \item MicroPython runtime environment
+    \item Arduino framework with PlatformIO build system
 \end{itemize}
 
 \subsubsection{ESP32 to Arduino Due wiring}
@@ -342,8 +342,8 @@ The ESP32-S3 provides the network interface and computational resources for coor
 \toprule
 \textbf{ESP32-S3} & \textbf{Arduino Due} & \textbf{Function} \\
 \midrule
-GPIO17 & Pin 19 (RX1) & ESP32 TX $\rightarrow$ Due RX \\
-GPIO18 & Pin 18 (TX1) & ESP32 RX $\leftarrow$ Due TX \\
+GPIO5 & Pin 19 (RX1) & ESP32 TX $\rightarrow$ Due RX \\
+GPIO6 & Pin 18 (TX1) & ESP32 RX $\leftarrow$ Due TX \\
 GND & GND & Common ground \\
 \bottomrule
 \end{tabular}
@@ -625,68 +625,71 @@ Simulation parameters (configurable in \texttt{config.h}):
 
 \subsection{Software architecture}
 
-The ESP32 controller runs MicroPython with a modular architecture:
+The ESP32 controller is implemented in C++ using the Arduino framework and PlatformIO build system. This provides better performance and reliability compared to interpreted languages:
 
 \begin{table}[H]
 \centering
-\caption{ESP32 MicroPython modules}
+\caption{ESP32 Arduino/C++ source files}
 \begin{tabular}{lll}
 \toprule
-\textbf{Module} & \textbf{Purpose} & \textbf{Size} \\
+\textbf{File} & \textbf{Purpose} \\
 \midrule
-\texttt{boot.py} & WiFi/Ethernet initialisation & $\sim$0.5\,KB \\
-\texttt{main.py} & Main application, tracking loop & $\sim$4.5\,KB \\
-\texttt{config.py} & Configuration settings & $\sim$1.2\,KB \\
-\texttt{coordinates.py} & Astronomical transforms & $\sim$17\,KB \\
-\texttt{web\_server.py} & HTTP server and web UI & $\sim$34\,KB \\
-\texttt{stellarium.py} & Stellarium telescope protocol & $\sim$3.5\,KB \\
-\texttt{srt\_serial.py} & Serial communication with Due & $\sim$5\,KB \\
-\texttt{wifi\_manager.py} & WiFi AP/station management & $\sim$4\,KB \\
-\texttt{ethernet.py} & W5500 Ethernet management & $\sim$5\,KB \\
+\texttt{main.cpp} & Main application, tracking loop, time sync \\
+\texttt{config.h} & Compile-time default settings \\
+\texttt{settings.cpp/h} & Runtime settings with NVS persistence \\
+\texttt{coordinates.cpp/h} & Astronomical transforms \\
+\texttt{web\_server.cpp/h} & Async HTTP server and web UI \\
+\texttt{stellarium.cpp/h} & Stellarium telescope protocol \\
+\texttt{srt\_serial.cpp/h} & Serial communication with Due \\
+\texttt{wifi\_manager.cpp/h} & WiFi AP/station management \\
+\texttt{index\_html.h} & Embedded web interface HTML \\
 \bottomrule
 \end{tabular}
 \end{table}
 
+The firmware uses the ESPAsyncWebServer library for non-blocking HTTP handling and AsyncTCP for the Stellarium protocol. Settings are stored in ESP32's Non-Volatile Storage (NVS) and can be modified via the web interface.
+
 \subsection{Configuration}
 
-Key configuration parameters in \texttt{config.py}:
+Default configuration parameters are defined in \texttt{config.h}. Most settings can be changed at runtime via the web interface and are saved to NVS:
 
-\begin{lstlisting}[language=Python,caption={ESP32 configuration parameters}]
-# WiFi Access Point
-WIFI_AP_SSID = "SRT_Controller"
-WIFI_AP_PASSWORD = "radio1420"
+\begin{lstlisting}[language=C,caption={ESP32 configuration parameters (config.h)}]
+// WiFi Access Point
+#define WIFI_AP_SSID "SRT_Controller"
+#define WIFI_AP_PASSWORD "radio1420"
 
-# Serial connection to Arduino Due
-DUE_UART_TX = 17
-DUE_UART_RX = 18
-DUE_BAUD_RATE = 115200
+// Serial connection to Arduino Due
+#define DUE_UART_TX 5
+#define DUE_UART_RX 6
+#define DUE_BAUD_RATE 115200
 
-# Observer location (critical for coordinate transforms)
-OBSERVER_LAT = 55.9    # Latitude (degrees, north positive)
-OBSERVER_LON = -4.3    # Longitude (degrees, east positive)
+// Observer location (critical for coordinate transforms)
+#define OBSERVER_LAT 55.902426
+#define OBSERVER_LON -4.307865
 
-# Server ports
-STELLARIUM_PORT = 10001
-WEB_PORT = 80
+// Server ports
+#define STELLARIUM_PORT 10001
+#define WEB_PORT 80
 
-# Mount software limits (must match Due configuration)
-MOUNT_AZ_MIN = 2.0
-MOUNT_AZ_MAX = 353.0
-MOUNT_ALT_MIN = 0.0
-MOUNT_ALT_MAX = 90.0
+// Mount software limits (must match Due configuration)
+#define MOUNT_AZ_MIN 2.0
+#define MOUNT_AZ_MAX 353.0
+#define MOUNT_ALT_MIN 0.0
+#define MOUNT_ALT_MAX 90.0
 \end{lstlisting}
 
 \subsection{Networking}
 
-\subsubsection{Network priority}
+\subsubsection{Network modes}
 
-The ESP32 supports multiple network interfaces with the following priority:
+The ESP32 operates in AP+STA mode, providing both access point and station connectivity:
 
 \begin{enumerate}
-    \item \textbf{Ethernet} (if enabled and connected) --- Preferred for Stellarium
-    \item \textbf{WiFi Station} (if connected to saved network)
-    \item \textbf{WiFi Access Point} (always active at 192.168.4.1)
+    \item \textbf{WiFi Access Point} --- Always active at 192.168.4.1 for configuration
+    \item \textbf{WiFi Station} --- Connects to saved network if available
 \end{enumerate}
+
+Ethernet support (W5500) is planned for future versions.
 
 \subsubsection{Default network settings}
 
@@ -1155,44 +1158,33 @@ pio run -e simulation -t upload
 
 \subsection{ESP32-S3 controller}
 
-\subsubsection{Flashing MicroPython}
+\subsubsection{Building and uploading}
 
-Download firmware from \url{https://micropython.org/download/ESP32_GENERIC_S3/}
-
-\begin{lstlisting}[language=bash]
-# Erase flash (hold BOOT button while connecting if needed)
-esptool.py --chip esp32s3 --port COM5 erase_flash
-
-# Flash MicroPython
-esptool.py --chip esp32s3 --port COM5 write_flash -z 0 ESP32_GENERIC_S3-*.bin
-\end{lstlisting}
-
-\subsubsection{Uploading controller code}
+The ESP32 controller uses Arduino/PlatformIO:
 
 \begin{lstlisting}[language=bash]
-cd new_SRT_drive/esp32_controller
+cd new_SRT_drive/esp32_controller_arduino
 
-# Upload all Python files
-mpremote connect COM5 cp *.py :
+# Build and upload
+pio run --target upload
 
-# Upload help page
-mpremote connect COM5 cp help.html :
-
-# Reset to run
-mpremote connect COM5 reset
+# Monitor serial output
+pio device monitor -b 115200
 \end{lstlisting}
 
 \subsection{Configuration}
 
 \subsubsection{Observer location}
 
-Edit \texttt{esp32\_controller/config.py} before uploading:
+Settings can be changed via the web interface Settings tab. Default values are in \texttt{config.h}:
 
-\begin{lstlisting}[language=Python]
-# Critical: set to your observatory location
-OBSERVER_LAT = 55.9    # Latitude (degrees, north positive)
-OBSERVER_LON = -4.3    # Longitude (degrees, west negative)
+\begin{lstlisting}[language=C]
+// Critical: set to your observatory location
+#define OBSERVER_LAT 55.902426  // Latitude (degrees, north positive)
+#define OBSERVER_LON -4.307865  // Longitude (degrees, west negative)
 \end{lstlisting}
+
+Runtime settings are saved to ESP32 flash (NVS) and persist across reboots.
 
 \subsubsection{Receiver prerequisites}
 

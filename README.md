@@ -85,52 +85,19 @@ The system consists of four integrated components:
 
 | ESP32-S3 | Arduino Due | Function |
 |----------|-------------|----------|
-| GPIO17   | Pin 19 (RX1)| ESP32 TX -> Due RX |
-| GPIO18   | Pin 18 (TX1)| ESP32 RX <- Due TX |
+| GPIO5    | Pin 19 (RX1)| ESP32 TX -> Due RX |
+| GPIO6    | Pin 18 (TX1)| ESP32 RX <- Due TX |
 | GND      | GND         | Common ground |
 
-### Wiring: ESP32-S3 to W5500 Ethernet
+### Wiring: ESP32-S3 to Arduino Due
 
-| W5500 | ESP32-S3 | Function |
-|-------|----------|----------|
-| MOSI  | GPIO11   | SPI data out |
-| MISO  | GPIO13   | SPI data in |
-| SCK   | GPIO12   | SPI clock |
-| CS    | GPIO10   | Chip select |
-| RST   | GPIO9    | Reset (or tie to 3.3V) |
-| 3.3V  | 3.3V     | Power |
-| GND   | GND      | Ground |
+| ESP32-S3 | Arduino Due | Function |
+|----------|-------------|----------|
+| GPIO5    | Pin 19 (RX1)| ESP32 TX -> Due RX |
+| GPIO6    | Pin 18 (TX1)| ESP32 RX <- Due TX |
+| GND      | GND         | Common ground |
 
-### Ethernet Options
-
-The W5500 is the default Ethernet option, but alternatives exist depending on your requirements.
-
-#### SPI-Based Options (ESP32-S3 compatible)
-
-| Chip | Speed | MicroPython | Notes |
-|------|-------|-------------|-------|
-| **W5500** | 10/100 Mbps | `network.WIZNET5K` | Recommended. Hardware TCP/IP stack, 8 sockets |
-| W5100S | 10/100 Mbps | `network.WIZNET5K` | Older variant, 4 sockets |
-| ENC28J60 | 10 Mbps | Limited | Cheaper but slower, software TCP/IP stack |
-
-The W5500 is preferred for its hardware TCP/IP offloading and reliable MicroPython support.
-
-#### Native Ethernet (Original ESP32 only)
-
-The **original ESP32** (not S3) has a built-in RMII Ethernet MAC, enabling use of PHY chips like:
-
-| Option | Notes |
-|--------|-------|
-| **LAN8720 PHY module** | ~$3, requires specific RMII GPIO pins |
-| **Olimex ESP32-POE** | All-in-one board with Ethernet + Power over Ethernet |
-| **Olimex ESP32-Gateway** | ESP32 + Ethernet + WiFi gateway board |
-
-Native Ethernet advantages:
-- Faster and more reliable than SPI
-- Fewer GPIO pins used (dedicated RMII interface)
-- Native `network.LAN()` support in MicroPython
-
-**Trade-off:** The ESP32-S3 has more RAM and faster CPU than the original ESP32, but lacks native Ethernet. For fixed observatory installations where Ethernet reliability is critical (e.g., Stellarium connection), consider using an Olimex ESP32-POE instead. The controller code requires only minor changes to `ethernet.py` to use `network.LAN()`.
+**Note:** The ESP32-S3 Super Mini uses GPIO5/6 for UART. Full development boards may use different pins - check `config.h`.
 
 ---
 
@@ -139,10 +106,6 @@ Native Ethernet advantages:
 ### Prerequisites
 
 - [PlatformIO](https://platformio.org/) (VS Code extension or CLI)
-- Python 3.x with `esptool` and `mpremote`:
-  ```bash
-  pip install platformio esptool mpremote
-  ```
 
 ### 1. Arduino Due Firmware
 
@@ -156,35 +119,19 @@ pio run -e due -t upload
 pio device monitor -b 115200
 ```
 
-### 2. ESP32-S3 MicroPython
-
-#### Flash MicroPython (one-time)
-
-Download firmware from [micropython.org/download/ESP32_GENERIC_S3](https://micropython.org/download/ESP32_GENERIC_S3/)
+### 2. ESP32-S3 Controller
 
 ```bash
-# Erase flash (hold BOOT button while connecting if needed)
-esptool.py --chip esp32s3 --port COM5 erase_flash
+cd new_SRT_drive/esp32_controller_arduino
 
-# Flash MicroPython
-esptool.py --chip esp32s3 --port COM5 write_flash -z 0 ESP32_GENERIC_S3-*.bin
+# Build and upload
+pio run --target upload
+
+# Monitor serial output
+pio device monitor -b 115200
 ```
 
-Replace `COM5` with your port (`/dev/ttyUSB0` on Linux, `/dev/tty.usbserial-*` on Mac).
-
-#### Upload Controller Code
-
-```bash
-cd new_SRT_drive/esp32_controller
-
-# Upload all files
-mpremote connect COM5 cp *.py :
-
-# Reset to run
-mpremote connect COM5 reset
-```
-
-Or use **MicroPico** VS Code extension for easier development.
+The ESP32 controller uses Arduino/PlatformIO (not MicroPython) for better performance and reliability.
 
 ---
 
@@ -192,20 +139,30 @@ Or use **MicroPico** VS Code extension for easier development.
 
 ### ESP32-S3 Settings
 
-Edit `esp32_controller/config.py` before uploading:
+Most settings can be changed at runtime via the web interface **Settings** tab:
 
-```python
-# WiFi Access Point
-WIFI_AP_SSID = "SRT_Controller"
-WIFI_AP_PASSWORD = "radio1420"
+- Observer location (latitude/longitude)
+- Mount software limits (azimuth/altitude ranges)
+- Home position
+- Update tolerance (position deadband)
+- WiFi AP name and password
 
-# Serial pins to Arduino Due
-DUE_UART_TX = 17
-DUE_UART_RX = 18
+Settings are saved to ESP32 flash (NVS) and persist across reboots.
 
-# Observer location (for coordinate conversion)
-OBSERVER_LAT = 55.9    # Latitude (degrees)
-OBSERVER_LON = -4.3    # Longitude (west negative)
+Compile-time defaults are in `esp32_controller_arduino/src/config.h`:
+
+```cpp
+// WiFi Access Point
+#define WIFI_AP_SSID "SRT_Controller"
+#define WIFI_AP_PASSWORD "radio1420"
+
+// Serial pins to Arduino Due
+#define DUE_UART_TX 5
+#define DUE_UART_RX 6
+
+// Observer location (for coordinate conversion)
+#define OBSERVER_LAT 55.902426
+#define OBSERVER_LON -4.307865
 ```
 
 ### Arduino Due Pin Assignments
@@ -476,7 +433,7 @@ h1_observation_20240313_143000.h5
 
 ```
 new_SRT_drive/
-├── platformio.ini          # PlatformIO build config
+├── platformio.ini          # PlatformIO build config (Arduino Due)
 ├── README.md               # This file
 │
 ├── src/                    # Arduino Due firmware
@@ -485,17 +442,21 @@ new_SRT_drive/
 ├── include/
 │   └── config.h            # Due pin assignments, defaults
 │
-├── esp32_controller/       # ESP32-S3 MicroPython
-│   ├── boot.py             # WiFi/Ethernet startup
-│   ├── main.py             # Main application, tracking loop
-│   ├── config.py           # Settings (location, pins, limits)
-│   ├── wifi_manager.py     # WiFi AP/STA management
-│   ├── ethernet.py         # W5500 Ethernet support
-│   ├── web_server.py       # HTTP server & web UI
-│   ├── srt_serial.py       # Serial protocol to Due
-│   ├── coordinates.py      # RA/Dec/Galactic <-> Alt/Az
-│   ├── stellarium.py       # Stellarium telescope protocol
-│   └── help.html           # Full documentation page
+├── esp32_controller_arduino/   # ESP32-S3 Arduino/PlatformIO
+│   ├── platformio.ini          # ESP32 build config
+│   └── src/
+│       ├── main.cpp            # Main application, tracking loop
+│       ├── config.h            # Default settings
+│       ├── settings.cpp/h      # Runtime settings with NVS persistence
+│       ├── wifi_manager.cpp/h  # WiFi AP/STA management
+│       ├── web_server.cpp/h    # HTTP server & web UI
+│       ├── srt_serial.cpp/h    # Serial protocol to Due
+│       ├── coordinates.cpp/h   # RA/Dec/Galactic <-> Alt/Az
+│       ├── stellarium.cpp/h    # Stellarium telescope protocol
+│       ├── state.h             # Global state structure
+│       └── index_html.h        # Embedded web interface
+│
+├── esp32_controller_micropython/  # Legacy MicroPython version (deprecated)
 │
 ├── receiver_scheduler/     # Observation scheduling & data acquisition
 │   ├── h1_web_scheduler.py # Flask web scheduler with ESP32 integration

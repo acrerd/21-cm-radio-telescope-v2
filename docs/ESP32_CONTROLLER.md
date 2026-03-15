@@ -1,6 +1,6 @@
 # ESP32-S3 Controller - Technical Manual
 
-**Version 1.0**
+**Version 2.0 (Arduino/PlatformIO)**
 **Acre Road Observatory, Glasgow**
 
 ---
@@ -10,7 +10,7 @@
 1. [Overview](#1-overview)
 2. [Installation](#2-installation)
 3. [Configuration Reference](#3-configuration-reference)
-4. [Module Reference](#4-module-reference)
+4. [Source Code Structure](#4-source-code-structure)
 5. [HTTP API](#5-http-api)
 6. [Stellarium Protocol](#6-stellarium-protocol)
 7. [Coordinate System](#7-coordinate-system)
@@ -30,7 +30,8 @@ The ESP32-S3 controller provides the high-level interface for the SRT drive syst
 - **Coordinate transforms** from RA/Dec (J2000) to Alt/Az
 - **Ephemeris calculations** for Sun and Moon positions
 - **Time synchronization** via NTP or browser fallback
-- **Networking** via WiFi (AP + station) and optional Ethernet
+- **Runtime configurable settings** saved to flash (NVS)
+- **Networking** via WiFi (AP + station mode)
 
 ### Architecture
 
@@ -45,11 +46,12 @@ The ESP32-S3 controller provides the high-level interface for the SRT drive syst
                          +--------+---------+
                          |                  |
                          |    ESP32-S3      |
+                         |   (Arduino C++)  |
                          |                  |
-                         |  main.py         |
-                         |  coordinates.py  |
-                         |  web_server.py   |
-                         |  stellarium.py   |
+                         |  main.cpp        |
+                         |  coordinates.cpp |
+                         |  web_server.cpp  |
+                         |  stellarium.cpp  |
                          +--------+---------+
                                   |
                              UART Serial
@@ -59,20 +61,20 @@ The ESP32-S3 controller provides the high-level interface for the SRT drive syst
                          +------------------+
 ```
 
-### File Structure
+### Source File Structure
 
-| File | Purpose | Size |
-|------|---------|------|
-| `boot.py` | WiFi/Ethernet initialization on startup | ~0.5 KB |
-| `main.py` | Main application, tracking loop, time sync | ~4.5 KB |
-| `config.py` | All configuration settings | ~1.2 KB |
-| `coordinates.py` | Astronomical coordinate transforms | ~17 KB |
-| `web_server.py` | HTTP server and web interface | ~34 KB |
-| `stellarium.py` | Stellarium telescope protocol | ~3.5 KB |
-| `srt_serial.py` | Serial communication with Due | ~5 KB |
-| `wifi_manager.py` | WiFi AP/station management | ~4 KB |
-| `ethernet.py` | W5500 Ethernet management | ~5 KB |
-| `help.html` | Full documentation (served at /docs) | ~16 KB |
+| File | Purpose |
+|------|---------|
+| `src/main.cpp` | Main application, tracking loop, time sync |
+| `src/config.h` | Default configuration values |
+| `src/settings.cpp/h` | Runtime settings with NVS persistence |
+| `src/coordinates.cpp/h` | Astronomical coordinate transforms |
+| `src/web_server.cpp/h` | HTTP server and web interface |
+| `src/stellarium.cpp/h` | Stellarium telescope protocol |
+| `src/srt_serial.cpp/h` | Serial communication with Due |
+| `src/wifi_manager.cpp/h` | WiFi AP/station management |
+| `src/state.h` | Global state structure |
+| `src/index_html.h` | Embedded web interface HTML |
 
 ---
 
@@ -80,291 +82,148 @@ The ESP32-S3 controller provides the high-level interface for the SRT drive syst
 
 ### Prerequisites
 
-- ESP32-S3 development board
-- MicroPython firmware (ESP32_GENERIC_S3)
-- `mpremote` tool: `pip install mpremote`
+- ESP32-S3 development board (or ESP32-S3 Super Mini)
+- [PlatformIO](https://platformio.org/) (VS Code extension or CLI)
+- USB cable
 
-### Flash MicroPython
-
-```bash
-# Download firmware from:
-# https://micropython.org/download/ESP32_GENERIC_S3/
-
-# Erase flash (hold BOOT button if needed)
-esptool.py --chip esp32s3 --port COM5 erase_flash
-
-# Flash firmware
-esptool.py --chip esp32s3 --port COM5 write_flash -z 0 ESP32_GENERIC_S3-*.bin
-```
-
-### Upload Controller Code
+### Build and Upload
 
 ```bash
-cd esp32_controller
+cd new_SRT_drive/esp32_controller_arduino
 
-# Upload all Python files
-mpremote connect COM5 cp *.py :
+# Build
+pio run
 
-# Upload help page
-mpremote connect COM5 cp help.html :
+# Upload
+pio run --target upload
 
-# Reset to run
-mpremote connect COM5 reset
+# Monitor serial output
+pio device monitor
 ```
 
 ### Verify Installation
 
-```bash
-# Connect to REPL
-mpremote connect COM5
+After upload, the serial monitor should show:
 
-# Check files
->>> import os
->>> os.listdir()
-['boot.py', 'main.py', 'config.py', ...]
+```
+SRT Controller starting...
+Settings loaded from NVS
+Due serial initialized
+Connecting to WiFi: <saved_network>
+...
+Async web server listening on port 80
+Stellarium async server listening on port 10001
+Free memory: 255000 bytes
+WiFi IP: 192.168.x.x
+AP IP: 192.168.4.1
 ```
 
 ---
 
 ## 3. Configuration Reference
 
-All settings are in `config.py`. Edit before uploading.
+### Compile-Time Defaults (config.h)
 
-### WiFi Access Point
+These values are used as defaults when no saved settings exist:
 
-```python
-WIFI_AP_SSID = "SRT_Controller"    # AP network name
-WIFI_AP_PASSWORD = "radio1420"      # AP password (min 8 chars)
+```cpp
+// WiFi Access Point
+#define WIFI_AP_SSID "SRT_Controller"
+#define WIFI_AP_PASSWORD "radio1420"
+
+// Serial connection to Arduino Due
+#define DUE_UART_TX 5   // ESP32-S3 GPIO -> Due RX (pin 19)
+#define DUE_UART_RX 6   // ESP32-S3 GPIO <- Due TX (pin 18)
+#define DUE_BAUD_RATE 115200
+
+// Observer location (Acre Road Observatory, Glasgow)
+#define OBSERVER_LAT 55.902426
+#define OBSERVER_LON -4.307865
+
+// Mount software limits (degrees)
+#define MOUNT_AZ_MIN 2.0
+#define MOUNT_AZ_MAX 353.0
+#define MOUNT_ALT_MIN 0.0
+#define MOUNT_ALT_MAX 90.0
+
+// Home position (degrees)
+#define HOME_ALT 0.0
+#define HOME_AZ 180.0
+
+// Position deadband (degrees)
+#define POSITION_DEADBAND 0.25
 ```
 
-The AP is always active for configuration access at `192.168.4.1`.
+### Runtime Settings (Web Interface)
 
-### Serial Connection to Arduino Due
+Settings can be changed via the web interface Settings tab:
 
-```python
-DUE_UART_TX = 17        # ESP32 GPIO -> Due RX (Pin 19)
-DUE_UART_RX = 18        # ESP32 GPIO <- Due TX (Pin 18)
-DUE_BAUD_RATE = 115200  # Must match Due firmware
-```
+| Setting | Description | Default |
+|---------|-------------|---------|
+| Observer Lat/Lon | Observatory coordinates | Glasgow |
+| Software Limits | Az/Alt min/max for tracking | 2-353, 0-90 |
+| Home Position | Park position when target below horizon | Alt=0, Az=180 |
+| Update Tolerance | Minimum position change to trigger update | 0.25 deg |
+| Page Name | Web interface title | "SRT Controller" |
+| AP SSID/Password | WiFi access point credentials | SRT_Controller/radio1420 |
 
-### W5500 Ethernet (Optional)
-
-```python
-ETH_ENABLED = True      # Set False to disable Ethernet
-ETH_SPI_ID = 1          # SPI bus number
-ETH_SCK = 12            # SPI clock
-ETH_MOSI = 11           # SPI data out
-ETH_MISO = 13           # SPI data in
-ETH_CS = 10             # Chip select
-ETH_RST = 9             # Reset (or None if tied to 3.3V)
-
-# IP Configuration
-ETH_USE_DHCP = True     # True for DHCP, False for static
-ETH_STATIC_IP = "192.168.1.100"
-ETH_STATIC_MASK = "255.255.255.0"
-ETH_STATIC_GW = "192.168.1.1"
-ETH_STATIC_DNS = "8.8.8.8"
-```
-
-### Observer Location
-
-```python
-OBSERVER_LAT = 55.9     # Latitude in degrees (north positive)
-OBSERVER_LON = -4.3     # Longitude in degrees (east positive, west negative)
-```
-
-**Critical:** Set these to your observatory location for accurate coordinate transforms.
-
-### Server Ports
-
-```python
-STELLARIUM_PORT = 10001  # Stellarium telescope protocol
-WEB_PORT = 80            # HTTP web interface
-NTP_SERVER = "pool.ntp.org"
-```
-
-### Mount Software Limits
-
-These must match the Arduino Due software limits for proper operation:
-
-```python
-MOUNT_AZ_MIN = 2.0      # Azimuth minimum (degrees)
-MOUNT_AZ_MAX = 353.0    # Azimuth maximum (degrees)
-MOUNT_ALT_MIN = 0.0     # Altitude minimum (degrees)
-MOUNT_ALT_MAX = 90.0    # Altitude maximum (degrees)
-
-# Home position - telescope parks here when waiting
-HOME_ALT = 0.0          # Home altitude (degrees)
-HOME_AZ = 180.0         # Home azimuth (degrees)
-```
-
-The ESP32 uses these limits for tracking control. When a target is below horizon, the telescope parks at home. When a circumpolar target exits azimuth limits, tracking waits for wrap-around.
+Settings are saved to ESP32 flash (NVS) and persist across reboots.
 
 ---
 
-## 4. Module Reference
+## 4. Source Code Structure
 
-### main.py
+### main.cpp
 
 Main application entry point and tracking loop.
 
-**Global State Variables:**
-
-| Variable | Type | Description |
-|----------|------|-------------|
-| `current_ra` | float | Current target RA (hours, J2000) |
-| `current_dec` | float | Current target Dec (degrees, J2000) |
-| `target_alt` | float | Computed target altitude (degrees) |
-| `target_az` | float | Computed target azimuth (degrees) |
-| `tracking_enabled` | bool | Whether tracking is active |
-| `target_name` | str | "Sun", "Moon", "Gal l=x b=y", or None |
-| `time_synced` | bool | True if time has been set |
-| `time_source` | str | "NTP", "browser", or None |
-| `waiting_for_rise` | bool | True when target is below horizon |
-| `waiting_for_wrap` | bool | True when target is outside az limits |
-
 **Key Functions:**
 
-- `sync_time_ntp()` - Sync time from NTP server
-- `set_time_from_timestamp(unix_ts)` - Set time from browser
-- `get_time_status()` - Return time sync status dict
-- `tracking_loop(srt)` - Background thread: RA/Dec to Alt/Az conversion
+- `setup()` - Initialize hardware, WiFi, web server
+- `loop()` - Handle servers, update tracking
+- `updateTracking()` - Convert RA/Dec to Alt/Az, send to Due
+- `syncTimeNTP()` - Sync time from NTP server
 
 **Tracking Loop Behavior:**
 
-1. Runs every 1 second when `tracking_enabled` is True
+1. Runs every 1 second when `trackingEnabled` is true
 2. For Sun/Moon targets, refreshes ephemeris every 30 seconds
 3. Converts current RA/Dec to Alt/Az using current time
-4. Checks mount software limits before sending commands:
-   - **Altitude**: Must be within `MOUNT_ALT_MIN` to `MOUNT_ALT_MAX`
-   - **Azimuth**: Must be within `MOUNT_AZ_MIN` to `MOUNT_AZ_MAX`
-5. Sends position to Due if within all limits
+4. Checks mount software limits before sending commands
+5. Sends position to Due if within limits and changed beyond deadband
 
-**Below-Horizon Handling:**
+### coordinates.cpp
 
-When a tracked target is below the horizon (altitude < 0°):
+Astronomical coordinate transformations. All functions are pure.
 
-1. The telescope parks at the home position (Alt=0°, Az=180°)
-2. Tracking enters "waiting for rise" state
-3. The controller continues computing the target position each second
-4. When the target rises above 0°, tracking resumes automatically
+| Function | Input | Output |
+|----------|-------|--------|
+| `raDecToAltAz()` | RA (h), Dec (deg) | Alt, Az (deg) |
+| `altAzToRaDec()` | Alt, Az (deg) | RA (h), Dec (deg) |
+| `galacticToEquatorial()` | l, b (deg) | RA (h), Dec (deg) |
+| `getSunPosition()` | (none) | RA (h), Dec (deg) |
+| `getMoonPosition()` | (none) | RA (h), Dec (deg) |
 
-The web interface shows `[WAITING - Below horizon]` when in this state.
-
-**Circumpolar Wrap-Around Handling:**
-
-For circumpolar sources (declination > 90° - latitude), the azimuth will eventually exceed the mount limits when tracking through lower culmination (near the northern horizon). The controller handles this automatically:
-
-1. When azimuth exits the valid range (e.g., passes 353°), tracking enters "waiting" state
-2. The controller continues computing the target position but does not send commands
-3. When the source reappears within valid azimuth range (e.g., after passing through 0° and reaching 2°), tracking resumes
-4. The telescope repositions to the new azimuth and continues tracking
-
-The web interface shows `[WAITING - Az limits]` when in this state.
-
-### coordinates.py
-
-Astronomical coordinate transformations. All functions are pure (no side effects).
-
-**Coordinate Functions:**
-
-| Function | Input | Output | Description |
-|----------|-------|--------|-------------|
-| `ra_dec_to_alt_az(ra, dec, lat, lon)` | RA (h), Dec (deg) | Alt, Az (deg) | J2000 RA/Dec to horizon coords |
-| `alt_az_to_ra_dec(alt, az, lat, lon)` | Alt, Az (deg) | RA (h), Dec (deg) | Horizon to J2000 RA/Dec |
-| `galactic_to_equatorial(l, b)` | l, b (deg) | RA (h), Dec (deg) | Galactic to J2000 equatorial |
-| `equatorial_to_galactic(ra, dec)` | RA (h), Dec (deg) | l, b (deg) | J2000 equatorial to galactic |
-| `get_sun_position()` | (none) | RA (h), Dec (deg) | Current Sun position (J2000) |
-| `get_moon_position()` | (none) | RA (h), Dec (deg) | Current Moon position (J2000) |
-
-**Low-Level Functions:**
-
-| Function | Description |
-|----------|-------------|
-| `julian_date(y, m, d, h, m, s)` | Calendar to Julian Date |
-| `gmst(jd)` | Greenwich Mean Sidereal Time (hours) |
-| `precess_j2000_to_date(ra, dec, jd)` | J2000 to equinox of date |
-| `precess_date_to_j2000(ra, dec, jd)` | Equinox of date to J2000 |
-
-### srt_serial.py
+### srt_serial.cpp
 
 Serial communication with Arduino Due.
 
-**SRTSerial Class:**
-
-```python
-srt = SRTSerial(tx_pin, rx_pin, baud_rate)
-
-# Commands
-srt.send_target(alt, az)   # Send position command
-srt.send_home()            # HOME command
-srt.send_stop()            # STOP command
-srt.send_reset()           # RESET command (clear fault)
-
-# Status
-srt.read_status()          # Read and parse status line
-srt.get_status_dict()      # Get parsed status as dict
-srt.is_ready()             # True if status is "Ready"
-srt.is_fault()             # True if status is "FAULT"
+```cpp
+srtSerial.sendTarget(alt, az);   // Send position command
+srtSerial.requestStatus();        // Request status update
+srtSerial.readStatus();           // Read and parse status
+srtSerial.getCurrentAlt();        // Get current position
+srtSerial.getStatusStr();         // Get status string
 ```
 
-**Status Dict Fields:**
+### settings.cpp
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `alt` | float | Current altitude (degrees) |
-| `az` | float | Current azimuth (degrees) |
-| `target_alt` | float | Target altitude if slewing |
-| `target_az` | float | Target azimuth if slewing |
-| `alt_current_a` | float | Altitude motor current (Amps) |
-| `az_current_a` | float | Azimuth motor current (Amps) |
-| `status` | str | "Ready", "Slewing", "Homing", "FAULT" |
-| `fault` | str | Fault description if in fault state |
-| `is_slewing` | bool | True if currently moving |
+Runtime settings with NVS persistence.
 
-### web_server.py
-
-HTTP server and web interface. Contains embedded HTML/CSS/JavaScript.
-
-**Key Functions:**
-
-- `start_web_server(srt)` - Start HTTP server (blocking)
-- `handle_http_request(client, srt)` - Route and handle requests
-- `send_response(client, body, content_type, status)` - Send HTTP response
-
-### wifi_manager.py
-
-WiFi connection management with credential storage.
-
-**WiFiManager Class:**
-
-```python
-from wifi_manager import wifi
-
-wifi.startup()              # Initialize (AP + try saved network)
-wifi.connect_sta(ssid, pw)  # Connect to network
-wifi.scan_networks()        # Scan for networks
-wifi.save_credentials(ssid, pw)  # Save credentials
-wifi.clear_credentials()    # Forget saved network
-wifi.get_status()           # Get connection status dict
-```
-
-Credentials are stored in `wifi_creds.json` on the ESP32 filesystem.
-
-### ethernet.py
-
-W5500 Ethernet management.
-
-**EthernetManager Class:**
-
-```python
-from ethernet import ethernet
-
-ethernet.init()             # Initialize W5500 hardware
-ethernet.connect()          # Connect (DHCP or static)
-ethernet.is_connected()     # Check connection status
-ethernet.get_ip()           # Get IP address
-ethernet.get_status()       # Get status dict
+```cpp
+settings.load();              // Load from NVS (called in setup)
+settings.save();              // Save to NVS
+settings.resetToDefaults();   // Reset to compile-time defaults
 ```
 
 ---
@@ -378,11 +237,11 @@ All endpoints return JSON unless noted.
 | Endpoint | Method | Description |
 |----------|--------|-------------|
 | `/` | GET | Web interface (HTML) |
-| `/docs` | GET | Full documentation (HTML) |
 | `/status` | GET | Mount position and status |
 | `/tracking` | GET | Current tracking state |
 | `/ephemeris` | GET | Sun and Moon positions |
 | `/time/status` | GET | Time sync status |
+| `/settings` | GET | Current settings |
 
 **Example: `/status` response**
 
@@ -410,123 +269,31 @@ All endpoints return JSON unless noted.
 | `/track/galactic` | `l`, `b` | Track galactic coords |
 | `/track/sun` | (none) | Track Sun |
 | `/track/moon` | (none) | Track Moon |
-| `/track` | `enable=0/1` | Enable/disable tracking |
+| `/tracking/enable` | `enable=0/1` | Enable/disable tracking |
 | `/direct` | `alt`, `az` | Go to Alt/Az directly |
 
-**Example: Track a source at RA=12h, Dec=+30deg**
+### Settings Endpoints
 
-```
-GET /track/radec?ra=12&dec=30
-```
-
-### Time Endpoints
-
-| Endpoint | Parameters | Description |
-|----------|------------|-------------|
-| `/time/status` | (none) | Get time sync status |
-| `/time/set` | `timestamp` | Set time from Unix timestamp |
+| Endpoint | Description |
+|----------|-------------|
+| `/settings` | GET current settings |
+| `/settings/save` | Save settings (with query params) |
+| `/settings/reset` | Reset to defaults |
 
 ### Network Endpoints
 
-| Endpoint | Parameters | Description |
-|----------|------------|-------------|
-| `/eth/status` | (none) | Ethernet status |
-| `/wifi/status` | (none) | WiFi status |
-| `/wifi/scan` | (none) | Scan for networks |
-| `/wifi/connect` | `ssid`, `password` | Connect to network |
-| `/wifi/forget` | (none) | Forget saved network |
-
-### External Scheduling
-
-Any scheduler can control the telescope via HTTP. All control endpoints return `{"ok": true}` on success.
-
-**Python example:**
-
-```python
-import requests
-
-ESP32_IP = "192.168.4.1"  # Or your network IP
-
-def track_source(ra_hours, dec_deg):
-    """Start tracking an RA/Dec position (J2000)"""
-    r = requests.get(f"http://{ESP32_IP}/track/radec",
-                     params={"ra": ra_hours, "dec": dec_deg})
-    return r.json()
-
-def track_galactic(l_deg, b_deg):
-    """Track galactic coordinates"""
-    r = requests.get(f"http://{ESP32_IP}/track/galactic",
-                     params={"l": l_deg, "b": b_deg})
-    return r.json()
-
-def stop_tracking():
-    requests.get(f"http://{ESP32_IP}/track", params={"enable": 0})
-
-def get_status():
-    return requests.get(f"http://{ESP32_IP}/status").json()
-
-# Example: observe Cygnus A
-track_source(ra_hours=19.991, dec_deg=40.734)
-```
-
-**Cron + curl example:**
-
-```bash
-# Track galactic center at midnight
-0 0 * * * curl "http://192.168.4.1/track/galactic?l=0&b=0"
-
-# Stop tracking at 2am
-0 2 * * * curl "http://192.168.4.1/track?enable=0"
-
-# Track the Sun during the day
-0 9 * * * curl "http://192.168.4.1/track/sun"
-0 17 * * * curl "http://192.168.4.1/track?enable=0"
-```
-
-**Observing schedule script:**
-
-```python
-import requests
-import time
-from datetime import datetime
-
-ESP32_IP = "192.168.4.1"
-SCHEDULE = [
-    {"hour": 22, "ra": 19.991, "dec": 40.734, "name": "Cyg A"},
-    {"hour": 23, "l": 0, "b": 0, "name": "Galactic Center"},
-    {"hour": 0, "ra": 5.576, "dec": 22.014, "name": "Crab Nebula"},
-]
-
-for obs in SCHEDULE:
-    # Wait for scheduled hour (simplified)
-    while datetime.now().hour != obs["hour"]:
-        time.sleep(60)
-
-    if "l" in obs:
-        requests.get(f"http://{ESP32_IP}/track/galactic",
-                    params={"l": obs["l"], "b": obs["b"]})
-    else:
-        requests.get(f"http://{ESP32_IP}/track/radec",
-                    params={"ra": obs["ra"], "dec": obs["dec"]})
-    print(f"Now observing: {obs['name']}")
-```
+| Endpoint | Description |
+|----------|-------------|
+| `/wifi/status` | WiFi connection status |
+| `/wifi/scan` | Scan for networks |
+| `/wifi/connect` | Connect to network |
+| `/wifi/forget` | Forget saved network |
 
 ---
 
 ## 6. Stellarium Protocol
 
 The controller implements the Stellarium telescope protocol on TCP port 10001.
-
-### Protocol Format
-
-**Goto Command (from Stellarium):**
-- Length: 20 bytes
-- Message type: 0
-- RA/Dec as unsigned 32-bit integers
-
-**Position Report (to Stellarium):**
-- Length: 24 bytes
-- Current position in same format
 
 ### Stellarium Setup
 
@@ -553,83 +320,48 @@ The controller implements the Stellarium telescope protocol on TCP port 10001.
 
 All equatorial coordinates use **J2000** (epoch J2000.0, equinox J2000.0):
 
-- Standard for modern star catalogs (Hipparcos, Tycho, etc.)
+- Standard for modern star catalogs
 - Used by Stellarium, SIMBAD, and most planetarium software
-- Matches ICRS to within milliarcseconds
-
-### Coordinate Flow
-
-```
-Input (J2000)              Internal                    Output
-+-------------+    +-------------------+    +------------------+
-| RA/Dec      | -> | Precess to date   | -> | Hour Angle       |
-| (J2000)     |    | Calculate HA      |    | Alt/Az           |
-+-------------+    | Spherical trig    |    +------------------+
-                   +-------------------+              |
-                                                      v
-                                              +------------------+
-                                              | Arduino Due      |
-                                              | (motor control)  |
-                                              +------------------+
-```
 
 ### Precession
 
-The controller applies IAU 1976 precession to convert J2000 coordinates to the equinox of the current date before computing Alt/Az. This is necessary because:
-
-1. The celestial pole moves ~50 arcsec/year due to precession
-2. Hour angle calculation requires coordinates at current equinox
-3. Error would be ~0.7 deg without precession correction (for 2025)
+The controller applies IAU 1976 precession to convert J2000 coordinates to the equinox of the current date before computing Alt/Az.
 
 ### Sun and Moon
 
-Sun and Moon positions are calculated using simplified algorithms that produce **apparent** coordinates (equinox of date). These are automatically converted to J2000 before being returned by `get_sun_position()` and `get_moon_position()`.
+Sun and Moon positions are calculated using simplified algorithms:
 
-**Accuracy:**
-- Sun: ~1 arcmin
-- Moon: ~5-10 arcmin (due to simplified orbital model)
-
-### Pointing Accuracy
-
-The coordinate transforms achieve <0.5 arcmin RMS error compared to astropy/ERFA for typical observing scenarios. Larger errors may occur:
-
-- Near the zenith (azimuth becomes ill-defined)
-- At very low altitudes (atmospheric refraction, not modeled)
+- **Sun accuracy:** ~1 arcmin
+- **Moon accuracy:** ~5-10 arcmin
 
 ---
 
 ## 8. Time Synchronization
 
-Accurate UTC time is required for coordinate transforms. The ESP32 obtains time via:
+Accurate UTC time is required for coordinate transforms.
 
 ### NTP (Primary)
 
-On startup, the controller attempts NTP sync 3 times:
+On startup with network connection:
 
-```python
-ntptime.host = "pool.ntp.org"
-ntptime.settime()
+```cpp
+configTime(0, 0, "pool.ntp.org");
 ```
 
 ### Browser Fallback
 
-If NTP fails (no internet), the web interface automatically sends browser time:
-
-```javascript
-// On page load
-fetch('/time/set?timestamp=' + Math.floor(Date.now() / 1000))
-```
+If NTP fails, the web interface automatically sends browser time on page load.
 
 ### Time Status
 
-Check time status via `/time/status`:
+Check via `/time/status`:
 
 ```json
 {
   "synced": true,
   "source": "NTP",
-  "utc": "2024-03-13 14:30:00",
-  "timestamp": 1710339000
+  "utc": "2026-03-15 14:30:00",
+  "timestamp": 1773766200
 }
 ```
 
@@ -637,21 +369,20 @@ Check time status via `/time/status`:
 
 ## 9. Networking
 
-### Network Priority
+### Network Modes
 
-1. **Ethernet** (if enabled and connected) - Best for Stellarium
-2. **WiFi Station** (if connected to saved network)
-3. **WiFi AP** (always active at 192.168.4.1)
+The ESP32 operates in **AP+STA** mode:
 
-All interfaces can be active simultaneously. The AP always remains available for configuration.
+1. **WiFi Access Point** - Always active at 192.168.4.1
+2. **WiFi Station** - Connects to saved network if available
 
 ### Startup Sequence
 
 1. Start WiFi Access Point
-2. Initialize Ethernet (if enabled)
-3. Connect Ethernet (DHCP or static)
-4. Try saved WiFi network (if configured)
-5. Continue - AP always available as fallback
+2. Load saved WiFi credentials
+3. Attempt connection to saved network (15s timeout)
+4. If connected: disable AP (single network mode)
+5. If failed: keep AP active for configuration
 
 ### IP Addresses
 
@@ -659,57 +390,43 @@ All interfaces can be active simultaneously. The AP always remains available for
 |-----------|------------|
 | WiFi AP | 192.168.4.1 (fixed) |
 | WiFi Station | DHCP assigned |
-| Ethernet | DHCP or static (configurable) |
 
 ---
 
 ## 10. Development
 
-### REPL Access
+### Serial Monitor
 
 ```bash
-mpremote connect COM5
+pio device monitor -b 115200
 ```
-
-### Testing Coordinates
-
-```python
->>> from coordinates import ra_dec_to_alt_az, get_sun_position
->>>
->>> # Get Sun position
->>> ra, dec = get_sun_position()
->>> print(f"Sun: RA={ra:.4f}h, Dec={dec:.2f}deg")
->>>
->>> # Convert to Alt/Az
->>> from config import OBSERVER_LAT, OBSERVER_LON
->>> alt, az = ra_dec_to_alt_az(ra, dec, OBSERVER_LAT, OBSERVER_LON)
->>> print(f"Alt={alt:.1f}, Az={az:.1f}")
-```
-
-### Memory Usage
-
-```python
->>> import gc
->>> gc.collect()
->>> gc.mem_free()
->>> gc.mem_alloc()
-```
-
-Typical usage: ~60-80 KB code, leaving >2 MB free on 4 MB ESP32-S3.
 
 ### Debug Output
 
-All modules print status messages to the serial console:
+Debug messages are only printed when USB Serial is connected:
 
+```cpp
+#define DBG(x) if (Serial) { x; }
+DBG(Serial.println("Debug message"));
 ```
-SRT Controller starting...
-NTP time synced
-W5500 initialized, MAC: de:ad:be:ef:00:01
-Ethernet connected: 192.168.1.100
-AP active: SRT_Controller
-AP IP: 192.168.4.1
-Web server listening on port 80
-Stellarium server listening on port 10001
+
+This allows the controller to run without a serial terminal attached.
+
+### Memory Usage
+
+Typical usage: ~42% flash, ~14% RAM on ESP32-S3 with 4MB flash.
+
+### Building
+
+```bash
+# Build only
+pio run
+
+# Build and upload
+pio run --target upload
+
+# Clean build
+pio run --target clean
 ```
 
 ---
@@ -721,47 +438,32 @@ Stellarium server listening on port 10001
 | Problem | Solution |
 |---------|----------|
 | Can't connect to 192.168.4.1 | Verify connected to SRT_Controller WiFi |
-| Page loads but no data | Check Due serial connection, verify baud rate |
-| Buttons don't respond | Check browser console for JavaScript errors |
+| Page loads but no data | Check Due serial connection |
+| Settings won't save | Check NVS, try reset to defaults |
 
 ### Coordinate Issues
 
 | Problem | Solution |
 |---------|----------|
-| Position doesn't match sky | Verify OBSERVER_LAT/LON in config.py |
-| Large errors (>1 deg) | Check time sync status on web interface |
-| Sun/Moon wrong by ~20 arcmin | Normal - simplified ephemeris accuracy |
+| Position doesn't match sky | Check observer lat/lon in settings |
+| Large errors (>1 deg) | Check time sync status |
+| Sun/Moon wrong by ~20 arcmin | Normal - simplified ephemeris |
 
 ### Stellarium Issues
 
 | Problem | Solution |
 |---------|----------|
-| Can't connect | Check IP and port 10001, verify ESP32 running |
-| Connects but no slew | Click object then Ctrl+1 (not just click) |
+| Can't connect | Check IP and port 10001 |
+| Connects but no slew | Click object then Ctrl+1 |
 | Wrong position shown | Verify time is synced |
-
-### Ethernet Issues
-
-| Problem | Solution |
-|---------|----------|
-| "WIZNET5K not available" | Rebuild MicroPython with W5500 support |
-| "No chip detected" | Check SPI wiring, verify 3.3V power |
-| "Connection timeout" | Check cable, try static IP |
 
 ### Serial Issues
 
 | Problem | Solution |
 |---------|----------|
 | No status updates | Check TX/RX wiring (cross-connect) |
-| Garbled data | Verify baud rate matches Due (115200) |
-| "FAULT" status | Check Due USB serial for details |
-
-### Memory Issues
-
-| Problem | Solution |
-|---------|----------|
-| MemoryError on startup | Reduce HTML_PAGE size, use help.html |
-| Crashes during operation | Check for memory leaks, add gc.collect() |
+| Garbled data | Verify baud rate (115200) |
+| Works only with terminal | Normal behavior before USB CDC fix |
 
 ---
 
@@ -777,17 +479,12 @@ Stellarium server listening on port 10001
 | Web Port | 80 |
 | Stellarium Port | 10001 |
 
-### Pin Assignments (Default)
+### Pin Assignments (ESP32-S3 Super Mini)
 
-| Function | ESP32-S3 GPIO |
-|----------|---------------|
-| Due TX | 17 |
-| Due RX | 18 |
-| ETH SCK | 12 |
-| ETH MOSI | 11 |
-| ETH MISO | 13 |
-| ETH CS | 10 |
-| ETH RST | 9 |
+| Function | GPIO |
+|----------|------|
+| Due TX | 5 |
+| Due RX | 6 |
 
 ### Coordinate Ranges
 
