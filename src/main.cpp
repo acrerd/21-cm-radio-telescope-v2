@@ -15,11 +15,35 @@
  *   LOAD                 - Load configuration from flash
  *   DEFAULTS             - Reset to factory defaults
  *   HELP                 - Show command help
+ *
+ * ESP32 Bridge Commands (WT32-ETH01 via Native USB):
+ *   ESPBOOT              - Put ESP32 in download mode for programming
+ *   ESPRESET             - Reset ESP32 to normal operation
  */
 
 #include <Arduino.h>
 #include <DueFlashStorage.h>
 #include "config.h"
+
+// =============================================================================
+// ESP32 BRIDGE CONFIGURATION (WT32-ETH01 programming via Native USB)
+// =============================================================================
+// The Due's Native USB port (SerialUSB) is permanently bridged to Serial1,
+// allowing direct communication with the WT32-ETH01. This enables:
+//   1. Real-time ESP32 debug output on Native USB
+//   2. Programming the ESP32 without a separate USB-TTL adapter
+//
+// Hardware connections:
+//   Due Pin 18 (TX1) -> WT32-ETH01 GPIO3 (RXD)
+//   Due Pin 19 (RX1) -> WT32-ETH01 GPIO1 (TXD)
+//   Due Pin 2        -> WT32-ETH01 GPIO0 (boot mode)
+//   Due Pin 3        -> WT32-ETH01 EN (reset)
+// =============================================================================
+
+#define ESP_BRIDGE_ENABLED  1       // Set to 0 to disable bridge functionality
+#define ESP_GPIO0_PIN       2       // Controls ESP32 boot mode
+#define ESP_EN_PIN          3       // Controls ESP32 reset
+#define ESP_BRIDGE_BAUD     115200  // Baud rate for Native USB bridge
 
 // =============================================================================
 // SIMULATION MODE - Override hardware I/O with software stubs
@@ -95,6 +119,13 @@ const char* getFaultString();
 void outputStatus();
 void outputStatusIfChanged();
 void updatePrevStatus();
+
+#if ESP_BRIDGE_ENABLED
+void setupESPBridge();
+void espEnterBootMode();
+void espReset();
+void handleESPBridge();
+#endif
 
 // =============================================================================
 // STATE DEFINITIONS
@@ -1190,6 +1221,12 @@ void showHelp() {
     printAllLn("  SAVE             - Save config to flash");
     printAllLn("  LOAD             - Load config from flash");
     printAllLn("  DEFAULTS         - Reset to factory defaults");
+    #if ESP_BRIDGE_ENABLED
+    printAllLn("");
+    printAllLn("ESP32 Bridge (Native USB <-> Serial1):");
+    printAllLn("  ESPBOOT          - Put ESP32 in download mode");
+    printAllLn("  ESPRESET         - Reset ESP32 to normal mode");
+    #endif
     printAllLn("");
     printAllLn("SET parameters:");
     printAllLn("  ALTHWMIN, ALTHWMAX - Altitude hardware limits (deg)");
@@ -1399,6 +1436,14 @@ void processCommand(const char* buffer) {
         loadDefaults();
         printAllLn("Configuration reset to defaults.");
     }
+    #if ESP_BRIDGE_ENABLED
+    else if (strEqualsIgnoreCase(cmd, "ESPBOOT") || strEqualsIgnoreCase(cmd, "BOOTMODE")) {
+        espEnterBootMode();
+    }
+    else if (strEqualsIgnoreCase(cmd, "ESPRESET") || strEqualsIgnoreCase(cmd, "RESETESP")) {
+        espReset();
+    }
+    #endif
     else {
         // Try as simple two-number command
         if (sscanf(buffer, "%f %f", &val1, &val2) == 2) {
@@ -1499,6 +1544,63 @@ void processSerialInput() {
 }
 
 // =============================================================================
+// ESP32 BRIDGE FUNCTIONS (WT32-ETH01)
+// =============================================================================
+
+#if ESP_BRIDGE_ENABLED
+
+void setupESPBridge() {
+    // Initialize Native USB for ESP32 bridge
+    SerialUSB.begin(ESP_BRIDGE_BAUD);
+
+    // Setup boot mode control pins
+    pinMode(ESP_GPIO0_PIN, OUTPUT);
+    pinMode(ESP_EN_PIN, OUTPUT);
+    digitalWrite(ESP_GPIO0_PIN, HIGH);  // Normal boot (not download mode)
+    digitalWrite(ESP_EN_PIN, HIGH);     // Not in reset
+}
+
+void espEnterBootMode() {
+    Serial.println("ESP32: Entering download mode...");
+    Serial.println("ESP32: Use Native USB port for upload.");
+
+    digitalWrite(ESP_GPIO0_PIN, LOW);   // GPIO0 LOW = download mode
+    delay(10);
+    digitalWrite(ESP_EN_PIN, LOW);      // Reset
+    delay(100);
+    digitalWrite(ESP_EN_PIN, HIGH);     // Release reset (GPIO0 still LOW)
+
+    Serial.println("ESP32: Ready for upload.");
+}
+
+void espReset() {
+    Serial.println("ESP32: Resetting to normal mode...");
+
+    digitalWrite(ESP_GPIO0_PIN, HIGH);  // Ensure normal boot mode
+    delay(10);
+    digitalWrite(ESP_EN_PIN, LOW);      // Reset
+    delay(100);
+    digitalWrite(ESP_EN_PIN, HIGH);     // Release reset
+
+    Serial.println("ESP32: Reset complete.");
+}
+
+// Call this at the start of loop() to bridge SerialUSB <-> Serial1
+void handleESPBridge() {
+    // Forward Native USB -> Serial1 (to ESP32)
+    while (SerialUSB.available()) {
+        Serial1.write(SerialUSB.read());
+    }
+    // Forward Serial1 -> Native USB (from ESP32)
+    while (Serial1.available()) {
+        int c = Serial1.read();
+        SerialUSB.write(c);
+    }
+}
+
+#endif // ESP_BRIDGE_ENABLED
+
+// =============================================================================
 // SETUP AND MAIN LOOP
 // =============================================================================
 
@@ -1547,16 +1649,24 @@ void setup() {
     Serial1.begin(SERIAL_BAUD);
     #endif
 
+    #if ESP_BRIDGE_ENABLED
+    // Initialize ESP32 bridge (Native USB <-> Serial1)
+    setupESPBridge();
+    #endif
+
     // Load configuration from flash (or use defaults)
     if (!loadConfig()) {
         loadDefaults();
     }
 
     printAllLn("=================================");
-    printAllLn("SRT Drive Controller v1.1");
+    printAllLn("SRT Drive Controller v1.2");
     printAllLn("Acre Road Observatory, Glasgow");
     #ifdef SIMULATION_MODE
     printAllLn("*** SIMULATION MODE ***");
+    #endif
+    #if ESP_BRIDGE_ENABLED
+    printAllLn("ESP32 Bridge: Native USB <-> Serial1");
     #endif
     printAllLn("=================================");
     printAllLn("");
@@ -1580,6 +1690,11 @@ void setup() {
 }
 
 void loop() {
+    #if ESP_BRIDGE_ENABLED
+    // Bridge Native USB <-> Serial1 (ESP32) - runs every loop, always active
+    handleESPBridge();
+    #endif
+
     // Safety checks (always run)
     runSafetyChecks();
 
