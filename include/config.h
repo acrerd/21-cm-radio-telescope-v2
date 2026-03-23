@@ -156,9 +156,10 @@ typedef struct {
 
 #ifdef SIMULATION_MODE
 
-#define SIM_MAX_SPEED_DEG_S     18.0    // Simulated max motor speed (degrees/second)
-#define SIM_INITIAL_AZ_DEG      180.0   // Starting azimuth before homing (degrees)
-#define SIM_INITIAL_ALT_DEG     45.0    // Starting altitude before homing (degrees)
+#define SIM_MAX_SPEED_DEG_S     180.0   // Simulated max motor speed (degrees/second) - fast for testing
+#define SIM_INITIAL_AZ_DEG      20.0    // Starting azimuth before homing (degrees) - close to limit
+#define SIM_INITIAL_ALT_DEG     10.0    // Starting altitude before homing (degrees) - close to limit
+#define SIM_STALL_TIMEOUT_MS    200     // Faster stall detection in simulation (ms)
 
 #endif // SIMULATION_MODE
 

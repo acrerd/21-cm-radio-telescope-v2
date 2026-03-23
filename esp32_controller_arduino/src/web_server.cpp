@@ -2,6 +2,12 @@
 
 #include "web_server.h"
 #include "config.h"
+
+// Ethernet state (defined in main.cpp for WT32-ETH01)
+#if ETHERNET_ENABLED
+extern bool ethConnected;
+extern String ethIP;
+#endif
 #include "settings.h"
 #include "state.h"
 #include "wifi_manager.h"
@@ -221,11 +227,22 @@ void setupWebServer() {
         }
     });
 
-    // WiFi status
+    // WiFi/Network status
     webServer.on("/wifi/status", HTTP_GET, [](AsyncWebServerRequest *request) {
         String savedSSID, savedPass;
         wifiManager.loadCredentials(savedSSID, savedPass);
         String json = "{";
+        // Ethernet status (WT32-ETH01 only)
+        #if ETHERNET_ENABLED
+        json += "\"eth_available\":true,";
+        json += "\"eth_connected\":" + String(ethConnected ? "true" : "false") + ",";
+        json += "\"eth_ip\":\"" + ethIP + "\",";
+        #else
+        json += "\"eth_available\":false,";
+        json += "\"eth_connected\":false,";
+        json += "\"eth_ip\":\"\",";
+        #endif
+        // WiFi status
         json += "\"ap_active\":" + String(wifiManager.isAPActive() ? "true" : "false") + ",";
         json += "\"ap_ssid\":\"" + settings.apSSID + "\",";
         json += "\"ap_ip\":\"" + (wifiManager.isAPActive() ? wifiManager.getAPIP() : String("")) + "\",";

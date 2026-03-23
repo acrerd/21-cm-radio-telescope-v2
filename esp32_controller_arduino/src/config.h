@@ -1,4 +1,5 @@
-// config.h - Configuration settings for ESP32-S3 SRT Controller
+// config.h - Configuration settings for SRT Controller
+// Supports ESP32-S3 and WT32-ETH01
 
 #ifndef CONFIG_H
 #define CONFIG_H
@@ -10,10 +11,33 @@
 // WiFi connection timeout (seconds)
 #define WIFI_CONNECT_TIMEOUT 15
 
-// Serial connection to Arduino Due (UART1)
-// ESP32-S3 Super Mini pinout
-#define DUE_UART_TX 5   // ESP32-S3 GPIO -> Due RX (pin 19)
-#define DUE_UART_RX 6   // ESP32-S3 GPIO <- Due TX (pin 18)
+// =============================================================================
+// Board-specific pin configuration
+// =============================================================================
+
+#ifdef BOARD_WT32_ETH01
+    // WT32-ETH01: Serial to Due via GPIO14/15 (avoids boot-sensitive pins)
+    #define DUE_UART_TX 14   // WT32 GPIO -> Due RX (pin 19)
+    #define DUE_UART_RX 15   // WT32 GPIO <- Due TX (pin 18)
+
+    // Ethernet PHY configuration (LAN8720) - pin numbers only
+    // The actual PHY type constants are defined by ETH.h
+    #define ETH_PHY_ADDR_CFG    1
+    #define ETH_PHY_MDC_PIN     23
+    #define ETH_PHY_MDIO_PIN    18
+    #define ETH_PHY_POWER_PIN   16
+
+    // Enable Ethernet support
+    #define ETHERNET_ENABLED 1
+#else
+    // ESP32-S3 Super Mini: Serial to Due via GPIO5/6
+    #define DUE_UART_TX 5    // ESP32-S3 GPIO -> Due RX (pin 19)
+    #define DUE_UART_RX 6    // ESP32-S3 GPIO <- Due TX (pin 18)
+
+    // No Ethernet on ESP32-S3 Super Mini
+    #define ETHERNET_ENABLED 0
+#endif
+
 #define DUE_BAUD_RATE 115200
 
 // Server ports

@@ -1,6 +1,6 @@
-# WT32-ETH01 Migration Plan
+# WT32-ETH01 Setup Guide
 
-**Status:** Planned
+**Status:** Implemented
 **Purpose:** Replace ESP32-S3 with WT32-ETH01 for native Ethernet support
 
 ---
@@ -89,39 +89,57 @@ The WT32-ETH01 is a compact ESP32 module with built-in LAN8720 Ethernet PHY. Unl
 
 ## 3. Wiring: WT32-ETH01 to Arduino Due
 
-### Recommended UART Pins
+### Important: TX0/RX0 vs TXD/RXD
 
-Use GPIO14 and GPIO15 for serial to Due (avoiding boot-sensitive pins):
+The WT32-ETH01 has **two different serial interfaces** with confusingly similar names:
 
-| WT32-ETH01 | Arduino Due | Function |
-|------------|-------------|----------|
-| GPIO14 | Pin 19 (RX1) | WT32 TX -> Due RX |
-| GPIO15 | Pin 18 (TX1) | WT32 RX <- Due TX |
-| GND | GND | Common ground |
-| 5V | 5V | Power (or separate supply) |
+| Label | GPIO | UART | Location | Notes |
+|-------|------|------|----------|-------|
+| **TX0** | GPIO1 | UART0 | 6-pin programming header | Use this! |
+| **RX0** | GPIO3 | UART0 | 6-pin programming header | Use this! |
+| TXD | GPIO17 | UART2 | Main board edge | **Conflicts with Ethernet!** |
+| RXD | GPIO5 | UART2 | Main board edge | Available but UART2 TX unusable |
 
-**Alternative:** GPIO32/GPIO33 are also safe choices if GPIO14/15 cause issues.
+**You MUST use TX0/RX0 (the 6-pin programming header), NOT TXD/RXD!**
 
-### Programming Connection
+### Due to WT32-ETH01 Connections (Runtime)
 
-The WT32-ETH01 requires a USB-TTL adapter for programming:
+| Arduino Due | WT32-ETH01 | Function | Wire Color |
+|-------------|------------|----------|------------|
+| Pin 18 (TX1) | **RX0** (GPIO3) | Data to ESP32 | Blue |
+| Pin 19 (RX1) | **TX0** (GPIO1) | Data from ESP32 | Green |
+| GND | GND | Common ground | Black |
+| 5V | 5V | Power | Red |
+
+**Note:** GPIO0 and EN are not connected to the Due. Programming is done externally.
+
+### Programming via USB-TTL Adapter
+
+For programming, disconnect the Due and use an external USB-TTL adapter:
 
 | USB-TTL | WT32-ETH01 |
 |---------|------------|
-| TX | RXD (GPIO3) |
-| RX | TXD (GPIO1) |
+| TX | RX0 (GPIO3) |
+| RX | TX0 (GPIO1) |
 | GND | GND |
 | 3.3V | 3V3 |
 
-**Boot Mode:** Hold IO0 LOW while pressing EN to enter flash mode.
+**Boot Mode Sequence (Manual Buttons):**
+1. Hold IO0 button (or jumper GPIO0 to GND)
+2. Press and release EN button
+3. Release IO0 button
+4. Upload firmware via PlatformIO
+5. ESP32 auto-resets to normal operation after upload
 
 ---
 
-## 4. Code Changes
+## 4. ESP32 Code (Implemented)
+
+The ESP32 firmware supports both ESP32-S3 and WT32-ETH01 from the same codebase using conditional compilation.
 
 ### 4.1 platformio.ini
 
-Replace the ESP32-S3 configuration:
+Both board environments are configured (use `pio run -e wt32-eth01` or `pio run -e esp32s3`):
 
 ```ini
 ; PlatformIO Configuration for WT32-ETH01
@@ -269,11 +287,11 @@ function updateNetworkStatus() {
 
 ---
 
-## 6. Dual-USB Architecture
+## 6. Dual-USB Architecture (Implemented)
 
 ### Overview
 
-The Arduino Due has two USB ports. We use both for a clean, always-on design:
+The Arduino Due has two USB ports. The Native USB provides serial monitoring for the ESP32:
 
 ```
                         Arduino Due
@@ -281,164 +299,98 @@ The Arduino Due has two USB ports. We use both for a clean, always-on design:
 PC USB #1 ─────────►│ Programming USB │◄──── Due debug, commands, status
                     │    (Serial)     │
                     │                 │
-PC USB #2 ─────────►│  Native USB     │◄──── ESP32 console & programming
+PC USB #2 ─────────►│  Native USB     │◄──── ESP32 serial monitoring
                     │  (SerialUSB)    │
                     │       ↕         │
-                    │    Serial1      │────► WT32-ETH01 (GPIO1/GPIO3)
-                    │                 │
-                    │    GPIO 2,3     │────► WT32-ETH01 (GPIO0, EN)
+                    │    Serial1      │────► WT32-ETH01 (TX0/RX0)
                     └─────────────────┘
+
+                   External USB-TTL ─────► WT32-ETH01 (for programming)
 ```
 
 **Programming USB (Serial):** Due programming, commands (HOME, STOP, etc.), status output
 
-**Native USB (SerialUSB):** Permanent bridge to ESP32 - always active, no mode switching
+**Native USB (SerialUSB):** Bidirectional serial bridge to ESP32 for monitoring
+
+**External USB-TTL:** Used for ESP32 programming (disconnect Due serial during programming)
 
 ### Hardware Connections
 
-| Due Pin | WT32-ETH01 | Function |
-|---------|------------|----------|
-| Pin 18 (TX1) | GPIO3 (RXD) | Serial data to ESP32 |
-| Pin 19 (RX1) | GPIO1 (TXD) | Serial data from ESP32 |
-| Pin 2 | GPIO0 (IO0) | Boot mode control |
-| Pin 3 | EN | Reset control |
-| GND | GND | Common ground |
-| 5V | 5V | Power |
+| Due Pin | WT32-ETH01 | Function | Wire Color |
+|---------|------------|----------|------------|
+| Pin 18 (TX1) | RX0 (GPIO3) | Serial data to ESP32 | Blue |
+| Pin 19 (RX1) | TX0 (GPIO1) | Serial data from ESP32 | Green |
+| GND | GND | Common ground | Black |
+| 5V | 5V | Power | Red |
 
-### Due Firmware Changes
+**IMPORTANT:** Use the 6-pin programming header pins (TX0/RX0), NOT the TXD/RXD pins on the main board edge!
 
-Add to the Due's `main.cpp`:
+### Due Firmware (Already Implemented)
+
+The bridge code in `src/main.cpp`:
 
 ```cpp
-// ===== Add near top, after includes =====
-#define ESP_GPIO0_PIN 2
-#define ESP_EN_PIN 3
+#define ESP_BRIDGE_ENABLED  1       // Set to 0 to disable bridge functionality
+#define ESP_BRIDGE_BAUD     115200  // Baud rate for ESP32 serial monitoring
 
-// ===== Add this function =====
+#if ESP_BRIDGE_ENABLED
+
 void setupESPBridge() {
-    // Initialize Native USB for ESP32 bridge
-    SerialUSB.begin(115200);
-
-    // Setup boot mode control pins
-    pinMode(ESP_GPIO0_PIN, OUTPUT);
-    pinMode(ESP_EN_PIN, OUTPUT);
-    digitalWrite(ESP_GPIO0_PIN, HIGH);  // Normal boot (not download mode)
-    digitalWrite(ESP_EN_PIN, HIGH);     // Not in reset
+    // Initialize Native USB for ESP32 serial monitoring
+    SerialUSB.begin(ESP_BRIDGE_BAUD);
 }
 
-void espEnterBootMode() {
-    Serial.println("ESP32: Entering download mode...");
-    digitalWrite(ESP_GPIO0_PIN, LOW);   // GPIO0 LOW = download mode
-    delay(10);
-    digitalWrite(ESP_EN_PIN, LOW);      // Reset
-    delay(100);
-    digitalWrite(ESP_EN_PIN, HIGH);     // Release reset (GPIO0 still LOW)
-    Serial.println("ESP32: Ready for upload on Native USB port");
-}
-
-void espReset() {
-    Serial.println("ESP32: Resetting...");
-    digitalWrite(ESP_GPIO0_PIN, HIGH);  // Ensure normal boot mode
-    digitalWrite(ESP_EN_PIN, LOW);
-    delay(100);
-    digitalWrite(ESP_EN_PIN, HIGH);
-    Serial.println("ESP32: Reset complete");
-}
-
-// ===== Add to setup(), after Serial1.begin() =====
-void setup() {
-    // ... existing Serial and Serial1 initialization ...
-
-    // Add: Initialize ESP32 bridge
-    setupESPBridge();
-
-    // ... rest of existing setup ...
-}
-
-// ===== Add at START of loop() =====
-void loop() {
-    // Permanent bridge: Native USB ↔ Serial1 (ESP32)
-    // This runs every loop iteration, always active
+// Handle ESP32 serial bridge - bidirectional passthrough for monitoring
+void handleESPBridge() {
+    // Forward Native USB -> Serial1 (PC to ESP32)
     while (SerialUSB.available()) {
         Serial1.write(SerialUSB.read());
     }
+
+    // Forward Serial1 -> Native USB (ESP32 to PC)
     while (Serial1.available()) {
         SerialUSB.write(Serial1.read());
     }
-
-    // ... rest of existing loop code ...
 }
 
-// ===== Add to command processing =====
-// In processLine() or wherever commands are handled, add:
-
-if (line == "ESPBOOT" || line == "BOOTMODE") {
-    espEnterBootMode();
-    return;
-}
-if (line == "ESPRESET" || line == "RESETESP") {
-    espReset();
-    return;
-}
+#endif // ESP_BRIDGE_ENABLED
 ```
 
 ### How the Bridge Works
 
-The Due's Native USB port acts as a **transparent USB-to-serial adapter**. It's functionally identical to a CH340 or CP2102 module - just byte-for-byte passthrough between the PC and the ESP32's serial port.
+The Due's Native USB port acts as a **transparent USB-to-serial adapter** for runtime monitoring:
 
-- **Always active** - no mode switching or special commands for normal use
+- **Always active** - no mode switching or special commands
 - **Bidirectional** - ESP32 output appears on PC, PC input goes to ESP32
 - **Independent** - works alongside normal Due operation
 
-The Due pins 2 and 3 (GPIO0/EN control) are optional extras that let you trigger download mode via software command - something a plain USB-to-serial adapter can't do.
-
 ### Programming the ESP32
 
-The ESP32 must be in **download mode** to accept firmware uploads. There are two ways to enter download mode:
+Programming is done externally using a USB-TTL adapter with manual buttons:
 
-#### Method 1: Physical Buttons (Simplest)
-
-If the WT32-ETH01 has GPIO0 and EN buttons (or you've added them):
-
-1. **Hold** GPIO0 button
-2. **Press and release** EN button
-3. **Release** GPIO0 button
+1. **Disconnect** the Due's Serial1 lines from the ESP32 (or power off Due)
+2. **Connect** USB-TTL adapter to WT32-ETH01:
+   - TX → RX0 (GPIO3)
+   - RX → TX0 (GPIO1)
+   - GND → GND
+   - 3.3V → 3V3
+3. **Enter boot mode:**
+   - Hold IO0 button
+   - Press and release EN button
+   - Release IO0 button
 4. **Upload** via PlatformIO:
    ```bash
    cd esp32_controller_arduino
    pio run -e wt32-eth01 -t upload --upload-port COMx
    ```
+5. **Reconnect** Due serial lines after programming
 
 The ESP32 auto-resets to normal operation after upload completes.
-
-#### Method 2: Due Software Command
-
-If you've wired Due pins 2/3 to GPIO0/EN:
-
-1. Send `ESPBOOT` to Due (via Programming USB port)
-2. **Upload** via Native USB port:
-   ```bash
-   pio run -e wt32-eth01 -t upload --upload-port COMx
-   ```
-3. Send `ESPRESET` to Due (or ESP32 auto-resets after upload)
-
-### Due Commands for ESP32
-
-| Command | Action |
-|---------|--------|
-| `ESPBOOT` | Put ESP32 in download mode for programming |
-| `ESPRESET` | Reset ESP32 to normal operation |
-
-### Why No Auto-Reset?
-
-Many ESP32 dev boards program without pressing any buttons. They use **auto-reset circuitry** - the USB-to-serial chip's DTR/RTS lines are wired through transistors to toggle GPIO0 and EN automatically when esptool starts.
-
-The Due bridge doesn't have this because SerialUSB doesn't expose DTR/RTS control lines the same way. Using physical buttons or the `ESPBOOT` command is simple and reliable.
 
 ### Daily Usage
 
 **Monitor ESP32:**
-- Connect any serial terminal to Native USB port at 115200 baud
+- Connect any serial terminal to Due Native USB port at 115200 baud
 - ESP32 debug output appears continuously
 - No special commands needed
 
@@ -447,93 +399,58 @@ The Due bridge doesn't have this because SerialUSB doesn't expose DTR/RTS contro
 - Send HOME, STOP, STATUS, etc.
 - Completely independent of ESP32
 
-### Windows Upload Script
-
-Create `upload_esp32.bat`:
-
-```batch
-@echo off
-setlocal
-
-:: Configure for your system
-set DUE_PROG_PORT=COM3
-set DUE_NATIVE_PORT=COM10
-set PROJECT_DIR=esp32_controller_arduino
-
-echo Putting ESP32 in download mode...
-echo ESPBOOT > \\.\%DUE_PROG_PORT%
-timeout /t 2 /nobreak > nul
-
-echo Uploading firmware...
-cd %PROJECT_DIR%
-pio run -e wt32-eth01 -t upload --upload-port %DUE_NATIVE_PORT%
-
-if %ERRORLEVEL% EQU 0 (
-    echo.
-    echo Upload successful! Resetting ESP32...
-    echo ESPRESET > \\.\%DUE_PROG_PORT%
-) else (
-    echo.
-    echo Upload FAILED
-)
-
-pause
-```
-
 ### Troubleshooting
 
 **No output on Native USB:**
-- Check Serial1 wiring (TX1→RX, RX1→TX - they cross!)
+- Check Serial1 wiring (TX1→RX0, RX1→TX0 - they cross!)
 - Verify ESP32 is powered and running
 - Check baud rate matches (115200)
 
 **Upload fails:**
-- Try physical button method: hold GPIO0, press EN, release GPIO0
-- Check GPIO0 and EN wiring to Due pins 2 and 3
-- Verify correct COM port for Native USB
-
-**ESP32 not running after upload:**
-- Send `ESPRESET` command to Due
-- Or press EN button on WT32-ETH01
-- Or power cycle the system
+- Ensure Due serial lines are disconnected during programming
+- Hold IO0, press EN, release IO0 before upload
+- Verify correct COM port for USB-TTL adapter
 
 ## 7. Build & Flash Procedure
 
-### First-Time Setup (USB-TTL adapter)
+### Programming via USB-TTL Adapter
 
-1. **Install USB-TTL adapter drivers** (CH340 or CP2102)
+Use an external USB-TTL adapter (CH340, CP2102, etc.) for programming:
+
+1. **Disconnect Due serial lines** from the WT32-ETH01 (or power off Due)
 
 2. **Connect USB-TTL to WT32-ETH01:**
-   ```
-   USB-TTL TX  -> WT32 RXD
-   USB-TTL RX  -> WT32 TXD
+
+   ```text
+   USB-TTL TX  -> WT32 RX0 (GPIO3)
+   USB-TTL RX  -> WT32 TX0 (GPIO1)
    USB-TTL GND -> WT32 GND
    USB-TTL 3V3 -> WT32 3V3
    ```
 
-3. **Enter boot mode:**
-   - Hold IO0 button (or jumper to GND)
+3. **Enter boot mode manually:**
+   - Hold IO0 button (or jumper GPIO0 to GND)
    - Press EN button (reset)
    - Release IO0
 
 4. **Flash:**
    ```bash
    cd esp32_controller_arduino
-   pio run -e wt32-eth01 --target upload
+   pio run -e wt32-eth01 -t upload --upload-port COMx
    ```
 
-5. **Monitor:**
-   ```bash
-   pio device monitor
-   ```
+5. **Reconnect Due serial lines** after programming
 
-### Subsequent Updates
+### Monitoring via Due Bridge
 
-Same process - enter boot mode, flash.
+Once programmed, monitor ESP32 output through the Due:
+
+- Connect terminal to Due Native USB port at 115200 baud
+- ESP32 debug output appears continuously
 
 ---
 
-## 7. Testing Checklist
+## 8. Testing Checklist
 
 ### Hardware Verification
 
@@ -574,29 +491,23 @@ Same process - enter boot mode, flash.
 
 ---
 
-## 8. Fallback Plan
+## 9. Dual-Board Support (Implemented)
 
-If WT32-ETH01 migration has issues:
+Both ESP32-S3 and WT32-ETH01 are supported from the same codebase:
 
-1. **Keep ESP32-S3 version working** - don't delete the current code
-2. **Use build environments** - platformio.ini can have both `[env:esp32s3]` and `[env:wt32-eth01]`
-3. **Conditional compilation** - use `#ifdef` for board-specific code
+```bash
+# Build for WT32-ETH01 (Ethernet)
+pio run -e wt32-eth01
 
-```ini
-[env:esp32s3]
-; Current working configuration
-board = esp32-s3-devkitc-1
-build_flags = -DBOARD_ESP32S3
-
-[env:wt32-eth01]
-; New Ethernet configuration
-board = wt32-eth01
-build_flags = -DBOARD_WT32_ETH01
+# Build for ESP32-S3 (USB CDC)
+pio run -e esp32s3
 ```
+
+The code uses `#ifdef BOARD_WT32_ETH01` / `#ifdef BOARD_ESP32S3` for board-specific features.
 
 ---
 
-## 9. Parts List
+## 10. Parts List
 
 | Item | Quantity | Notes |
 |------|----------|-------|
@@ -612,15 +523,23 @@ build_flags = -DBOARD_WT32_ETH01
 
 ---
 
-## 10. Timeline
+## 11. Quick Reference
 
-| Phase | Tasks | Duration |
-|-------|-------|----------|
-| 1. Procurement | Order WT32-ETH01, USB-TTL adapter | 1-2 weeks |
-| 2. Code changes | Update platformio.ini, config.h, add ETH code | 1 day |
-| 3. Bench test | Flash, test Ethernet/WiFi/Serial independently | 1 day |
-| 4. Integration | Connect to Due, test full system | 1 day |
-| 5. Deployment | Install in telescope, verify operation | 1 day |
+### USB Ports
+
+| Port                 | Purpose                                     |
+|----------------------|---------------------------------------------|
+| Due Programming USB  | Due commands (HOME, STOP, STATUS, etc.)     |
+| Due Native USB       | ESP32 serial monitoring (115200 baud)       |
+| External USB-TTL     | ESP32 programming (disconnect Due first)    |
+
+### Network Interfaces
+
+| Interface  | Address                              |
+|------------|--------------------------------------|
+| WiFi AP    | 192.168.4.1 (SSID: SRT_Controller)   |
+| Ethernet   | DHCP assigned (check serial output)  |
+| Stellarium | Port 10001 on any interface          |
 
 ---
 

@@ -1,14 +1,18 @@
 // main.cpp - SRT Controller main application
-// ESP32-S3 Arduino version
+// Supports ESP32-S3 and WT32-ETH01
 
 #include <Arduino.h>
 #include <WiFi.h>
 #include <time.h>
 
-// Debug print macros - only print if USB CDC is connected
-#define DBG(x) if (Serial) { x; }
+#include "config.h"  // Need config.h early for ETHERNET_ENABLED
 
-#include "config.h"
+#if ETHERNET_ENABLED
+#include <ETH.h>
+#endif
+
+// Debug print macros - only print if Serial is connected
+#define DBG(x) if (Serial) { x; }
 #include "settings.h"
 #include "state.h"
 #include "wifi_manager.h"
@@ -26,6 +30,43 @@ unsigned long lastEphemerisUpdate = 0;
 float lastSentAlt = -999;
 float lastSentAz = -999;
 bool wasTracking = false;
+
+// Ethernet state (WT32-ETH01 only)
+#if ETHERNET_ENABLED
+bool ethConnected = false;
+String ethIP = "";
+
+void onEthEvent(arduino_event_id_t event) {
+    switch (event) {
+        case ARDUINO_EVENT_ETH_START:
+            Serial.println("ETH Started");
+            break;
+        case ARDUINO_EVENT_ETH_CONNECTED:
+            Serial.println("ETH Link Up");
+            break;
+        case ARDUINO_EVENT_ETH_GOT_IP:
+            ethConnected = true;
+            ethIP = ETH.localIP().toString();
+            Serial.printf("ETH IP: %s, Speed: %dMbps, %s\n",
+                ethIP.c_str(),
+                ETH.linkSpeed(),
+                ETH.fullDuplex() ? "Full Duplex" : "Half Duplex");
+            break;
+        case ARDUINO_EVENT_ETH_DISCONNECTED:
+            Serial.println("ETH Disconnected");
+            ethConnected = false;
+            ethIP = "";
+            break;
+        case ARDUINO_EVENT_ETH_STOP:
+            Serial.println("ETH Stopped");
+            ethConnected = false;
+            ethIP = "";
+            break;
+        default:
+            break;
+    }
+}
+#endif
 
 // NTP sync
 void syncTimeNTP() {
@@ -165,8 +206,12 @@ void updateTracking() {
 void setup() {
     // Initialize USB Serial for debug
     Serial.begin(115200);
-    Serial.setTxTimeoutMs(0);  // Don't block on serial output
+    #ifdef BOARD_ESP32S3
+    Serial.setTxTimeoutMs(0);  // Don't block on serial output (ESP32-S3 USB CDC)
     delay(3000);  // Give USB time to enumerate
+    #else
+    delay(1000);  // Standard UART needs less time
+    #endif
 
     Serial.println("\n\nSRT Controller starting...");
 
@@ -177,10 +222,34 @@ void setup() {
     srtSerial.begin(DUE_UART_TX, DUE_UART_RX, DUE_BAUD_RATE);
     Serial.println("Due serial initialized");
 
+    // Initialize Ethernet (WT32-ETH01 only)
+    #if ETHERNET_ENABLED
+    Serial.println("Initializing Ethernet...");
+    WiFi.onEvent(onEthEvent);
+    // WT32-ETH01 uses LAN8720 PHY with specific pin configuration
+    ETH.begin(ETH_PHY_ADDR_CFG, ETH_PHY_POWER_PIN, ETH_PHY_MDC_PIN,
+              ETH_PHY_MDIO_PIN, ETH_PHY_LAN8720, ETH_CLOCK_GPIO0_IN);
+    // Give Ethernet time to connect
+    unsigned long ethStart = millis();
+    while (!ethConnected && (millis() - ethStart < 5000)) {
+        delay(100);
+    }
+    if (ethConnected) {
+        Serial.println("Ethernet connected - syncing time");
+        syncTimeNTP();
+    }
+    #endif
+
     // Initialize WiFi
     if (wifiManager.startup()) {
         // Connected to WiFi - sync time with NTP
+        #if !ETHERNET_ENABLED
         syncTimeNTP();
+        #else
+        if (!state.timeSynced) {
+            syncTimeNTP();
+        }
+        #endif
     }
 
     if (!state.timeSynced) {
@@ -194,6 +263,11 @@ void setup() {
     setupStellariumServer();
 
     Serial.printf("Free memory: %d bytes\n", ESP.getFreeHeap());
+    #if ETHERNET_ENABLED
+    if (ethConnected) {
+        Serial.printf("Ethernet IP: %s\n", ethIP.c_str());
+    }
+    #endif
     if (WiFi.status() == WL_CONNECTED) {
         Serial.printf("WiFi IP: %s\n", WiFi.localIP().toString().c_str());
     }

@@ -16,9 +16,8 @@
  *   DEFAULTS             - Reset to factory defaults
  *   HELP                 - Show command help
  *
- * ESP32 Bridge Commands (WT32-ETH01 via Native USB):
- *   ESPBOOT              - Put ESP32 in download mode for programming
- *   ESPRESET             - Reset ESP32 to normal operation
+ * ESP32 Bridge (WT32-ETH01 via Native USB):
+ *   Serial output from ESP32 is forwarded to Native USB port for monitoring
  */
 
 #include <Arduino.h>
@@ -41,9 +40,7 @@
 // =============================================================================
 
 #define ESP_BRIDGE_ENABLED  1       // Set to 0 to disable bridge functionality
-#define ESP_GPIO0_PIN       2       // Controls ESP32 boot mode
-#define ESP_EN_PIN          3       // Controls ESP32 reset
-#define ESP_BRIDGE_BAUD     115200  // Baud rate for Native USB bridge
+#define ESP_BRIDGE_BAUD     115200  // Baud rate for ESP32 serial monitoring
 
 // =============================================================================
 // SIMULATION MODE - Override hardware I/O with software stubs
@@ -76,17 +73,25 @@ static void simAnalogWrite(uint32_t pin, uint32_t val) {
 }
 #define analogWrite(pin, val) simAnalogWrite(pin, val)
 
-// Override digitalWrite - capture direction state
+// Override digitalWrite - capture direction state, but pass through ESP bridge pins
 static void simDigitalWrite(uint32_t pin, uint32_t val) {
     if (pin == PIN_DIR_AZ)       simDirAz = (val == HIGH);
     else if (pin == PIN_DIR_ALT) simDirAlt = (val == HIGH);
+    else {
+        // Pass through to real hardware for non-motor pins (ESP bridge, etc.)
+        PIO_SetOutput(g_APinDescription[pin].pPort, g_APinDescription[pin].ulPin,
+                      val, 0, PIO_PULLUP);
+    }
 }
 #define digitalWrite(pin, val) simDigitalWrite(pin, val)
 
-// Override digitalRead - return no-fault state for all pins
+// Override digitalRead - return no-fault state for motor pins, real read for others
 static int simDigitalRead(uint32_t pin) {
-    (void)pin;
-    return LOW;  // Both fault flags LOW = no fault
+    if (pin == PIN_FF1_AZ || pin == PIN_FF2_AZ || pin == PIN_FF1_ALT || pin == PIN_FF2_ALT) {
+        return LOW;  // Fault flags LOW = no fault
+    }
+    // Real read for other pins
+    return (PIO_Get(g_APinDescription[pin].pPort, PIO_INPUT, g_APinDescription[pin].ulPin) ? HIGH : LOW);
 }
 #define digitalRead(pin) simDigitalRead(pin)
 
@@ -98,8 +103,26 @@ static int simAnalogRead(uint32_t pin) {
 }
 #define analogRead(pin) simAnalogRead(pin)
 
-// No-op hardware setup functions
-#define pinMode(pin, mode)          ((void)0)
+// Override pinMode - no-op for motor pins, real setup for others (ESP bridge)
+static void simPinMode(uint32_t pin, uint32_t mode) {
+    // Only actually configure non-motor pins (ESP bridge pins 2, 3, etc.)
+    if (pin != PIN_PWM_AZ && pin != PIN_PWM_ALT &&
+        pin != PIN_DIR_AZ && pin != PIN_DIR_ALT &&
+        pin != PIN_PULSE_AZ && pin != PIN_PULSE_ALT &&
+        pin != PIN_FF1_AZ && pin != PIN_FF2_AZ &&
+        pin != PIN_FF1_ALT && pin != PIN_FF2_ALT &&
+        pin != PIN_RESET_AZ && pin != PIN_RESET_ALT) {
+        if (mode == OUTPUT) {
+            PIO_Configure(g_APinDescription[pin].pPort, PIO_OUTPUT_0,
+                          g_APinDescription[pin].ulPin, g_APinDescription[pin].ulPinConfiguration);
+        } else {
+            PIO_Configure(g_APinDescription[pin].pPort, PIO_INPUT,
+                          g_APinDescription[pin].ulPin, g_APinDescription[pin].ulPinConfiguration);
+        }
+    }
+}
+#define pinMode(pin, mode) simPinMode(pin, mode)
+
 #define attachInterrupt(a, b, c)    ((void)0)
 #define analogReadResolution(x)     ((void)0)
 
@@ -122,8 +145,6 @@ void updatePrevStatus();
 
 #if ESP_BRIDGE_ENABLED
 void setupESPBridge();
-void espEnterBootMode();
-void espReset();
 void handleESPBridge();
 #endif
 
@@ -222,33 +243,22 @@ FaultCode prevFaultCode = FAULT_NONE;
 // DUAL SERIAL OUTPUT HELPER
 // =============================================================================
 
-// Print to all active serial ports
+// Print to Programming Port (Serial) only
+// Serial1 is reserved exclusively for ESP32 bridge - no cross-talk
 void printAll(const char* str) {
     Serial.print(str);
-    #if ENABLE_SERIAL1
-    Serial1.print(str);
-    #endif
 }
 
 void printAllLn(const char* str) {
     Serial.println(str);
-    #if ENABLE_SERIAL1
-    Serial1.println(str);
-    #endif
 }
 
 void printAllFloat(float val, int decimals) {
     Serial.print(val, decimals);
-    #if ENABLE_SERIAL1
-    Serial1.print(val, decimals);
-    #endif
 }
 
 void printAllInt(int val) {
     Serial.print(val);
-    #if ENABLE_SERIAL1
-    Serial1.print(val);
-    #endif
 }
 
 void printPrompt() {
@@ -287,7 +297,11 @@ void loadDefaults() {
     cfg.rampDownDeg = DEFAULT_RAMP_DOWN_DEG;
     cfg.stopRampMs = DEFAULT_STOP_RAMP_MS;
     cfg.currentLimit = DEFAULT_CURRENT_LIMIT;
+    #ifdef SIMULATION_MODE
+    cfg.stallTimeoutMs = SIM_STALL_TIMEOUT_MS;  // Faster stall detection in simulation
+    #else
     cfg.stallTimeoutMs = DEFAULT_STALL_TIMEOUT;
+    #endif
     cfg.checksum = calculateChecksum(&cfg);
 }
 
@@ -1223,9 +1237,7 @@ void showHelp() {
     printAllLn("  DEFAULTS         - Reset to factory defaults");
     #if ESP_BRIDGE_ENABLED
     printAllLn("");
-    printAllLn("ESP32 Bridge (Native USB <-> Serial1):");
-    printAllLn("  ESPBOOT          - Put ESP32 in download mode");
-    printAllLn("  ESPRESET         - Reset ESP32 to normal mode");
+    printAllLn("ESP32 Bridge: Serial1 <-> Native USB (monitoring only)");
     #endif
     printAllLn("");
     printAllLn("SET parameters:");
@@ -1436,12 +1448,16 @@ void processCommand(const char* buffer) {
         loadDefaults();
         printAllLn("Configuration reset to defaults.");
     }
-    #if ESP_BRIDGE_ENABLED
-    else if (strEqualsIgnoreCase(cmd, "ESPBOOT") || strEqualsIgnoreCase(cmd, "BOOTMODE")) {
-        espEnterBootMode();
+    // Debug: force pin 2 LOW/HIGH to test GPIO
+    else if (strEqualsIgnoreCase(cmd, "TEST2")) {
+        pinMode(2, OUTPUT);
+        digitalWrite(2, LOW);
+        printAllLn("Pin 2 forced LOW - measure with multimeter");
     }
-    else if (strEqualsIgnoreCase(cmd, "ESPRESET") || strEqualsIgnoreCase(cmd, "RESETESP")) {
-        espReset();
+    else if (strEqualsIgnoreCase(cmd, "TEST2H")) {
+        pinMode(2, OUTPUT);
+        digitalWrite(2, HIGH);
+        printAllLn("Pin 2 forced HIGH - measure with multimeter");
     }
     #endif
     else {
@@ -1490,21 +1506,19 @@ void processSerialInput() {
         } else if (serialIndex < (int)(sizeof(serialBuffer) - 1)) {
             lastLineEndChar = 0;
             serialBuffer[serialIndex++] = c;
-            // Echo character
+            // Echo character back to originating port only
             Serial.print(c);
-            #if ENABLE_SERIAL1
-            Serial1.print(c);
-            #endif
         }
     }
 
-    #if ENABLE_SERIAL1
-    // Process hardware UART (Serial1 on pins 18/19 for ESP32)
+    // Note: Serial1 is NOT processed here when ESP_BRIDGE_ENABLED
+    // In that case, handleESPBridge() manages Serial1 exclusively
+    #if ENABLE_SERIAL1 && !ESP_BRIDGE_ENABLED
+    // Process hardware UART (Serial1) as command input only if no ESP bridge
     while (Serial1.available() > 0) {
         char c = Serial1.read();
 
         if (c == '\n' || c == '\r') {
-            // Skip second char of CRLF or LFCR pair
             if ((lastLineEndChar1 == '\r' && c == '\n') ||
                 (lastLineEndChar1 == '\n' && c == '\r')) {
                 lastLineEndChar1 = 0;
@@ -1513,31 +1527,25 @@ void processSerialInput() {
             lastLineEndChar1 = c;
 
             if (serial1Index > 0) {
-                printAllLn("");  // Echo newline
+                Serial1.println();
                 serial1Buffer[serial1Index] = '\0';
                 processCommand(serial1Buffer);
                 serial1Index = 0;
-                printPrompt();
+                Serial1.print("> ");
             } else {
-                // Empty line - just print new prompt
-                printAllLn("");
-                printPrompt();
+                Serial1.println();
+                Serial1.print("> ");
             }
         } else if (c == '\b' || c == 127) {
             lastLineEndChar1 = 0;
-            // Handle backspace
             if (serial1Index > 0) {
                 serial1Index--;
-                printAll("\b \b");
+                Serial1.print("\b \b");
             }
         } else if (serial1Index < (int)(sizeof(serial1Buffer) - 1)) {
             lastLineEndChar1 = 0;
             serial1Buffer[serial1Index++] = c;
-            // Echo character
-            Serial.print(c);
-            #if ENABLE_SERIAL1
-            Serial1.print(c);
-            #endif
+            Serial1.print(c);  // Echo to Serial1 only
         }
     }
     #endif
@@ -1545,56 +1553,26 @@ void processSerialInput() {
 
 // =============================================================================
 // ESP32 BRIDGE FUNCTIONS (WT32-ETH01)
+// Serial monitoring only - programming done externally via USB-TTL adapter
 // =============================================================================
 
 #if ESP_BRIDGE_ENABLED
 
 void setupESPBridge() {
-    // Initialize Native USB for ESP32 bridge
+    // Initialize Native USB for ESP32 serial monitoring
     SerialUSB.begin(ESP_BRIDGE_BAUD);
-
-    // Setup boot mode control pins
-    pinMode(ESP_GPIO0_PIN, OUTPUT);
-    pinMode(ESP_EN_PIN, OUTPUT);
-    digitalWrite(ESP_GPIO0_PIN, HIGH);  // Normal boot (not download mode)
-    digitalWrite(ESP_EN_PIN, HIGH);     // Not in reset
 }
 
-void espEnterBootMode() {
-    Serial.println("ESP32: Entering download mode...");
-    Serial.println("ESP32: Use Native USB port for upload.");
-
-    digitalWrite(ESP_GPIO0_PIN, LOW);   // GPIO0 LOW = download mode
-    delay(10);
-    digitalWrite(ESP_EN_PIN, LOW);      // Reset
-    delay(100);
-    digitalWrite(ESP_EN_PIN, HIGH);     // Release reset (GPIO0 still LOW)
-
-    Serial.println("ESP32: Ready for upload.");
-}
-
-void espReset() {
-    Serial.println("ESP32: Resetting to normal mode...");
-
-    digitalWrite(ESP_GPIO0_PIN, HIGH);  // Ensure normal boot mode
-    delay(10);
-    digitalWrite(ESP_EN_PIN, LOW);      // Reset
-    delay(100);
-    digitalWrite(ESP_EN_PIN, HIGH);     // Release reset
-
-    Serial.println("ESP32: Reset complete.");
-}
-
-// Call this at the start of loop() to bridge SerialUSB <-> Serial1
+// Handle ESP32 serial bridge - bidirectional passthrough for monitoring
 void handleESPBridge() {
-    // Forward Native USB -> Serial1 (to ESP32)
+    // Forward Native USB -> Serial1 (PC to ESP32)
     while (SerialUSB.available()) {
         Serial1.write(SerialUSB.read());
     }
-    // Forward Serial1 -> Native USB (from ESP32)
+
+    // Forward Serial1 -> Native USB (ESP32 to PC)
     while (Serial1.available()) {
-        int c = Serial1.read();
-        SerialUSB.write(c);
+        SerialUSB.write(Serial1.read());
     }
 }
 
@@ -1646,7 +1624,7 @@ void setup() {
 
     #if ENABLE_SERIAL1
     // Initialize Serial1 for ESP32 connection (TX1=pin 18, RX1=pin 19)
-    Serial1.begin(SERIAL_BAUD);
+    Serial1.begin(ESP_BRIDGE_BAUD);  // 460800 for fast ESP32 programming
     #endif
 
     #if ESP_BRIDGE_ENABLED
