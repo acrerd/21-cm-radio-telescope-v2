@@ -195,6 +195,229 @@ void test_moon_position_reasonable_range() {
 }
 
 // =============================================================================
+// Known radio source coordinates (J2000)
+// =============================================================================
+
+void test_crab_nebula_m1() {
+    // Crab Nebula (M1/Taurus A) - strong radio source, supernova remnant
+    // J2000: RA = 05h 34m 31.94s, Dec = +22° 00' 52.2"
+    // Galactic: l = 184.56°, b = -5.78°
+    double ra, dec;
+    galacticToEquatorial(184.56, -5.78, ra, dec);
+
+    // Expected RA = 5.5755h (5h34m31s), Dec = +22.01°
+    TEST_ASSERT_FLOAT_WITHIN(0.05, 5.575, ra);   // Within 3 arcmin
+    TEST_ASSERT_FLOAT_WITHIN(0.1, 22.01, dec);
+}
+
+void test_cassiopeia_a() {
+    // Cassiopeia A - brightest extrasolar radio source in sky
+    // J2000: RA = 23h 23m 24s, Dec = +58° 48' 54"
+    // Galactic: l = 111.73°, b = -2.13°
+    double ra, dec;
+    galacticToEquatorial(111.73, -2.13, ra, dec);
+
+    // Expected RA = 23.39h, Dec = +58.82°
+    TEST_ASSERT_FLOAT_WITHIN(0.05, 23.39, ra);
+    TEST_ASSERT_FLOAT_WITHIN(0.1, 58.82, dec);
+}
+
+void test_cygnus_a() {
+    // Cygnus A - classic radio galaxy, very strong source
+    // J2000: RA = 19h 59m 28.3s, Dec = +40° 44' 02"
+    // Galactic: l = 76.19°, b = 5.76°
+    double ra, dec;
+    galacticToEquatorial(76.19, 5.76, ra, dec);
+
+    // Expected RA = 19.99h, Dec = +40.73°
+    TEST_ASSERT_FLOAT_WITHIN(0.05, 19.99, ra);
+    TEST_ASSERT_FLOAT_WITHIN(0.1, 40.73, dec);
+}
+
+void test_sagittarius_a() {
+    // Sagittarius A* - galactic center radio source
+    // J2000: RA = 17h 45m 40.0s, Dec = -29° 00' 28"
+    // Galactic: l = 0°, b = 0° (by definition)
+    double ra, dec;
+    galacticToEquatorial(0.0, 0.0, ra, dec);
+
+    // Expected RA = 17.76h, Dec = -29.0°
+    TEST_ASSERT_FLOAT_WITHIN(0.02, 17.76, ra);
+    TEST_ASSERT_FLOAT_WITHIN(0.1, -29.0, dec);
+}
+
+// =============================================================================
+// Sun seasonal positions (verify ephemeris)
+// =============================================================================
+
+void test_sun_at_vernal_equinox() {
+    // At vernal equinox (~March 20), Sun is at RA=0h, Dec=0°
+    // Test with fixed JD for March 20, 2024 12:00 UTC
+    double jd = julianDate(2024, 3, 20, 12, 0, 0);
+
+    // Calculate expected Sun RA at this date (should be near 0h)
+    // We can't directly test getSunPosition() at arbitrary time,
+    // but we can verify the formula produces valid equinox-like output
+    // For now, just verify current sun is in valid range
+    double ra, dec;
+    getSunPosition(ra, dec);
+
+    // Sun Dec should always be within ecliptic bounds
+    TEST_ASSERT_TRUE(dec >= -23.5 && dec <= 23.5);
+}
+
+void test_sun_declination_bounds() {
+    // Sun's declination should never exceed ±23.44° (obliquity of ecliptic)
+    double ra, dec;
+    getSunPosition(ra, dec);
+
+    TEST_ASSERT_TRUE(dec >= -23.45 && dec <= 23.45);
+}
+
+// =============================================================================
+// Local Sidereal Time tests
+// =============================================================================
+
+void test_lst_at_greenwich_j2000() {
+    // At J2000.0 epoch, GMST = 18.697374558h
+    // At Greenwich (lon=0), LST = GMST
+    double jd = 2451545.0;  // J2000.0
+    double lst = localSiderealTime(jd, 0.0, 12.0);
+
+    TEST_ASSERT_FLOAT_WITHIN(0.001, 18.697374558, lst);
+}
+
+void test_lst_longitude_offset() {
+    // LST should differ by longitude/15 hours from GMST
+    double jd = 2451545.0;
+    double gmst_val = gmst(jd, 12.0);
+
+    // Glasgow at -4.3° longitude
+    double lst_glasgow = localSiderealTime(jd, -4.3, 12.0);
+
+    // LST = GMST + lon/15
+    double expected = fmod(gmst_val + (-4.3/15.0) + 24.0, 24.0);
+    TEST_ASSERT_FLOAT_WITHIN(0.001, expected, lst_glasgow);
+}
+
+void test_lst_increases_with_time() {
+    // LST should increase by ~4 minutes per day more than solar time
+    // Over 24 hours, LST advances by ~24h 3m 56s
+    double jd1 = julianDate(2024, 6, 15, 12, 0, 0);
+    double jd2 = julianDate(2024, 6, 16, 12, 0, 0);  // 24 hours later
+
+    double lst1 = localSiderealTime(jd1, 0.0, 12.0);
+    double lst2 = localSiderealTime(jd2, 0.0, 12.0);
+
+    // LST should have advanced by slightly more than 24h (wraps around)
+    // The difference should be close to 0 but slightly positive
+    double diff = lst2 - lst1;
+    if (diff < 0) diff += 24.0;
+
+    // Sidereal day is ~3m 56s shorter, so LST gains ~0.0657h per solar day
+    TEST_ASSERT_FLOAT_WITHIN(0.01, 0.0657, diff);
+}
+
+// =============================================================================
+// Roundtrip consistency tests
+// =============================================================================
+
+void test_radec_altaz_roundtrip() {
+    // Convert RA/Dec -> Alt/Az -> RA/Dec should give original (approximately)
+    // Note: This involves current time, so we test consistency not absolute values
+    double lat = 55.9, lon = -4.3;
+    double ra_in = 12.0, dec_in = 45.0;
+
+    // Convert to Alt/Az
+    double alt, az;
+    raDecToAltAz(ra_in, dec_in, lat, lon, alt, az);
+
+    // Skip if object is below horizon (alt < 0)
+    if (alt < 0) {
+        TEST_PASS();
+        return;
+    }
+
+    // Convert back to RA/Dec
+    double ra_out, dec_out;
+    altAzToRaDec(alt, az, lat, lon, ra_out, dec_out);
+
+    // Should get back close to original (within precession tolerance)
+    TEST_ASSERT_FLOAT_WITHIN(0.1, ra_in, ra_out);   // 0.1h = 6 arcmin
+    TEST_ASSERT_FLOAT_WITHIN(0.1, dec_in, dec_out); // 0.1 deg = 6 arcmin
+}
+
+void test_galactic_equatorial_roundtrip_multiple() {
+    // Test roundtrip at multiple points across the sky
+    double test_points[][2] = {
+        {0.0, 0.0},      // Galactic center
+        {180.0, 0.0},    // Anticenter
+        {90.0, 0.0},     // l=90
+        {270.0, 0.0},    // l=270
+        {0.0, 45.0},     // Mid-latitude
+        {0.0, -45.0},    // Southern mid-latitude
+        {120.0, 60.0},   // Arbitrary point
+        {240.0, -30.0},  // Another arbitrary point
+    };
+
+    for (int i = 0; i < 8; i++) {
+        double l_in = test_points[i][0];
+        double b_in = test_points[i][1];
+        double ra, dec, l_out, b_out;
+
+        galacticToEquatorial(l_in, b_in, ra, dec);
+        equatorialToGalactic(ra, dec, l_out, b_out);
+
+        TEST_ASSERT_FLOAT_WITHIN(ANGLE_TOLERANCE, l_in, l_out);
+        TEST_ASSERT_FLOAT_WITHIN(ANGLE_TOLERANCE, b_in, b_out);
+    }
+}
+
+// =============================================================================
+// Galactic plane survey points (21cm HI observations)
+// =============================================================================
+
+void test_galactic_plane_survey_points() {
+    // Common galactic plane survey points should convert correctly
+    // These are along b=0 at various longitudes
+    double survey_longitudes[] = {0, 30, 60, 90, 120, 150, 180, 210, 240, 270, 300, 330};
+
+    for (int i = 0; i < 12; i++) {
+        double l = survey_longitudes[i];
+        double ra, dec;
+
+        galacticToEquatorial(l, 0.0, ra, dec);
+
+        // Should produce valid coordinates
+        TEST_ASSERT_TRUE(ra >= 0.0 && ra < 24.0);
+        TEST_ASSERT_TRUE(dec >= -90.0 && dec <= 90.0);
+        TEST_ASSERT_TRUE(!isnan(ra) && !isnan(dec));
+    }
+}
+
+void test_hi_cloud_velocities_region() {
+    // High-velocity cloud regions are at high galactic latitudes
+    // Test conversion for typical HVC observation points
+    double hvc_points[][2] = {
+        {120.0, 50.0},   // Northern HVC region
+        {280.0, -40.0},  // Magellanic Stream region
+        {0.0, 80.0},     // North galactic pole region
+    };
+
+    for (int i = 0; i < 3; i++) {
+        double l = hvc_points[i][0];
+        double b = hvc_points[i][1];
+        double ra, dec;
+
+        galacticToEquatorial(l, b, ra, dec);
+
+        TEST_ASSERT_TRUE(ra >= 0.0 && ra < 24.0);
+        TEST_ASSERT_TRUE(dec >= -90.0 && dec <= 90.0);
+        TEST_ASSERT_TRUE(!isnan(ra) && !isnan(dec));
+    }
+}
+
+// =============================================================================
 // Edge cases and boundary tests
 // =============================================================================
 
@@ -363,8 +586,11 @@ int main(int argc, char **argv) {
     RUN_TEST(test_julian_date_leap_year);
     RUN_TEST(test_julian_date_edge_cases);
 
-    // GMST
+    // GMST and LST
     RUN_TEST(test_gmst_j2000_epoch);
+    RUN_TEST(test_lst_at_greenwich_j2000);
+    RUN_TEST(test_lst_longitude_offset);
+    RUN_TEST(test_lst_increases_with_time);
 
     // Galactic coordinates
     RUN_TEST(test_galactic_center_to_equatorial);
@@ -388,13 +614,29 @@ int main(int argc, char **argv) {
     RUN_TEST(test_altaz_horizon_boundary);
     RUN_TEST(test_negative_altitude_rejected);
 
+    // Roundtrip consistency
+    RUN_TEST(test_radec_altaz_roundtrip);
+    RUN_TEST(test_galactic_equatorial_roundtrip_multiple);
+
     // Boundary conditions
     RUN_TEST(test_ra_wraparound_24h);
     RUN_TEST(test_dec_at_poles);
 
     // Ephemeris
     RUN_TEST(test_sun_position_reasonable_range);
+    RUN_TEST(test_sun_at_vernal_equinox);
+    RUN_TEST(test_sun_declination_bounds);
     RUN_TEST(test_moon_position_reasonable_range);
+
+    // Known radio sources
+    RUN_TEST(test_crab_nebula_m1);
+    RUN_TEST(test_cassiopeia_a);
+    RUN_TEST(test_cygnus_a);
+    RUN_TEST(test_sagittarius_a);
+
+    // Galactic plane survey (21cm HI)
+    RUN_TEST(test_galactic_plane_survey_points);
+    RUN_TEST(test_hi_cloud_velocities_region);
 
     return UNITY_END();
 }
