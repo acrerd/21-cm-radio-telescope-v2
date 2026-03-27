@@ -65,6 +65,7 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
         .log-line { margin: 1px 0; white-space: nowrap; }
         .log-tx { color: #00d9ff; }
         .log-rx { color: #88ff88; }
+        .log-esp { color: #ffaa00; }
         .log-time { color: #666; margin-right: 8px; }
         body { padding-bottom: 180px; }
     </style>

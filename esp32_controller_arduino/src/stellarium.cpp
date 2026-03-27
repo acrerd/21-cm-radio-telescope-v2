@@ -5,6 +5,7 @@
 #include "settings.h"
 #include "state.h"
 #include "coordinates.h"
+#include "srt_serial.h"
 #include <AsyncTCP.h>
 
 static AsyncServer* stellariumServer = nullptr;
@@ -73,6 +74,9 @@ void onStellariumData(void* arg, AsyncClient* client, void* data, size_t len) {
             double decDeg = (double)decSigned * 90.0 / 1073741824.0;
 
             Serial.printf("Stellarium goto: RA=%.4fh, Dec=%.4f\n", raHours, decDeg);
+            char logBuf[48];
+            snprintf(logBuf, sizeof(logBuf), "Stellarium: RA=%.3fh Dec=%.1f", raHours, decDeg);
+            srtSerial.logESP(logBuf);
 
             state.currentRA = raHours;
             state.currentDec = decDeg;
@@ -86,6 +90,7 @@ void onStellariumData(void* arg, AsyncClient* client, void* data, size_t len) {
 
 void onStellariumClient(void* arg, AsyncClient* client) {
     Serial.println("Stellarium client connected");
+    srtSerial.logESP("Stellarium connected");
 
     if (stellariumClient && stellariumClient != client) {
         // Disconnect old client
@@ -98,6 +103,7 @@ void onStellariumClient(void* arg, AsyncClient* client) {
 
     client->onDisconnect([](void* arg, AsyncClient* c) {
         Serial.println("Stellarium client disconnected");
+        srtSerial.logESP("Stellarium disconnected");
         if (stellariumClient == c) {
             stellariumClient = nullptr;
         }

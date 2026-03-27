@@ -94,8 +94,10 @@ void syncTimeNTP() {
         Serial.printf("NTP time synced: %04d-%02d-%02d %02d:%02d:%02d UTC\n",
                       t->tm_year + 1900, t->tm_mon + 1, t->tm_mday,
                       t->tm_hour, t->tm_min, t->tm_sec);
+        srtSerial.logESP("NTP time synced");
     } else {
         Serial.println("NTP sync failed");
+        srtSerial.logESP("NTP sync failed");
     }
 }
 
@@ -126,6 +128,7 @@ void updateTracking() {
             lastSentAlt = -999;
             lastSentAz = -999;
             DBG(Serial.println("Tracking enabled - sending initial position"));
+            srtSerial.logESP("Tracking enabled");
         }
         wasTracking = true;
 
@@ -158,6 +161,7 @@ void updateTracking() {
                 state.waitingForRise = true;
                 DBG(Serial.printf("Target below horizon: Alt=%.1f\n", alt));
                 DBG(Serial.println("Parking at home, waiting for target to rise..."));
+                srtSerial.logESP("Target below horizon - parking");
                 srtSerial.sendTarget(settings.homeAlt, settings.homeAz);
                 lastSentAlt = settings.homeAlt;
                 lastSentAz = settings.homeAz;
@@ -173,6 +177,7 @@ void updateTracking() {
                 state.waitingForWrap = true;
                 DBG(Serial.printf("Target outside az limits: Az=%.1f\n", az));
                 DBG(Serial.println("Waiting for circumpolar wrap-around..."));
+                srtSerial.logESP("Az limits - waiting for wrap");
             }
         }
         else {
@@ -181,6 +186,7 @@ void updateTracking() {
                 state.waitingForRise = false;
                 DBG(Serial.printf("Target risen: Alt=%.1f Az=%.1f\n", alt, az));
                 DBG(Serial.println("Resuming tracking..."));
+                srtSerial.logESP("Target risen - resuming");
                 lastSentAlt = -999;
                 lastSentAz = -999;
             }
@@ -188,6 +194,7 @@ void updateTracking() {
                 state.waitingForWrap = false;
                 DBG(Serial.printf("Target back in az limits: Alt=%.1f Az=%.1f\n", alt, az));
                 DBG(Serial.println("Repositioning to resume tracking..."));
+                srtSerial.logESP("Az wrap complete - resuming");
                 lastSentAlt = -999;
                 lastSentAz = -999;
             }

@@ -159,6 +159,7 @@ void setupWebServer() {
             state.targetName = "";
             state.waitingForWrap = false;
             state.waitingForRise = false;
+            srtSerial.logESP("Tracking stopped");
         }
         request->send(200, "application/json", "{\"ok\":true}");
     });
@@ -173,6 +174,7 @@ void setupWebServer() {
         state.waitingForWrap = false;
         state.waitingForRise = false;
         state.trackingEnabled = true;
+        srtSerial.logESP("Track Sun");
         request->send(200, "application/json", "{\"ok\":true}");
     });
 
@@ -186,6 +188,7 @@ void setupWebServer() {
         state.waitingForWrap = false;
         state.waitingForRise = false;
         state.trackingEnabled = true;
+        srtSerial.logESP("Track Moon");
         request->send(200, "application/json", "{\"ok\":true}");
     });
 
@@ -261,6 +264,7 @@ void setupWebServer() {
             state.timeSynced = true;
             state.timeSource = "browser";
             Serial.printf("Time set from browser: %lu\n", timestamp);
+            srtSerial.logESP("Browser time sync");
             request->send(200, "application/json", "{\"ok\":true}");
         } else {
             request->send(200, "application/json", "{\"ok\":false,\"error\":\"Invalid timestamp\"}");

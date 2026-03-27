@@ -9,7 +9,7 @@
 
 struct SerialLogEntry {
     unsigned long timestamp;  // millis()
-    bool isTX;                // true = sent to Due, false = received from Due
+    char direction;           // 'T' = TX to Due, 'R' = RX from Due, 'E' = ESP32 diagnostic
     String message;
 };
 
@@ -46,9 +46,10 @@ public:
 
     // Serial log access
     String getLogJSON();
+    void logESP(const String &msg);  // Log ESP32 diagnostic message
 
 private:
-    void logMessage(bool isTX, const String &msg);
+    void logMessage(char direction, const String &msg);
     void parseStatus(const String &line);
 
     HardwareSerial *uart;
