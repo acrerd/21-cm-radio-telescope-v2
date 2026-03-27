@@ -58,9 +58,31 @@ void setupWebServer() {
         json += "\"dec\":" + String(state.currentDec, 2) + ",";
         json += "\"target_name\":\"" + state.targetName + "\",";
         json += "\"waiting_for_wrap\":" + String(state.waitingForWrap ? "true" : "false") + ",";
-        json += "\"waiting_for_rise\":" + String(state.waitingForRise ? "true" : "false");
+        json += "\"waiting_for_rise\":" + String(state.waitingForRise ? "true" : "false") + ",";
+        json += "\"offset_alt\":" + String(state.offsetAlt, 2) + ",";
+        json += "\"offset_az\":" + String(state.offsetAz, 2);
         json += "}";
         request->send(200, "application/json", json);
+    });
+
+    // Set pointing offset (for scanning/mapping)
+    webServer.on("/offset", HTTP_GET, [](AsyncWebServerRequest *request) {
+        if (request->hasArg("alt")) {
+            state.offsetAlt = request->arg("alt").toFloat();
+        }
+        if (request->hasArg("az")) {
+            state.offsetAz = request->arg("az").toFloat();
+        }
+        String json = "{\"ok\":true,\"offset_alt\":" + String(state.offsetAlt, 2) +
+                      ",\"offset_az\":" + String(state.offsetAz, 2) + "}";
+        request->send(200, "application/json", json);
+    });
+
+    // Clear pointing offset
+    webServer.on("/offset/clear", HTTP_GET, [](AsyncWebServerRequest *request) {
+        state.offsetAlt = 0.0;
+        state.offsetAz = 0.0;
+        request->send(200, "application/json", "{\"ok\":true,\"offset_alt\":0,\"offset_az\":0}");
     });
 
     // Ephemeris

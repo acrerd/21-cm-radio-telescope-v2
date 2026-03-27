@@ -192,15 +192,30 @@ void updateTracking() {
                 lastSentAz = -999;
             }
 
-            // Apply deadband
+            // Apply pointing offset for scanning/mapping
+            float finalAlt = alt + state.offsetAlt;
+            float finalAz = az + state.offsetAz;
+
+            // Clamp to valid range
+            if (finalAlt < settings.mountAltMin) finalAlt = settings.mountAltMin;
+            if (finalAlt > settings.mountAltMax) finalAlt = settings.mountAltMax;
+            if (finalAz < settings.mountAzMin) finalAz = settings.mountAzMin;
+            if (finalAz > settings.mountAzMax) finalAz = settings.mountAzMax;
+
+            // Apply deadband (check against final position including offset)
             if (lastSentAlt < -900 || lastSentAz < -900 ||
-                fabs(alt - lastSentAlt) >= settings.positionDeadband ||
-                fabs(az - lastSentAz) >= settings.positionDeadband) {
-                DBG(Serial.printf("Tracking %s: sending Alt=%.1f Az=%.1f\n",
-                              state.targetName.c_str(), alt, az));
-                srtSerial.sendTarget(alt, az);
-                lastSentAlt = alt;
-                lastSentAz = az;
+                fabs(finalAlt - lastSentAlt) >= settings.positionDeadband ||
+                fabs(finalAz - lastSentAz) >= settings.positionDeadband) {
+                if (state.offsetAlt != 0 || state.offsetAz != 0) {
+                    DBG(Serial.printf("Tracking %s: base Alt=%.1f Az=%.1f, offset %.1f/%.1f, sending %.1f/%.1f\n",
+                                  state.targetName.c_str(), alt, az, state.offsetAlt, state.offsetAz, finalAlt, finalAz));
+                } else {
+                    DBG(Serial.printf("Tracking %s: sending Alt=%.1f Az=%.1f\n",
+                                  state.targetName.c_str(), finalAlt, finalAz));
+                }
+                srtSerial.sendTarget(finalAlt, finalAz);
+                lastSentAlt = finalAlt;
+                lastSentAz = finalAz;
             }
         }
     } else {

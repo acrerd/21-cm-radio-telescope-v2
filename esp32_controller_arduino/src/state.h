@@ -16,6 +16,10 @@ struct SRTState {
     bool waitingForWrap = false; // True when target is outside az limits
     bool waitingForRise = false; // True when target is below horizon
 
+    // Pointing offset for scanning/mapping (degrees)
+    float offsetAlt = 0.0;
+    float offsetAz = 0.0;
+
     // Time state
     bool timeSynced = false;
     String timeSource = "";      // "NTP", "browser", or empty
