@@ -5,6 +5,7 @@
 
 // Ethernet state (defined in main.cpp for WT32-ETH01)
 #if ETHERNET_ENABLED
+#include <ETH.h>
 extern bool ethConnected;
 extern String ethIP;
 #endif
@@ -237,6 +238,7 @@ void setupWebServer() {
         json += "\"eth_available\":true,";
         json += "\"eth_connected\":" + String(ethConnected ? "true" : "false") + ",";
         json += "\"eth_ip\":\"" + ethIP + "\",";
+        json += "\"eth_mac\":\"" + ETH.macAddress() + "\",";
         json += "\"eth_dhcp\":" + String(settings.ethUseDHCP ? "true" : "false") + ",";
         json += "\"eth_static_ip\":\"" + settings.ethStaticIP + "\",";
         json += "\"eth_gateway\":\"" + settings.ethGateway + "\",";
@@ -246,6 +248,7 @@ void setupWebServer() {
         json += "\"eth_available\":false,";
         json += "\"eth_connected\":false,";
         json += "\"eth_ip\":\"\",";
+        json += "\"eth_mac\":\"\",";
         json += "\"eth_dhcp\":true,";
         json += "\"eth_static_ip\":\"\",";
         json += "\"eth_gateway\":\"\",";
@@ -256,6 +259,7 @@ void setupWebServer() {
         json += "\"ap_active\":" + String(wifiManager.isAPActive() ? "true" : "false") + ",";
         json += "\"ap_ssid\":\"" + settings.apSSID + "\",";
         json += "\"ap_ip\":\"" + (wifiManager.isAPActive() ? wifiManager.getAPIP() : String("")) + "\",";
+        json += "\"wifi_mac\":\"" + WiFi.macAddress() + "\",";
         json += "\"sta_connected\":" + String(wifiManager.isSTAConnected() ? "true" : "false") + ",";
         json += "\"sta_ssid\":\"" + (wifiManager.isSTAConnected() ? wifiManager.getConnectedSSID() : String("")) + "\",";
         json += "\"sta_ip\":\"" + (wifiManager.isSTAConnected() ? wifiManager.getSTAIP() : String("")) + "\",";
