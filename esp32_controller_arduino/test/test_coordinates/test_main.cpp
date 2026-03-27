@@ -157,15 +157,15 @@ void test_altaz_zenith() {
 }
 
 void test_altaz_horizon_north() {
-    // Object on northern horizon
+    // Object on northern horizon (alt=0, az=0)
     double ra, dec;
     double lat = 55.9, lon = -4.3;
 
     altAzToRaDec(0.0, 0.0, lat, lon, ra, dec);
 
-    // Dec should be negative (southern object on northern horizon from Glasgow)
-    // Actually for north horizon from Glasgow, dec = lat - 90 = -34.1
-    TEST_ASSERT_FLOAT_WITHIN(5.0, lat - 90.0, dec);
+    // For alt=0, az=0: sin(dec) = cos(lat)*cos(az) = cos(55.9) ≈ 0.56
+    // So dec ≈ +34 degrees (north of celestial equator)
+    TEST_ASSERT_FLOAT_WITHIN(5.0, 90.0 - lat, dec);
 }
 
 // =============================================================================
