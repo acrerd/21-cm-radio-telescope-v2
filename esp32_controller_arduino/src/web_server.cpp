@@ -51,6 +51,11 @@ void setupWebServer() {
         request->send(200, "application/json", json);
     });
 
+    // Serial log endpoint
+    webServer.on("/serial/log", HTTP_GET, [](AsyncWebServerRequest *request) {
+        request->send(200, "application/json", srtSerial.getLogJSON());
+    });
+
     // Calibrator control
     webServer.on("/calibrator", HTTP_GET, [](AsyncWebServerRequest *request) {
         bool on = srtSerial.getCalibratorOn();

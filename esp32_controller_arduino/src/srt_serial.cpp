@@ -14,7 +14,35 @@ SRTSerial::SRTSerial() :
     azCurrentA(0),
     statusStr("UNKNOWN"),
     isSlewing(false),
-    calibratorOn(false) {
+    calibratorOn(false),
+    logHead(0),
+    logCount(0) {
+}
+
+void SRTSerial::logMessage(bool isTX, const String &msg) {
+    logBuffer[logHead].timestamp = millis();
+    logBuffer[logHead].isTX = isTX;
+    logBuffer[logHead].message = msg;
+    logHead = (logHead + 1) % SERIAL_LOG_SIZE;
+    if (logCount < SERIAL_LOG_SIZE) logCount++;
+}
+
+String SRTSerial::getLogJSON() {
+    String json = "[";
+    int start = (logCount < SERIAL_LOG_SIZE) ? 0 : logHead;
+    for (int i = 0; i < logCount; i++) {
+        int idx = (start + i) % SERIAL_LOG_SIZE;
+        if (i > 0) json += ",";
+        json += "{\"t\":" + String(logBuffer[idx].timestamp) + ",";
+        json += "\"dir\":\"" + String(logBuffer[idx].isTX ? "TX" : "RX") + "\",";
+        // Escape quotes in message
+        String escaped = logBuffer[idx].message;
+        escaped.replace("\\", "\\\\");
+        escaped.replace("\"", "\\\"");
+        json += "\"msg\":\"" + escaped + "\"}";
+    }
+    json += "]";
+    return json;
 }
 
 void SRTSerial::begin(int txPin, int rxPin, int baudRate) {
@@ -26,36 +54,42 @@ void SRTSerial::begin(int txPin, int rxPin, int baudRate) {
 void SRTSerial::sendTarget(float alt, float az) {
     if (uart) {
         char cmd[32];
-        snprintf(cmd, sizeof(cmd), "%.1f %.1f\n", alt, az);
-        uart->print(cmd);
+        snprintf(cmd, sizeof(cmd), "%.1f %.1f", alt, az);
+        logMessage(true, cmd);
+        uart->println(cmd);
     }
 }
 
 void SRTSerial::sendHome() {
     if (uart) {
+        logMessage(true, "HOME");
         uart->println("HOME");
     }
 }
 
 void SRTSerial::sendStop() {
     if (uart) {
+        logMessage(true, "STOP");
         uart->println("STOP");
     }
 }
 
 void SRTSerial::sendReset() {
     if (uart) {
+        logMessage(true, "RESET");
         uart->println("RESET");
     }
 }
 
 void SRTSerial::sendCalibrator(bool on) {
     if (uart) {
+        logMessage(true, on ? "CAL ON" : "CAL OFF");
         uart->println(on ? "CAL ON" : "CAL OFF");
     }
 }
 
 void SRTSerial::requestStatus() {
+    // Don't log STATUS requests - too noisy (every second)
     if (uart) {
         uart->println("STATUS");
     }
@@ -78,6 +112,7 @@ bool SRTSerial::readStatus() {
             line.indexOf(" Az:") != -1 &&
             line.indexOf(" Az:") == line.lastIndexOf(" Az:")) {
             lastValidLine = line;
+            logMessage(false, line);  // Log valid status lines
         }
     }
 

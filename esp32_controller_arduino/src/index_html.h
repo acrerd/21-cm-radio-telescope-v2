@@ -57,6 +57,16 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
         .coord-row label { white-space: nowrap; }
         .btn-row { margin-top: 8px; }
         @media (max-width: 800px) { .two-col { grid-template-columns: 1fr; } }
+        .serial-panel { position: fixed; bottom: 0; left: 0; right: 0; background: #0f0f23; border-top: 2px solid #00d9ff; transition: height 0.3s; }
+        .serial-header { display: flex; justify-content: space-between; padding: 6px 15px; background: #16213e; cursor: pointer; }
+        .serial-header:hover { background: #1a2a4e; }
+        .serial-log { height: 150px; overflow-y: auto; font-family: monospace; font-size: 0.85em; padding: 5px 10px; }
+        .serial-log.collapsed { height: 0; padding: 0; }
+        .log-line { margin: 1px 0; white-space: nowrap; }
+        .log-tx { color: #00d9ff; }
+        .log-rx { color: #88ff88; }
+        .log-time { color: #666; margin-right: 8px; }
+        body { padding-bottom: 180px; }
     </style>
 </head>
 <body>
@@ -275,12 +285,31 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
                         <p><strong>Alt/Az</strong>: Altitude 0-90, Azimuth 0-355</p>
                     </div>
                     <div class="box">
+                        <h3>RA/Dec Input Formats</h3>
+                        <p style="font-size:0.85em;"><strong>RA:</strong> 12.5 | 12h30m | 12h30m00s | 12:30:00</p>
+                        <p style="font-size:0.85em;"><strong>Dec:</strong> -45.5 | -45d30m | +45d30m00s | 45:30:00</p>
+                    </div>
+                    <div class="box">
                         <h3>Tracking Modes</h3>
                         <p><strong>Go To:</strong> Slew to position once</p>
                         <p><strong>Track:</strong> Continuously follow as Earth rotates</p>
                     </div>
+                    <div class="box">
+                        <h3>Pointing Offset</h3>
+                        <p style="font-size:0.9em;">Add Alt/Az offset for scanning or mapping. Offset is applied to all tracking commands until cleared.</p>
+                    </div>
+                    <div class="box">
+                        <h3>Calibrator</h3>
+                        <p style="font-size:0.9em;">Noise source for receiver calibration. Toggle via button or API. State shown in status bar.</p>
+                    </div>
                 </div>
                 <div>
+                    <div class="box">
+                        <h3>Mount Limits</h3>
+                        <p style="font-size:0.9em;"><strong>Altitude:</strong> 0 to 90 degrees</p>
+                        <p style="font-size:0.9em;"><strong>Azimuth:</strong> 2 to 353 degrees (configurable)</p>
+                        <p style="font-size:0.9em;">Targets outside limits go to home position.</p>
+                    </div>
                     <div class="box">
                         <h3>Stellarium Setup</h3>
                         <ol style="margin: 5px 0; padding-left: 20px; font-size: 0.9em;">
@@ -290,9 +319,36 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
                             <li>Connect, then Ctrl+1 to slew to selected object</li>
                         </ol>
                     </div>
+                    <div class="box">
+                        <h3>API Endpoints</h3>
+                        <p style="font-size:0.85em;"><code>/status</code> - Mount position &amp; state</p>
+                        <p style="font-size:0.85em;"><code>/track/radec?ra=X&amp;dec=Y</code> - Track J2000</p>
+                        <p style="font-size:0.85em;"><code>/track/galactic?l=X&amp;b=Y</code> - Track galactic</p>
+                        <p style="font-size:0.85em;"><code>/offset?alt=X&amp;az=Y</code> - Set pointing offset</p>
+                        <p style="font-size:0.85em;"><code>/calibrator?on=1</code> - Control noise source</p>
+                    </div>
+                    <div class="box">
+                        <h3>Due Serial Commands</h3>
+                        <p style="font-size:0.85em;"><code>HOME</code> - Run homing sequence</p>
+                        <p style="font-size:0.85em;"><code>STOP</code> - Emergency stop</p>
+                        <p style="font-size:0.85em;"><code>STATUS</code> - Show position</p>
+                        <p style="font-size:0.85em;"><code>CAL ON/OFF</code> - Calibrator control</p>
+                    </div>
+                    <div class="box">
+                        <h3>About</h3>
+                        <p style="font-size:0.9em;">SRT Controller v2.0<br>Acre Road Observatory, Glasgow</p>
+                        <p style="font-size:0.85em;"><a href="https://github.com/acrerd/21-cm-radio-telescope-v2" target="_blank" style="color:#4fc3f7;">GitHub Repository</a></p>
+                    </div>
                 </div>
             </div>
         </div>
+    </div>
+    <div class="serial-panel" id="serial-panel">
+        <div class="serial-header" onclick="toggleSerialPanel()">
+            <span>Serial Monitor</span>
+            <span id="serial-toggle">▼</span>
+        </div>
+        <div class="serial-log" id="serial-log"></div>
     </div>
 <script>
 let selectedSsid='';
@@ -332,7 +388,10 @@ function loadSettings(){fetch('/settings').then(r=>r.json()).then(d=>{document.g
 function saveSettings(){const params=new URLSearchParams();params.append('observer_lat',document.getElementById('set_lat').value);params.append('observer_lon',document.getElementById('set_lon').value);params.append('mount_az_min',document.getElementById('set_az_min').value);params.append('mount_az_max',document.getElementById('set_az_max').value);params.append('mount_alt_min',document.getElementById('set_alt_min').value);params.append('mount_alt_max',document.getElementById('set_alt_max').value);params.append('home_alt',document.getElementById('set_home_alt').value);params.append('home_az',document.getElementById('set_home_az').value);params.append('position_deadband',document.getElementById('set_deadband').value);params.append('ap_ssid',document.getElementById('set_ap_ssid').value);params.append('ap_password',document.getElementById('set_ap_pass').value);params.append('page_name',document.getElementById('set_page_name').value);fetch('/settings/save?'+params.toString()).then(r=>r.json()).then(d=>{document.getElementById('settings-status').textContent=d.ok?'Settings saved!':'Save failed';document.getElementById('settings-status').style.color=d.ok?'#00ff00':'#ff4444';if(d.ok){document.getElementById('page-title').textContent=document.getElementById('set_page_name').value;document.title=document.getElementById('set_page_name').value;}});}
 function resetSettings(){if(confirm('Reset all settings to defaults?')){fetch('/settings/reset').then(r=>r.json()).then(d=>{if(d.ok){loadSettings();document.getElementById('settings-status').textContent='Reset to defaults';document.getElementById('settings-status').style.color='#ffaa00';}});}}
 function loadPageName(){fetch('/settings').then(r=>r.json()).then(d=>{document.getElementById('page-title').textContent=d.page_name;document.title=d.page_name;});}
-setInterval(updateEphemeris,10000);scheduleRefresh();updateStatus();updateEphemeris();checkAndSyncTime();loadPageName();
+let serialExpanded=true;
+function toggleSerialPanel(){const log=document.getElementById('serial-log');const tog=document.getElementById('serial-toggle');serialExpanded=!serialExpanded;log.classList.toggle('collapsed',!serialExpanded);tog.textContent=serialExpanded?'\u25BC':'\u25B2';}
+function updateSerialLog(){fetch('/serial/log').then(r=>r.json()).then(entries=>{const log=document.getElementById('serial-log');const wasAtBottom=log.scrollHeight-log.scrollTop<=log.clientHeight+5;let html='';entries.forEach(e=>{const secs=(e.t/1000).toFixed(1);html+='<div class="log-line log-'+e.dir.toLowerCase()+'"><span class="log-time">'+secs+'s</span><span class="log-dir">['+e.dir+']</span> '+e.msg+'</div>';});log.innerHTML=html;if(wasAtBottom)log.scrollTop=log.scrollHeight;});}
+setInterval(updateEphemeris,10000);setInterval(updateSerialLog,1000);scheduleRefresh();updateStatus();updateEphemeris();checkAndSyncTime();loadPageName();updateSerialLog();
 </script>
 </body>
 </html>)rawliteral";

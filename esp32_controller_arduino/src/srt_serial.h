@@ -5,6 +5,14 @@
 
 #include <Arduino.h>
 
+#define SERIAL_LOG_SIZE 30  // Number of log entries to keep
+
+struct SerialLogEntry {
+    unsigned long timestamp;  // millis()
+    bool isTX;                // true = sent to Due, false = received from Due
+    String message;
+};
+
 class SRTSerial {
 public:
     SRTSerial();
@@ -36,7 +44,11 @@ public:
     bool getCalibratorOn() { return calibratorOn; }
     String getLastStatus() { return lastStatus; }
 
+    // Serial log access
+    String getLogJSON();
+
 private:
+    void logMessage(bool isTX, const String &msg);
     void parseStatus(const String &line);
 
     HardwareSerial *uart;
@@ -51,6 +63,11 @@ private:
     String faultStr;
     bool isSlewing;
     bool calibratorOn;
+
+    // Ring buffer for serial log
+    SerialLogEntry logBuffer[SERIAL_LOG_SIZE];
+    int logHead;  // Next write position
+    int logCount; // Number of entries (up to SERIAL_LOG_SIZE)
 };
 
 // Global instance
