@@ -255,7 +255,8 @@ All endpoints return JSON unless noted.
   "az_current_a": 0.20,
   "status": "Ready",
   "fault": "",
-  "is_slewing": false
+  "is_slewing": false,
+  "calibrator_on": false
 }
 ```
 
@@ -271,6 +272,9 @@ All endpoints return JSON unless noted.
 | `/track/moon` | (none) | Track Moon |
 | `/tracking/enable` | `enable=0/1` | Enable/disable tracking |
 | `/direct` | `alt`, `az` | Go to Alt/Az directly |
+| `/offset` | `alt`, `az` | Set pointing offset (degrees) |
+| `/offset/clear` | (none) | Clear pointing offset |
+| `/calibrator` | `state=on/off/toggle` | Control calibrator noise source |
 
 ### Settings Endpoints
 
@@ -284,10 +288,13 @@ All endpoints return JSON unless noted.
 
 | Endpoint | Description |
 |----------|-------------|
-| `/wifi/status` | WiFi connection status |
-| `/wifi/scan` | Scan for networks |
-| `/wifi/connect` | Connect to network |
-| `/wifi/forget` | Forget saved network |
+| `/wifi/status` | Network status (includes WiFi, Ethernet, MAC addresses) |
+| `/wifi/scan` | Scan for WiFi networks |
+| `/wifi/connect` | Connect to WiFi network |
+| `/wifi/forget` | Forget saved WiFi credentials |
+| `/eth/save` | Save Ethernet settings (dhcp, ip, gateway, subnet, dns) |
+
+The `/wifi/status` response includes `eth_mac` and `wifi_mac` fields for device identification.
 
 ---
 
@@ -390,6 +397,17 @@ The ESP32 operates in **AP+STA** mode:
 |-----------|------------|
 | WiFi AP | 192.168.4.1 (fixed) |
 | WiFi Station | DHCP assigned |
+| Ethernet (WT32-ETH01) | DHCP or static (configurable) |
+
+### Ethernet Configuration (WT32-ETH01)
+
+Ethernet IP can be configured via the web interface Network tab:
+
+- **DHCP** (default): Automatically obtain IP from network
+- **Static IP**: Manually configure IP, gateway, subnet, and DNS
+
+Settings are stored in non-volatile memory (NVS) and persist across reboots.
+Changes require a reboot to take effect.
 
 ---
 

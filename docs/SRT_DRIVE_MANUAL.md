@@ -124,6 +124,8 @@ Or use the VS Code PlatformIO serial monitor button.
 | **Current Sensors** |
 | Az Current | A1 | Black | Analog input |
 | Alt Current | A0 | White | Analog input |
+| **Calibrator** |
+| Calibrator Control | 26 | --- | Output, active HIGH |
 
 ### 3.2 USB Ports
 
@@ -179,6 +181,7 @@ Alt:45.0 Az:180.0 Ialt:0.52A Iaz:0.38A Status:Ready
 | `Ialt` | Altitude motor current | Amps |
 | `Iaz` | Azimuth motor current | Amps |
 | `Status` | System state | See section 7 |
+| `Cal` | Calibrator state | ON/OFF |
 
 **Additional fields when slewing:**
 
@@ -283,6 +286,16 @@ HOME             Re-run homing sequence
 STOP             Immediate stop
 RESET            Clear fault, then re-home
 ```
+
+### 6.2 Calibrator Commands
+
+| Command | Description |
+|---------|-------------|
+| `CAL ON` | Turn calibrator noise source on |
+| `CAL OFF` | Turn calibrator noise source off |
+| `CAL` | Toggle calibrator state |
+
+The calibrator is a noise source used for receiver calibration. When enabled, GPIO pin 26 goes HIGH to activate the noise diode.
 
 ### 6.2 Information Commands
 
@@ -752,6 +765,7 @@ Encoders:       12(Az), 13(Alt)
 Fault Flags:    4,5(Az), 6,7(Alt)
 Current Sense:  A0(Alt), A1(Az)
 Serial1:        18(TX), 19(RX)
+Calibrator:     26 (active HIGH)
 ```
 
 ---

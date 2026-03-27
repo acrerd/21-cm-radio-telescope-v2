@@ -262,6 +262,13 @@ Connect via USB at 115200 baud.
 | `CONFIG` | Show configuration |
 | `HELP` | List all commands |
 
+#### Calibrator
+| Command | Description |
+|---------|-------------|
+| `CAL ON` | Turn calibrator noise source on |
+| `CAL OFF` | Turn calibrator noise source off |
+| `CAL` | Toggle calibrator state |
+
 #### Configuration
 | Command | Description |
 |---------|-------------|
@@ -274,9 +281,9 @@ Connect via USB at 115200 baud.
 
 #### Status Output Format
 ```
-Alt:45.0 Az:180.0 Ialt:0.15A Iaz:0.20A Status:Ready
-Alt:45.0 Az:180.0 Ialt:0.25A Iaz:0.30A Status:Slewing -> Alt:60.0 Az:200.0
-Alt:45.0 Az:180.0 Ialt:0.00A Iaz:0.00A Status:FAULT [Motor stalled]
+Alt:45.0 Az:180.0 Ialt:0.15A Iaz:0.20A Status:Ready Cal:OFF
+Alt:45.0 Az:180.0 Ialt:0.25A Iaz:0.30A Status:Slewing -> Alt:60.0 Az:200.0 Cal:OFF
+Alt:45.0 Az:180.0 Ialt:0.00A Iaz:0.00A Status:FAULT [Motor stalled] Cal:OFF
 ```
 
 ---

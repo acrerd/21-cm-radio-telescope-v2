@@ -277,11 +277,14 @@ The Network tab includes:
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/wifi/status` | GET | Network status including Ethernet settings |
+| `/wifi/status` | GET | Network status including Ethernet settings and MAC addresses |
 | `/eth/save` | GET | Save Ethernet settings (dhcp, ip, gateway, subnet, dns) |
 | `/wifi/scan` | GET | Scan for WiFi networks |
 | `/wifi/connect` | GET | Connect to WiFi (ssid, password) |
 | `/wifi/forget` | GET | Clear saved WiFi credentials |
+| `/offset` | GET | Set pointing offset (alt, az in degrees) |
+| `/offset/clear` | GET | Clear pointing offset |
+| `/calibrator` | GET | Control calibrator (state=on/off/toggle) |
 
 ---
 

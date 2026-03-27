@@ -274,6 +274,9 @@ Alt Current & A0 & White & ACS712 hall-effect \\
 \multicolumn{4}{l}{\textit{Serial1 (ESP32 interface)}} \\
 TX1 & 18 & --- & To ESP32 RX \\
 RX1 & 19 & --- & From ESP32 TX \\
+\midrule
+\multicolumn{4}{l}{\textit{Calibrator (output)}} \\
+Calibrator Control & 26 & --- & Active HIGH, noise source \\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -525,6 +528,24 @@ The firmware accepts commands via USB serial (Programming Port) and Serial1 (ESP
 \end{tabular}
 \end{table}
 
+\subsubsection{Calibrator commands}
+
+\begin{table}[H]
+\centering
+\caption{Calibrator commands}
+\begin{tabular}{ll}
+\toprule
+\textbf{Command} & \textbf{Description} \\
+\midrule
+\texttt{CAL ON} & Turn calibrator noise source on \\
+\texttt{CAL OFF} & Turn calibrator noise source off \\
+\texttt{CAL} & Toggle calibrator state \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The calibrator is a noise source used for receiver calibration. When enabled, GPIO pin 26 goes HIGH to activate the noise diode.
+
 \subsubsection{Configuration commands}
 
 \begin{table}[H]
@@ -574,10 +595,12 @@ STALL & Stall detection timeout & 2000 & ms \\
 The controller outputs status in a machine-parseable format:
 
 \begin{lstlisting}[language=bash,caption={Status output examples}]
-Alt:45.0 Az:180.0 Ialt:0.52A Iaz:0.38A Status:Ready
-Alt:30.0 Az:150.0 Ialt:2.10A Iaz:1.85A Status:Slewing -> Alt:45.0 Az:180.0
-Alt:30.0 Az:150.0 Ialt:5.20A Iaz:0.00A Status:FAULT [Altitude motor overcurrent]
+Alt:45.0 Az:180.0 Ialt:0.52A Iaz:0.38A Status:Ready Cal:OFF
+Alt:30.0 Az:150.0 Ialt:2.10A Iaz:1.85A Status:Slewing -> Alt:45.0 Az:180.0 Cal:OFF
+Alt:30.0 Az:150.0 Ialt:5.20A Iaz:0.00A Status:FAULT [Altitude motor overcurrent] Cal:OFF
 \end{lstlisting}
+
+The \texttt{Cal:ON} or \texttt{Cal:OFF} field indicates the state of the calibrator noise source.
 
 \subsection{Fault detection}
 
@@ -701,9 +724,10 @@ The ESP32 operates in AP+STA mode, providing both access point and station conne
 \begin{enumerate}
     \item \textbf{WiFi Access Point} --- Always active at 192.168.4.1 for configuration
     \item \textbf{WiFi Station} --- Connects to saved network if available
+    \item \textbf{Ethernet (WT32-ETH01)} --- Native LAN8720 Ethernet with DHCP or static IP
 \end{enumerate}
 
-Ethernet support (W5500) is planned for future versions.
+For the WT32-ETH01 board, Ethernet IP configuration (DHCP or static) can be set via the web interface. Settings are stored in non-volatile memory (NVS) and persist across reboots.
 
 \subsubsection{Default network settings}
 
@@ -717,6 +741,7 @@ Ethernet support (W5500) is planned for future versions.
 WiFi AP SSID & SRT\_Controller \\
 WiFi AP Password & radio1420 \\
 AP IP Address & 192.168.4.1 \\
+Ethernet IP & DHCP or static (configurable) \\
 Web Server Port & 80 \\
 Stellarium Port & 10001 \\
 \bottomrule
@@ -762,9 +787,24 @@ The ESP32 provides a RESTful HTTP API for telescope control.
 \texttt{/track/moon} & --- & Track Moon \\
 \texttt{/track} & \texttt{enable=0/1} & Enable/disable tracking \\
 \texttt{/direct} & \texttt{alt}, \texttt{az} & Go to Alt/Az directly \\
+\texttt{/offset} & \texttt{alt}, \texttt{az} & Set pointing offset (degrees) \\
+\texttt{/offset/clear} & --- & Clear pointing offset \\
+\texttt{/calibrator} & \texttt{state=on/off/toggle} & Control calibrator noise source \\
 \bottomrule
 \end{tabular}
 \end{table}
+
+\subsubsection{Pointing offset}
+
+The pointing offset feature allows small angular offsets to be applied to the telescope pointing. This is useful for:
+
+\begin{itemize}
+    \item Raster scanning around a target for mapping
+    \item Beam switching for background subtraction
+    \item Fine-tuning pointing calibration
+\end{itemize}
+
+The offset is applied in the Alt/Az frame after coordinate conversion. The final position is clamped to mount limits.
 
 \subsubsection{Example API usage}
 
