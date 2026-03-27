@@ -574,6 +574,250 @@ void test_precession_distant_past() {
 }
 
 // =============================================================================
+// Robustness tests - ensure no crashes with invalid input
+// =============================================================================
+
+void test_no_crash_nan_input_galactic() {
+    // NaN inputs should not crash, just produce NaN output
+    double ra, dec;
+    double nan_val = NAN;
+
+    galacticToEquatorial(nan_val, 0.0, ra, dec);
+    // Just verify no crash - output may be NaN
+    TEST_ASSERT_TRUE(true);
+
+    galacticToEquatorial(0.0, nan_val, ra, dec);
+    TEST_ASSERT_TRUE(true);
+
+    galacticToEquatorial(nan_val, nan_val, ra, dec);
+    TEST_ASSERT_TRUE(true);
+}
+
+void test_no_crash_infinity_input() {
+    double ra, dec;
+    double inf_val = INFINITY;
+    double neg_inf = -INFINITY;
+
+    // These should not crash
+    galacticToEquatorial(inf_val, 0.0, ra, dec);
+    TEST_ASSERT_TRUE(true);
+
+    galacticToEquatorial(neg_inf, 0.0, ra, dec);
+    TEST_ASSERT_TRUE(true);
+
+    equatorialToGalactic(inf_val, 0.0, ra, dec);
+    TEST_ASSERT_TRUE(true);
+}
+
+void test_no_crash_extreme_values() {
+    double ra, dec, l, b, alt, az;
+
+    // Very large values
+    galacticToEquatorial(1e10, 1e10, ra, dec);
+    TEST_ASSERT_TRUE(true);
+
+    equatorialToGalactic(1e10, 1e10, l, b);
+    TEST_ASSERT_TRUE(true);
+
+    // Very small values (near zero)
+    galacticToEquatorial(1e-15, 1e-15, ra, dec);
+    TEST_ASSERT_TRUE(!isnan(ra) && !isnan(dec));
+
+    // Negative zero
+    galacticToEquatorial(-0.0, -0.0, ra, dec);
+    TEST_ASSERT_TRUE(!isnan(ra) && !isnan(dec));
+}
+
+void test_no_crash_out_of_range_ra() {
+    // RA values outside 0-24 range
+    double l, b;
+
+    equatorialToGalactic(25.0, 45.0, l, b);  // RA > 24
+    TEST_ASSERT_TRUE(!isnan(l) && !isnan(b));
+
+    equatorialToGalactic(-1.0, 45.0, l, b);  // RA < 0
+    TEST_ASSERT_TRUE(!isnan(l) && !isnan(b));
+
+    equatorialToGalactic(100.0, 45.0, l, b); // RA way out of range
+    TEST_ASSERT_TRUE(!isnan(l) && !isnan(b));
+}
+
+void test_no_crash_out_of_range_dec() {
+    // Dec values outside -90 to +90 range
+    double l, b;
+
+    equatorialToGalactic(12.0, 95.0, l, b);   // Dec > 90
+    TEST_ASSERT_TRUE(true);  // May produce NaN, but shouldn't crash
+
+    equatorialToGalactic(12.0, -95.0, l, b);  // Dec < -90
+    TEST_ASSERT_TRUE(true);
+
+    equatorialToGalactic(12.0, 180.0, l, b);  // Dec way out of range
+    TEST_ASSERT_TRUE(true);
+}
+
+void test_no_crash_out_of_range_galactic() {
+    double ra, dec;
+
+    // Galactic coords outside normal range
+    galacticToEquatorial(400.0, 0.0, ra, dec);   // l > 360
+    TEST_ASSERT_TRUE(!isnan(ra) && !isnan(dec));
+
+    galacticToEquatorial(-50.0, 0.0, ra, dec);   // l < 0
+    TEST_ASSERT_TRUE(!isnan(ra) && !isnan(dec));
+
+    galacticToEquatorial(0.0, 100.0, ra, dec);   // b > 90
+    TEST_ASSERT_TRUE(true);
+
+    galacticToEquatorial(0.0, -100.0, ra, dec);  // b < -90
+    TEST_ASSERT_TRUE(true);
+}
+
+void test_no_crash_altaz_extreme_latitude() {
+    double ra, dec;
+
+    // Exactly at poles (lat = +/-90 can cause div by zero)
+    altAzToRaDec(45.0, 180.0, 90.0, 0.0, ra, dec);
+    TEST_ASSERT_TRUE(true);  // May be undefined, but shouldn't crash
+
+    altAzToRaDec(45.0, 180.0, -90.0, 0.0, ra, dec);
+    TEST_ASSERT_TRUE(true);
+
+    // Extreme longitudes
+    altAzToRaDec(45.0, 180.0, 55.0, 360.0, ra, dec);
+    TEST_ASSERT_TRUE(!isnan(ra) && !isnan(dec));
+
+    altAzToRaDec(45.0, 180.0, 55.0, -180.0, ra, dec);
+    TEST_ASSERT_TRUE(!isnan(ra) && !isnan(dec));
+}
+
+void test_no_crash_altaz_extreme_angles() {
+    double ra, dec;
+    double lat = 55.9, lon = -4.3;
+
+    // Altitude beyond valid range
+    altAzToRaDec(100.0, 0.0, lat, lon, ra, dec);  // Alt > 90
+    TEST_ASSERT_TRUE(true);
+
+    altAzToRaDec(-90.0, 0.0, lat, lon, ra, dec);  // Alt = -90
+    TEST_ASSERT_TRUE(true);
+
+    // Azimuth beyond valid range
+    altAzToRaDec(45.0, 400.0, lat, lon, ra, dec); // Az > 360
+    TEST_ASSERT_TRUE(!isnan(ra) && !isnan(dec));
+
+    altAzToRaDec(45.0, -45.0, lat, lon, ra, dec); // Az < 0
+    TEST_ASSERT_TRUE(!isnan(ra) && !isnan(dec));
+}
+
+void test_no_crash_julian_date_extreme() {
+    // Extreme dates
+    double jd;
+
+    jd = julianDate(0, 1, 1, 0, 0, 0);      // Year 0
+    TEST_ASSERT_TRUE(!isnan(jd) && !isinf(jd));
+
+    jd = julianDate(-1000, 1, 1, 0, 0, 0);  // Negative year
+    TEST_ASSERT_TRUE(!isnan(jd) && !isinf(jd));
+
+    jd = julianDate(10000, 1, 1, 0, 0, 0);  // Far future
+    TEST_ASSERT_TRUE(!isnan(jd) && !isinf(jd));
+
+    jd = julianDate(2024, 0, 1, 0, 0, 0);   // Invalid month
+    TEST_ASSERT_TRUE(!isnan(jd) && !isinf(jd));
+
+    jd = julianDate(2024, 13, 1, 0, 0, 0);  // Invalid month
+    TEST_ASSERT_TRUE(!isnan(jd) && !isinf(jd));
+
+    jd = julianDate(2024, 1, 0, 0, 0, 0);   // Invalid day
+    TEST_ASSERT_TRUE(!isnan(jd) && !isinf(jd));
+
+    jd = julianDate(2024, 1, 32, 0, 0, 0);  // Invalid day
+    TEST_ASSERT_TRUE(!isnan(jd) && !isinf(jd));
+}
+
+void test_no_crash_precession_extreme_dates() {
+    double ra_out, dec_out;
+
+    // Very far future
+    double jd_far = julianDate(10000, 1, 1, 12, 0, 0);
+    precessJ2000ToDate(12.0, 45.0, jd_far, ra_out, dec_out);
+    TEST_ASSERT_TRUE(!isnan(ra_out) && !isnan(dec_out));
+
+    // Very far past
+    double jd_past = julianDate(-1000, 1, 1, 12, 0, 0);
+    precessJ2000ToDate(12.0, 45.0, jd_past, ra_out, dec_out);
+    TEST_ASSERT_TRUE(!isnan(ra_out) && !isnan(dec_out));
+
+    // JD = 0 (invalid but shouldn't crash)
+    precessJ2000ToDate(12.0, 45.0, 0.0, ra_out, dec_out);
+    TEST_ASSERT_TRUE(true);
+
+    // Negative JD
+    precessJ2000ToDate(12.0, 45.0, -1000000.0, ra_out, dec_out);
+    TEST_ASSERT_TRUE(true);
+}
+
+void test_no_crash_gmst_extreme() {
+    double result;
+
+    // Extreme JD values
+    result = gmst(0.0, 12.0);
+    TEST_ASSERT_TRUE(!isnan(result));
+
+    result = gmst(-1000000.0, 12.0);
+    TEST_ASSERT_TRUE(!isnan(result));
+
+    result = gmst(1e10, 12.0);
+    TEST_ASSERT_TRUE(!isnan(result));
+
+    // Extreme hours UT
+    result = gmst(2451545.0, -100.0);
+    TEST_ASSERT_TRUE(!isnan(result));
+
+    result = gmst(2451545.0, 100.0);
+    TEST_ASSERT_TRUE(!isnan(result));
+}
+
+void test_no_crash_rapid_repeated_calls() {
+    // Simulate rapid telescope tracking updates
+    double ra, dec, alt, az, l, b;
+    double lat = 55.9, lon = -4.3;
+
+    for (int i = 0; i < 1000; i++) {
+        double test_ra = (double)(i % 24);
+        double test_dec = (double)((i % 180) - 90);
+
+        raDecToAltAz(test_ra, test_dec, lat, lon, alt, az);
+        altAzToRaDec(alt, az, lat, lon, ra, dec);
+        equatorialToGalactic(test_ra, test_dec, l, b);
+        galacticToEquatorial(l, b, ra, dec);
+    }
+    // If we got here, no crash
+    TEST_ASSERT_TRUE(true);
+}
+
+void test_no_crash_all_zeros() {
+    double ra, dec, l, b, alt, az;
+
+    // All zeros - potential division by zero issues
+    galacticToEquatorial(0.0, 0.0, ra, dec);
+    TEST_ASSERT_TRUE(!isnan(ra) && !isnan(dec));
+
+    equatorialToGalactic(0.0, 0.0, l, b);
+    TEST_ASSERT_TRUE(!isnan(l) && !isnan(b));
+
+    altAzToRaDec(0.0, 0.0, 0.0, 0.0, ra, dec);
+    TEST_ASSERT_TRUE(true);  // At equator, looking north on horizon
+
+    raDecToAltAz(0.0, 0.0, 0.0, 0.0, alt, az);
+    TEST_ASSERT_TRUE(true);
+
+    double jd = julianDate(0, 0, 0, 0, 0, 0);
+    TEST_ASSERT_TRUE(!isnan(jd));
+}
+
+// =============================================================================
 // Main
 // =============================================================================
 
@@ -637,6 +881,21 @@ int main(int argc, char **argv) {
     // Galactic plane survey (21cm HI)
     RUN_TEST(test_galactic_plane_survey_points);
     RUN_TEST(test_hi_cloud_velocities_region);
+
+    // Robustness - ensure no crashes with invalid input
+    RUN_TEST(test_no_crash_nan_input_galactic);
+    RUN_TEST(test_no_crash_infinity_input);
+    RUN_TEST(test_no_crash_extreme_values);
+    RUN_TEST(test_no_crash_out_of_range_ra);
+    RUN_TEST(test_no_crash_out_of_range_dec);
+    RUN_TEST(test_no_crash_out_of_range_galactic);
+    RUN_TEST(test_no_crash_altaz_extreme_latitude);
+    RUN_TEST(test_no_crash_altaz_extreme_angles);
+    RUN_TEST(test_no_crash_julian_date_extreme);
+    RUN_TEST(test_no_crash_precession_extreme_dates);
+    RUN_TEST(test_no_crash_gmst_extreme);
+    RUN_TEST(test_no_crash_rapid_repeated_calls);
+    RUN_TEST(test_no_crash_all_zeros);
 
     return UNITY_END();
 }
