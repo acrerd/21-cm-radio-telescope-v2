@@ -8,7 +8,8 @@
 #define SERIAL_LOG_SIZE 30  // Number of log entries to keep
 
 struct SerialLogEntry {
-    unsigned long timestamp;  // millis()
+    time_t utcTime;           // UTC timestamp (0 if not synced)
+    unsigned long millis;     // millis() as fallback
     char direction;           // 'T' = TX to Due, 'R' = RX from Due, 'E' = ESP32 diagnostic
     String message;
 };

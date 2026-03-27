@@ -391,7 +391,7 @@ function resetSettings(){if(confirm('Reset all settings to defaults?')){fetch('/
 function loadPageName(){fetch('/settings').then(r=>r.json()).then(d=>{document.getElementById('page-title').textContent=d.page_name;document.title=d.page_name;});}
 let serialExpanded=true;
 function toggleSerialPanel(){const log=document.getElementById('serial-log');const tog=document.getElementById('serial-toggle');serialExpanded=!serialExpanded;log.classList.toggle('collapsed',!serialExpanded);tog.textContent=serialExpanded?'\u25BC':'\u25B2';}
-function updateSerialLog(){fetch('/serial/log').then(r=>r.json()).then(entries=>{const log=document.getElementById('serial-log');const wasAtBottom=log.scrollHeight-log.scrollTop<=log.clientHeight+5;let html='';entries.forEach(e=>{const secs=(e.t/1000).toFixed(1);html+='<div class="log-line log-'+e.dir.toLowerCase()+'"><span class="log-time">'+secs+'s</span><span class="log-dir">['+e.dir+']</span> '+e.msg+'</div>';});log.innerHTML=html;if(wasAtBottom)log.scrollTop=log.scrollHeight;});}
+function updateSerialLog(){fetch('/serial/log').then(r=>r.json()).then(entries=>{const log=document.getElementById('serial-log');const wasAtBottom=log.scrollHeight-log.scrollTop<=log.clientHeight+5;let html='';entries.forEach(e=>{html+='<div class="log-line log-'+e.dir.toLowerCase()+'"><span class="log-time">'+e.time+'</span><span class="log-dir">['+e.dir+']</span> '+e.msg+'</div>';});log.innerHTML=html;if(wasAtBottom)log.scrollTop=log.scrollHeight;});}
 setInterval(updateEphemeris,10000);setInterval(updateSerialLog,1000);scheduleRefresh();updateStatus();updateEphemeris();checkAndSyncTime();loadPageName();updateSerialLog();
 </script>
 </body>

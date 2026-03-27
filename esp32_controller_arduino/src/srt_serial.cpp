@@ -20,7 +20,8 @@ SRTSerial::SRTSerial() :
 }
 
 void SRTSerial::logMessage(char direction, const String &msg) {
-    logBuffer[logHead].timestamp = millis();
+    logBuffer[logHead].utcTime = time(nullptr);
+    logBuffer[logHead].millis = millis();
     logBuffer[logHead].direction = direction;
     logBuffer[logHead].message = msg;
     logHead = (logHead + 1) % SERIAL_LOG_SIZE;
@@ -37,7 +38,20 @@ String SRTSerial::getLogJSON() {
     for (int i = 0; i < logCount; i++) {
         int idx = (start + i) % SERIAL_LOG_SIZE;
         if (i > 0) json += ",";
-        json += "{\"t\":" + String(logBuffer[idx].timestamp) + ",";
+
+        // Format timestamp - use UTC if available, otherwise millis
+        String timeStr;
+        if (logBuffer[idx].utcTime > 1000000000) {
+            struct tm *t = gmtime(&logBuffer[idx].utcTime);
+            char buf[12];
+            snprintf(buf, sizeof(buf), "%02d:%02d:%02d",
+                     t->tm_hour, t->tm_min, t->tm_sec);
+            timeStr = buf;
+        } else {
+            timeStr = String(logBuffer[idx].millis / 1000) + "s";
+        }
+
+        json += "{\"time\":\"" + timeStr + "\",";
         const char* dirStr = (logBuffer[idx].direction == 'T') ? "TX" :
                              (logBuffer[idx].direction == 'R') ? "RX" : "ESP";
         json += "\"dir\":\"" + String(dirStr) + "\",";
