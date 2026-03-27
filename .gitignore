@@ -21,6 +21,11 @@ __pycache__/
 *.h5
 *.hdf5
 
+# Coverage files
+*.gcov
+*.gcda
+*.gcno
+
 # OS files
 .DS_Store
 Thumbs.db
