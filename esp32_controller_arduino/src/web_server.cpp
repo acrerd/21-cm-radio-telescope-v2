@@ -237,10 +237,20 @@ void setupWebServer() {
         json += "\"eth_available\":true,";
         json += "\"eth_connected\":" + String(ethConnected ? "true" : "false") + ",";
         json += "\"eth_ip\":\"" + ethIP + "\",";
+        json += "\"eth_dhcp\":" + String(settings.ethUseDHCP ? "true" : "false") + ",";
+        json += "\"eth_static_ip\":\"" + settings.ethStaticIP + "\",";
+        json += "\"eth_gateway\":\"" + settings.ethGateway + "\",";
+        json += "\"eth_subnet\":\"" + settings.ethSubnet + "\",";
+        json += "\"eth_dns\":\"" + settings.ethDNS + "\",";
         #else
         json += "\"eth_available\":false,";
         json += "\"eth_connected\":false,";
         json += "\"eth_ip\":\"\",";
+        json += "\"eth_dhcp\":true,";
+        json += "\"eth_static_ip\":\"\",";
+        json += "\"eth_gateway\":\"\",";
+        json += "\"eth_subnet\":\"\",";
+        json += "\"eth_dns\":\"\",";
         #endif
         // WiFi status
         json += "\"ap_active\":" + String(wifiManager.isAPActive() ? "true" : "false") + ",";
@@ -252,6 +262,31 @@ void setupWebServer() {
         json += "\"saved_ssid\":\"" + savedSSID + "\"";
         json += "}";
         request->send(200, "application/json", json);
+    });
+
+    // Save Ethernet settings (requires reboot to apply)
+    webServer.on("/eth/save", HTTP_GET, [](AsyncWebServerRequest *request) {
+        #if ETHERNET_ENABLED
+        if (request->hasArg("dhcp")) {
+            settings.ethUseDHCP = (request->arg("dhcp") == "1");
+        }
+        if (request->hasArg("ip")) {
+            settings.ethStaticIP = request->arg("ip");
+        }
+        if (request->hasArg("gateway")) {
+            settings.ethGateway = request->arg("gateway");
+        }
+        if (request->hasArg("subnet")) {
+            settings.ethSubnet = request->arg("subnet");
+        }
+        if (request->hasArg("dns")) {
+            settings.ethDNS = request->arg("dns");
+        }
+        settings.save();
+        request->send(200, "application/json", "{\"ok\":true,\"reboot_required\":true}");
+        #else
+        request->send(200, "application/json", "{\"ok\":false,\"error\":\"Ethernet not available\"}");
+        #endif
     });
 
     // WiFi scan

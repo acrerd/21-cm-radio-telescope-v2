@@ -31,6 +31,13 @@ public:
     // Display
     String pageName;
 
+    // Ethernet (WT32-ETH01 only)
+    bool ethUseDHCP;
+    String ethStaticIP;
+    String ethGateway;
+    String ethSubnet;
+    String ethDNS;
+
     // Load settings from NVS (uses defaults if not saved)
     void load();
 

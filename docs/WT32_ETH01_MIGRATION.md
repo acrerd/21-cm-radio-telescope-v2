@@ -262,42 +262,26 @@ The WT32-ETH01 uses standard UART, not USB CDC. The `DBG()` macro can be simplif
 
 ---
 
-## 5. Web Interface Updates
+## 5. Web Interface (Implemented)
 
-### Network Tab Additions
+### Network Tab Features
 
-Add Ethernet status display:
+The Network tab includes:
 
-```html
-<div class="section">
-    <h3>Ethernet</h3>
-    <div class="status-row">
-        <span>Status:</span>
-        <span id="eth-status">--</span>
-    </div>
-    <div class="status-row">
-        <span>IP Address:</span>
-        <span id="eth-ip">--</span>
-    </div>
-</div>
-```
+- **Ethernet status**: Connection state and current IP address
+- **Ethernet configuration**: DHCP/Static IP selection with IP, gateway, subnet, DNS fields
+- **WiFi AP status**: Access point SSID and IP
+- **WiFi Station**: Connection to external networks with scan/connect
 
-### JavaScript Updates
+### API Endpoints
 
-```javascript
-function updateNetworkStatus() {
-    fetch('/wifi/status')
-        .then(r => r.json())
-        .then(data => {
-            // Ethernet
-            document.getElementById('eth-status').textContent =
-                data.eth_connected ? 'Connected' : 'Disconnected';
-            document.getElementById('eth-ip').textContent =
-                data.eth_ip || '--';
-            // ... existing WiFi status code
-        });
-}
-```
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/wifi/status` | GET | Network status including Ethernet settings |
+| `/eth/save` | GET | Save Ethernet settings (dhcp, ip, gateway, subnet, dns) |
+| `/wifi/scan` | GET | Scan for WiFi networks |
+| `/wifi/connect` | GET | Connect to WiFi (ssid, password) |
+| `/wifi/forget` | GET | Clear saved WiFi credentials |
 
 ---
 
@@ -557,8 +541,18 @@ The code uses `#ifdef BOARD_WT32_ETH01` / `#ifdef BOARD_ESP32S3` for board-speci
 | Interface  | Address                              |
 |------------|--------------------------------------|
 | WiFi AP    | 192.168.4.1 (SSID: SRT_Controller)   |
-| Ethernet   | DHCP assigned (check serial output)  |
+| Ethernet   | DHCP or static (configurable via web UI) |
 | Stellarium | Port 10001 on any interface          |
+
+### Ethernet IP Configuration
+
+Ethernet IP can be configured via the web interface (Network tab):
+
+- **DHCP** (default): Automatically obtain IP from network
+- **Static IP**: Manually configure IP, gateway, subnet, and DNS
+
+Settings are stored in non-volatile memory and persist across reboots.
+Changes require a reboot to take effect.
 
 ---
 

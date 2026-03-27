@@ -225,10 +225,24 @@ void setup() {
     // Initialize Ethernet (WT32-ETH01 only)
     #if ETHERNET_ENABLED
     Serial.println("Initializing Ethernet...");
+    Serial.printf("  Mode: %s\n", settings.ethUseDHCP ? "DHCP" : "Static IP");
     WiFi.onEvent(onEthEvent);
     // WT32-ETH01 uses LAN8720 PHY with specific pin configuration
     ETH.begin(ETH_PHY_ADDR_CFG, ETH_PHY_POWER_PIN, ETH_PHY_MDC_PIN,
               ETH_PHY_MDIO_PIN, ETH_PHY_LAN8720, ETH_CLOCK_GPIO0_IN);
+    // Configure static IP if not using DHCP
+    if (!settings.ethUseDHCP) {
+        IPAddress ip, gateway, subnet, dns;
+        if (ip.fromString(settings.ethStaticIP) &&
+            gateway.fromString(settings.ethGateway) &&
+            subnet.fromString(settings.ethSubnet) &&
+            dns.fromString(settings.ethDNS)) {
+            ETH.config(ip, gateway, subnet, dns);
+            Serial.printf("  Static IP: %s\n", settings.ethStaticIP.c_str());
+        } else {
+            Serial.println("  Invalid static IP config, using DHCP");
+        }
+    }
     // Give Ethernet time to connect
     unsigned long ethStart = millis();
     while (!ethConnected && (millis() - ethStart < 5000)) {

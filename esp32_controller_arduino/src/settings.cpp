@@ -19,6 +19,12 @@ void Settings::resetToDefaults() {
     apSSID = WIFI_AP_SSID;
     apPassword = WIFI_AP_PASSWORD;
     pageName = "SRT Controller";
+    // Ethernet defaults
+    ethUseDHCP = true;
+    ethStaticIP = "192.168.1.100";
+    ethGateway = "192.168.1.1";
+    ethSubnet = "255.255.255.0";
+    ethDNS = "8.8.8.8";
 }
 
 void Settings::load() {
@@ -42,6 +48,12 @@ void Settings::load() {
         apSSID = prefs.getString("apSSID", WIFI_AP_SSID);
         apPassword = prefs.getString("apPass", WIFI_AP_PASSWORD);
         pageName = prefs.getString("pageName", "SRT Controller");
+        // Ethernet settings
+        ethUseDHCP = prefs.getBool("ethDHCP", true);
+        ethStaticIP = prefs.getString("ethIP", "192.168.1.100");
+        ethGateway = prefs.getString("ethGW", "192.168.1.1");
+        ethSubnet = prefs.getString("ethSub", "255.255.255.0");
+        ethDNS = prefs.getString("ethDNS", "8.8.8.8");
         Serial.println("Settings loaded from NVS");
     } else {
         Serial.println("Using default settings");
@@ -66,6 +78,12 @@ void Settings::save() {
     prefs.putString("apSSID", apSSID);
     prefs.putString("apPass", apPassword);
     prefs.putString("pageName", pageName);
+    // Ethernet settings
+    prefs.putBool("ethDHCP", ethUseDHCP);
+    prefs.putString("ethIP", ethStaticIP);
+    prefs.putString("ethGW", ethGateway);
+    prefs.putString("ethSub", ethSubnet);
+    prefs.putString("ethDNS", ethDNS);
 
     prefs.end();
     Serial.println("Settings saved to NVS");
