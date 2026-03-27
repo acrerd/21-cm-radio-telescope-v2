@@ -17,6 +17,7 @@ public:
     void sendHome();
     void sendStop();
     void sendReset();
+    void sendCalibrator(bool on);
     void requestStatus();
 
     // Read status from Due
@@ -32,6 +33,7 @@ public:
     String getStatusStr() { return statusStr; }
     String getFaultStr() { return faultStr; }
     bool getIsSlewing() { return isSlewing; }
+    bool getCalibratorOn() { return calibratorOn; }
     String getLastStatus() { return lastStatus; }
 
 private:
@@ -48,6 +50,7 @@ private:
     String statusStr;
     String faultStr;
     bool isSlewing;
+    bool calibratorOn;
 };
 
 // Global instance

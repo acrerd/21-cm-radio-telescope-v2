@@ -239,6 +239,9 @@ int32_t prevTargetAlt = 0;
 SystemState prevSystemState = STATE_INIT;
 FaultCode prevFaultCode = FAULT_NONE;
 
+// Calibrator state
+bool calibratorOn = false;
+
 // =============================================================================
 // DUAL SERIAL OUTPUT HELPER
 // =============================================================================
@@ -1209,6 +1212,10 @@ void outputStatus() {
         printAllFloat((float)targetAz / PULSES_PER_DEGREE, 1);
     }
 
+    // Calibrator state
+    printAll(" Cal:");
+    printAll(calibratorOn ? "ON" : "OFF");
+
     printAllLn("");
 
     updatePrevStatus();
@@ -1228,6 +1235,7 @@ void showHelp() {
     printAllLn("  DRIVE <alt> <az> - Slew to position");
     printAllLn("  HOME             - Run homing sequence");
     printAllLn("  STOP             - Emergency stop");
+    printAllLn("  CAL [ON|OFF]     - Toggle/set calibrator");
     printAllLn("  RESET            - Clear fault and re-home");
     printAllLn("  STATUS           - Show current status");
     printAllLn("  CONFIG           - Show configuration");
@@ -1409,6 +1417,26 @@ void processCommand(const char* buffer) {
         stopAllMotors();
         printAllLn("STOPPED");
     }
+    else if (strEqualsIgnoreCase(cmd, "CAL")) {
+        // Parse optional ON/OFF argument
+        char arg[8];
+        if (sscanf(buffer, "%*s %7s", arg) == 1) {
+            if (strEqualsIgnoreCase(arg, "ON") || strcmp(arg, "1") == 0) {
+                calibratorOn = true;
+            } else if (strEqualsIgnoreCase(arg, "OFF") || strcmp(arg, "0") == 0) {
+                calibratorOn = false;
+            } else {
+                printAllLn("Usage: CAL [ON|OFF]");
+                return;
+            }
+        } else {
+            // Toggle if no argument
+            calibratorOn = !calibratorOn;
+        }
+        digitalWrite(PIN_CALIBRATOR, calibratorOn ? HIGH : LOW);
+        printAll("Calibrator: ");
+        printAllLn(calibratorOn ? "ON" : "OFF");
+    }
     else if (strEqualsIgnoreCase(cmd, "RESET")) {
         if (systemState != STATE_FAULT) {
             printAllLn("No fault to reset.");
@@ -1459,7 +1487,6 @@ void processCommand(const char* buffer) {
         digitalWrite(2, HIGH);
         printAllLn("Pin 2 forced HIGH - measure with multimeter");
     }
-    #endif
     else {
         // Try as simple two-number command
         if (sscanf(buffer, "%f %f", &val1, &val2) == 2) {
@@ -1608,6 +1635,11 @@ void setup() {
     pinMode(PIN_DIR_ALT, OUTPUT);
     digitalWrite(PIN_DIR_AZ, HIGH);
     digitalWrite(PIN_DIR_ALT, HIGH);
+
+    // Configure calibrator output (off by default)
+    pinMode(PIN_CALIBRATOR, OUTPUT);
+    digitalWrite(PIN_CALIBRATOR, LOW);
+    calibratorOn = false;
 
     // Attach interrupts for position sensing
     attachInterrupt(digitalPinToInterrupt(PIN_PULSE_AZ), pulseAzISR, FALLING);

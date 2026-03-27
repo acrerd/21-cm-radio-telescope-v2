@@ -45,8 +45,20 @@ void setupWebServer() {
         json += "\"status\":\"" + srtSerial.getStatusStr() + "\",";
         json += "\"fault\":\"" + srtSerial.getFaultStr() + "\",";
         json += "\"is_slewing\":" + String(srtSerial.getIsSlewing() ? "true" : "false") + ",";
+        json += "\"calibrator\":" + String(srtSerial.getCalibratorOn() ? "true" : "false") + ",";
         json += "\"raw\":\"" + srtSerial.getLastStatus() + "\"";
         json += "}";
+        request->send(200, "application/json", json);
+    });
+
+    // Calibrator control
+    webServer.on("/calibrator", HTTP_GET, [](AsyncWebServerRequest *request) {
+        bool on = srtSerial.getCalibratorOn();
+        if (request->hasArg("on")) {
+            on = (request->arg("on") == "1" || request->arg("on") == "true");
+            srtSerial.sendCalibrator(on);
+        }
+        String json = "{\"ok\":true,\"calibrator\":" + String(on ? "true" : "false") + "}";
         request->send(200, "application/json", json);
     });
 

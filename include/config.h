@@ -38,6 +38,9 @@
 #define PIN_CURRENT_AZ  A1      // Azimuth current sensor (black)
 #define PIN_CURRENT_ALT A0      // Altitude current sensor (white)
 
+// Calibrator control (output, active HIGH)
+#define PIN_CALIBRATOR  26      // Noise calibrator on/off
+
 // =============================================================================
 // DEFAULT VALUES - These are loaded into config struct at startup
 // =============================================================================

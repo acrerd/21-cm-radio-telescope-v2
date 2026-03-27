@@ -13,7 +13,8 @@ SRTSerial::SRTSerial() :
     altCurrentA(0),
     azCurrentA(0),
     statusStr("UNKNOWN"),
-    isSlewing(false) {
+    isSlewing(false),
+    calibratorOn(false) {
 }
 
 void SRTSerial::begin(int txPin, int rxPin, int baudRate) {
@@ -45,6 +46,12 @@ void SRTSerial::sendStop() {
 void SRTSerial::sendReset() {
     if (uart) {
         uart->println("RESET");
+    }
+}
+
+void SRTSerial::sendCalibrator(bool on) {
+    if (uart) {
+        uart->println(on ? "CAL ON" : "CAL OFF");
     }
 }
 
@@ -155,5 +162,11 @@ void SRTSerial::parseStatus(const String &line) {
             targetAlt = line.substring(tAltIdx + 4, tAzIdx).toFloat();
             targetAz = line.substring(tAzIdx + 4).toFloat();
         }
+    }
+
+    // Extract calibrator state Cal:ON or Cal:OFF
+    int calIdx = line.indexOf("Cal:");
+    if (calIdx >= 0) {
+        calibratorOn = (line.substring(calIdx + 4, calIdx + 6) == "ON");
     }
 }
