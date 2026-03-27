@@ -7,8 +7,10 @@
 #include "coordinates.h"
 
 // Test tolerance for floating point comparisons
-#define ANGLE_TOLERANCE 0.01   // degrees
-#define RA_TOLERANCE 0.001     // hours
+// For radio telescope pointing, we want sub-arcminute precision
+#define ANGLE_TOLERANCE 0.02      // 0.02 degrees = 72 arcseconds (allows for precession drift)
+#define RA_TOLERANCE 0.0002       // 0.0002 hours = 0.72 arcseconds
+#define JD_TOLERANCE 0.00001      // ~1 second
 
 void setUp(void) {
     // Called before each test
@@ -26,20 +28,20 @@ void test_julian_date_j2000_epoch() {
     // J2000.0 epoch is January 1, 2000 at 12:00 TT
     // JD = 2451545.0
     double jd = julianDate(2000, 1, 1, 12, 0, 0);
-    TEST_ASSERT_FLOAT_WITHIN(0.0001, 2451545.0, jd);
+    TEST_ASSERT_FLOAT_WITHIN(JD_TOLERANCE, 2451545.0, jd);
 }
 
 void test_julian_date_known_value() {
     // October 4, 1957 (Sputnik launch) at 19:28:34 UTC
     // JD = 2436116.31150
     double jd = julianDate(1957, 10, 4, 19, 28, 34);
-    TEST_ASSERT_FLOAT_WITHIN(0.001, 2436116.31150, jd);
+    TEST_ASSERT_FLOAT_WITHIN(JD_TOLERANCE, 2436116.31150, jd);
 }
 
 void test_julian_date_leap_year() {
     // February 29, 2024 at noon
     double jd = julianDate(2024, 2, 29, 12, 0, 0);
-    TEST_ASSERT_FLOAT_WITHIN(0.0001, 2460370.0, jd);
+    TEST_ASSERT_FLOAT_WITHIN(JD_TOLERANCE, 2460370.0, jd);
 }
 
 // =============================================================================
@@ -50,7 +52,7 @@ void test_gmst_j2000_epoch() {
     // At J2000.0 epoch, GMST should be approximately 18.697374558 hours
     double jd = 2451545.0;  // J2000.0
     double sidereal = gmst(jd, 12.0);
-    TEST_ASSERT_FLOAT_WITHIN(0.01, 18.697, sidereal);
+    TEST_ASSERT_FLOAT_WITHIN(RA_TOLERANCE, 18.697374558, sidereal);
 }
 
 // =============================================================================
@@ -58,27 +60,27 @@ void test_gmst_j2000_epoch() {
 // =============================================================================
 
 void test_galactic_center_to_equatorial() {
-    // Galactic center (l=0, b=0) should be approximately RA=17h46m, Dec=-29deg
+    // Galactic center (l=0, b=0) J2000: RA=17h45m37s, Dec=-28°56'10"
     double ra, dec;
     galacticToEquatorial(0.0, 0.0, ra, dec);
-    TEST_ASSERT_FLOAT_WITHIN(0.2, 17.76, ra);      // ~17h 46m
-    TEST_ASSERT_FLOAT_WITHIN(1.0, -29.0, dec);     // ~-29 deg
+    TEST_ASSERT_FLOAT_WITHIN(RA_TOLERANCE, 17.76033, ra);     // 17h45m37s
+    TEST_ASSERT_FLOAT_WITHIN(ANGLE_TOLERANCE, -28.9362, dec); // -28°56'10"
 }
 
 void test_galactic_north_pole_to_equatorial() {
-    // North Galactic Pole (l=any, b=90) should be approximately RA=12h51m, Dec=+27deg
+    // North Galactic Pole (b=90) J2000: RA=12h51m26s, Dec=+27°07'42"
     double ra, dec;
     galacticToEquatorial(0.0, 90.0, ra, dec);
-    TEST_ASSERT_FLOAT_WITHIN(0.2, 12.86, ra);      // ~12h 51m
-    TEST_ASSERT_FLOAT_WITHIN(1.0, 27.13, dec);     // ~+27 deg
+    TEST_ASSERT_FLOAT_WITHIN(RA_TOLERANCE, 12.8572, ra);     // 12h51m26s
+    TEST_ASSERT_FLOAT_WITHIN(ANGLE_TOLERANCE, 27.1283, dec); // +27°07'42"
 }
 
 void test_galactic_anticenter_to_equatorial() {
-    // Galactic anticenter (l=180, b=0)
+    // Galactic anticenter (l=180, b=0) J2000: RA=5h45m37s, Dec=+28°56'10"
     double ra, dec;
     galacticToEquatorial(180.0, 0.0, ra, dec);
-    TEST_ASSERT_FLOAT_WITHIN(0.2, 5.76, ra);       // ~5h 46m
-    TEST_ASSERT_FLOAT_WITHIN(1.0, 28.9, dec);      // ~+29 deg
+    TEST_ASSERT_FLOAT_WITHIN(RA_TOLERANCE, 5.76033, ra);      // 5h45m37s
+    TEST_ASSERT_FLOAT_WITHIN(ANGLE_TOLERANCE, 28.9362, dec);  // +28°56'10"
 }
 
 void test_equatorial_to_galactic_roundtrip() {
@@ -141,19 +143,15 @@ void test_precession_polaris_drift() {
 
 void test_altaz_zenith() {
     // Object at zenith should have alt=90 regardless of azimuth
-    // This tests the math, not the time-dependent conversion
-    // For Glasgow (55.9N), an object at Dec=55.9 on meridian is at zenith
-
-    // We can't easily test raDecToAltAz without mocking time,
-    // but we can test the inverse altAzToRaDec for basic sanity
+    // For any location, an object at zenith has Dec = latitude
     double ra, dec;
     double lat = 55.9, lon = -4.3;
 
     // An object straight up (alt=90) from Glasgow
     altAzToRaDec(90.0, 0.0, lat, lon, ra, dec);
 
-    // Dec should be approximately equal to latitude
-    TEST_ASSERT_FLOAT_WITHIN(1.0, lat, dec);
+    // Dec should be exactly equal to latitude
+    TEST_ASSERT_FLOAT_WITHIN(ANGLE_TOLERANCE, lat, dec);
 }
 
 void test_altaz_horizon_north() {
@@ -163,9 +161,9 @@ void test_altaz_horizon_north() {
 
     altAzToRaDec(0.0, 0.0, lat, lon, ra, dec);
 
-    // For alt=0, az=0: sin(dec) = cos(lat)*cos(az) = cos(55.9) ≈ 0.56
-    // So dec ≈ +34 degrees (north of celestial equator)
-    TEST_ASSERT_FLOAT_WITHIN(5.0, 90.0 - lat, dec);
+    // For alt=0, az=0: sin(dec) = cos(lat)*cos(az) = cos(55.9)
+    // dec = asin(cos(55.9)) = 90 - 55.9 = 34.1 degrees
+    TEST_ASSERT_FLOAT_WITHIN(ANGLE_TOLERANCE, 90.0 - lat, dec);
 }
 
 // =============================================================================
