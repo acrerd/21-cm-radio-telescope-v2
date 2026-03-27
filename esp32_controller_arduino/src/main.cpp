@@ -34,6 +34,7 @@ bool wasTracking = false;
 // Ethernet state (WT32-ETH01 only)
 #if ETHERNET_ENABLED
 bool ethConnected = false;
+bool ethNeedNtpSync = false;  // Flag to trigger NTP sync from main loop
 String ethIP = "";
 
 void onEthEvent(arduino_event_id_t event) {
@@ -51,6 +52,10 @@ void onEthEvent(arduino_event_id_t event) {
                 ethIP.c_str(),
                 ETH.linkSpeed(),
                 ETH.fullDuplex() ? "Full Duplex" : "Half Duplex");
+            // Request NTP sync if time not already synced
+            if (!state.timeSynced) {
+                ethNeedNtpSync = true;
+            }
             break;
         case ARDUINO_EVENT_ETH_DISCONNECTED:
             Serial.println("ETH Disconnected");
@@ -292,5 +297,15 @@ void loop() {
     handleWebServer();
     handleStellariumServer();
     updateTracking();
+
+    // Check if Ethernet connected and needs NTP sync
+    #if ETHERNET_ENABLED
+    if (ethNeedNtpSync && ethConnected) {
+        ethNeedNtpSync = false;
+        Serial.println("Ethernet connected - syncing time via NTP");
+        syncTimeNTP();
+    }
+    #endif
+
     delay(10);
 }
