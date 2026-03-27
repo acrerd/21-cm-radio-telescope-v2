@@ -322,18 +322,18 @@ I = \frac{V_{\text{ADC}} - V_{\text{offset}}}{S}
 \end{equation}
 where $V_{\text{ADC}}$ is the measured voltage, $V_{\text{offset}} = 2.5$\,V, and $S = 0.066$\,V/A.
 
-\subsection{ESP32-S3 controller}
+\subsection{ESP32 controller}
 
-The ESP32-S3 provides the network interface and computational resources for coordinate transformations:
+Two ESP32 variants are supported:
 
 \begin{itemize}
-    \item Dual-core Xtensa LX7 processor
-    \item WiFi 802.11 b/g/n (2.4\,GHz)
-    \item 4\,MB flash, 512\,KB SRAM
-    \item Arduino framework with PlatformIO build system
+    \item \textbf{ESP32-S3 Super Mini}: WiFi only, USB CDC serial
+    \item \textbf{WT32-ETH01}: Native Ethernet + WiFi, standard UART serial (recommended)
 \end{itemize}
 
-\subsubsection{ESP32 to Arduino Due wiring}
+Both provide the network interface and computational resources for coordinate transformations using the Arduino framework with PlatformIO build system.
+
+\subsubsection{ESP32-S3 to Arduino Due wiring}
 
 \begin{table}[H]
 \centering
@@ -349,27 +349,41 @@ GND & GND & Common ground \\
 \end{tabular}
 \end{table}
 
-\subsubsection{W5500 Ethernet module (optional)}
+\subsubsection{WT32-ETH01 to Arduino Due wiring}
 
-For installations requiring wired network connectivity:
+The WT32-ETH01 uses GPIO32/33 for Due communication, keeping TX0/RX0 free for programming:
 
 \begin{table}[H]
 \centering
-\caption{W5500 Ethernet module wiring}
+\caption{WT32-ETH01 to Arduino Due serial connection}
 \begin{tabular}{lll}
 \toprule
-\textbf{W5500} & \textbf{ESP32-S3} & \textbf{Function} \\
+\textbf{WT32-ETH01} & \textbf{Arduino Due} & \textbf{Function} \\
 \midrule
-MOSI & GPIO11 & SPI data out \\
-MISO & GPIO13 & SPI data in \\
-SCK & GPIO12 & SPI clock \\
-CS & GPIO10 & Chip select \\
-RST & GPIO9 & Reset \\
-3.3V & 3.3V & Power \\
-GND & GND & Ground \\
+GPIO32 & Pin 19 (RX1) & ESP32 TX $\rightarrow$ Due RX \\
+GPIO33 & Pin 18 (TX1) & ESP32 RX $\leftarrow$ Due TX \\
+GND & GND & Common ground \\
+5V & 5V & Power \\
 \bottomrule
 \end{tabular}
 \end{table}
+
+\begin{table}[H]
+\centering
+\caption{WT32-ETH01 programming connection (USB-TTL adapter)}
+\begin{tabular}{lll}
+\toprule
+\textbf{USB-TTL} & \textbf{WT32-ETH01} & \textbf{Function} \\
+\midrule
+TX & RX0 (GPIO3) & Adapter TX $\rightarrow$ ESP32 RX \\
+RX & TX0 (GPIO1) & Adapter RX $\leftarrow$ ESP32 TX \\
+GND & GND & Common ground \\
+3.3V & 3V3 & Power (during programming) \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The separate programming and communication pins allow firmware updates without disconnecting the Due.
 
 \subsection{Operational limits}
 
