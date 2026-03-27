@@ -3,7 +3,22 @@
 #ifndef COORDINATES_H
 #define COORDINATES_H
 
+#ifdef ARDUINO
 #include <Arduino.h>
+#else
+// Native build - define constants normally provided by Arduino.h
+#ifndef DEG_TO_RAD
+#define DEG_TO_RAD 0.017453292519943295
+#endif
+#ifndef RAD_TO_DEG
+#define RAD_TO_DEG 57.29577951308232
+#endif
+#ifndef M_PI
+#define M_PI 3.14159265358979323846
+#endif
+#include <cmath>
+#include <ctime>
+#endif
 
 // Julian Date calculation
 double julianDate(int year, int month, int day, int hour, int minute, int second);

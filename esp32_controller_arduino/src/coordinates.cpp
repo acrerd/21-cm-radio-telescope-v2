@@ -1,12 +1,14 @@
 // coordinates.cpp - Astronomical coordinate transformations
 
 #include "coordinates.h"
+#ifndef NATIVE_BUILD
 #include "config.h"
 #include <Arduino.h>
+#endif
 #include <math.h>
 #include <time.h>
 
-// DEG_TO_RAD and RAD_TO_DEG are already defined in Arduino.h
+// DEG_TO_RAD and RAD_TO_DEG are defined in Arduino.h or coordinates.h (native)
 
 double julianDate(int year, int month, int day, int hour, int minute, int second) {
     if (month <= 2) {
