@@ -68,10 +68,12 @@ This project uses [Radioconda](https://github.com/ryanvolz/radioconda), a conda 
    conda activate radioconda
    ```
 
-4. Install Flask for the web scheduler:
+4. Install additional dependencies:
    ```bash
-   pip install flask
+   pip install -r requirements.txt
    ```
+
+   This installs Flask (web scheduler), ephem (satellite tracking), and pytest (testing).
 
 ### Included with Radioconda
 
@@ -79,6 +81,8 @@ This project uses [Radioconda](https://github.com/ryanvolz/radioconda), a conda 
 - PyQt5 / PyQtGraph
 - NumPy
 - h5py
+
+These cannot be pip-installed and must come from Radioconda.
 
 ### SDR Drivers
 

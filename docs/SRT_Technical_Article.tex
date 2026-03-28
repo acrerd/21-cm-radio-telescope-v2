@@ -1279,12 +1279,18 @@ Runtime settings are saved to ESP32 flash (NVS) and persist across reboots.
 \subsubsection{Receiver prerequisites}
 
 \begin{lstlisting}[language=bash]
-# Install Radioconda from:
+# 1. Install Radioconda from:
 # https://github.com/ryanvolz/radioconda/releases
 
-# Or install dependencies manually:
-conda install gnuradio gnuradio-uhd pyqtgraph h5py flask
+# 2. Activate the environment
+conda activate radioconda
+
+# 3. Install additional Python dependencies
+cd receiver_scheduler
+pip install -r requirements.txt
 \end{lstlisting}
+
+Radioconda provides GNU Radio, PyQt5, NumPy, and h5py. The \texttt{requirements.txt} file installs Flask (web scheduler), PyEphem (satellite tracking), and pytest (testing).
 
 %==============================================================================
 \section{Operation}

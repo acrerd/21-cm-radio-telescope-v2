@@ -327,12 +327,18 @@ The `receiver_scheduler/` folder contains the data acquisition system for 21 cm 
 The receiver requires **radioconda** (or a GNU Radio installation with UHD support):
 
 ```bash
-# Install radioconda (recommended)
+# 1. Install radioconda
 # Download from: https://github.com/ryanvolz/radioconda
 
-# Or install dependencies manually:
-conda install gnuradio gnuradio-uhd pyqtgraph h5py flask
+# 2. Activate the environment
+conda activate radioconda
+
+# 3. Install additional Python dependencies
+cd receiver_scheduler
+pip install -r requirements.txt
 ```
+
+This installs Flask (web scheduler), ephem (satellite tracking), and pytest (testing). GNU Radio, PyQt5, NumPy, and h5py are provided by radioconda.
 
 ### Receiver Components
 

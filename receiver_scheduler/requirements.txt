@@ -1,0 +1,20 @@
+# H1 Receiver & Observation Scheduler
+# Install with: pip install -r requirements.txt
+# Note: GNU Radio and UHD are provided by radioconda and cannot be pip-installed.
+#       Install radioconda first: https://github.com/ryanvolz/radioconda
+
+# Web scheduler
+flask>=3.0
+
+# Data recording
+h5py>=3.0
+numpy>=1.24
+
+# Receiver GUI
+pyqtgraph>=0.13
+
+# Satellite tracking (TLE propagation and pass prediction)
+ephem>=4.0
+
+# Testing
+pytest>=7.0
