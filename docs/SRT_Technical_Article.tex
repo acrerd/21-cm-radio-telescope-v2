@@ -1523,21 +1523,155 @@ HELP             # Show all commands
 \section{HTTP API quick reference}
 %==============================================================================
 
-\begin{lstlisting}[language=bash,caption={HTTP API examples}]
+\subsection{ESP32 controller API}
+
+All endpoints accept HTTP GET requests. Base URL is the ESP32's IP address (e.g.\ \texttt{http://192.168.0.149}).
+
+\subsubsection{Status and information}
+
+\begin{longtable}{lp{8cm}}
+\toprule
+\textbf{Endpoint} & \textbf{Description} \\
+\midrule
+\texttt{/status} & Current position (alt, az, target\_alt, target\_az), motor currents, status string, fault, is\_slewing, calibrator state \\
+\texttt{/tracking} & Tracking state: enabled, RA/Dec, target name, offsets, waiting flags \\
+\texttt{/ephemeris} & Current Sun and Moon positions (RA, Dec, Alt, Az) \\
+\texttt{/serial/log} & Serial communication log (JSON array) \\
+\texttt{/time/status} & Time sync status: synced, source, UTC, timestamp \\
+\texttt{/settings} & All settings: observer location, mount limits, home position, AP config, page name \\
+\bottomrule
+\end{longtable}
+
+\subsubsection{Telescope control}
+
+\begin{longtable}{lp{5cm}p{4cm}}
+\toprule
+\textbf{Endpoint} & \textbf{Parameters} & \textbf{Description} \\
+\midrule
+\texttt{/direct} & \texttt{alt}, \texttt{az} (degrees) & Direct alt/az slew, disables tracking \\
+\texttt{/track/radec} & \texttt{ra} (hours), \texttt{dec} (degrees) & Track J2000 RA/Dec \\
+\texttt{/track/galactic} & \texttt{l}, \texttt{b} (degrees) & Track galactic coordinates \\
+\texttt{/track/sun} & (none) & Track the Sun \\
+\texttt{/track/moon} & (none) & Track the Moon \\
+\texttt{/goto} & \texttt{ra} (hours), \texttt{dec} (degrees) & One-time slew to RA/Dec \\
+\texttt{/goto/galactic} & \texttt{l}, \texttt{b} (degrees) & One-time slew to galactic \\
+\texttt{/tracking/enable} & \texttt{enable} (0 or 1) & Enable/disable tracking \\
+\texttt{/calibrator} & \texttt{on} (0 or 1) & Control noise source \\
+\texttt{/offset} & \texttt{alt}, \texttt{az} (degrees) & Set pointing offset \\
+\texttt{/offset/clear} & (none) & Clear pointing offset \\
+\bottomrule
+\end{longtable}
+
+\subsubsection{Time}
+
+\begin{longtable}{lp{5cm}p{4cm}}
+\toprule
+\textbf{Endpoint} & \textbf{Parameters} & \textbf{Description} \\
+\midrule
+\texttt{/time/status} & (none) & Get sync status and current UTC \\
+\texttt{/time/set} & \texttt{timestamp} (Unix epoch) & Set time from browser \\
+\bottomrule
+\end{longtable}
+
+\subsubsection{Network}
+
+\begin{longtable}{lp{5cm}p{4cm}}
+\toprule
+\textbf{Endpoint} & \textbf{Parameters} & \textbf{Description} \\
+\midrule
+\texttt{/wifi/status} & (none) & Ethernet and WiFi status, IPs, MACs \\
+\texttt{/wifi/scan} & (none) & Scan for WiFi networks \\
+\texttt{/wifi/connect} & \texttt{ssid}, \texttt{password} & Connect to WiFi network \\
+\texttt{/wifi/forget} & (none) & Clear saved WiFi credentials \\
+\texttt{/wifi/power} & \texttt{enable} (0 or 1) & Enable/disable WiFi radio \\
+\texttt{/eth/save} & \texttt{dhcp}, \texttt{ip}, \texttt{gateway}, \texttt{subnet}, \texttt{dns} & Save Ethernet config (reboot required) \\
+\bottomrule
+\end{longtable}
+
+\subsubsection{Settings}
+
+\begin{longtable}{lp{8cm}}
+\toprule
+\textbf{Endpoint} & \textbf{Description} \\
+\midrule
+\texttt{/settings} & Get all settings (JSON) \\
+\texttt{/settings/save} & Set settings: \texttt{observer\_lat}, \texttt{observer\_lon}, \texttt{mount\_az\_min}, \texttt{mount\_az\_max}, \texttt{mount\_alt\_min}, \texttt{mount\_alt\_max}, \texttt{home\_alt}, \texttt{home\_az}, \texttt{position\_deadband}, \texttt{ap\_ssid}, \texttt{ap\_password}, \texttt{page\_name} \\
+\texttt{/settings/reset} & Reset all settings to compiled defaults \\
+\bottomrule
+\end{longtable}
+
+\subsection{Observation scheduler API}
+
+All endpoints are served by the Flask scheduler at \texttt{http://localhost:5000}.
+
+\begin{longtable}{llp{6cm}}
+\toprule
+\textbf{Endpoint} & \textbf{Method} & \textbf{Description} \\
+\midrule
+\texttt{/} & GET & Web interface (HTML) \\
+\texttt{/api/schedule} & GET & Get observation schedule (JSON array) \\
+\texttt{/api/schedule} & POST & Save schedule (JSON array); rejects clashing observations \\
+\texttt{/api/status} & GET & Running state, current observation, remaining seconds \\
+\texttt{/api/start} & POST & Start an observation immediately (JSON observation object) \\
+\texttt{/api/stop} & POST & Stop current observation \\
+\texttt{/api/telescope} & GET & Telescope status from controller (position, tracking) \\
+\texttt{/api/config} & GET & Get scheduler configuration \\
+\texttt{/api/config} & POST & Save configuration; re-syncs observer location from controller \\
+\texttt{/api/fetch\_tle} & POST & Fetch TLE from CelesTrak (\texttt{query}: name or NORAD ID) \\
+\texttt{/api/predict\_pass} & POST & Predict next satellite pass (\texttt{tle\_text}: TLE lines) \\
+\texttt{/api/log} & GET & Last $N$ lines of scheduler log \\
+\bottomrule
+\end{longtable}
+
+\subsection{Examples}
+
+\begin{lstlisting}[language=bash,caption={ESP32 controller API examples}]
 # Track RA/Dec (J2000)
-curl "http://192.168.4.1/track/radec?ra=12&dec=30"
+curl "http://192.168.0.149/track/radec?ra=12.5&dec=-30"
 
 # Track galactic coordinates
-curl "http://192.168.4.1/track/galactic?l=0&b=0"
+curl "http://192.168.0.149/track/galactic?l=0&b=0"
 
-# Track Sun
-curl "http://192.168.4.1/track/sun"
+# Track Sun / Moon
+curl "http://192.168.0.149/track/sun"
+curl "http://192.168.0.149/track/moon"
+
+# Direct alt/az slew
+curl "http://192.168.0.149/direct?alt=45&az=180"
 
 # Stop tracking
-curl "http://192.168.4.1/track?enable=0"
+curl "http://192.168.0.149/tracking/enable?enable=0"
 
 # Get status
-curl "http://192.168.4.1/status"
+curl "http://192.168.0.149/status"
+
+# Get ephemeris (Sun and Moon positions)
+curl "http://192.168.0.149/ephemeris"
+
+# Calibrator on/off
+curl "http://192.168.0.149/calibrator?on=1"
+curl "http://192.168.0.149/calibrator?on=0"
+
+# Get settings (includes observer location)
+curl "http://192.168.0.149/settings"
+\end{lstlisting}
+
+\begin{lstlisting}[language=bash,caption={Scheduler API examples}]
+# Get schedule
+curl "http://localhost:5000/api/schedule"
+
+# Get running status
+curl "http://localhost:5000/api/status"
+
+# Fetch TLE from CelesTrak
+curl -X POST "http://localhost:5000/api/fetch_tle" \
+  -H "Content-Type: application/json" \
+  -d '{"query": "ISS (ZARYA)"}'
+
+# Predict next satellite pass
+curl -X POST "http://localhost:5000/api/predict_pass" \
+  -H "Content-Type: application/json" \
+  -d '{"tle_text": "ISS (ZARYA)\n1 25544U...\n2 25544..."}'
 \end{lstlisting}
 
 %==============================================================================
