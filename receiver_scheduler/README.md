@@ -221,6 +221,23 @@ Displays the last N lines of `scheduler.log` with auto-refresh (5 second interva
 | RA/Dec (Equatorial J2000) | Right Ascension / Declination | Tracks as Earth rotates |
 | Galactic (l, b) | Galactic longitude / latitude | Tracks as Earth rotates |
 | Solar System Object | Select Sun or Moon by name | Automatic ephemeris tracking |
+| Satellite (TLE) | Two-Line Element set | SGP4 propagation at 1 Hz |
+
+### Satellite Tracking
+
+The scheduler supports satellite tracking using Two-Line Element (TLE) sets:
+
+1. Select "Satellite (TLE)" in the coordinate system dropdown
+2. Enter a TLE by one of three methods:
+   - **Search CelesTrak**: Type a satellite name or NORAD catalogue number and click "Fetch TLE"
+   - **Paste**: Paste 2 or 3 TLE lines directly into the text area
+   - **Load file**: Load a `.tle` or `.txt` file
+3. Click "Compute Next Pass" to find the next pass above the minimum elevation
+4. The start time, duration, and satellite name are auto-filled
+
+During a satellite observation, a background thread uses PyEphem to propagate the TLE and sends `/direct?alt=X&az=Y` to the controller every second. When the satellite is below the horizon, no command is sent.
+
+Observer location (latitude, longitude, elevation) and minimum pass elevation are set in the Configuration tab.
 
 ### Telescope Integration
 
@@ -228,8 +245,9 @@ When an SRT controller is configured, the scheduler:
 1. Sends the pointing/tracking command to the telescope
 2. Waits for slewing to complete (polls `is_slewing` status)
 3. Sets the calibrator state (on/off)
-4. Starts the SDR receiver
-5. On completion: turns off calibrator (if it was on), sends home/stow command (if configured)
+4. For satellite observations, starts a background thread sending position updates at 1 Hz
+5. Starts the SDR receiver
+6. On completion: stops satellite tracking, turns off calibrator (if it was on), sends home/stow command (if configured)
 
 ### Logging
 

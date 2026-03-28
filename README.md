@@ -356,12 +356,15 @@ python b210_h1_receiver.py --sdr demo
 
 #### Observation Scheduler (`h1_web_scheduler.py`)
 
-Web-based scheduler that coordinates telescope pointing and data recording:
+Tabbed web interface that coordinates telescope pointing and data recording:
 
-- **Web UI:** Schedule observations with coordinates, time, duration, SDR settings
-- **Telescope Integration:** Automatically commands ESP32 to point telescope before each observation
-- **Coordinate Systems:** Supports Alt/Az, RA/Dec (J2000), and Galactic coordinates
-- **Background Scheduler:** Starts observations automatically at scheduled times
+- **Scheduler Tab:** Add/edit/clone/delete observations with clash prevention, late-start recovery, preemption, and audio notifications
+- **Configuration Tab:** Persistent settings (controller URL, observer location, data folder, Python path, sound)
+- **Log Tab:** Live view of rotating scheduler log
+- **Coordinate Systems:** Alt/Az, RA/Dec (J2000), Galactic, Solar System objects (Sun/Moon), and Satellite (TLE)
+- **Satellite Tracking:** Fetch TLEs from CelesTrak, compute next pass, track via 1 Hz position updates
+- **Calibrator Control:** Per-observation noise source on/off, with `_cal` filename suffix
+- **End Actions:** Stay, Go Home, or Stow telescope after observation
 
 ```bash
 # Start the scheduler
@@ -373,43 +376,39 @@ python h1_web_scheduler.py --host 0.0.0.0 --port 5000
 
 ### Scheduler Configuration
 
-Edit `receiver_scheduler/h1_web_scheduler.py` to set the ESP32 controller URL:
+Settings are managed via the Configuration tab in the web interface and persisted in `scheduler_config.json`. Key settings include:
 
-```python
-# SRT Controller URL - set to ESP32's IP address
-SRT_CONTROLLER_URL = "http://192.168.4.1"  # Default AP IP
-
-# Or use Ethernet IP
-SRT_CONTROLLER_URL = "http://192.168.1.100"
-
-# Set to None to disable telescope control (receiver only)
-SRT_CONTROLLER_URL = None
-```
+- **Controller URL** — ESP32 address (empty to disable telescope control)
+- **Observer Location** — Latitude, longitude, elevation (used for satellite pass prediction)
+- **Min Elevation** — Minimum elevation for satellite passes (default 10°)
+- **Data Output Folder** — Where HDF5 files are saved
+- **Python Path** — Path to Python executable (e.g. radioconda)
 
 ### Observation Workflow
 
 1. **Open Scheduler:** Browse to `http://localhost:5000`
 2. **Add Observation:** Click "+ Add Observation"
-   - Enter target name and coordinates (RA/Dec, Galactic, or Alt/Az)
-   - Set start date/time and duration
-   - Configure SDR settings (frequency, bandwidth, gain, channels)
-3. **Save Schedule:** Schedule is auto-saved and persists across restarts
+   - Select coordinate system and enter target (or fetch satellite TLE from CelesTrak)
+   - Set start date/time and duration (end time calculated automatically)
+   - Configure SDR settings, calibrator, and end action (stay/home/stow)
+3. **Save Schedule:** Auto-saved with clash prevention; running items are locked
 4. **Automatic Execution:** At scheduled time:
-   - Scheduler sends HTTP request to ESP32: `/track/radec?ra=X&dec=Y`
-   - ESP32 converts coordinates and commands Arduino Due
-   - Telescope slews to target position
-   - Scheduler launches GNU Radio receiver
-   - Data saved to HDF5 file
-5. **Monitor:** Web UI shows telescope status, current observation, time remaining
+   - Scheduler sends pointing command to ESP32
+   - Waits for slew to complete (polls `is_slewing` status)
+   - Sets calibrator state, starts satellite tracking thread if applicable
+   - Launches GNU Radio receiver
+   - Data saved to HDF5 in linear power with observation metadata
+   - On completion: calibrator off, telescope home/stow if configured
+5. **Monitor:** Status bar shows running observation with countdown, or time to next observation when idle
 
 ### Output Data Format
 
 HDF5 files contain:
 
 ```
-h1_observation_20240313_143000.h5
+h1_sun_20260328_151303.h5
 ├── frequency_hz          # Frequency axis (Hz)
-├── spectra_db            # Integrated spectra (dB), shape: [n_spectra, n_channels]
+├── spectra_linear        # Integrated spectra (linear power), shape: [n_spectra, n_channels]
 ├── timestamps            # Unix timestamps for each spectrum
 ├── integration_times     # Actual integration time per spectrum
 └── attrs:
@@ -418,8 +417,14 @@ h1_observation_20240313_143000.h5
     ├── sample_rate_hz    # Sample rate / bandwidth
     ├── fft_size          # Number of FFT channels
     ├── gain_db           # RF gain setting
-    └── created           # ISO timestamp
+    ├── created           # ISO timestamp
+    ├── obs_name          # Observation name (from scheduler)
+    ├── coord_system      # altaz, radec, galactic, object, or satellite
+    ├── calibrator        # 1 = noise source on, 0 = off
+    └── ...               # Target coordinates, TLE, schedule times
 ```
+
+See `receiver_scheduler/read_h1_data.ipynb` for a complete analysis example.
 
 ---
 
@@ -467,6 +472,9 @@ new_SRT_drive/
 ├── receiver_scheduler/     # Observation scheduling & data acquisition
 │   ├── h1_web_scheduler.py # Flask web scheduler with ESP32 integration
 │   ├── b210_h1_receiver.py # GNU Radio 21cm receiver (B210/RTL-SDR)
+│   ├── read_h1_data.ipynb  # Jupyter notebook for reading/plotting HDF5 data
+│   ├── scheduler_config.json # Persistent configuration (auto-generated)
+│   ├── scheduler.log       # Rotating log file (auto-generated)
 │   ├── h1_schedule.json    # Saved observation schedule
 │   └── README.md           # Receiver/scheduler documentation
 │

@@ -22,9 +22,16 @@ from pathlib import Path
 from flask import Flask, render_template_string, jsonify, request, send_from_directory
 import logging
 import logging.handlers
+import math
 import urllib.request
 import urllib.error
 import urllib.parse
+
+try:
+    import ephem
+    EPHEM_AVAILABLE = True
+except ImportError:
+    EPHEM_AVAILABLE = False
 
 # Logging setup - logs to both console and rotating file
 LOG_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -65,6 +72,10 @@ _DEFAULT_CONFIG = {
     "data_output_folder": os.path.join(_SCRIPT_DIR, "data"),
     "log_lines": 100,
     "sound_enabled": True,
+    "observer_lat": 55.9,
+    "observer_lon": -4.3,
+    "observer_elevation": 50,
+    "min_elevation": 10.0,
 }
 
 
@@ -212,6 +223,11 @@ def srt_point_telescope(obs: dict) -> bool:
             log.error("SRT unknown object: %s", object_name)
             return False
 
+    elif coord_system == 'satellite':
+        # Satellite: tracking thread handles continuous updates
+        log.info("SRT satellite mode - tracking thread will send updates")
+        return True
+
     else:
         log.error("SRT unknown coordinate system: %s", coord_system)
         return False
@@ -296,6 +312,134 @@ def srt_stop_tracking() -> bool:
 
     result = srt_api_call("/track", {"enable": "0"})
     return bool(result and result.get('ok', False))
+
+
+# =============================================================================
+# Satellite Tracking (TLE)
+# =============================================================================
+
+def _get_observer() -> 'ephem.Observer':
+    """Create a PyEphem Observer from config."""
+    obs = ephem.Observer()
+    obs.lat = str(get_config_value("observer_lat"))
+    obs.lon = str(get_config_value("observer_lon"))
+    obs.elevation = get_config_value("observer_elevation")
+    return obs
+
+
+def parse_tle(tle_text: str) -> tuple:
+    """Parse TLE text into (name, line1, line2).
+
+    Accepts 2-line or 3-line format (with or without name line).
+    """
+    lines = [l.strip() for l in tle_text.strip().splitlines() if l.strip()]
+    if len(lines) == 3:
+        return lines[0], lines[1], lines[2]
+    elif len(lines) == 2:
+        return "SATELLITE", lines[0], lines[1]
+    else:
+        raise ValueError(f"Expected 2 or 3 TLE lines, got {len(lines)}")
+
+
+def predict_next_pass(tle_text: str) -> Optional[dict]:
+    """Predict the next pass of a satellite above minimum elevation.
+
+    Returns dict with rise/set times, max elevation, duration, etc.
+    or None if no pass found.
+    """
+    if not EPHEM_AVAILABLE:
+        return None
+
+    name, line1, line2 = parse_tle(tle_text)
+    sat = ephem.readtle(name, line1, line2)
+    obs = _get_observer()
+    min_el = get_config_value("min_elevation")
+
+    # Search up to 24 hours ahead
+    obs.date = ephem.now()
+    for _ in range(48):  # up to 48 attempts to find a good pass
+        try:
+            rise_time, rise_az, max_time, max_el, set_time, set_az = obs.next_pass(sat)
+        except Exception as e:
+            log.error("Pass prediction error: %s", e)
+            return None
+
+        max_el_deg = math.degrees(max_el)
+        if max_el_deg >= min_el:
+            rise_dt = ephem.Date(rise_time).datetime()
+            set_dt = ephem.Date(set_time).datetime()
+            max_dt = ephem.Date(max_time).datetime()
+            duration_min = (set_dt - rise_dt).total_seconds() / 60
+
+            return {
+                "name": name,
+                "rise_time_utc": rise_dt.strftime("%Y-%m-%d %H:%M:%S"),
+                "rise_time_local": ephem.localtime(rise_time).strftime("%Y-%m-%d %H:%M:%S"),
+                "rise_az": round(math.degrees(rise_az), 1),
+                "max_time_utc": max_dt.strftime("%Y-%m-%d %H:%M:%S"),
+                "max_el": round(max_el_deg, 1),
+                "set_time_utc": set_dt.strftime("%Y-%m-%d %H:%M:%S"),
+                "set_time_local": ephem.localtime(set_time).strftime("%Y-%m-%d %H:%M:%S"),
+                "set_az": round(math.degrees(set_az), 1),
+                "duration_minutes": round(duration_min, 1),
+                "start_date": ephem.localtime(rise_time).strftime("%Y-%m-%d"),
+                "start_time": ephem.localtime(rise_time).strftime("%H:%M"),
+            }
+
+        # Skip past this pass and try the next one
+        obs.date = set_time + ephem.minute
+
+    return None
+
+
+# Satellite tracking thread
+_sat_tracking_stop = threading.Event()
+_sat_tracking_thread: Optional[threading.Thread] = None
+
+
+def _satellite_tracking_loop(tle_text: str):
+    """Background loop that sends alt/az updates every second for a satellite."""
+    try:
+        name, line1, line2 = parse_tle(tle_text)
+        sat = ephem.readtle(name, line1, line2)
+        obs = _get_observer()
+
+        log.info("Satellite tracking started: %s", name)
+
+        while not _sat_tracking_stop.is_set():
+            obs.date = ephem.now()
+            sat.compute(obs)
+            alt_deg = math.degrees(sat.alt)
+            az_deg = math.degrees(sat.az)
+
+            if alt_deg > 0:
+                srt_api_call("/direct", {"alt": round(alt_deg, 2), "az": round(az_deg, 2)})
+
+            _sat_tracking_stop.wait(1.0)
+
+        log.info("Satellite tracking stopped: %s", name)
+    except Exception as e:
+        log.error("Satellite tracking error: %s", e, exc_info=True)
+
+
+def start_satellite_tracking(tle_text: str):
+    """Start the satellite tracking background thread."""
+    global _sat_tracking_thread
+    stop_satellite_tracking()
+    _sat_tracking_stop.clear()
+    _sat_tracking_thread = threading.Thread(
+        target=_satellite_tracking_loop, args=(tle_text,), daemon=True
+    )
+    _sat_tracking_thread.start()
+
+
+def stop_satellite_tracking():
+    """Stop the satellite tracking background thread."""
+    global _sat_tracking_thread
+    if _sat_tracking_thread and _sat_tracking_thread.is_alive():
+        _sat_tracking_stop.set()
+        _sat_tracking_thread.join(timeout=5)
+    _sat_tracking_thread = None
 
 
 # Current running observation
@@ -403,7 +547,15 @@ def start_observation(obs: dict, duration_override: int = None) -> bool:
                 log.error("SRT failed to command telescope - aborting observation")
                 return False
 
-            if not srt_wait_for_slew():
+            if obs.get('coord_system') == 'satellite':
+                # Start satellite tracking thread (sends /direct every second)
+                tle_text = obs.get('tle_text', '')
+                if tle_text:
+                    start_satellite_tracking(tle_text)
+                else:
+                    log.error("No TLE data for satellite observation")
+                    return False
+            elif not srt_wait_for_slew():
                 log.warning("SRT slew timeout - starting observation at current position")
 
         # Set calibrator state
@@ -430,6 +582,7 @@ def start_observation(obs: dict, duration_override: int = None) -> bool:
             'duration_minutes': obs.get('duration_minutes', 30),
             'start_date': obs.get('start_date', ''),
             'start_time': obs.get('start_time', ''),
+            'tle_text': obs.get('tle_text', ''),
         })
 
         python_exe = PYTHON_PATH or sys.executable
@@ -479,6 +632,9 @@ def stop_observation() -> bool:
         except subprocess.TimeoutExpired:
             current_process.kill()
             current_process.wait()
+
+        # Stop satellite tracking if active
+        stop_satellite_tracking()
 
         # Ensure calibrator is off when observation ends
         if SRT_CONTROLLER_URL and current_observation and current_observation.get('calibrator'):
@@ -744,6 +900,26 @@ HTML_TEMPLATE = '''
                     </div>
                 </div>
 
+                <div class="section-title">Observer Location</div>
+                <div class="form-grid">
+                    <div class="form-group">
+                        <label>Latitude (degrees, +N)</label>
+                        <input type="number" id="cfgObsLat" step="0.001" min="-90" max="90">
+                    </div>
+                    <div class="form-group">
+                        <label>Longitude (degrees, +E)</label>
+                        <input type="number" id="cfgObsLon" step="0.001" min="-180" max="180">
+                    </div>
+                    <div class="form-group">
+                        <label>Elevation (metres)</label>
+                        <input type="number" id="cfgObsElev" step="1" min="0" max="9000">
+                    </div>
+                    <div class="form-group">
+                        <label>Min Elevation for passes (degrees)</label>
+                        <input type="number" id="cfgMinElev" step="1" min="0" max="90">
+                    </div>
+                </div>
+
                 <div class="section-title">Receiver</div>
                 <div class="form-group">
                     <label>Python Executable (leave empty for default)</label>
@@ -836,6 +1012,7 @@ HTML_TEMPLATE = '''
                                 <option value="radec">RA/Dec (Equatorial J2000)</option>
                                 <option value="galactic">Galactic (l, b)</option>
                                 <option value="object">Solar System Object</option>
+                                <option value="satellite">Satellite (TLE)</option>
                             </select>
                         </div>
                     </div>
@@ -846,6 +1023,36 @@ HTML_TEMPLATE = '''
                                 <option value="sun">Sun</option>
                                 <option value="moon">Moon</option>
                             </select>
+                        </div>
+                    </div>
+                    <div id="satelliteInput" style="margin-top:15px; display:none">
+                        <div style="display:flex; gap:10px; align-items:flex-end; margin-bottom:10px;">
+                            <div class="form-group" style="flex:1; margin:0;">
+                                <label>Search CelesTrak by name or NORAD ID</label>
+                                <input type="text" id="tleSearch" placeholder="e.g. ISS, NOAA 19, 25544" style="width:100%;">
+                            </div>
+                            <button class="btn btn-primary" type="button" onclick="fetchTle()" style="white-space:nowrap;">Fetch TLE</button>
+                        </div>
+                        <div id="tleResults" style="display:none; margin-bottom:10px;">
+                            <div class="form-group">
+                                <label>Select satellite</label>
+                                <select id="tleResultSelect" onchange="selectTleResult()" style="width:100%;"></select>
+                            </div>
+                        </div>
+                        <div class="form-group">
+                            <label>TLE (paste, search above, or load from file)</label>
+                            <textarea id="obsTleText" rows="4" style="width:100%; padding:8px; border:1px solid #333; border-radius:5px; background:#0f0f23; color:#fff; font-family:monospace; font-size:12px; resize:vertical;" placeholder="ISS (ZARYA)
+1 25544U 98067A   ...
+2 25544  51.6400  ..."></textarea>
+                        </div>
+                        <div style="display:flex; gap:10px; margin-top:8px; align-items:center; flex-wrap:wrap;">
+                            <button class="btn btn-primary" type="button" onclick="predictPass()">Compute Next Pass</button>
+                            <label class="btn btn-secondary" style="margin:0; cursor:pointer;">
+                                Load TLE File <input type="file" accept=".tle,.txt" style="display:none" onchange="loadTleFile(event)">
+                            </label>
+                            <span id="passInfo" style="color:#888; font-size:12px;"></span>
+                        </div>
+                        <div id="passDetails" style="display:none; margin-top:10px; padding:10px; background:#0f0f23; border-radius:5px; font-size:12px; color:#ccc;">
                         </div>
                     </div>
                     <div class="form-grid" id="coordInputs" style="margin-top:15px">
@@ -1061,9 +1268,11 @@ HTML_TEMPLATE = '''
         function updateCoordLabels() {
             const sys = document.getElementById('obsCoordSystem').value;
             const isObject = sys === 'object';
+            const isSat = sys === 'satellite';
             document.getElementById('objectSelector').style.display = isObject ? '' : 'none';
-            document.getElementById('coordInputs').style.display = isObject ? 'none' : '';
-            if (isObject) return;
+            document.getElementById('satelliteInput').style.display = isSat ? '' : 'none';
+            document.getElementById('coordInputs').style.display = (isObject || isSat) ? 'none' : '';
+            if (isObject || isSat) return;
             const cfg = COORD_CONFIG[sys];
             document.getElementById('coord1Label').textContent = cfg.c1;
             document.getElementById('coord2Label').textContent = cfg.c2;
@@ -1094,6 +1303,11 @@ HTML_TEMPLATE = '''
             if (sys === 'object') {
                 const name = obs.object_name || 'unknown';
                 return `Object: ${name.charAt(0).toUpperCase() + name.slice(1)}`;
+            }
+            if (sys === 'satellite') {
+                const tle = obs.tle_text || '';
+                const name = tle.split('\\n')[0] || 'Satellite';
+                return `Sat: ${name.substring(0, 20)}`;
             }
             const isRA = sys === 'radec';
             const c1 = formatCoord(obs.coord1_deg, obs.coord1_min, obs.coord1_sec, isRA);
@@ -1201,6 +1415,7 @@ HTML_TEMPLATE = '''
             document.getElementById('obsName').value = obs.name || DEFAULTS.name;
             document.getElementById('obsCoordSystem').value = obs.coord_system || DEFAULTS.coord_system;
             document.getElementById('obsObjectName').value = obs.object_name || 'sun';
+            document.getElementById('obsTleText').value = obs.tle_text || '';
             document.getElementById('coord1Deg').value = obs.coord1_deg ?? DEFAULTS.coord1_deg;
             document.getElementById('coord1Min').value = obs.coord1_min ?? DEFAULTS.coord1_min;
             document.getElementById('coord1Sec').value = obs.coord1_sec ?? DEFAULTS.coord1_sec;
@@ -1253,6 +1468,7 @@ HTML_TEMPLATE = '''
                 name: document.getElementById('obsName').value,
                 coord_system: document.getElementById('obsCoordSystem').value,
                 object_name: document.getElementById('obsObjectName').value,
+                tle_text: document.getElementById('obsTleText').value,
                 coord1_deg: parseInt(document.getElementById('coord1Deg').value) || 0,
                 coord1_min: parseInt(document.getElementById('coord1Min').value) || 0,
                 coord1_sec: parseFloat(document.getElementById('coord1Sec').value) || 0,
@@ -1350,6 +1566,31 @@ HTML_TEMPLATE = '''
         function playStartSound() { playTone([440, 554, 659], 0.4); }
         function playStopSound()  { playTone([659, 554, 440], 0.4); }
 
+        function nextObsCountdown() {
+            const now = new Date();
+            let nearest = null;
+            let nearestName = '';
+            schedule.forEach(obs => {
+                if (!obs.enabled || !obs.start_time) return;
+                const date = obs.start_date || now.toISOString().slice(0,10);
+                const start = new Date(`${date}T${obs.start_time}`);
+                if (start > now && (!nearest || start < nearest)) {
+                    nearest = start;
+                    nearestName = obs.name;
+                }
+            });
+            if (!nearest) return '';
+            const diff = Math.floor((nearest - now) / 1000);
+            if (diff <= 0) return '';
+            const h = Math.floor(diff / 3600);
+            const m = Math.floor((diff % 3600) / 60);
+            const s = diff % 60;
+            let t = '';
+            if (h > 0) t += h + 'h ';
+            t += m + 'm ' + s + 's';
+            return ` \u2014 Next: ${nearestName} in ${t}`;
+        }
+
         function updateStatus() {
             fetch('/api/status').then(r => r.json()).then(data => {
                 const dot = document.getElementById('statusDot');
@@ -1364,7 +1605,7 @@ HTML_TEMPLATE = '''
                     currentObs = data.observation;
                 } else {
                     dot.classList.remove('running');
-                    text.textContent = 'Idle - Scheduler Active';
+                    text.textContent = 'Idle' + nextObsCountdown();
                     btn.style.display = 'none';
                     if (wasRunning === true) playStopSound();
                     currentObs = null;
@@ -1428,6 +1669,109 @@ HTML_TEMPLATE = '''
             alert(removed > 0 ? `Removed ${removed} past observation(s).` : 'No past observations to clear.');
         }
 
+        let tleResultsData = [];
+
+        function fetchTle() {
+            const query = document.getElementById('tleSearch').value.trim();
+            if (!query) { alert('Enter a satellite name or NORAD ID.'); return; }
+            const info = document.getElementById('passInfo');
+            info.textContent = 'Fetching from CelesTrak...';
+            info.style.color = '#888';
+            fetch('/api/fetch_tle', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({query: query})
+            }).then(r => r.json()).then(data => {
+                if (data.success && data.results.length > 0) {
+                    tleResultsData = data.results;
+                    if (data.results.length === 1) {
+                        // Single result - use it directly
+                        document.getElementById('obsTleText').value = data.results[0].tle;
+                        document.getElementById('tleResults').style.display = 'none';
+                        info.textContent = 'TLE fetched - click Compute Next Pass';
+                        info.style.color = '#00ff88';
+                    } else {
+                        // Multiple results - show dropdown
+                        const sel = document.getElementById('tleResultSelect');
+                        sel.innerHTML = data.results.map((r, i) =>
+                            `<option value="${i}">${r.name}</option>`
+                        ).join('');
+                        document.getElementById('tleResults').style.display = '';
+                        selectTleResult();
+                        info.textContent = data.results.length + ' satellites found - select one';
+                        info.style.color = '#00d4ff';
+                    }
+                } else {
+                    document.getElementById('tleResults').style.display = 'none';
+                    info.textContent = data.error || 'Not found';
+                    info.style.color = '#ff4757';
+                }
+            }).catch(e => {
+                info.textContent = 'Error: ' + e;
+                info.style.color = '#ff4757';
+            });
+        }
+
+        function selectTleResult() {
+            const idx = parseInt(document.getElementById('tleResultSelect').value);
+            if (tleResultsData[idx]) {
+                document.getElementById('obsTleText').value = tleResultsData[idx].tle;
+            }
+        }
+
+        function predictPass() {
+            const tle = document.getElementById('obsTleText').value.trim();
+            if (!tle) { alert('Paste or load a TLE first.'); return; }
+            const info = document.getElementById('passInfo');
+            info.textContent = 'Computing...';
+            info.style.color = '#888';
+            fetch('/api/predict_pass', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({tle_text: tle})
+            }).then(r => r.json()).then(data => {
+                if (data.success) {
+                    const p = data.pass;
+                    // Auto-fill schedule fields
+                    document.getElementById('obsStartDate').value = p.start_date;
+                    document.getElementById('obsStartTime').value = p.start_time;
+                    document.getElementById('obsDuration').value = Math.ceil(p.duration_minutes);
+                    document.getElementById('obsName').value = document.getElementById('obsName').value || p.name;
+                    updateEndTime();
+                    info.textContent = 'Pass found!';
+                    info.style.color = '#00ff88';
+                    document.getElementById('passDetails').style.display = 'block';
+                    document.getElementById('passDetails').innerHTML =
+                        `<b>${p.name}</b><br>` +
+                        `Rise: ${p.rise_time_local} (Az ${p.rise_az}\\u00b0)<br>` +
+                        `Max:  ${p.max_time_utc} UTC (El ${p.max_el}\\u00b0)<br>` +
+                        `Set:  ${p.set_time_local} (Az ${p.set_az}\\u00b0)<br>` +
+                        `Duration: ${p.duration_minutes} min`;
+                } else {
+                    info.textContent = data.error || 'No pass found';
+                    info.style.color = '#ff4757';
+                    document.getElementById('passDetails').style.display = 'none';
+                }
+            }).catch(e => {
+                info.textContent = 'Error: ' + e;
+                info.style.color = '#ff4757';
+            });
+        }
+
+        function loadTleFile(e) {
+            const file = e.target.files[0];
+            if (file) {
+                const reader = new FileReader();
+                reader.onload = ev => {
+                    document.getElementById('obsTleText').value = ev.target.result.trim();
+                    document.getElementById('passInfo').textContent = 'TLE loaded from file';
+                    document.getElementById('passInfo').style.color = '#00d4ff';
+                };
+                reader.readAsText(file);
+            }
+            e.target.value = '';
+        }
+
         function loadFile(e) {
             const file = e.target.files[0];
             if (file) {
@@ -1462,6 +1806,10 @@ HTML_TEMPLATE = '''
                 document.getElementById('cfgControllerUrl').value = cfg.srt_controller_url || '';
                 document.getElementById('cfgSlewTimeout').value = cfg.slew_timeout || 300;
                 document.getElementById('cfgPositionTolerance').value = cfg.position_tolerance || 0.5;
+                document.getElementById('cfgObsLat').value = cfg.observer_lat ?? 55.9;
+                document.getElementById('cfgObsLon').value = cfg.observer_lon ?? -4.3;
+                document.getElementById('cfgObsElev').value = cfg.observer_elevation ?? 50;
+                document.getElementById('cfgMinElev').value = cfg.min_elevation ?? 10;
                 document.getElementById('cfgPythonPath').value = cfg.python_path || '';
                 document.getElementById('cfgDataFolder').value = cfg.data_output_folder || '';
                 document.getElementById('cfgLogLines').value = cfg.log_lines || 100;
@@ -1477,6 +1825,10 @@ HTML_TEMPLATE = '''
                 srt_controller_url: document.getElementById('cfgControllerUrl').value,
                 slew_timeout: parseInt(document.getElementById('cfgSlewTimeout').value) || 300,
                 position_tolerance: parseFloat(document.getElementById('cfgPositionTolerance').value) || 0.5,
+                observer_lat: parseFloat(document.getElementById('cfgObsLat').value) || 0,
+                observer_lon: parseFloat(document.getElementById('cfgObsLon').value) || 0,
+                observer_elevation: parseFloat(document.getElementById('cfgObsElev').value) || 0,
+                min_elevation: parseFloat(document.getElementById('cfgMinElev').value) || 10,
                 python_path: document.getElementById('cfgPythonPath').value,
                 data_output_folder: document.getElementById('cfgDataFolder').value,
                 log_lines: parseInt(document.getElementById('cfgLogLines').value) || 100,
@@ -1620,6 +1972,74 @@ def api_post_config():
     SRT_POSITION_TOLERANCE = cfg.get("position_tolerance", 0.5)
     PYTHON_PATH = cfg.get("python_path") or None
     return jsonify({'success': True})
+
+
+@app.route('/api/fetch_tle', methods=['POST'])
+def api_fetch_tle():
+    """Fetch TLE from CelesTrak by name or NORAD ID."""
+    data = request.json
+    query = data.get('query', '').strip()
+    if not query:
+        return jsonify({'success': False, 'error': 'No search query'}), 400
+
+    # Try NORAD ID (numeric) or name search
+    if query.isdigit():
+        url = f"https://celestrak.org/NORAD/elements/gp.php?CATNR={query}&FORMAT=TLE"
+    else:
+        url = f"https://celestrak.org/NORAD/elements/gp.php?NAME={urllib.parse.quote(query)}&FORMAT=TLE"
+
+    try:
+        req = urllib.request.Request(url, headers={'User-Agent': 'H1-Scheduler/1.0'})
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            body = resp.read().decode().strip()
+
+        if not body or 'No GP data found' in body:
+            return jsonify({'success': False, 'error': f'No TLE found for "{query}"'})
+
+        # Parse all returned TLEs into a list
+        lines = body.splitlines()
+        results = []
+        i = 0
+        while i < len(lines):
+            if i + 2 < len(lines) and lines[i+1].startswith('1 ') and lines[i+2].startswith('2 '):
+                results.append({
+                    'name': lines[i].strip(),
+                    'tle': lines[i] + '\n' + lines[i+1] + '\n' + lines[i+2]
+                })
+                i += 3
+            else:
+                i += 1
+
+        if not results:
+            return jsonify({'success': False, 'error': 'Unexpected TLE format'})
+
+        return jsonify({'success': True, 'results': results})
+    except urllib.error.URLError as e:
+        return jsonify({'success': False, 'error': f'Network error: {e}'}), 500
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/predict_pass', methods=['POST'])
+def api_predict_pass():
+    """Predict next satellite pass from TLE."""
+    if not EPHEM_AVAILABLE:
+        return jsonify({'success': False, 'error': 'PyEphem not installed'}), 500
+    data = request.json
+    tle_text = data.get('tle_text', '')
+    if not tle_text:
+        return jsonify({'success': False, 'error': 'No TLE data provided'}), 400
+    try:
+        result = predict_next_pass(tle_text)
+        if result:
+            return jsonify({'success': True, 'pass': result})
+        else:
+            min_el = get_config_value("min_elevation")
+            return jsonify({'success': False, 'error': f'No pass above {min_el}° found in next 24h'})
+    except ValueError as e:
+        return jsonify({'success': False, 'error': str(e)}), 400
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
 
 
 @app.route('/api/log', methods=['GET'])

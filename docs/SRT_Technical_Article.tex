@@ -1104,25 +1104,28 @@ The receiver outputs data in HDF5 format with the following structure:
 \textbf{Dataset} & \textbf{Shape} & \textbf{Description} \\
 \midrule
 \texttt{frequency\_hz} & $(N_{\text{fft}},)$ & Frequency axis in Hz \\
-\texttt{spectra\_db} & $(N_{\text{spectra}}, N_{\text{fft}})$ & Power spectra in dB \\
+\texttt{spectra\_linear} & $(N_{\text{spectra}}, N_{\text{fft}})$ & Power spectra in linear units \\
 \texttt{timestamps} & $(N_{\text{spectra}},)$ & Unix timestamps \\
 \texttt{integration\_times} & $(N_{\text{spectra}},)$ & Actual integration per spectrum \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-File attributes include SDR type, centre frequency, sample rate, FFT size, gain, and creation timestamp.
+File attributes include SDR type, centre frequency, sample rate, FFT size, gain, and creation timestamp. When launched from the scheduler, additional observation metadata is stored: observation name, coordinate system, target coordinates, calibrator state, scheduled start time, and duration. Spectra are stored in linear power units (not dB) to preserve radiometric accuracy for calibration workflows.
 
 \subsection{Observation scheduler}
 
-The web scheduler (\texttt{h1\_web\_scheduler.py}) coordinates telescope pointing and data acquisition:
+The web scheduler (\texttt{h1\_web\_scheduler.py}) provides a tabbed web interface for managing observations. Configuration is persisted in \texttt{scheduler\_config.json} and activity is logged to a rotating \texttt{scheduler.log} file.
 
-\begin{itemize}
-    \item Web-based interface for creating observation schedules
-    \item Automatic telescope pointing via HTTP API
-    \item Receiver process management
-    \item Persistent schedule storage (JSON)
-\end{itemize}
+\subsubsection{Web interface}
+
+The scheduler has three tabs:
+
+\begin{description}[style=nextline]
+    \item[Scheduler tab] Main view for managing observations. Supports add, edit, clone, and delete. Running observations are protected from editing. Includes clash prevention, late-start recovery, preemption of running observations, audio notifications, and a countdown to the next scheduled observation.
+    \item[Configuration tab] Persistent settings: controller URL, observer location (latitude, longitude, elevation), slew timeout, Python executable path, data output folder, minimum satellite pass elevation, banner name, and sound toggle.
+    \item[Log tab] Displays the last $N$ lines of \texttt{scheduler.log} with auto-refresh.
+\end{description}
 
 \subsubsection{Starting the scheduler}
 
@@ -1131,6 +1134,26 @@ python h1_web_scheduler.py --host 0.0.0.0 --port 5000
 \end{lstlisting}
 
 Then open \texttt{http://localhost:5000} in a browser.
+
+\subsubsection{Coordinate systems}
+
+\begin{table}[H]
+\centering
+\caption{Supported coordinate systems}
+\begin{tabular}{lll}
+\toprule
+\textbf{System} & \textbf{Description} & \textbf{Tracking} \\
+\midrule
+Alt/Az & Direct horizontal pointing & Fixed position \\
+RA/Dec (J2000) & Equatorial coordinates & Sidereal tracking \\
+Galactic ($l$, $b$) & Galactic coordinates & Sidereal tracking \\
+Solar System Object & Sun or Moon & Ephemeris tracking \\
+Satellite (TLE) & Two-Line Element set & SGP4 propagation \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+For satellite tracking, the scheduler uses PyEphem to propagate the TLE and sends updated \texttt{/direct?alt=X\&az=Y} commands to the controller every second. TLEs can be pasted, loaded from file, or fetched from CelesTrak by satellite name or NORAD catalogue number.
 
 \subsubsection{Observation parameters}
 
@@ -1142,15 +1165,17 @@ Then open \texttt{http://localhost:5000} in a browser.
 \textbf{Parameter} & \textbf{Description} \\
 \midrule
 Name & Descriptive name \\
-Start Date/Time & When to start (local time) \\
+Start Date/Time & When to start (local time); end time auto-calculated \\
 Duration & Observation length (minutes) \\
-Coordinates & Target position (Alt/Az, RA/Dec, or Galactic) \\
+Coordinates & Target position (see coordinate systems above) \\
 Centre Frequency & Observation frequency (default: 1420.405\,MHz) \\
 Bandwidth & Sample rate / bandwidth (MHz) \\
 Gain & RF gain (dB) \\
 Channels & FFT size \\
 Integration Time & Seconds per averaged spectrum \\
 SDR Type & B210, RTL-SDR, or Demo \\
+Calibrator & Noise source on/off (\texttt{\_cal} suffix in filename when on) \\
+When Done & Stay, Go Home (Alt\,0$^\circ$, Az\,0$^\circ$), or Stow (Alt\,90$^\circ$, Az\,180$^\circ$) \\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -1159,12 +1184,23 @@ SDR Type & B210, RTL-SDR, or Demo \\
 
 \begin{enumerate}
     \item User creates observation via web interface
-    \item At scheduled time, scheduler sends HTTP request to ESP32
-    \item ESP32 converts coordinates and commands Arduino Due
-    \item Telescope slews to target
+    \item At scheduled time, scheduler sends pointing command to ESP32
+    \item Scheduler waits for telescope slew to complete (polls \texttt{is\_slewing} status)
+    \item Calibrator noise source is set on or off as configured
+    \item For satellite observations, a background thread begins sending position updates at 1\,Hz
     \item Scheduler launches GNU Radio receiver
-    \item Data saved to HDF5 with timestamps and metadata
+    \item Data saved to HDF5 in linear power with observation metadata
+    \item On completion: calibrator turned off, telescope sent to home/stow position if configured
 \end{enumerate}
+
+\subsubsection{Scheduling behaviour}
+
+\begin{itemize}
+    \item \textbf{Clash prevention:} Overlapping observations cannot be saved
+    \item \textbf{Late start:} If the scheduler starts after a scheduled time, observations still within their window are started with remaining duration
+    \item \textbf{Preemption:} If a new observation is due while another is running, the current one is stopped
+    \item \textbf{Completion:} Observations with less than 60 seconds remaining are not restarted
+\end{itemize}
 
 %==============================================================================
 \section{Installation}
