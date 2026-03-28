@@ -37,11 +37,17 @@ public:
     // Status
     bool isSTAConnected();
     bool isAPActive();
+    bool isWiFiEnabled();
     String getSTAIP();
     String getAPIP();
     String getConnectedSSID();
 
+    // Power control (for saving power when using Ethernet)
+    void disableWiFi();
+    void enableWiFi();
+
 private:
+    bool wifiDisabled;
     String connectedSSID;
     bool apActive;
 };

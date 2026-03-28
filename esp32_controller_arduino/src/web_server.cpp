@@ -299,6 +299,7 @@ void setupWebServer() {
         json += "\"eth_dns\":\"\",";
         #endif
         // WiFi status
+        json += "\"wifi_enabled\":" + String(wifiManager.isWiFiEnabled() ? "true" : "false") + ",";
         json += "\"ap_active\":" + String(wifiManager.isAPActive() ? "true" : "false") + ",";
         json += "\"ap_ssid\":\"" + settings.apSSID + "\",";
         json += "\"ap_ip\":\"" + (wifiManager.isAPActive() ? wifiManager.getAPIP() : String("")) + "\",";
@@ -369,6 +370,38 @@ void setupWebServer() {
     webServer.on("/wifi/forget", HTTP_GET, [](AsyncWebServerRequest *request) {
         wifiManager.clearCredentials();
         request->send(200, "application/json", "{\"ok\":true}");
+    });
+
+    // WiFi power control (enable/disable to save power when using Ethernet)
+    webServer.on("/wifi/power", HTTP_GET, [](AsyncWebServerRequest *request) {
+        #if ETHERNET_ENABLED
+        if (!ethConnected) {
+            request->send(200, "application/json", "{\"ok\":false,\"error\":\"Cannot disable WiFi without Ethernet connection\"}");
+            return;
+        }
+        #endif
+
+        if (request->hasArg("enable")) {
+            bool enable = (request->arg("enable") == "1");
+            if (enable) {
+                wifiManager.enableWiFi();
+                settings.wifiEnabled = true;
+            } else {
+                #if ETHERNET_ENABLED
+                if (!ethConnected) {
+                    request->send(200, "application/json", "{\"ok\":false,\"error\":\"Cannot disable WiFi without Ethernet\"}");
+                    return;
+                }
+                #endif
+                wifiManager.disableWiFi();
+                settings.wifiEnabled = false;
+            }
+            settings.save();
+            request->send(200, "application/json", "{\"ok\":true,\"wifi_enabled\":" + String(enable ? "true" : "false") + "}");
+        } else {
+            // Just return current state
+            request->send(200, "application/json", "{\"wifi_enabled\":" + String(wifiManager.isWiFiEnabled() ? "true" : "false") + "}");
+        }
     });
 
     // Save settings (must be before /settings to avoid route conflict)

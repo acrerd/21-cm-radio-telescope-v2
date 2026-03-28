@@ -38,6 +38,9 @@ public:
     String ethSubnet;
     String ethDNS;
 
+    // WiFi power state (can be disabled to save power when using Ethernet)
+    bool wifiEnabled;
+
     // Load settings from NVS (uses defaults if not saved)
     void load();
 

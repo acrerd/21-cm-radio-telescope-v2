@@ -96,7 +96,9 @@ The WT32-ETH01 uses **different pins** for programming vs runtime communication:
 | Function | Pins | Notes |
 |----------|------|-------|
 | **Programming** | TX0/RX0 (GPIO1/3) | 6-pin header, USB-TTL adapter |
-| **Due Communication** | GPIO32/GPIO33 | No boot restrictions, always available |
+| **Due Communication** | IO4/IO14 | General purpose, no boot restrictions |
+
+**Note:** Some WT32-ETH01 variants (RS-485 versions) have IO32/IO33 labelled as CFG/485_EN and connected to onboard RS-485 circuitry. Use IO4/IO14 instead to avoid conflicts.
 
 This separation means you can program the ESP32 **without disconnecting the Due**.
 
@@ -115,14 +117,15 @@ The board has confusingly-named serial pins:
 
 | Arduino Due | WT32-ETH01 | Function | Wire Color |
 |-------------|------------|----------|------------|
-| Pin 18 (TX1) | **GPIO33** | Data to ESP32 (Due TX -> ESP RX) | Blue |
-| Pin 19 (RX1) | **GPIO32** | Data from ESP32 (ESP TX -> Due RX) | Green |
+| Pin 18 (TX1) | **IO14** | Data to ESP32 (Due TX -> ESP RX) | Blue |
+| Pin 19 (RX1) | **IO4** | Data from ESP32 (ESP TX -> Due RX) | Green |
 | GND | GND | Common ground | Black |
 | 5V | 5V | Power | Red |
 
-**Benefits of GPIO32/33:**
+**Benefits of IO4/IO14:**
 - No boot mode restrictions (unlike GPIO12/15)
 - Not used by Ethernet (unlike GPIO17-27)
+- Not connected to RS-485 circuitry (unlike IO32/IO33 on some variants)
 - Programming header (TX0/RX0) stays free for USB-TTL adapter
 
 ### Programming via USB-TTL Adapter
@@ -136,7 +139,7 @@ Connect USB-TTL adapter to the 6-pin programming header:
 | GND | GND |
 | 3.3V | 3V3 |
 
-**No need to disconnect the Due** - it uses GPIO32/33, not TX0/RX0.
+**No need to disconnect the Due** - it uses IO4/IO14, not TX0/RX0.
 
 **Boot Mode Sequence (Manual Buttons):**
 1. Hold IO0 button (or jumper GPIO0 to GND)
@@ -180,9 +183,10 @@ lib_deps =
 
 ```cpp
 // Serial connection to Arduino Due
-// WT32-ETH01: GPIO32/33 for runtime (TX0/RX0 reserved for programming)
-#define DUE_UART_TX 32   // WT32 GPIO32 -> Due RX (pin 19)
-#define DUE_UART_RX 33   // WT32 GPIO33 <- Due TX (pin 18)
+// WT32-ETH01: IO4/IO14 for runtime (TX0/RX0 reserved for programming)
+// Note: Avoid IO32/IO33 - labelled CFG/485_EN on RS-485 variants
+#define DUE_UART_TX 4    // WT32 IO4 -> Due RX (pin 19)
+#define DUE_UART_RX 14   // WT32 IO14 <- Due TX (pin 18)
 
 // Ethernet PHY configuration (LAN8720)
 #define ETH_PHY_TYPE  ETH_PHY_LAN8720
@@ -303,7 +307,7 @@ PC USB #1 ─────────►│ Programming USB │◄──── D
 PC USB #2 ─────────►│  Native USB     │◄──── ESP32 serial monitoring
                     │  (SerialUSB)    │
                     │       ↕         │
-                    │    Serial1      │────► WT32-ETH01 (GPIO32/33)
+                    │    Serial1      │────► WT32-ETH01 (IO4/IO14)
                     └─────────────────┘
 
                    External USB-TTL ─────► WT32-ETH01 TX0/RX0 (programming)
@@ -319,12 +323,12 @@ PC USB #2 ─────────►│  Native USB     │◄──── E
 
 | Due Pin | WT32-ETH01 | Function | Wire Color |
 |---------|------------|----------|------------|
-| Pin 18 (TX1) | GPIO33 | Serial data to ESP32 | Blue |
-| Pin 19 (RX1) | GPIO32 | Serial data from ESP32 | Green |
+| Pin 18 (TX1) | IO14 | Serial data to ESP32 | Blue |
+| Pin 19 (RX1) | IO4 | Serial data from ESP32 | Green |
 | GND | GND | Common ground | Black |
 | 5V | 5V | Power | Red |
 
-**Note:** Due uses GPIO32/33, leaving TX0/RX0 free for programming without disconnection.
+**Note:** Due uses IO4/IO14, leaving TX0/RX0 free for programming without disconnection.
 
 ### Due Firmware (Already Implemented)
 
@@ -367,7 +371,7 @@ The Due's Native USB port acts as a **transparent USB-to-serial adapter** for ru
 
 ### Programming the ESP32
 
-Programming uses the TX0/RX0 pins (6-pin header), separate from Due communication (GPIO32/33):
+Programming uses the TX0/RX0 pins (6-pin header), separate from Due communication (IO4/IO14):
 
 1. **Connect** USB-TTL adapter to WT32-ETH01 programming header:
    - TX → RX0 (GPIO3)
@@ -384,7 +388,7 @@ Programming uses the TX0/RX0 pins (6-pin header), separate from Due communicatio
    pio run -e wt32-eth01 -t upload --upload-port COMx
    ```
 
-**No need to disconnect the Due** - it uses GPIO32/33, not TX0/RX0.
+**No need to disconnect the Due** - it uses IO4/IO14, not TX0/RX0.
 
 ### Daily Usage
 
@@ -401,7 +405,7 @@ Programming uses the TX0/RX0 pins (6-pin header), separate from Due communicatio
 ### Troubleshooting
 
 **No output on Native USB:**
-- Check Serial1 wiring (TX1→GPIO33, RX1→GPIO32 - they cross!)
+- Check Serial1 wiring (TX1→IO14, RX1→IO4 - they cross!)
 - Verify ESP32 is powered and running
 - Check baud rate matches (115200)
 
@@ -414,7 +418,7 @@ Programming uses the TX0/RX0 pins (6-pin header), separate from Due communicatio
 
 ### Programming via USB-TTL Adapter
 
-Use an external USB-TTL adapter (CH340, CP2102, etc.) for programming. **No need to disconnect the Due** - programming uses TX0/RX0, while Due communication uses GPIO32/33.
+Use an external USB-TTL adapter (CH340, CP2102, etc.) for programming. **No need to disconnect the Due** - programming uses TX0/RX0, while Due communication uses IO4/IO14.
 
 1. **Connect USB-TTL to WT32-ETH01 programming header:**
 
@@ -534,8 +538,8 @@ The code uses `#ifdef BOARD_WT32_ETH01` / `#ifdef BOARD_ESP32S3` for board-speci
 
 | Connection | Pins |
 |------------|------|
-| Due TX1 (pin 18) → ESP32 | GPIO33 |
-| Due RX1 (pin 19) ← ESP32 | GPIO32 |
+| Due TX1 (pin 18) → ESP32 | IO14 |
+| Due RX1 (pin 19) ← ESP32 | IO4 |
 | USB-TTL TX → ESP32 | RX0 (GPIO3) |
 | USB-TTL RX ← ESP32 | TX0 (GPIO1) |
 

@@ -81,18 +81,18 @@ The system consists of four integrated components:
 - ESP32 module with built-in LAN8720 Ethernet PHY
 - Native 100 Mbps Ethernet (RJ45 connector)
 - WiFi 802.11 b/g/n (simultaneous with Ethernet)
-- Connects to Due via UART serial (GPIO32/33)
+- Connects to Due via UART serial (IO4/IO14)
 
 ### Wiring: WT32-ETH01 to Arduino Due
 
 | WT32-ETH01 | Arduino Due | Function |
 |------------|-------------|----------|
-| GPIO32     | Pin 19 (RX1)| ESP32 TX -> Due RX |
-| GPIO33     | Pin 18 (TX1)| ESP32 RX <- Due TX |
+| IO4        | Pin 19 (RX1)| ESP32 TX -> Due RX |
+| IO14       | Pin 18 (TX1)| ESP32 RX <- Due TX |
 | GND        | GND         | Common ground |
 | 5V         | 5V          | Power |
 
-**Note:** GPIO32/33 are used for Due communication, leaving TX0/RX0 free for programming via USB-TTL adapter. See [WT32-ETH01 Migration Guide](docs/WT32_ETH01_MIGRATION.md) for details.
+**Note:** IO4/IO14 are used for Due communication. Avoid IO32/IO33 (labelled CFG/485_EN on RS-485 variants). See [WT32-ETH01 Migration Guide](docs/WT32_ETH01_MIGRATION.md) for details.
 
 ---
 
@@ -153,8 +153,8 @@ Compile-time defaults are in `esp32_controller_arduino/src/config.h`:
 #define WIFI_AP_PASSWORD "radio1420"
 
 // Serial pins to Arduino Due (WT32-ETH01)
-#define DUE_UART_TX 32
-#define DUE_UART_RX 33
+#define DUE_UART_TX 4
+#define DUE_UART_RX 14
 
 // Observer location (for coordinate conversion)
 #define OBSERVER_LAT 55.902426
@@ -222,11 +222,14 @@ All equatorial (RA/Dec) coordinates use the **J2000 reference frame**, which is 
 
 #### Network Tab
 
-- **Ethernet**: Connection status, IP address, MAC address
+- **Ethernet**: Connection status, IP address, MAC address, DHCP/static configuration
+- **WiFi Power**: Enable/disable WiFi to save ~100mA (only available when Ethernet connected)
 - **WiFi**: Access Point status, station connection status
 - **WiFi Config**: Scan and connect to WiFi networks, forget saved credentials
 
-**Network Priority:** Ethernet provides a stable wired connection for Stellarium. WiFi AP remains active for mobile configuration access.
+**Network Priority:** Ethernet provides a stable wired connection for Stellarium. WiFi can be disabled to save power when using Ethernet only.
+
+**Power Consumption:** System draws ~400mA idle (300-320mA with WiFi disabled).
 
 ### Stellarium Integration
 

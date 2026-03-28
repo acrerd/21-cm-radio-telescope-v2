@@ -22,21 +22,22 @@
 
 #include <Arduino.h>
 #include <DueFlashStorage.h>
+#include <math.h>
 #include "config.h"
 
 // =============================================================================
-// ESP32 BRIDGE CONFIGURATION (WT32-ETH01 programming via Native USB)
+// ESP32 SERIAL COMMUNICATION (WT32-ETH01)
 // =============================================================================
-// The Due's Native USB port (SerialUSB) is permanently bridged to Serial1,
-// allowing direct communication with the WT32-ETH01. This enables:
-//   1. Real-time ESP32 debug output on Native USB
-//   2. Programming the ESP32 without a separate USB-TTL adapter
+// The Due communicates with the WT32-ETH01 via Serial1 (pins 18/19).
+// The Native USB port (SerialUSB) bridges to Serial1 for monitoring.
 //
-// Hardware connections:
-//   Due Pin 18 (TX1) -> WT32-ETH01 GPIO3 (RXD)
-//   Due Pin 19 (RX1) -> WT32-ETH01 GPIO1 (TXD)
-//   Due Pin 2        -> WT32-ETH01 GPIO0 (boot mode)
-//   Due Pin 3        -> WT32-ETH01 EN (reset)
+// Hardware connections (directly, no level shifter needed - both 3.3V):
+//   Due Pin 18 (TX1) -> WT32-ETH01 IO14 (ESP32 RX)
+//   Due Pin 19 (RX1) <- WT32-ETH01 IO4  (ESP32 TX)
+//   GND              -- GND
+//
+// Note: IO4/IO14 are used instead of IO32/IO33 because some WT32-ETH01
+// variants have IO32/IO33 labelled CFG/485_EN for RS-485 circuitry.
 // =============================================================================
 
 #define ESP_BRIDGE_ENABLED  1       // Set to 0 to disable bridge functionality
@@ -958,8 +959,8 @@ void performHoming() {
     }
 
     // Now at home position - set position to home coordinates
-    positionAz = (int32_t)(cfg.homeAz * PULSES_PER_DEGREE);
-    positionAlt = (int32_t)(cfg.homeAlt * PULSES_PER_DEGREE);
+    positionAz = (int32_t)round(cfg.homeAz * PULSES_PER_DEGREE);
+    positionAlt = (int32_t)round(cfg.homeAlt * PULSES_PER_DEGREE);
     targetAz = positionAz;
     targetAlt = positionAlt;
 
@@ -1187,36 +1188,39 @@ void outputStatus() {
     float currentAlt = readCurrentAlt();
     float currentAz = readCurrentAz();
 
-    // Build status line and send to all ports
-    printAll("Alt:");
-    printAllFloat(altDeg, 1);
-    printAll(" Az:");
-    printAllFloat(azDeg, 1);
-    printAll(" Ialt:");
-    printAllFloat(fabs(currentAlt), 2);
-    printAll("A Iaz:");
-    printAllFloat(fabs(currentAz), 2);
-    printAll("A Status:");
-    printAll(getStatusString());
+    // Build status string for both Serial (USB) and Serial1 (ESP32)
+    char statusLine[128];
+    int pos = 0;
+
+    pos += snprintf(statusLine + pos, sizeof(statusLine) - pos, "Alt:%.1f Az:%.1f",
+                    altDeg, azDeg);
+    pos += snprintf(statusLine + pos, sizeof(statusLine) - pos, " Ialt:%.2fA Iaz:%.2fA",
+                    fabs(currentAlt), fabs(currentAz));
+    pos += snprintf(statusLine + pos, sizeof(statusLine) - pos, " Status:%s",
+                    getStatusString());
 
     if (systemState == STATE_FAULT) {
-        printAll(" [");
-        printAll(getFaultString());
-        printAll("]");
+        pos += snprintf(statusLine + pos, sizeof(statusLine) - pos, " [%s]",
+                        getFaultString());
     }
 
     if (systemState == STATE_DRIVING) {
-        printAll(" -> Alt:");
-        printAllFloat((float)targetAlt / PULSES_PER_DEGREE, 1);
-        printAll(" Az:");
-        printAllFloat((float)targetAz / PULSES_PER_DEGREE, 1);
+        pos += snprintf(statusLine + pos, sizeof(statusLine) - pos, " -> Alt:%.1f Az:%.1f",
+                        (float)targetAlt / PULSES_PER_DEGREE,
+                        (float)targetAz / PULSES_PER_DEGREE);
     }
 
     // Calibrator state
-    printAll(" Cal:");
-    printAll(calibratorOn ? "ON" : "OFF");
+    pos += snprintf(statusLine + pos, sizeof(statusLine) - pos, " Cal:%s",
+                    calibratorOn ? "ON" : "OFF");
 
-    printAllLn("");
+    // Output to Programming Port (USB)
+    Serial.println(statusLine);
+
+    // Output to Serial1 (ESP32) so it can read status
+    #if ENABLE_SERIAL1
+    Serial1.println(statusLine);
+    #endif
 
     updatePrevStatus();
 }
@@ -1292,8 +1296,8 @@ void executeDrive(float alt, float az) {
         } else if (systemState == STATE_HOMING) {
             printAllLn("ERROR: Cannot slew while homing in progress.");
         } else {
-            targetAlt = (int32_t)(alt * PULSES_PER_DEGREE);
-            targetAz = (int32_t)(az * PULSES_PER_DEGREE);
+            targetAlt = (int32_t)round(alt * PULSES_PER_DEGREE);
+            targetAz = (int32_t)round(az * PULSES_PER_DEGREE);
             printAll("Slewing to Alt:");
             printAllFloat(alt, 1);
             printAll(" Az:");
@@ -1538,12 +1542,15 @@ void processSerialInput() {
         }
     }
 
-    // Note: Serial1 is NOT processed here when ESP_BRIDGE_ENABLED
-    // In that case, handleESPBridge() manages Serial1 exclusively
-    #if ENABLE_SERIAL1 && !ESP_BRIDGE_ENABLED
-    // Process hardware UART (Serial1) as command input only if no ESP bridge
+    // Process Serial1 commands (from ESP32 or direct connection)
+    #if ENABLE_SERIAL1
     while (Serial1.available() > 0) {
         char c = Serial1.read();
+
+        #if ESP_BRIDGE_ENABLED
+        // Forward to SerialUSB for monitoring when bridge is enabled
+        SerialUSB.write(c);
+        #endif
 
         if (c == '\n' || c == '\r') {
             if ((lastLineEndChar1 == '\r' && c == '\n') ||
@@ -1554,25 +1561,34 @@ void processSerialInput() {
             lastLineEndChar1 = c;
 
             if (serial1Index > 0) {
-                Serial1.println();
                 serial1Buffer[serial1Index] = '\0';
                 processCommand(serial1Buffer);
                 serial1Index = 0;
+                #if !ESP_BRIDGE_ENABLED
+                Serial1.println();
                 Serial1.print("> ");
-            } else {
+                #endif
+            }
+            #if !ESP_BRIDGE_ENABLED
+            else {
                 Serial1.println();
                 Serial1.print("> ");
             }
+            #endif
         } else if (c == '\b' || c == 127) {
             lastLineEndChar1 = 0;
             if (serial1Index > 0) {
                 serial1Index--;
+                #if !ESP_BRIDGE_ENABLED
                 Serial1.print("\b \b");
+                #endif
             }
         } else if (serial1Index < (int)(sizeof(serial1Buffer) - 1)) {
             lastLineEndChar1 = 0;
             serial1Buffer[serial1Index++] = c;
-            Serial1.print(c);  // Echo to Serial1 only
+            #if !ESP_BRIDGE_ENABLED
+            Serial1.print(c);  // Echo to Serial1 only when no bridge
+            #endif
         }
     }
     #endif
@@ -1590,16 +1606,13 @@ void setupESPBridge() {
     SerialUSB.begin(ESP_BRIDGE_BAUD);
 }
 
-// Handle ESP32 serial bridge - bidirectional passthrough for monitoring
+// Handle ESP32 serial bridge - forward PC commands to ESP32
+// Note: Serial1->SerialUSB forwarding is now done in processSerialInput()
+// where we also process commands from ESP32
 void handleESPBridge() {
     // Forward Native USB -> Serial1 (PC to ESP32)
     while (SerialUSB.available()) {
         Serial1.write(SerialUSB.read());
-    }
-
-    // Forward Serial1 -> Native USB (ESP32 to PC)
-    while (Serial1.available()) {
-        SerialUSB.write(Serial1.read());
     }
 }
 

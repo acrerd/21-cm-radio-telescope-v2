@@ -25,6 +25,8 @@ void Settings::resetToDefaults() {
     ethGateway = "192.168.1.1";
     ethSubnet = "255.255.255.0";
     ethDNS = "8.8.8.8";
+    // WiFi enabled by default
+    wifiEnabled = true;
 }
 
 void Settings::load() {
@@ -54,6 +56,8 @@ void Settings::load() {
         ethGateway = prefs.getString("ethGW", "192.168.1.1");
         ethSubnet = prefs.getString("ethSub", "255.255.255.0");
         ethDNS = prefs.getString("ethDNS", "8.8.8.8");
+        // WiFi power state
+        wifiEnabled = prefs.getBool("wifiOn", true);
         Serial.println("Settings loaded from NVS");
     } else {
         Serial.println("Using default settings");
@@ -84,6 +88,8 @@ void Settings::save() {
     prefs.putString("ethGW", ethGateway);
     prefs.putString("ethSub", ethSubnet);
     prefs.putString("ethDNS", ethDNS);
+    // WiFi power state
+    prefs.putBool("wifiOn", wifiEnabled);
 
     prefs.end();
     Serial.println("Settings saved to NVS");

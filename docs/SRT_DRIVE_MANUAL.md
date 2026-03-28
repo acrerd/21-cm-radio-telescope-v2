@@ -138,17 +138,17 @@ The Arduino Due has two USB ports:
 
 **Use the Programming Port** for both uploading firmware and serial communication.
 
-### 3.3 ESP32 Interface (Serial1)
+### 3.3 WT32-ETH01 Interface (Serial1)
 
-For external microcontroller connections (e.g., ESP32), use the hardware UART:
+The Due communicates with the WT32-ETH01 (ESP32) via hardware UART:
 
-| Due Pin | Function | Connect to ESP32 |
-|---------|----------|------------------|
-| 18 | TX1 (transmit) | RX (via level shifter) |
-| 19 | RX1 (receive) | TX (via level shifter) |
+| Due Pin | Function | WT32-ETH01 Pin |
+|---------|----------|----------------|
+| 18 | TX1 (transmit) | IO14 (RX) |
+| 19 | RX1 (receive) | IO4 (TX) |
 | GND | Ground | GND |
 
-**Important:** The Due operates at 3.3V logic. If your ESP32 is also 3.3V, direct connection is possible. Otherwise, use a level shifter.
+**Note:** Both the Due and ESP32 operate at 3.3V logic - direct connection is used, no level shifter required. Avoid IO32/IO33 on WT32-ETH01 RS-485 variants (labelled CFG/485_EN).
 
 ---
 

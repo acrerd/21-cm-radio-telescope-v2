@@ -16,10 +16,11 @@
 // =============================================================================
 
 #ifdef BOARD_WT32_ETH01
-    // WT32-ETH01: Serial to Due via GPIO32/33 (no boot restrictions)
+    // WT32-ETH01: Serial to Due via GPIO4/14
+    // Note: GPIO32/33 labelled CFG/485_EN on RS-485 variants - avoid those
     // TX0/RX0 (GPIO1/3) reserved for programming - no need to disconnect Due
-    #define DUE_UART_TX 32   // WT32 GPIO32 -> Due RX (pin 19)
-    #define DUE_UART_RX 33   // WT32 GPIO33 <- Due TX (pin 18)
+    #define DUE_UART_TX 4    // WT32 IO4 -> Due RX (pin 19)
+    #define DUE_UART_RX 14   // WT32 IO14 <- Due TX (pin 18)
 
     // Ethernet PHY configuration (LAN8720) - pin numbers only
     // The actual PHY type constants are defined by ETH.h

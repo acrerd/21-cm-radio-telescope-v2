@@ -9,7 +9,7 @@
 WiFiManager wifiManager;
 Preferences wifiPrefs;
 
-WiFiManager::WiFiManager() : apActive(false) {
+WiFiManager::WiFiManager() : apActive(false), wifiDisabled(false) {
 }
 
 bool WiFiManager::loadCredentials(String &ssid, String &password) {
@@ -164,4 +164,31 @@ String WiFiManager::getAPIP() {
 
 String WiFiManager::getConnectedSSID() {
     return connectedSSID;
+}
+
+bool WiFiManager::isWiFiEnabled() {
+    return !wifiDisabled;
+}
+
+void WiFiManager::disableWiFi() {
+    if (wifiDisabled) return;
+
+    Serial.println("Disabling WiFi to save power...");
+    WiFi.disconnect(true);
+    WiFi.mode(WIFI_OFF);
+    apActive = false;
+    wifiDisabled = true;
+    connectedSSID = "";
+    Serial.println("WiFi disabled");
+}
+
+void WiFiManager::enableWiFi() {
+    if (!wifiDisabled) return;
+
+    Serial.println("Enabling WiFi...");
+    wifiDisabled = false;
+
+    // Restart WiFi - try saved credentials or fall back to AP
+    startup();
+    Serial.println("WiFi enabled");
 }

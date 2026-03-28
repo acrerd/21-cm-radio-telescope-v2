@@ -66,9 +66,27 @@ String SRTSerial::getLogJSON() {
 }
 
 void SRTSerial::begin(int txPin, int rxPin, int baudRate) {
-    uart = &Serial1;
+    // Use Serial2 on standard ESP32 (Serial1 pins conflict with flash)
+    uart = &Serial2;
+    Serial.printf("SRTSerial: TX pin=%d, RX pin=%d, baud=%d\n", txPin, rxPin, baudRate);
+
+    // Test: toggle TX pin manually to verify connectivity
+    pinMode(txPin, OUTPUT);
+    for (int i = 0; i < 5; i++) {
+        digitalWrite(txPin, HIGH);
+        delay(100);
+        digitalWrite(txPin, LOW);
+        delay(100);
+    }
+    Serial.println("SRTSerial: TX pin toggle test complete");
+
     uart->begin(baudRate, SERIAL_8N1, rxPin, txPin);
     uart->setTimeout(10);  // 10ms timeout instead of default 1000ms
+    Serial.println("SRTSerial: Serial2 initialized");
+
+    // Send test message
+    uart->println("ESP32_HELLO");
+    Serial.println("SRTSerial: Sent test message");
 }
 
 void SRTSerial::sendTarget(float alt, float az) {

@@ -132,8 +132,8 @@ These values are used as defaults when no saved settings exist:
 #define WIFI_AP_PASSWORD "radio1420"
 
 // Serial connection to Arduino Due (WT32-ETH01 pins)
-#define DUE_UART_TX 32   // WT32 GPIO32 -> Due RX (pin 19)
-#define DUE_UART_RX 33   // WT32 GPIO33 <- Due TX (pin 18)
+#define DUE_UART_TX 4    // WT32 IO4 -> Due RX (pin 19)
+#define DUE_UART_RX 14   // WT32 IO14 <- Due TX (pin 18)
 #define DUE_BAUD_RATE 115200
 
 // Observer location (Acre Road Observatory, Glasgow)
@@ -292,9 +292,10 @@ All endpoints return JSON unless noted.
 | `/wifi/scan` | Scan for WiFi networks |
 | `/wifi/connect` | Connect to WiFi network |
 | `/wifi/forget` | Forget saved WiFi credentials |
+| `/wifi/power` | Enable/disable WiFi (`enable=0/1`) - requires Ethernet connection |
 | `/eth/save` | Save Ethernet settings (dhcp, ip, gateway, subnet, dns) |
 
-The `/wifi/status` response includes `eth_mac` and `wifi_mac` fields for device identification.
+The `/wifi/status` response includes `wifi_enabled`, `eth_mac` and `wifi_mac` fields.
 
 ---
 
@@ -380,16 +381,15 @@ Check via `/time/status`:
 
 The ESP32 operates in **AP+STA** mode:
 
-1. **WiFi Access Point** - Always active at 192.168.4.1
+1. **WiFi Access Point** - Active at 192.168.4.1 (can be disabled)
 2. **WiFi Station** - Connects to saved network if available
 
 ### Startup Sequence
 
-1. Start WiFi Access Point
-2. Load saved WiFi credentials
-3. Attempt connection to saved network (15s timeout)
-4. If connected: disable AP (single network mode)
-5. If failed: keep AP active for configuration
+1. Initialize Ethernet (if available)
+2. If WiFi disabled and Ethernet connected: skip WiFi startup
+3. Otherwise: Start WiFi Access Point and connect to saved network
+4. Sync time via NTP
 
 ### IP Addresses
 
@@ -408,6 +408,15 @@ Ethernet IP can be configured via the web interface Network tab:
 
 Settings are stored in non-volatile memory (NVS) and persist across reboots.
 Changes require a reboot to take effect.
+
+### WiFi Power Control
+
+When Ethernet is connected, WiFi can be disabled to save power (~80-120mA):
+
+- **Web UI**: Network tab > WiFi Power > Disable WiFi
+- **API**: `GET /wifi/power?enable=0`
+
+The setting persists across reboots. WiFi cannot be disabled unless Ethernet is connected.
 
 ---
 
@@ -501,8 +510,8 @@ pio run --target clean
 
 | Function | GPIO |
 |----------|------|
-| Due TX | 32 |
-| Due RX | 33 |
+| Due TX | 4 |
+| Due RX | 14 |
 
 ### Coordinate Ranges
 
