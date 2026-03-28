@@ -267,7 +267,7 @@ class TestConfig:
         with patch.object(sched, 'CONFIG_FILE', str(tmp_path / "nonexistent.json")):
             cfg = sched.load_config()
             assert cfg["srt_controller_url"] == "http://192.168.0.149"
-            assert cfg["observer_lat"] == 55.9
+            assert cfg["observer_lat"] == pytest.approx(55.902444)
             assert cfg["sound_enabled"] is True
 
     def test_save_and_load_config(self, tmp_path):
