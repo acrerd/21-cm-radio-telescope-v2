@@ -625,9 +625,9 @@ Simulation parameters (configurable in \texttt{config.h}):
 \toprule
 \textbf{Parameter} & \textbf{Default} & \textbf{Description} \\
 \midrule
-\texttt{SIM\_MAX\_SPEED\_DEG\_S} & 18.0 & Maximum speed (deg/s) \\
-\texttt{SIM\_INITIAL\_AZ\_DEG} & 180.0 & Starting azimuth \\
-\texttt{SIM\_INITIAL\_ALT\_DEG} & 45.0 & Starting altitude \\
+\texttt{SIM\_MAX\_SPEED\_DEG\_S} & 180.0 & Maximum speed (deg/s) \\
+\texttt{SIM\_INITIAL\_AZ\_DEG} & 20.0 & Starting azimuth \\
+\texttt{SIM\_INITIAL\_ALT\_DEG} & 10.0 & Starting altitude \\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -762,11 +762,11 @@ The ESP32 provides a RESTful HTTP API for telescope control.
 \texttt{/track/galactic} & \texttt{l}, \texttt{b} & Track galactic coordinates \\
 \texttt{/track/sun} & --- & Track Sun \\
 \texttt{/track/moon} & --- & Track Moon \\
-\texttt{/track} & \texttt{enable=0/1} & Enable/disable tracking \\
+\texttt{/tracking/enable} & \texttt{enable=0/1} & Enable/disable tracking \\
 \texttt{/direct} & \texttt{alt}, \texttt{az} & Go to Alt/Az directly \\
 \texttt{/offset} & \texttt{alt}, \texttt{az} & Set pointing offset (degrees) \\
 \texttt{/offset/clear} & --- & Clear pointing offset \\
-\texttt{/calibrator} & \texttt{state=on/off/toggle} & Control calibrator noise source \\
+\texttt{/calibrator} & \texttt{on=0/1} & Control calibrator noise source \\
 \bottomrule
 \end{tabular}
 \end{table}
