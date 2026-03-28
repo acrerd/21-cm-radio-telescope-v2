@@ -1088,7 +1088,52 @@ The receiver outputs data in HDF5 format with the following structure:
 \end{tabular}
 \end{table}
 
-File attributes include SDR type, centre frequency, sample rate, FFT size, gain, and creation timestamp. When launched from the scheduler, additional observation metadata is stored: observation name, coordinate system, target coordinates, calibrator state, scheduled start time, and duration. Spectra are stored in linear power units (not dB) to preserve radiometric accuracy for calibration workflows.
+Spectra are stored in linear power units (not dB) to preserve radiometric accuracy for calibration workflows.
+
+\begin{table}[H]
+\centering
+\caption{HDF5 root attributes (always present)}
+\begin{tabular}{ll}
+\toprule
+\textbf{Attribute} & \textbf{Description} \\
+\midrule
+\texttt{sdr\_type} & SDR used: \texttt{b210}, \texttt{rtlsdr}, or \texttt{demo} \\
+\texttt{center\_freq\_hz} & Centre frequency in Hz \\
+\texttt{sample\_rate\_hz} & Sample rate in Hz \\
+\texttt{fft\_size} & Number of FFT bins \\
+\texttt{gain\_db} & RF gain setting in dB \\
+\texttt{nominal\_integration\_time} & Target integration time in seconds \\
+\texttt{created} & ISO\,8601 UTC timestamp of file creation \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+When launched from the scheduler, additional observation metadata attributes are stored:
+
+\begin{table}[H]
+\centering
+\caption{HDF5 observation metadata attributes (from scheduler)}
+\begin{tabular}{ll}
+\toprule
+\textbf{Attribute} & \textbf{Description} \\
+\midrule
+\texttt{obs\_name} & Observation name from the schedule \\
+\texttt{coord\_system} & Coordinate system: \texttt{altaz}, \texttt{radec}, \texttt{galactic}, \texttt{object}, or \texttt{satellite} \\
+\texttt{object\_name} & Solar system object (\texttt{sun}, \texttt{moon}) if applicable \\
+\texttt{coord1\_deg} & Target coordinate 1: degrees (Alt, RA, or Gal $l$) \\
+\texttt{coord1\_min} & Target coordinate 1: arcminutes \\
+\texttt{coord1\_sec} & Target coordinate 1: arcseconds \\
+\texttt{coord2\_deg} & Target coordinate 2: degrees (Az, Dec, or Gal $b$) \\
+\texttt{coord2\_min} & Target coordinate 2: arcminutes \\
+\texttt{coord2\_sec} & Target coordinate 2: arcseconds \\
+\texttt{calibrator} & 1 if noise source was on, 0 if off \\
+\texttt{duration\_minutes} & Scheduled observation duration \\
+\texttt{start\_date} & Scheduled start date (YYYY-MM-DD) \\
+\texttt{start\_time} & Scheduled start time (HH:MM) \\
+\texttt{tle\_text} & TLE data for satellite observations \\
+\bottomrule
+\end{tabular}
+\end{table}
 
 A Jupyter notebook (\texttt{read\_h1\_data.ipynb}) is provided for reading HDF5 files, displaying observation metadata, and plotting waterfall diagrams and mean spectra. All averaging is performed in the linear power domain; conversion to dB is applied only for display.
 
