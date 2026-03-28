@@ -20,6 +20,8 @@ This receiver is designed for radio astronomy observations of neutral hydrogen (
 | `b210_h1_receiver.py` | Main receiver application with GUI |
 | `h1_web_scheduler.py` | Web-based observation scheduler |
 | `h1_schedule.json` | Saved observation schedule (auto-generated) |
+| `scheduler_config.json` | Scheduler configuration (auto-generated) |
+| `scheduler.log` | Rotating log file (auto-generated) |
 
 ## Hardware Requirements
 
@@ -152,15 +154,46 @@ python h1_web_scheduler.py
 
 Then open http://localhost:5000 in your browser.
 
-### Scheduler Features
+### Web Interface Tabs
 
-- **Add/Edit/Delete observations** with full parameter control
+The scheduler web interface has three tabs:
+
+#### Scheduler Tab
+The main view for managing observations.
+
+- **Add/Edit/Clone/Delete observations** with full parameter control
 - **Automatic triggering** - observations start automatically at scheduled times
-- **Real-time status** - see running observation with time remaining
+- **Late start recovery** - if the scheduler starts after a scheduled time, observations still within their window are started with remaining duration
+- **Preemption** - if a new observation is due while another is running, the current one is stopped and the new one starts
+- **Clash prevention** - overlapping observations cannot be saved; end times are calculated from start time + duration
+- **Real-time status** - see running observation with countdown timer
+- **Running item protection** - running observations cannot be edited, deleted, or disabled
 - **Local and UTC time display** - schedule in local time, see both clocks
 - **Auto-save** - changes are saved automatically
 - **Manual start** - click play button to start any observation immediately
+- **Clone** - duplicate an observation's settings into a new item
+- **Clear Past** - remove observations whose end time has passed
 - **Import/Export** - save and load schedules as JSON
+- **Audio notifications** - rising/falling tones when observations start/stop
+
+#### Configuration Tab
+Persistent settings saved to `scheduler_config.json`:
+
+| Setting | Description |
+|---------|-------------|
+| Banner Name / Subtitle | Customise the page title and heading |
+| Controller URL | SRT telescope controller address (empty to disable) |
+| Slew Timeout | Max seconds to wait for telescope to reach target (default: 300) |
+| Position Tolerance | Degrees within which the telescope is considered on-target (default: 0.5) |
+| Python Executable | Path to Python (empty for default, e.g. radioconda) |
+| Data Output Folder | Where observation HDF5 files are saved |
+| Log Lines to Display | Number of log lines shown in the Log tab |
+| Sound on Start/Stop | Enable/disable audio notifications |
+
+Configuration changes take effect immediately without restarting.
+
+#### Log Tab
+Displays the last N lines of `scheduler.log` with auto-refresh (5 second interval, toggleable). The log file uses rotating storage (5 MB max, 3 backups).
 
 ### Observation Parameters
 
@@ -168,26 +201,45 @@ Then open http://localhost:5000 in your browser.
 |-----------|-------------|
 | Name | Descriptive name for the observation |
 | Start Date/Time | When to start (local time, leave date empty for "today") |
-| Duration | How long to observe (minutes) |
-| Coordinates | Target position (Alt/Az, RA/Dec, or Galactic) |
+| Duration | How long to observe (minutes); end time is calculated automatically |
+| Coordinates | Target position — see Coordinate Systems below |
 | Center Frequency | Observation frequency in MHz (default: 1420.405) |
 | Bandwidth | Sample rate / observation bandwidth in MHz |
 | Gain | RF gain in dB |
 | Channels | FFT size (frequency resolution) |
 | Integration Time | Seconds per averaged spectrum |
 | SDR Type | B210, RTL-SDR, or Demo |
-| Filename | Output file (auto-generated if empty) |
+| Calibrator | Turn noise source on/off for this observation |
+| When Done | Action after observation ends: Stay, Go Home (Alt 0°, Az 0°), or Stow (Alt 90°, Az 180°) |
+| Filename | Output file (auto-generated if empty; `_cal` suffix added when calibrator is on) |
 
-### Scheduler Console Output
+### Coordinate Systems
 
-The scheduler prints status to the console:
-```
-[Scheduler] 12:00:00 - 2 observations loaded
-  - Morning Survey: 2026-03-14 06:00 (enabled=True)
-  - Evening Deep: 2026-03-14 22:00 (enabled=True)
-[12:00:05] Scheduled start: Morning Survey (diff=5.2s)
-[12:00:05] Started: Morning Survey (ends at 13:00:05)
-```
+| System | Description | Tracking |
+|--------|-------------|----------|
+| Alt/Az (Horizontal) | Direct altitude/azimuth pointing | Fixed position |
+| RA/Dec (Equatorial J2000) | Right Ascension / Declination | Tracks as Earth rotates |
+| Galactic (l, b) | Galactic longitude / latitude | Tracks as Earth rotates |
+| Solar System Object | Select Sun or Moon by name | Automatic ephemeris tracking |
+
+### Telescope Integration
+
+When an SRT controller is configured, the scheduler:
+1. Sends the pointing/tracking command to the telescope
+2. Waits for slewing to complete (polls `is_slewing` status)
+3. Sets the calibrator state (on/off)
+4. Starts the SDR receiver
+5. On completion: turns off calibrator (if it was on), sends home/stow command (if configured)
+
+### Logging
+
+All scheduler activity is logged to both the console (INFO level) and `scheduler.log` (DEBUG level):
+- Observation start/stop events
+- Telescope commands and slew status
+- Calibrator state changes
+- Preemption events
+- Schedule loading and clash detection
+- Errors with full tracebacks
 
 ## Configuration
 
@@ -247,6 +299,20 @@ Data is saved to an HDF5 file with the following structure:
 | `gain_db` | RF gain setting |
 | `nominal_integration_time` | Target integration time |
 | `created` | ISO 8601 timestamp of file creation |
+
+When launched from the scheduler, additional observation metadata is included:
+
+| Attribute | Description |
+|-----------|-------------|
+| `obs_name` | Observation name from the schedule |
+| `coord_system` | Coordinate system used (altaz, radec, galactic, object) |
+| `object_name` | Solar system object name (sun, moon) if applicable |
+| `coord1_deg/min/sec` | Target coordinate 1 (Alt, RA, or Galactic longitude) |
+| `coord2_deg/min/sec` | Target coordinate 2 (Az, Dec, or Galactic latitude) |
+| `calibrator` | 1 if calibrator noise source was on, 0 otherwise |
+| `duration_minutes` | Scheduled observation duration |
+| `start_date` | Scheduled start date (YYYY-MM-DD) |
+| `start_time` | Scheduled start time (HH:MM) |
 
 ### Reading Data in Python
 

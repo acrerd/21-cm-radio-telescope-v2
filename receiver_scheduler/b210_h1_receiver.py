@@ -845,6 +845,20 @@ class H1ReceiverWindow(QtWidgets.QMainWindow):
         hf.attrs['nominal_integration_time'] = INTEGRATION_TIME
         hf.attrs['created'] = datetime.now(timezone.utc).isoformat()
 
+        # Observation metadata from scheduler
+        import json as _json
+        obs_meta = os.environ.get('H1_OBS_METADATA', '')
+        if obs_meta:
+            try:
+                meta = _json.loads(obs_meta)
+                for key, val in meta.items():
+                    if isinstance(val, bool):
+                        hf.attrs[key] = int(val)
+                    elif val is not None and val != '':
+                        hf.attrs[key] = val
+            except Exception:
+                pass
+
         return hf
 
     def _save_spectrum(self):
