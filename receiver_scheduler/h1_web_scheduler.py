@@ -72,8 +72,8 @@ _DEFAULT_CONFIG = {
     "data_output_folder": os.path.join(_SCRIPT_DIR, "data"),
     "log_lines": 100,
     "sound_enabled": True,
-    "observer_lat": 55.9,
-    "observer_lon": -4.3,
+    "observer_lat": 55.902444,
+    "observer_lon": -4.307861,
     "observer_elevation": 50,
     "min_elevation": 10.0,
 }
@@ -149,6 +149,29 @@ def srt_api_call(endpoint: str, params: Optional[dict] = None) -> Optional[dict]
     except Exception as e:
         log.error("SRT API error: %s", e)
         return None
+
+
+def srt_get_settings() -> Optional[dict]:
+    """Get controller settings (observer location, home position, etc)."""
+    return srt_api_call("/settings")
+
+
+def sync_observer_from_controller():
+    """Fetch observer location from the SRT controller and update config."""
+    if not SRT_CONTROLLER_URL:
+        return
+    settings = srt_get_settings()
+    if not settings:
+        return
+    lat = settings.get('observer_lat')
+    lon = settings.get('observer_lon')
+    if lat is not None and lon is not None:
+        cfg = load_config()
+        if cfg.get('observer_lat') != lat or cfg.get('observer_lon') != lon:
+            cfg['observer_lat'] = lat
+            cfg['observer_lon'] = lon
+            save_config(cfg)
+            log.info("Observer location synced from controller: lat=%.6f lon=%.6f", lat, lon)
 
 
 def srt_get_status() -> Optional[dict]:
@@ -1971,6 +1994,8 @@ def api_post_config():
     SRT_SLEW_TIMEOUT = cfg.get("slew_timeout", 300)
     SRT_POSITION_TOLERANCE = cfg.get("position_tolerance", 0.5)
     PYTHON_PATH = cfg.get("python_path") or None
+    # Re-sync observer location if controller URL changed
+    sync_observer_from_controller()
     return jsonify({'success': True})
 
 
@@ -2081,6 +2106,9 @@ def main():
         print(f"SRT Controller: {SRT_CONTROLLER_URL}")
     else:
         print("SRT Controller: DISABLED (telescope control off)")
+    # Sync observer location from controller
+    sync_observer_from_controller()
+
     print(f"\nOpen your browser to: http://{args.host}:{args.port}")
     print("Scheduler is ACTIVE - observations will start automatically")
     print("\nPress Ctrl+C to stop\n")
