@@ -549,10 +549,11 @@ def scheduler_thread():
                 duration_sec = obs.get('duration_minutes', 30) * 60
                 end_time = scheduled + timedelta(seconds=duration_sec)
                 diff = (now - scheduled).total_seconds()
-                if diff >= 0 and now < end_time:
+                remaining_sec = (end_time - now).total_seconds()
+                if diff >= 0 and remaining_sec > 60:
                     due_obs = obs
                     due_scheduled = scheduled
-                    due_remaining = int((end_time - now).total_seconds() / 60)
+                    due_remaining = int(remaining_sec / 60)
                     break
 
             with process_lock:

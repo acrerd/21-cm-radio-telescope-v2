@@ -819,7 +819,7 @@ class H1ReceiverWindow(QtWidgets.QMainWindow):
 
         hf.create_dataset('frequency_hz', data=self.freq_axis_hz)
 
-        hf.create_dataset('spectra_db',
+        hf.create_dataset('spectra_linear',
                           shape=(0, self.fft_size),
                           maxshape=(None, self.fft_size),
                           dtype='float32',
@@ -867,25 +867,25 @@ class H1ReceiverWindow(QtWidgets.QMainWindow):
             if self.accumulator is None or self.accumulator_count == 0:
                 return
 
-            # Calculate average in linear domain, convert back to dB
+            # Calculate average in linear power domain
             avg_linear = self.accumulator / self.accumulator_count
-            spectrum_db = 10 * np.log10(avg_linear)
 
             timestamp = time.time()
             integration_time = timestamp - self.accumulator_start_time
 
-            # Save to HDF5
-            n = self.hf['spectra_db'].shape[0]
-            self.hf['spectra_db'].resize((n + 1, self.fft_size))
+            # Save to HDF5 in linear power (preserves radiometric accuracy)
+            n = self.hf['spectra_linear'].shape[0]
+            self.hf['spectra_linear'].resize((n + 1, self.fft_size))
             self.hf['timestamps'].resize((n + 1,))
             self.hf['integration_times'].resize((n + 1,))
 
-            self.hf['spectra_db'][n, :] = spectrum_db.astype(np.float32)
+            self.hf['spectra_linear'][n, :] = avg_linear.astype(np.float32)
             self.hf['timestamps'][n] = timestamp
             self.hf['integration_times'][n] = integration_time
             self.hf.flush()
 
-            # Add to waterfall (one row per integration)
+            # Add to waterfall (one row per integration, in dB for display)
+            spectrum_db = 10 * np.log10(avg_linear)
             self.waterfall_data.append(spectrum_db.copy())
             if len(self.waterfall_data) > 0:
                 waterfall_array = np.array(self.waterfall_data)

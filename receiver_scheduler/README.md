@@ -284,7 +284,7 @@ Data is saved to an HDF5 file with the following structure:
 | Dataset | Shape | Type | Description |
 |---------|-------|------|-------------|
 | `frequency_hz` | (N_fft,) | float64 | Frequency axis in Hz |
-| `spectra_db` | (N_spectra, N_fft) | float32 | Power spectra in dB |
+| `spectra_linear` | (N_spectra, N_fft) | float32 | Power spectra in linear units |
 | `timestamps` | (N_spectra,) | float64 | Unix timestamps |
 | `integration_times` | (N_spectra,) | float32 | Actual integration time per spectrum |
 
@@ -323,10 +323,10 @@ import matplotlib.pyplot as plt
 
 # Open the data file
 with h5py.File('h1_data.h5', 'r') as hf:
-    # Read datasets
+    # Read datasets (linear power, not dB)
     freq_hz = hf['frequency_hz'][:]
     freq_mhz = freq_hz / 1e6
-    spectra = hf['spectra_db'][:]
+    spectra = hf['spectra_linear'][:]
     timestamps = hf['timestamps'][:]
 
     # Print metadata
@@ -335,10 +335,10 @@ with h5py.File('h1_data.h5', 'r') as hf:
     print(f"Sample rate: {hf.attrs['sample_rate_hz']/1e6:.3f} MHz")
     print(f"Number of spectra: {len(timestamps)}")
 
-# Plot average spectrum
-avg_spectrum = np.mean(spectra, axis=0)
+# Average in linear power domain, then convert to dB for display
+avg_spectrum_db = 10 * np.log10(np.mean(spectra, axis=0))
 plt.figure(figsize=(12, 6))
-plt.plot(freq_mhz, avg_spectrum)
+plt.plot(freq_mhz, avg_spectrum_db)
 plt.axvline(x=1420.405, color='r', linestyle='--', label='H1 Line')
 plt.xlabel('Frequency (MHz)')
 plt.ylabel('Power (dB)')
@@ -347,17 +347,20 @@ plt.legend()
 plt.grid(True)
 plt.show()
 
-# Plot waterfall
+# Plot waterfall (convert to dB for display)
+spectra_db = 10 * np.log10(np.maximum(spectra, 1e-30))
 plt.figure(figsize=(12, 8))
-plt.imshow(spectra, aspect='auto',
-           extent=[freq_mhz[0], freq_mhz[-1], len(spectra), 0],
-           cmap='viridis', vmin=-70, vmax=-30)
+plt.imshow(spectra_db, aspect='auto',
+           extent=[freq_mhz[0], freq_mhz[-1], len(spectra_db), 0],
+           cmap='viridis')
 plt.colorbar(label='Power (dB)')
 plt.xlabel('Frequency (MHz)')
 plt.ylabel('Time (integration #)')
 plt.title('Hydrogen Line Waterfall')
 plt.show()
 ```
+
+See `read_h1_data.ipynb` for a more complete example with metadata display and zoomed H I views.
 
 ## Troubleshooting
 
