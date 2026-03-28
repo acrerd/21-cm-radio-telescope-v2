@@ -7,7 +7,7 @@ A complete control system for a Small Radio Telescope (SRT) for 21cm hydrogen li
 The system consists of four integrated components:
 
 1. **Arduino Due** - Low-level motor control, position tracking, limit switches, current sensing
-2. **ESP32-S3** - Network interface, web UI, Stellarium integration, RA/Dec to Alt/Az coordinate transforms
+2. **WT32-ETH01** - Network interface (Ethernet + WiFi), web UI, Stellarium integration, RA/Dec to Alt/Az coordinate transforms
 3. **H1 Receiver** - GNU Radio SDR application for 21cm hydrogen line data acquisition
 4. **Observation Scheduler** - Web-based scheduler that coordinates telescope pointing and data recording
 
@@ -27,10 +27,10 @@ The system consists of four integrated components:
          |                          |
 +--------+----------+      +--------+-----------+
 |                   |      |                    |
-|    ESP32-S3       |      |   H1 Receiver      |
+|   WT32-ETH01      |      |   H1 Receiver      |
 |    Controller     |      |   (GNU Radio)      |
 |                   |      |                    |
-|  - WiFi/Ethernet  |      |  - Ettus B210 SDR  |
+|  - Ethernet/WiFi  |      |  - Ettus B210 SDR  |
 |  - Web UI (:80)   |      |  - FFT processing  |
 |  - Coord convert  |      |  - HDF5 output     |
 |  - NTP time sync  |      |  - Live display    |
@@ -76,28 +76,23 @@ The system consists of four integrated components:
 - **Current sensing:** ACS712 hall-effect sensors
 - **Limit switches:** Altitude ~0°, Azimuth ~0° and ~355°
 
-### ESP32-S3
-- ESP32-S3 development board
-- W5500 Ethernet module (optional, recommended for fixed installations)
-- Connects to Due via UART serial
+### WT32-ETH01
 
-### Wiring: ESP32-S3 to Arduino Due
+- ESP32 module with built-in LAN8720 Ethernet PHY
+- Native 100 Mbps Ethernet (RJ45 connector)
+- WiFi 802.11 b/g/n (simultaneous with Ethernet)
+- Connects to Due via UART serial (GPIO32/33)
 
-| ESP32-S3 | Arduino Due | Function |
-|----------|-------------|----------|
-| GPIO5    | Pin 19 (RX1)| ESP32 TX -> Due RX |
-| GPIO6    | Pin 18 (TX1)| ESP32 RX <- Due TX |
-| GND      | GND         | Common ground |
+### Wiring: WT32-ETH01 to Arduino Due
 
-### Wiring: ESP32-S3 to Arduino Due
+| WT32-ETH01 | Arduino Due | Function |
+|------------|-------------|----------|
+| GPIO32     | Pin 19 (RX1)| ESP32 TX -> Due RX |
+| GPIO33     | Pin 18 (TX1)| ESP32 RX <- Due TX |
+| GND        | GND         | Common ground |
+| 5V         | 5V          | Power |
 
-| ESP32-S3 | Arduino Due | Function |
-|----------|-------------|----------|
-| GPIO5    | Pin 19 (RX1)| ESP32 TX -> Due RX |
-| GPIO6    | Pin 18 (TX1)| ESP32 RX <- Due TX |
-| GND      | GND         | Common ground |
-
-**Note:** The ESP32-S3 Super Mini uses GPIO5/6 for UART. Full development boards may use different pins - check `config.h`.
+**Note:** GPIO32/33 are used for Due communication, leaving TX0/RX0 free for programming via USB-TTL adapter. See [WT32-ETH01 Migration Guide](docs/WT32_ETH01_MIGRATION.md) for details.
 
 ---
 
@@ -119,13 +114,13 @@ pio run -e due -t upload
 pio device monitor -b 115200
 ```
 
-### 2. ESP32-S3 Controller
+### 2. WT32-ETH01 Controller
 
 ```bash
 cd new_SRT_drive/esp32_controller_arduino
 
-# Build and upload
-pio run --target upload
+# Build and upload (use USB-TTL adapter)
+pio run -e wt32-eth01 --target upload
 
 # Monitor serial output
 pio device monitor -b 115200
@@ -137,7 +132,7 @@ The ESP32 controller uses Arduino/PlatformIO (not MicroPython) for better perfor
 
 ## Configuration
 
-### ESP32-S3 Settings
+### WT32-ETH01 Settings
 
 Most settings can be changed at runtime via the web interface **Settings** tab:
 
@@ -146,6 +141,7 @@ Most settings can be changed at runtime via the web interface **Settings** tab:
 - Home position
 - Update tolerance (position deadband)
 - WiFi AP name and password
+- Ethernet IP (DHCP or static)
 
 Settings are saved to ESP32 flash (NVS) and persist across reboots.
 
@@ -156,9 +152,9 @@ Compile-time defaults are in `esp32_controller_arduino/src/config.h`:
 #define WIFI_AP_SSID "SRT_Controller"
 #define WIFI_AP_PASSWORD "radio1420"
 
-// Serial pins to Arduino Due
-#define DUE_UART_TX 5
-#define DUE_UART_RX 6
+// Serial pins to Arduino Due (WT32-ETH01)
+#define DUE_UART_TX 32
+#define DUE_UART_RX 33
 
 // Observer location (for coordinate conversion)
 #define OBSERVER_LAT 55.902426
@@ -449,7 +445,7 @@ new_SRT_drive/
 ├── include/
 │   └── config.h            # Due pin assignments, defaults
 │
-├── esp32_controller_arduino/   # ESP32-S3 Arduino/PlatformIO
+├── esp32_controller_arduino/   # WT32-ETH01 Arduino/PlatformIO
 │   ├── platformio.ini          # ESP32 build config
 │   └── src/
 │       ├── main.cpp            # Main application, tracking loop
@@ -472,8 +468,9 @@ new_SRT_drive/
 │   └── README.md           # Receiver/scheduler documentation
 │
 └── docs/
-    ├── SRT_DRIVE_MANUAL.md     # Arduino Due firmware manual
-    └── ESP32_CONTROLLER.md     # ESP32 controller manual
+    ├── SRT_DRIVE_MANUAL.md         # Arduino Due firmware manual
+    ├── ESP32_CONTROLLER.md         # ESP32 controller manual
+    └── WT32_ETH01_MIGRATION.md     # WT32-ETH01 setup guide
 ```
 
 ---
@@ -481,7 +478,8 @@ new_SRT_drive/
 ## Documentation
 
 - [SRT Drive Manual](docs/SRT_DRIVE_MANUAL.md) - Arduino Due firmware reference
-- [ESP32 Controller Manual](docs/ESP32_CONTROLLER.md) - ESP32-S3 controller and API reference
+- [ESP32 Controller Manual](docs/ESP32_CONTROLLER.md) - WT32-ETH01 controller and API reference
+- [WT32-ETH01 Setup Guide](docs/WT32_ETH01_MIGRATION.md) - Hardware setup and wiring
 - [Receiver & Scheduler](receiver_scheduler/README.md) - H1 receiver and observation scheduler
 
 ## License

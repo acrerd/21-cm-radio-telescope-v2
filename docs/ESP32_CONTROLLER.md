@@ -1,6 +1,6 @@
-# ESP32-S3 Controller - Technical Manual
+# WT32-ETH01 Controller - Technical Manual
 
-**Version 2.0 (Arduino/PlatformIO)**
+**Version 2.1 (Arduino/PlatformIO)**
 **Acre Road Observatory, Glasgow**
 
 ---
@@ -23,7 +23,7 @@
 
 ## 1. Overview
 
-The ESP32-S3 controller provides the high-level interface for the SRT drive system:
+The WT32-ETH01 controller provides the high-level interface for the SRT drive system:
 
 - **Web interface** for manual control and monitoring
 - **Stellarium integration** via TCP telescope protocol
@@ -31,7 +31,7 @@ The ESP32-S3 controller provides the high-level interface for the SRT drive syst
 - **Ephemeris calculations** for Sun and Moon positions
 - **Time synchronization** via NTP or browser fallback
 - **Runtime configurable settings** saved to flash (NVS)
-- **Networking** via WiFi (AP + station mode)
+- **Networking** via native Ethernet + WiFi (AP + station mode)
 
 ### Architecture
 
@@ -45,7 +45,7 @@ The ESP32-S3 controller provides the high-level interface for the SRT drive syst
                                   |
                          +--------+---------+
                          |                  |
-                         |    ESP32-S3      |
+                         |   WT32-ETH01     |
                          |   (Arduino C++)  |
                          |                  |
                          |  main.cpp        |
@@ -82,20 +82,20 @@ The ESP32-S3 controller provides the high-level interface for the SRT drive syst
 
 ### Prerequisites
 
-- ESP32-S3 development board (or ESP32-S3 Super Mini)
+- WT32-ETH01 module (ESP32 with built-in LAN8720 Ethernet)
+- USB-TTL adapter (CH340 or CP2102) for programming
 - [PlatformIO](https://platformio.org/) (VS Code extension or CLI)
-- USB cable
 
 ### Build and Upload
 
 ```bash
 cd new_SRT_drive/esp32_controller_arduino
 
-# Build
-pio run
+# Build for WT32-ETH01
+pio run -e wt32-eth01
 
-# Upload
-pio run --target upload
+# Upload (requires boot mode: hold IO0, press EN, release IO0)
+pio run -e wt32-eth01 --target upload
 
 # Monitor serial output
 pio device monitor
@@ -131,9 +131,9 @@ These values are used as defaults when no saved settings exist:
 #define WIFI_AP_SSID "SRT_Controller"
 #define WIFI_AP_PASSWORD "radio1420"
 
-// Serial connection to Arduino Due
-#define DUE_UART_TX 5   // ESP32-S3 GPIO -> Due RX (pin 19)
-#define DUE_UART_RX 6   // ESP32-S3 GPIO <- Due TX (pin 18)
+// Serial connection to Arduino Due (WT32-ETH01 pins)
+#define DUE_UART_TX 32   // WT32 GPIO32 -> Due RX (pin 19)
+#define DUE_UART_RX 33   // WT32 GPIO33 <- Due TX (pin 18)
 #define DUE_BAUD_RATE 115200
 
 // Observer location (Acre Road Observatory, Glasgow)
@@ -432,7 +432,7 @@ This allows the controller to run without a serial terminal attached.
 
 ### Memory Usage
 
-Typical usage: ~42% flash, ~14% RAM on ESP32-S3 with 4MB flash.
+Typical usage: ~42% flash, ~14% RAM on WT32-ETH01 (ESP32 with 4MB flash).
 
 ### Building
 
@@ -497,12 +497,12 @@ pio run --target clean
 | Web Port | 80 |
 | Stellarium Port | 10001 |
 
-### Pin Assignments (ESP32-S3 Super Mini)
+### Pin Assignments (WT32-ETH01)
 
 | Function | GPIO |
 |----------|------|
-| Due TX | 5 |
-| Due RX | 6 |
+| Due TX | 32 |
+| Due RX | 33 |
 
 ### Coordinate Ranges
 
