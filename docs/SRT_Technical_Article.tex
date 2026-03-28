@@ -86,7 +86,7 @@
 \maketitle
 
 \begin{abstract}
-This document provides comprehensive technical documentation for the Small Radio Telescope (SRT) Drive Controller system designed for 21\,cm hydrogen line observations at Acre Road Observatory, Glasgow. The system comprises a multi-layered architecture incorporating an Arduino Due microcontroller for low-level motor control, an ESP32-S3 for network interface and coordinate transformations, and a GNU Radio-based receiver with web scheduling capabilities. This document details the hardware configuration, software architecture, communication protocols, coordinate transformation algorithms, installation procedures, and operational guidelines necessary for the deployment and maintenance of the telescope control system.
+This document provides comprehensive technical documentation for the Small Radio Telescope (SRT) Drive Controller system designed for 21\,cm hydrogen line observations at Acre Road Observatory, Glasgow. The system comprises a multi-layered architecture incorporating an Arduino Due microcontroller for low-level motor control, an WT32-ETH01 for network interface and coordinate transformations, and a GNU Radio-based receiver with web scheduling capabilities. This document details the hardware configuration, software architecture, communication protocols, coordinate transformation algorithms, installation procedures, and operational guidelines necessary for the deployment and maintenance of the telescope control system.
 \end{abstract}
 
 \tableofcontents
@@ -114,7 +114,7 @@ The telescope control system employs a layered architecture separating concerns 
 
 \begin{enumerate}
     \item \textbf{Arduino Due} --- Low-level motor control, position encoding, limit switch monitoring, and current sensing
-    \item \textbf{ESP32-S3} --- Network interface, astronomical coordinate transformations, web server, and Stellarium protocol implementation
+    \item \textbf{WT32-ETH01} --- Network interface, astronomical coordinate transformations, web server, and Stellarium protocol implementation
     \item \textbf{H1 Receiver} --- GNU Radio-based spectrum analyser for 21\,cm data acquisition
     \item \textbf{Observation Scheduler} --- Web-based automation coordinating telescope pointing and data recording
 \end{enumerate}
@@ -148,7 +148,7 @@ The system architecture follows a hierarchical design principle, with each layer
 \node[extbox, right=2cm of browser] (scheduler) {Observation\\Scheduler};
 
 % ESP32
-\node[box, below=1.5cm of browser] (esp32) {ESP32-S3\\Controller};
+\node[box, below=1.5cm of browser] (esp32) {WT32-ETH01\\Controller};
 
 % Arduino Due
 \node[box, below=1.5cm of esp32] (due) {Arduino Due\\Motor Controller};
@@ -327,30 +327,7 @@ where $V_{\text{ADC}}$ is the measured voltage, $V_{\text{offset}} = 2.5$\,V, an
 
 \subsection{ESP32 controller}
 
-Two ESP32 variants are supported:
-
-\begin{itemize}
-    \item \textbf{ESP32-S3 Super Mini}: WiFi only, USB CDC serial
-    \item \textbf{WT32-ETH01}: Native Ethernet + WiFi, standard UART serial (recommended)
-\end{itemize}
-
-Both provide the network interface and computational resources for coordinate transformations using the Arduino framework with PlatformIO build system.
-
-\subsubsection{ESP32-S3 to Arduino Due wiring}
-
-\begin{table}[H]
-\centering
-\caption{ESP32-S3 to Arduino Due serial connection}
-\begin{tabular}{lll}
-\toprule
-\textbf{ESP32-S3} & \textbf{Arduino Due} & \textbf{Function} \\
-\midrule
-GPIO5 & Pin 19 (RX1) & ESP32 TX $\rightarrow$ Due RX \\
-GPIO6 & Pin 18 (TX1) & ESP32 RX $\leftarrow$ Due TX \\
-GND & GND & Common ground \\
-\bottomrule
-\end{tabular}
-\end{table}
+The WT32-ETH01 is an ESP32-based board with native Ethernet (LAN8720A) and WiFi, providing reliable wired connectivity for telescope control.
 
 \subsubsection{WT32-ETH01 to Arduino Due wiring}
 
@@ -1246,7 +1223,7 @@ pio run -e simulation
 pio run -e simulation -t upload
 \end{lstlisting}
 
-\subsection{ESP32-S3 controller}
+\subsection{WT32-ETH01 controller}
 
 \subsubsection{Building and uploading}
 
