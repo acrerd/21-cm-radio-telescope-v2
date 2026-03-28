@@ -22,6 +22,9 @@ This receiver is designed for radio astronomy observations of neutral hydrogen (
 | `h1_schedule.json` | Saved observation schedule (auto-generated) |
 | `scheduler_config.json` | Scheduler configuration (auto-generated) |
 | `scheduler.log` | Rotating log file (auto-generated) |
+| `read_h1_data.ipynb` | Jupyter notebook for reading/plotting HDF5 data |
+| `requirements.txt` | Python package dependencies |
+| `test_scheduler.py` | Unit tests (71 tests) |
 
 ## Hardware Requirements
 
@@ -129,7 +132,7 @@ optional arguments:
                         SDR type (default: b210)
   --gain, -g GAIN       RF gain in dB (default: 40)
   --sample-rate, -r SAMPLE_RATE
-                        Sample rate in Hz (default: 2.4e6)
+                        Sample rate in Hz (default: 2.4e6 for B210, 2.048e6 for RTL-SDR)
 ```
 
 ### Examples
@@ -189,6 +192,10 @@ Persistent settings saved to `scheduler_config.json`:
 | Controller URL | SRT telescope controller address (empty to disable) |
 | Slew Timeout | Max seconds to wait for telescope to reach target (default: 300) |
 | Position Tolerance | Degrees within which the telescope is considered on-target (default: 0.5) |
+| Observer Latitude | Observer latitude in degrees (+N), synced from controller on startup |
+| Observer Longitude | Observer longitude in degrees (+E), synced from controller on startup |
+| Observer Elevation | Observer elevation in metres |
+| Min Elevation | Minimum elevation for satellite pass filtering (default: 10°) |
 | Python Executable | Path to Python (empty for default, e.g. radioconda) |
 | Data Output Folder | Where observation HDF5 files are saved |
 | Log Lines to Display | Number of log lines shown in the Log tab |

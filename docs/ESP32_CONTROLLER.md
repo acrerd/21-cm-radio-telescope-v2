@@ -256,7 +256,7 @@ All endpoints return JSON unless noted.
   "status": "Ready",
   "fault": "",
   "is_slewing": false,
-  "calibrator_on": false
+  "calibrator": false
 }
 ```
 
@@ -274,7 +274,7 @@ All endpoints return JSON unless noted.
 | `/direct` | `alt`, `az` | Go to Alt/Az directly |
 | `/offset` | `alt`, `az` | Set pointing offset (degrees) |
 | `/offset/clear` | (none) | Clear pointing offset |
-| `/calibrator` | `state=on/off/toggle` | Control calibrator noise source |
+| `/calibrator` | `on=0/1` | Control calibrator noise source |
 
 ### Settings Endpoints
 

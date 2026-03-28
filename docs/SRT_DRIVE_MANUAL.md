@@ -612,7 +612,7 @@ In simulation mode, a `simulatePulses()` function replaces the interrupt-driven 
 
 2. Reads the **shadow direction state** to determine whether to increment or decrement position.
 
-3. **Accumulates fractional pulses** over real elapsed time using the configured maximum speed (`SIM_MAX_SPEED_DEG_S`, default 6 deg/s):
+3. **Accumulates fractional pulses** over real elapsed time using the configured maximum speed (`SIM_MAX_SPEED_DEG_S`, default 180 deg/s):
 
    ```
    pulses_this_tick = speed * max_pulse_rate * dt
@@ -649,9 +649,9 @@ These are defined in `include/config.h` under the `SIMULATION_MODE` guard:
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| `SIM_MAX_SPEED_DEG_S` | 18.0 | Maximum simulated motor speed in degrees/second at full PWM |
-| `SIM_INITIAL_AZ_DEG` | 180.0 | Simulated starting azimuth before homing (degrees) |
-| `SIM_INITIAL_ALT_DEG` | 45.0 | Simulated starting altitude before homing (degrees) |
+| `SIM_MAX_SPEED_DEG_S` | 180.0 | Maximum simulated motor speed in degrees/second at full PWM |
+| `SIM_INITIAL_AZ_DEG` | 20.0 | Simulated starting azimuth before homing (degrees) |
+| `SIM_INITIAL_ALT_DEG` | 10.0 | Simulated starting altitude before homing (degrees) |
 
 The initial position values determine how far the simulated telescope must "drive" during the homing sequence before hitting the limits. With the defaults (Az=180, Alt=45), homing takes about 10 seconds at the default speed of 18 deg/s. Setting them closer to 0 will make homing faster; setting them further away gives a longer, more realistic homing test.
 
