@@ -485,6 +485,17 @@ sun_scan_state: dict = {
     "image_path": None,
 }
 
+# Calibration day state
+cal_day_thread: Optional[threading.Thread] = None
+cal_day_cancel = threading.Event()
+cal_day_state: dict = {
+    "running": False,
+    "scans_completed": 0,
+    "next_scan_time": None,
+    "interval_minutes": 30,
+    "error": None,
+}
+
 
 # Default observation template
 DEFAULT_OBSERVATION = {
@@ -568,10 +579,14 @@ def generate_filename(obs: dict) -> str:
 def start_observation(obs: dict, duration_override: int = None) -> bool:
     """Start an observation.
 
-    1. Commands the telescope to point at target coordinates
-    2. Starts the SDR receiver to capture data
+    For calibration observations: runs repeated sun scans.
+    For all others: commands telescope + starts SDR receiver.
     """
     global current_process, current_observation, observation_end_time
+
+    # Calibration day: runs as a background thread, not a subprocess
+    if obs.get('coord_system') == 'calibration':
+        return _start_calibration_observation(obs, duration_override)
 
     with process_lock:
         if current_process is not None and current_process.poll() is None:
@@ -652,6 +667,16 @@ def stop_observation() -> bool:
     """Stop current observation."""
     global current_process, current_observation, observation_end_time
 
+    # Handle calibration observations (thread-based, not subprocess)
+    if current_observation and current_observation.get('coord_system') == 'calibration':
+        name = current_observation.get('name', '?')
+        cal_day_cancel.set()
+        sun_scan_cancel.set()
+        log.info("Stopped calibration: %s", name)
+        current_observation = None
+        observation_end_time = None
+        return True
+
     with process_lock:
         if current_process is None:
             return False
@@ -689,6 +714,54 @@ def stop_observation() -> bool:
         current_observation = None
         observation_end_time = None
         return True
+
+
+def _start_calibration_observation(obs: dict, duration_override: int = None) -> bool:
+    """Start a calibration day as a scheduled observation.
+
+    Uses the calibration day thread but tracks it as a running observation
+    so the scheduler knows it's active.
+    """
+    global current_observation, observation_end_time, cal_day_thread
+
+    if cal_day_state["running"]:
+        log.warning("Calibration day already running")
+        return False
+
+    with process_lock:
+        if current_process is not None and current_process.poll() is None:
+            log.warning("Receiver busy — cannot start calibration")
+            return False
+
+    duration = duration_override or obs.get('duration_minutes', 480)
+    now = datetime.now()
+    observation_end_time = now + timedelta(minutes=duration)
+    current_observation = {
+        **obs,
+        'started_at': now.isoformat(),
+        'ends_at': observation_end_time.isoformat(),
+    }
+
+    params = {
+        "n": obs.get("cal_grid_n", 5),
+        "grid_spacing_deg": obs.get("cal_spacing_deg", 1.5),
+        "integration_time_s": obs.get("integration_time_s", 3.0),
+        "center_freq_mhz": obs.get("center_freq_mhz", 1420.405),
+        "bandwidth_mhz": obs.get("bandwidth_mhz", 2.4),
+        "gain_db": obs.get("gain_db", 40),
+        "sdr_type": obs.get("sdr_type", "b210"),
+        "beam_fwhm_deg": 3.0,
+        "interval_minutes": obs.get("cal_interval_min", 30),
+    }
+
+    cal_day_cancel.clear()
+    cal_day_thread = threading.Thread(target=_run_calibration_day, args=(params,),
+                                      daemon=True)
+    cal_day_thread.start()
+
+    log.info("Started calibration day: %s (ends at %s)",
+             obs.get('name'), observation_end_time.strftime('%H:%M:%S'))
+    return True
 
 
 def scheduler_thread():
@@ -751,6 +824,9 @@ def scheduler_thread():
             with process_lock:
                 is_running = current_process is not None and current_process.poll() is None
                 running_name = current_observation.get('name', '') if current_observation else ''
+            # Also count calibration day as running
+            if not is_running and current_observation and current_observation.get('coord_system') == 'calibration':
+                is_running = cal_day_state["running"]
 
             if due_obs:
                 if is_running and running_name == due_obs.get('name', ''):
@@ -974,6 +1050,43 @@ HTML_TEMPLATE = '''
                     </div>
                 </div>
             </div>
+
+            <div style="margin-top:30px; border-top:2px solid #333; padding-top:20px;">
+                <div style="display:flex; gap:20px; flex-wrap:wrap;">
+                    <div class="config-form" style="flex:0 0 340px;">
+                        <div class="section-title">Calibration Day</div>
+                        <p style="color:#888; font-size:12px; margin-bottom:15px;">
+                            Run repeated sun scans to determine the effective observer lat/lon
+                            (correcting for mount tilt) and constant alt/az offsets.
+                        </p>
+                        <div class="form-group">
+                            <label>Scan Interval (minutes)</label>
+                            <input type="number" id="cdInterval" min="5" max="120" value="30">
+                        </div>
+                        <div style="margin-top:15px; display:flex; gap:10px; flex-wrap:wrap;">
+                            <button class="btn btn-success" id="cdStartBtn" onclick="startCalDay()">Start Calibration Day</button>
+                            <button class="btn btn-danger" id="cdStopBtn" style="display:none" onclick="stopCalDay()">Stop</button>
+                            <button class="btn btn-primary" id="cdFitBtn" onclick="fitModel()">Fit Model</button>
+                            <button class="btn btn-secondary" onclick="clearCalData()">Clear Data</button>
+                        </div>
+                    </div>
+                    <div style="flex:1; min-width:300px;">
+                        <div class="section-title">Calibration Status</div>
+                        <div id="cdStatus" style="background:#0f0f23; border:1px solid #333; border-radius:8px; padding:15px; margin-bottom:15px;">
+                            <span style="color:#888;">Idle.</span>
+                        </div>
+                        <div class="section-title">Pointing Model</div>
+                        <div id="cdModel" style="background:#0f0f23; border:1px solid #333; border-radius:8px; padding:15px; margin-bottom:15px;">
+                            <span style="color:#888;">No model fitted yet.</span>
+                        </div>
+                        <div style="display:flex; gap:10px; margin-bottom:15px;">
+                            <button class="btn btn-success" id="cdApplyBtn" style="display:none" onclick="applyModel()">Apply to Telescope</button>
+                        </div>
+                        <div id="cdPlotContainer" style="text-align:center;">
+                        </div>
+                    </div>
+                </div>
+            </div>
         </div>
 
         <div class="tab-content" id="tab-config">
@@ -1117,6 +1230,7 @@ HTML_TEMPLATE = '''
                                 <option value="galactic">Galactic (l, b)</option>
                                 <option value="object">Solar System Object</option>
                                 <option value="satellite">Satellite (TLE)</option>
+                                <option value="calibration">Calibration Day (Sun Scan)</option>
                             </select>
                         </div>
                     </div>
@@ -1157,6 +1271,26 @@ HTML_TEMPLATE = '''
                             <span id="passInfo" style="color:#888; font-size:12px;"></span>
                         </div>
                         <div id="passDetails" style="display:none; margin-top:10px; padding:10px; background:#0f0f23; border-radius:5px; font-size:12px; color:#ccc;">
+                        </div>
+                    </div>
+                    <div id="calibrationInput" style="margin-top:15px; display:none">
+                        <p style="color:#888; font-size:12px; margin-bottom:10px;">
+                            Runs repeated sun scans for the observation duration to determine
+                            effective observer lat/lon and pointing offsets.
+                        </p>
+                        <div class="form-grid">
+                            <div class="form-group">
+                                <label>Grid Size (n x n)</label>
+                                <input type="number" id="obsCalGridN" min="3" max="15" step="2" value="5">
+                            </div>
+                            <div class="form-group">
+                                <label>Grid Spacing (degrees)</label>
+                                <input type="number" id="obsCalSpacing" min="0.1" max="10" step="0.1" value="1.5">
+                            </div>
+                            <div class="form-group">
+                                <label>Scan Interval (minutes)</label>
+                                <input type="number" id="obsCalInterval" min="5" max="120" value="30">
+                            </div>
                         </div>
                     </div>
                     <div class="form-grid" id="coordInputs" style="margin-top:15px">
@@ -1373,10 +1507,12 @@ HTML_TEMPLATE = '''
             const sys = document.getElementById('obsCoordSystem').value;
             const isObject = sys === 'object';
             const isSat = sys === 'satellite';
+            const isCal = sys === 'calibration';
             document.getElementById('objectSelector').style.display = isObject ? '' : 'none';
             document.getElementById('satelliteInput').style.display = isSat ? '' : 'none';
-            document.getElementById('coordInputs').style.display = (isObject || isSat) ? 'none' : '';
-            if (isObject || isSat) return;
+            document.getElementById('calibrationInput').style.display = isCal ? '' : 'none';
+            document.getElementById('coordInputs').style.display = (isObject || isSat || isCal) ? 'none' : '';
+            if (isObject || isSat || isCal) return;
             const cfg = COORD_CONFIG[sys];
             document.getElementById('coord1Label').textContent = cfg.c1;
             document.getElementById('coord2Label').textContent = cfg.c2;
@@ -1412,6 +1548,11 @@ HTML_TEMPLATE = '''
                 const tle = obs.tle_text || '';
                 const name = tle.split('\\n')[0] || 'Satellite';
                 return `Sat: ${name.substring(0, 20)}`;
+            }
+            if (sys === 'calibration') {
+                const n = obs.cal_grid_n || 5;
+                const interval = obs.cal_interval_min || 30;
+                return `Cal: ${n}x${n} every ${interval}min`;
             }
             const isRA = sys === 'radec';
             const c1 = formatCoord(obs.coord1_deg, obs.coord1_min, obs.coord1_sec, isRA);
@@ -1538,6 +1679,9 @@ HTML_TEMPLATE = '''
             document.getElementById('obsCalibrator').value = obs.calibrator ? 'on' : 'off';
             document.getElementById('obsEndAction').value = obs.end_action || 'none';
             document.getElementById('obsFilename').value = obs.filename || '';
+            document.getElementById('obsCalGridN').value = obs.cal_grid_n || 5;
+            document.getElementById('obsCalSpacing').value = obs.cal_spacing_deg || 1.5;
+            document.getElementById('obsCalInterval').value = obs.cal_interval_min || 30;
             updateCoordLabels();
             updateEndTime();
         }
@@ -1593,6 +1737,9 @@ HTML_TEMPLATE = '''
                 calibrator: document.getElementById('obsCalibrator').value === 'on',
                 end_action: document.getElementById('obsEndAction').value,
                 filename: document.getElementById('obsFilename').value,
+                cal_grid_n: parseInt(document.getElementById('obsCalGridN').value) || 5,
+                cal_spacing_deg: parseFloat(document.getElementById('obsCalSpacing').value) || 1.5,
+                cal_interval_min: parseInt(document.getElementById('obsCalInterval').value) || 30,
                 enabled: i >= 0 ? schedule[i].enabled : true
             };
             if (i >= 0) { schedule[i] = obs; } else { schedule.push(obs); }
@@ -1900,7 +2047,7 @@ HTML_TEMPLATE = '''
             document.getElementById('tab-' + name).classList.add('active');
             if (name === 'config') loadConfig();
             if (name === 'log') loadLog();
-            if (name === 'sunscan') pollSunScan();
+            if (name === 'sunscan') { pollSunScan(); loadCalModel(); }
         }
 
         // ---- Sun Scan ----
@@ -1993,6 +2140,133 @@ HTML_TEMPLATE = '''
                     } else {
                         document.getElementById('ssStatus').innerHTML = '<span style="color:#888;">Idle &mdash; configure parameters and click Start.</span>';
                     }
+                }
+            });
+        }
+
+        // ---- Calibration Day ----
+        let cdPollTimer = null;
+
+        function startCalDay() {
+            const params = {
+                n: parseInt(document.getElementById('ssGridN').value),
+                grid_spacing_deg: parseFloat(document.getElementById('ssSpacing').value),
+                integration_time_s: parseFloat(document.getElementById('ssIntegration').value),
+                center_freq_mhz: parseFloat(document.getElementById('ssCenterFreq').value),
+                bandwidth_mhz: parseFloat(document.getElementById('ssBandwidth').value),
+                gain_db: parseFloat(document.getElementById('ssGain').value),
+                sdr_type: document.getElementById('ssSdrType').value,
+                beam_fwhm_deg: parseFloat(document.getElementById('ssBeamFwhm').value),
+                interval_minutes: parseInt(document.getElementById('cdInterval').value),
+            };
+            fetch('/api/calday/start', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify(params)
+            }).then(r => r.json()).then(data => {
+                if (data.success) {
+                    document.getElementById('cdStartBtn').style.display = 'none';
+                    document.getElementById('cdStopBtn').style.display = 'inline-block';
+                    cdPollTimer = setInterval(pollCalDay, 3000);
+                    pollCalDay();
+                } else {
+                    document.getElementById('cdStatus').innerHTML = '<span style="color:#ff4757;">Error: ' + (data.error || 'Unknown') + '</span>';
+                }
+            });
+        }
+
+        function stopCalDay() {
+            fetch('/api/calday/stop', {method: 'POST'}).then(() => pollCalDay());
+        }
+
+        function pollCalDay() {
+            fetch('/api/calday/status').then(r => r.json()).then(data => {
+                if (data.running) {
+                    document.getElementById('cdStartBtn').style.display = 'none';
+                    document.getElementById('cdStopBtn').style.display = 'inline-block';
+                    let info = '<span style="color:#00d4ff;">Running</span> &mdash; ';
+                    info += data.scans_completed + ' scans completed';
+                    if (data.scan_running) {
+                        info += '<br><span style="color:#ccc;">Scan in progress (' + data.scan_progress + '/' + data.scan_total + ' points)</span>';
+                    } else if (data.next_scan_time) {
+                        const next = new Date(data.next_scan_time).toLocaleTimeString();
+                        info += '<br><span style="color:#888;">Next scan at ' + next + '</span>';
+                    }
+                    document.getElementById('cdStatus').innerHTML = info;
+                } else {
+                    document.getElementById('cdStartBtn').style.display = 'inline-block';
+                    document.getElementById('cdStopBtn').style.display = 'none';
+                    if (cdPollTimer) { clearInterval(cdPollTimer); cdPollTimer = null; }
+                    let info = '<span style="color:#888;">Idle</span>';
+                    if (data.scans_completed > 0) {
+                        info += ' &mdash; ' + data.scans_completed + ' scans collected';
+                    }
+                    if (data.error) {
+                        info += '<br><span style="color:#ff4757;">' + data.error + '</span>';
+                    }
+                    document.getElementById('cdStatus').innerHTML = info;
+                }
+            });
+        }
+
+        function fitModel() {
+            document.getElementById('cdModel').innerHTML = '<span style="color:#888;">Fitting model...</span>';
+            fetch('/api/calday/fit', {method: 'POST'}).then(r => r.json()).then(m => {
+                if (m.success) {
+                    let html = '<table style="width:100%; font-size:13px; color:#ccc;">';
+                    html += '<tr><td style="color:#888; padding:4px 8px;">Scans used</td><td>' + m.n_scans + '</td></tr>';
+                    html += '<tr><td style="color:#888; padding:4px 8px;">Alt zero offset</td><td>' + (m.alt_offset_deg >= 0 ? '+' : '') + m.alt_offset_deg.toFixed(3) + '&deg;</td></tr>';
+                    html += '<tr><td style="color:#888; padding:4px 8px;">Az zero offset</td><td>' + (m.az_offset_deg >= 0 ? '+' : '') + m.az_offset_deg.toFixed(3) + '&deg;</td></tr>';
+                    html += '<tr><td style="color:#888; padding:4px 8px;">N-S tilt (AN)</td><td>' + (m.tilt_north_deg >= 0 ? '+' : '') + m.tilt_north_deg.toFixed(3) + '&deg;</td></tr>';
+                    html += '<tr><td style="color:#888; padding:4px 8px;">E-W tilt (AE)</td><td>' + (m.tilt_east_deg >= 0 ? '+' : '') + m.tilt_east_deg.toFixed(3) + '&deg;</td></tr>';
+                    html += '<tr><td style="color:#888; padding:4px 8px;">RMS residual</td><td>alt ' + m.rms_alt_deg.toFixed(3) + '&deg;, az ' + m.rms_az_deg.toFixed(3) + '&deg;</td></tr>';
+                    if (m.effective_lat !== undefined) {
+                        html += '<tr><td style="color:#888; padding:4px 8px;">Effective lat</td><td style="color:#00d4ff; font-weight:bold;">' + m.effective_lat.toFixed(6) + '&deg;</td></tr>';
+                        html += '<tr><td style="color:#888; padding:4px 8px;">Effective lon</td><td style="color:#00d4ff; font-weight:bold;">' + m.effective_lon.toFixed(6) + '&deg;</td></tr>';
+                    }
+                    html += '</table>';
+                    document.getElementById('cdModel').innerHTML = html;
+                    document.getElementById('cdApplyBtn').style.display = 'inline-block';
+                    // Show plot
+                    document.getElementById('cdPlotContainer').innerHTML =
+                        '<img src="/api/calday/plot?' + Date.now() + '" style="max-width:100%; border-radius:8px; border:1px solid #333; margin-top:10px;">';
+                } else {
+                    document.getElementById('cdModel').innerHTML = '<span style="color:#ff4757;">' + (m.error || 'Fit failed') + '</span>';
+                }
+            });
+        }
+
+        function clearCalData() {
+            if (!confirm('Clear all accumulated pointing data?')) return;
+            fetch('/api/calday/clear', {method: 'POST'}).then(() => {
+                document.getElementById('cdModel').innerHTML = '<span style="color:#888;">No model fitted yet.</span>';
+                document.getElementById('cdApplyBtn').style.display = 'none';
+                document.getElementById('cdPlotContainer').innerHTML = '';
+                document.getElementById('cdStatus').innerHTML = '<span style="color:#888;">Data cleared.</span>';
+            });
+        }
+
+        function applyModel() {
+            if (!confirm('Apply the effective lat/lon to the ESP32 controller and scheduler config?')) return;
+            fetch('/api/calday/apply', {method: 'POST'}).then(r => r.json()).then(data => {
+                if (data.success) {
+                    alert('Applied!\\nEffective lat: ' + data.effective_lat.toFixed(6) + '\\nEffective lon: ' + data.effective_lon.toFixed(6));
+                } else {
+                    alert('Failed: ' + (data.error || 'Unknown error'));
+                }
+            });
+        }
+
+        // Load existing model on tab open
+        function loadCalModel() {
+            fetch('/api/calday/model').then(r => r.json()).then(m => {
+                if (m.success) {
+                    fitModel();  // re-render
+                }
+            });
+            fetch('/api/calday/data').then(r => r.json()).then(d => {
+                if (d.data && d.data.length > 0) {
+                    document.getElementById('cdStatus').innerHTML = '<span style="color:#888;">Idle &mdash; ' + d.data.length + ' scans collected</span>';
                 }
             });
         }
@@ -2138,6 +2412,84 @@ def _run_sun_scan(params: dict):
         sun_scan_state["running"] = False
 
 
+def _run_calibration_day(params: dict):
+    """Run repeated sun scans at a fixed interval until sunset or cancelled."""
+    from sun_scan import (sun_scan as do_sun_scan, get_sun_altaz,
+                          save_scan_to_pointing_data)
+
+    interval = params.get("interval_minutes", 30)
+    cal_day_state.update(running=True, scans_completed=0, error=None,
+                         interval_minutes=interval, next_scan_time=None)
+    cal_day_cancel.clear()
+
+    try:
+        while not cal_day_cancel.is_set():
+            cfg = load_config()
+            lat = cfg.get("observer_lat", 55.9)
+            lon = cfg.get("observer_lon", -4.3)
+            elev = cfg.get("observer_elevation", 50)
+
+            # Check sun is up — wait for sunrise if not
+            sun_alt, sun_az = get_sun_altaz(lat, lon, elev)
+            if sun_alt < 5.0:
+                # If sun has already been up and set, we're done for the day
+                if cal_day_state["scans_completed"] > 0:
+                    log.info("Calibration day: sun has set (%.1f°), finishing",
+                             sun_alt)
+                    break
+                # Otherwise wait for sunrise
+                log.info("Calibration day: waiting for sun to rise (alt=%.1f°)",
+                         sun_alt)
+                cal_day_state["error"] = None
+                while sun_alt < 5.0:
+                    if cal_day_cancel.is_set():
+                        return
+                    time.sleep(30)
+                    sun_alt, _ = get_sun_altaz(lat, lon, elev)
+                log.info("Calibration day: sun is up (alt=%.1f°), starting scans",
+                         sun_alt)
+                continue
+
+            # Wait for any running single scan to finish
+            while sun_scan_state["running"]:
+                if cal_day_cancel.is_set():
+                    return
+                time.sleep(1)
+
+            # Run a scan
+            log.info("Calibration day: starting scan %d",
+                     cal_day_state["scans_completed"] + 1)
+            sun_scan_cancel.clear()
+            _run_sun_scan(params)
+
+            # Save result to pointing data
+            if sun_scan_state.get("result") and not sun_scan_state.get("error"):
+                save_scan_to_pointing_data(sun_scan_state["result"])
+                cal_day_state["scans_completed"] += 1
+                log.info("Calibration day: scan %d complete",
+                         cal_day_state["scans_completed"])
+
+            # Wait for next interval
+            next_time = datetime.now() + timedelta(minutes=interval)
+            cal_day_state["next_scan_time"] = next_time.isoformat()
+            log.info("Calibration day: next scan at %s",
+                     next_time.strftime("%H:%M:%S"))
+
+            while datetime.now() < next_time:
+                if cal_day_cancel.is_set():
+                    return
+                time.sleep(5)
+
+    except Exception as exc:
+        log.error("Calibration day error: %s", exc)
+        cal_day_state["error"] = str(exc)
+    finally:
+        cal_day_state["running"] = False
+        cal_day_state["next_scan_time"] = None
+        log.info("Calibration day ended (%d scans)",
+                 cal_day_state["scans_completed"])
+
+
 @app.route('/')
 def index():
     cfg = load_config()
@@ -2166,14 +2518,17 @@ def post_schedule():
 def get_status():
     with process_lock:
         running = current_process is not None and current_process.poll() is None
-        remaining = None
-        if running and observation_end_time:
-            remaining = max(0, (observation_end_time - datetime.now()).total_seconds())
-        return jsonify({
-            'running': running,
-            'observation': current_observation if running else None,
-            'remaining_seconds': remaining
-        })
+    # Also count calibration day as running
+    if not running and current_observation and current_observation.get('coord_system') == 'calibration':
+        running = cal_day_state["running"]
+    remaining = None
+    if running and observation_end_time:
+        remaining = max(0, (observation_end_time - datetime.now()).total_seconds())
+    return jsonify({
+        'running': running,
+        'observation': current_observation if running else None,
+        'remaining_seconds': remaining
+    })
 
 
 @app.route('/api/start', methods=['POST'])
@@ -2366,6 +2721,139 @@ def api_sunscan_image():
         from flask import send_file
         return send_file(img, mimetype='image/png')
     return ('', 404)
+
+
+# =============================================================================
+# Calibration Day API
+# =============================================================================
+
+@app.route('/api/calday/start', methods=['POST'])
+def api_calday_start():
+    global cal_day_thread
+    if cal_day_state["running"]:
+        return jsonify({'success': False, 'error': 'Calibration day already running'})
+    with process_lock:
+        if current_process is not None and current_process.poll() is None:
+            return jsonify({'success': False,
+                            'error': 'Receiver is busy with an observation'})
+    params = request.json or {}
+    cal_day_cancel.clear()
+    cal_day_thread = threading.Thread(target=_run_calibration_day, args=(params,),
+                                      daemon=True)
+    cal_day_thread.start()
+    return jsonify({'success': True})
+
+
+@app.route('/api/calday/stop', methods=['POST'])
+def api_calday_stop():
+    cal_day_cancel.set()
+    sun_scan_cancel.set()  # also stop any in-progress scan
+    return jsonify({'success': True})
+
+
+@app.route('/api/calday/status', methods=['GET'])
+def api_calday_status():
+    return jsonify({
+        'running': cal_day_state["running"],
+        'scans_completed': cal_day_state["scans_completed"],
+        'next_scan_time': cal_day_state["next_scan_time"],
+        'interval_minutes': cal_day_state["interval_minutes"],
+        'error': cal_day_state["error"],
+        'scan_running': sun_scan_state["running"],
+        'scan_progress': sun_scan_state["progress"],
+        'scan_total': sun_scan_state["total"],
+    })
+
+
+@app.route('/api/calday/data', methods=['GET'])
+def api_calday_data():
+    from sun_scan import load_pointing_data
+    return jsonify({'data': load_pointing_data()})
+
+
+@app.route('/api/calday/clear', methods=['POST'])
+def api_calday_clear():
+    from sun_scan import clear_pointing_data
+    clear_pointing_data()
+    return jsonify({'success': True})
+
+
+@app.route('/api/calday/fit', methods=['POST'])
+def api_calday_fit():
+    from sun_scan import fit_pointing_model, save_pointing_model, generate_calibration_plot
+    cfg = load_config()
+    model = fit_pointing_model(
+        true_lat=cfg.get("observer_lat"),
+        true_lon=cfg.get("observer_lon"),
+    )
+    if model.get("success"):
+        save_pointing_model(model)
+        data_folder = get_config_value("data_output_folder")
+        os.makedirs(data_folder, exist_ok=True)
+        plot_path = os.path.join(data_folder, "calibration_day.png")
+        try:
+            generate_calibration_plot(model, plot_path)
+            model["plot_path"] = plot_path
+        except Exception as exc:
+            log.warning("Could not generate calibration plot: %s", exc)
+    return jsonify(model)
+
+
+@app.route('/api/calday/plot', methods=['GET'])
+def api_calday_plot():
+    data_folder = get_config_value("data_output_folder")
+    plot_path = os.path.join(data_folder, "calibration_day.png")
+    if os.path.isfile(plot_path):
+        from flask import send_file
+        return send_file(plot_path, mimetype='image/png')
+    return ('', 404)
+
+
+@app.route('/api/calday/apply', methods=['POST'])
+def api_calday_apply():
+    """Apply the fitted pointing model to the ESP32 controller settings."""
+    from sun_scan import load_pointing_model
+    model = load_pointing_model()
+    if not model or not model.get("success"):
+        return jsonify({'success': False, 'error': 'No valid pointing model to apply'})
+
+    eff_lat = model.get("effective_lat")
+    eff_lon = model.get("effective_lon")
+    if eff_lat is None or eff_lon is None:
+        return jsonify({'success': False, 'error': 'Model has no effective lat/lon'})
+
+    # Update ESP32 controller
+    if SRT_CONTROLLER_URL:
+        result = srt_api_call("/settings/save", {
+            "observer_lat": f"{eff_lat:.6f}",
+            "observer_lon": f"{eff_lon:.6f}",
+        })
+        if not (result and result.get("ok")):
+            return jsonify({'success': False,
+                            'error': f'Failed to update ESP32: {result}'})
+        log.info("Applied effective lat=%.6f lon=%.6f to ESP32", eff_lat, eff_lon)
+
+    # Update scheduler config too
+    cfg = load_config()
+    cfg["observer_lat"] = eff_lat
+    cfg["observer_lon"] = eff_lon
+    save_config(cfg)
+    log.info("Updated scheduler config with effective lat/lon")
+
+    return jsonify({
+        'success': True,
+        'effective_lat': eff_lat,
+        'effective_lon': eff_lon,
+        'alt_offset_deg': model["alt_offset_deg"],
+        'az_offset_deg': model["az_offset_deg"],
+    })
+
+
+@app.route('/api/calday/model', methods=['GET'])
+def api_calday_model():
+    from sun_scan import load_pointing_model
+    model = load_pointing_model()
+    return jsonify(model or {'success': False, 'error': 'No model fitted yet'})
 
 
 def main():

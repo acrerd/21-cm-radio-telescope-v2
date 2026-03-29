@@ -414,14 +414,30 @@ Determines telescope pointing errors by performing an n×n raster scan centred o
 
 - **Integrated via the Sun Scan tab** in the web scheduler — uses the same observer location, SRT controller URL, and SDR settings as the scheduler
 - **Grid:** configurable n×n (default 5×5) with adjustable spacing (default 1.5° = half-beam for Nyquist sampling)
-- **Scan pattern:** serpentine (snake) order to minimise slew time
+- **Scan pattern:** all rows scan east-to-west with backlash overshoot at each row start
 - **Azimuth correction:** grid offsets are corrected by cos(altitude) for uniform sky spacing
 - **Output:** pointing error (ΔAlt, ΔAz), fitted beam FWHM, and a two-panel image (measured data + Gaussian fit)
 - **SDR backends:** B210, RTL-SDR, or demo mode (simulated Gaussian beam)
 - **Standalone usage:**
+
   ```bash
   python sun_scan.py --n 5 --spacing 1.5 --integration 3.0 --sdr demo
   ```
+
+#### Calibration Day — 4-Parameter Pointing Model
+
+Running repeated sun scans over a day determines the telescope's effective observer position (correcting for mount tilt) and constant pointing offsets. The model fits four parameters:
+
+- **ΔAlt₀, ΔAz₀** — constant zero-point offsets in altitude and azimuth
+- **AN** (north-south tilt) — equivalent to a latitude error
+- **AE** (east-west tilt) — equivalent to a longitude error × cos(lat)
+
+The effective lat/lon where the tilted mount would be vertical is computed from AN and AE. This can be applied to the ESP32 controller so all coordinate transforms (RA/Dec, galactic, sun/moon tracking) automatically account for the tilt.
+
+To run a calibration day:
+- **From the scheduler:** add a "Calibration Day (Sun Scan)" observation with a start time before sunrise and a long duration (e.g. 12 hours). The scheduler waits for sunrise, runs scans at the configured interval, and stops at sunset.
+- **From the Sun Scan tab:** use the Calibration Day controls to start/stop manually, fit the model, and apply corrections.
+- **Recommended:** 6–8 scans spread over several hours for good azimuth coverage. Spring–autumn gives best results.
 
 ### Output Data Format
 

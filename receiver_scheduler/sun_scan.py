@@ -404,6 +404,7 @@ def sun_scan(
     output_image: str | None = "sun_scan.png",
     slew_timeout: int = 120,
     beam_fwhm_deg: float = 3.0,
+    backlash_deg: float = 2.0,
     progress_callback=None,
     cancel_event=None,
 ) -> dict:
@@ -468,11 +469,14 @@ def sun_scan(
     # alt_offsets: rows, az_offsets: columns (cross-elevation)
     AZ_OFF, ALT_OFF = np.meshgrid(offsets_1d, offsets_1d)
 
-    # Serpentine (snake) scan order to minimise slew distance
+    # All rows scan east to west (decreasing azimuth) for consistent backlash.
+    # At the start of each row, an overshoot point east of the first
+    # measurement removes backlash from both axes before data is taken.
     scan_order = []
+    row_starts = []  # indices in scan_order where each new row begins
     for row in range(n):
-        cols = range(n) if row % 2 == 0 else range(n - 1, -1, -1)
-        for col in cols:
+        row_starts.append(len(scan_order))
+        for col in range(n - 1, -1, -1):  # always east to west
             scan_order.append((row, col))
 
     total_points = n * n
@@ -504,6 +508,15 @@ def sun_scan(
         # Enforce altitude limits
         cmd_alt = max(0.0, min(90.0, cmd_alt))
 
+        # Backlash compensation: at the start of each row, slew to an
+        # overshoot point east of the first measurement, then approach
+        # westward so both axes settle with backlash taken up.
+        if sdr_type != "demo" and backlash_deg > 0 and idx in row_starts:
+            overshoot_az = cmd_az + backlash_deg / cos_alt
+            log.info("Row %d: backlash overshoot to Az=%.2f° then approaching west",
+                     row, overshoot_az)
+            _slew_to(srt_url, cmd_alt, overshoot_az, slew_timeout)
+
         point_info = {
             "point": idx + 1, "total": total_points,
             "row": row, "col": col,
@@ -516,7 +529,7 @@ def sun_scan(
         if progress_callback:
             progress_callback(idx, total_points, point_info)
 
-        # Slew
+        # Slew to measurement point
         if sdr_type != "demo":
             ok = _slew_to(srt_url, cmd_alt, cmd_az, slew_timeout)
             if not ok:
@@ -583,6 +596,290 @@ def sun_scan(
         "n": n,
         "integration_time_s": integration_time_s,
     }
+
+
+# ---------------------------------------------------------------------------
+# Pointing model — 4-parameter tilt fit from multiple sun scans
+# ---------------------------------------------------------------------------
+#
+# Model:
+#   ΔAlt = ΔAlt₀ + AN·cos(az) + AE·sin(az)
+#   ΔAz  = ΔAz₀  + (−AN·sin(az) + AE·cos(az))·tan(alt)
+#
+# where AN = north-south tilt ≈ latitude error
+#       AE = east-west tilt  ≈ longitude error × cos(lat)
+#       ΔAlt₀, ΔAz₀ = constant zero-point offsets
+#
+# The effective observer position is:
+#   effective_lat = true_lat + AN
+#   effective_lon = true_lon + AE / cos(true_lat)
+# ---------------------------------------------------------------------------
+
+_POINTING_DATA_FILE = os.path.join(_SCRIPT_DIR, "pointing_data.json")
+_POINTING_MODEL_FILE = os.path.join(_SCRIPT_DIR, "pointing_model.json")
+
+
+def save_scan_to_pointing_data(scan_result: dict):
+    """Append a sun scan result to the pointing data file."""
+    entry = {
+        "timestamp": scan_result["timestamp"],
+        "sun_alt_deg": scan_result["sun_alt_deg"],
+        "sun_az_deg": scan_result["sun_az_deg"],
+        "alt_error_deg": scan_result["alt_error_deg"],
+        "az_error_deg": scan_result["az_error_deg"],
+        "beam_fwhm_deg": scan_result["beam_fwhm_deg"],
+        "fit_success": scan_result["fit"]["success"],
+    }
+    data = load_pointing_data()
+    data.append(entry)
+    with open(_POINTING_DATA_FILE, "w") as f:
+        json.dump(data, f, indent=2)
+    log.info("Saved scan to pointing data (%d entries total)", len(data))
+
+
+def load_pointing_data() -> list:
+    """Load accumulated pointing data."""
+    try:
+        with open(_POINTING_DATA_FILE) as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return []
+
+
+def clear_pointing_data():
+    """Clear all accumulated pointing data."""
+    with open(_POINTING_DATA_FILE, "w") as f:
+        json.dump([], f)
+    log.info("Pointing data cleared")
+
+
+def _pointing_model_matrix(alt_deg: np.ndarray, az_deg: np.ndarray) -> np.ndarray:
+    """Build the design matrix for the 4-parameter pointing model.
+
+    For N observations, returns a (2N x 4) matrix where the parameters are
+    [ΔAlt₀, ΔAz₀, AN, AE].
+
+    Rows 0..N-1 are the altitude equations, rows N..2N-1 are the azimuth equations.
+    """
+    az_rad = np.radians(az_deg)
+    alt_rad = np.radians(alt_deg)
+    n = len(alt_deg)
+    A = np.zeros((2 * n, 4))
+
+    # Altitude equations: ΔAlt = ΔAlt₀ + AN·cos(az) + AE·sin(az)
+    A[:n, 0] = 1.0          # ΔAlt₀
+    A[:n, 2] = np.cos(az_rad)  # AN
+    A[:n, 3] = np.sin(az_rad)  # AE
+
+    # Azimuth equations: ΔAz = ΔAz₀ + (−AN·sin(az) + AE·cos(az))·tan(alt)
+    tan_alt = np.tan(alt_rad)
+    A[n:, 1] = 1.0                      # ΔAz₀
+    A[n:, 2] = -np.sin(az_rad) * tan_alt  # AN
+    A[n:, 3] = np.cos(az_rad) * tan_alt   # AE
+
+    return A
+
+
+def fit_pointing_model(data: list | None = None,
+                       true_lat: float | None = None,
+                       true_lon: float | None = None) -> dict:
+    """Fit the 4-parameter pointing/tilt model to accumulated sun scan data.
+
+    Parameters
+    ----------
+    data      : list of scan entries (default: load from file)
+    true_lat  : observer latitude for effective lat/lon calculation
+    true_lon  : observer longitude for effective lat/lon calculation
+
+    Returns
+    -------
+    dict with keys:
+        alt_offset_deg, az_offset_deg : constant zero-point offsets
+        tilt_north_deg (AN)           : north-south tilt
+        tilt_east_deg (AE)            : east-west tilt
+        effective_lat, effective_lon  : corrected observer position (if true given)
+        residuals_alt, residuals_az   : residual errors (degrees)
+        rms_alt, rms_az               : RMS residuals
+        n_scans                       : number of scans used
+        success                       : bool
+    """
+    if data is None:
+        data = load_pointing_data()
+
+    # Filter to successful fits only
+    good = [d for d in data if d.get("fit_success", True)]
+    if len(good) < 3:
+        return {"success": False, "error": f"Need at least 3 scans, have {len(good)}",
+                "n_scans": len(good)}
+
+    alt_sun = np.array([d["sun_alt_deg"] for d in good])
+    az_sun = np.array([d["sun_az_deg"] for d in good])
+    d_alt = np.array([d["alt_error_deg"] for d in good])
+    d_az = np.array([d["az_error_deg"] for d in good])
+    n = len(good)
+
+    # Build design matrix and observation vector
+    A = _pointing_model_matrix(alt_sun, az_sun)
+    b = np.concatenate([d_alt, d_az])
+
+    # Least-squares fit: A·x = b
+    result = np.linalg.lstsq(A, b, rcond=None)
+    x = result[0]  # [ΔAlt₀, ΔAz₀, AN, AE]
+
+    alt_offset = float(x[0])
+    az_offset = float(x[1])
+    tilt_north = float(x[2])  # AN ≈ δlat
+    tilt_east = float(x[3])   # AE ≈ δlon·cos(lat)
+
+    # Residuals
+    predicted = A @ x
+    res_alt = d_alt - predicted[:n]
+    res_az = d_az - predicted[n:]
+    rms_alt = float(np.sqrt(np.mean(res_alt ** 2)))
+    rms_az = float(np.sqrt(np.mean(res_az ** 2)))
+
+    model = {
+        "alt_offset_deg": alt_offset,
+        "az_offset_deg": az_offset,
+        "tilt_north_deg": tilt_north,
+        "tilt_east_deg": tilt_east,
+        "rms_alt_deg": rms_alt,
+        "rms_az_deg": rms_az,
+        "n_scans": n,
+        "residuals_alt": res_alt.tolist(),
+        "residuals_az": res_az.tolist(),
+        "scan_azimuths": az_sun.tolist(),
+        "scan_altitudes": alt_sun.tolist(),
+        "measured_alt_errors": d_alt.tolist(),
+        "measured_az_errors": d_az.tolist(),
+        "success": True,
+    }
+
+    # Effective lat/lon
+    if true_lat is not None:
+        model["effective_lat"] = true_lat + tilt_north
+    if true_lon is not None and true_lat is not None:
+        cos_lat = math.cos(math.radians(true_lat))
+        model["effective_lon"] = true_lon + tilt_east / cos_lat if cos_lat > 0.01 else true_lon
+
+    return model
+
+
+def save_pointing_model(model: dict):
+    """Save fitted pointing model to file."""
+    with open(_POINTING_MODEL_FILE, "w") as f:
+        json.dump(model, f, indent=2)
+    log.info("Pointing model saved")
+
+
+def load_pointing_model() -> dict | None:
+    """Load the last fitted pointing model."""
+    try:
+        with open(_POINTING_MODEL_FILE) as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return None
+
+
+def generate_calibration_plot(model: dict, output_path: str = "calibration_day.png") -> str:
+    """Generate a plot showing the calibration day results.
+
+    Four panels:
+    1. Measured vs modelled altitude errors over azimuth
+    2. Measured vs modelled azimuth errors over azimuth
+    3. Residuals
+    4. Summary text
+    """
+    if not MATPLOTLIB_AVAILABLE:
+        raise ImportError("matplotlib is required")
+
+    az = np.array(model["scan_azimuths"])
+    alt = np.array(model["scan_altitudes"])
+    d_alt_meas = np.array(model["measured_alt_errors"])
+    d_az_meas = np.array(model["measured_az_errors"])
+    res_alt = np.array(model["residuals_alt"])
+    res_az = np.array(model["residuals_az"])
+
+    # Compute model predictions
+    d_alt_model = d_alt_meas - res_alt
+    d_az_model = d_az_meas - res_az
+
+    fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+
+    # Panel 1: altitude errors vs azimuth
+    ax = axes[0, 0]
+    ax.plot(az, d_alt_meas, "o", color="#00d4ff", label="Measured", markersize=6)
+    az_fine = np.linspace(az.min(), az.max(), 200)
+    alt_mean = np.mean(alt)
+    A_fine = _pointing_model_matrix(
+        np.full_like(az_fine, alt_mean), az_fine)
+    x = np.array([model["alt_offset_deg"], model["az_offset_deg"],
+                   model["tilt_north_deg"], model["tilt_east_deg"]])
+    pred_fine = A_fine @ x
+    ax.plot(az_fine, pred_fine[:len(az_fine)], "-", color="#ff6b6b",
+            label="Model", linewidth=2)
+    ax.set_xlabel("Sun azimuth (°)")
+    ax.set_ylabel("Altitude error (°)")
+    ax.set_title("Altitude pointing error")
+    ax.legend()
+    ax.grid(alpha=0.3)
+
+    # Panel 2: azimuth errors vs azimuth
+    ax = axes[0, 1]
+    ax.plot(az, d_az_meas, "o", color="#00d4ff", label="Measured", markersize=6)
+    # For azimuth model curve, need varying altitude too — use scatter style
+    ax.plot(az, d_az_model, "s", color="#ff6b6b", label="Model", markersize=5,
+            markerfacecolor="none", markeredgewidth=1.5)
+    ax.set_xlabel("Sun azimuth (°)")
+    ax.set_ylabel("Azimuth error (°)")
+    ax.set_title("Azimuth pointing error")
+    ax.legend()
+    ax.grid(alpha=0.3)
+
+    # Panel 3: residuals
+    ax = axes[1, 0]
+    ax.plot(az, res_alt, "o", color="#00ff88", label="Alt residual", markersize=5)
+    ax.plot(az, res_az, "s", color="#ffaa00", label="Az residual", markersize=5)
+    ax.axhline(0, color="#666", linewidth=0.5)
+    ax.set_xlabel("Sun azimuth (°)")
+    ax.set_ylabel("Residual (°)")
+    ax.set_title("Residuals after model fit")
+    ax.legend()
+    ax.grid(alpha=0.3)
+
+    # Panel 4: summary text
+    ax = axes[1, 1]
+    ax.axis("off")
+    lines = [
+        "Pointing Model Results",
+        "",
+        f"Scans used: {model['n_scans']}",
+        f"Az coverage: {az.min():.0f}° — {az.max():.0f}°",
+        "",
+        f"Alt zero offset:  {model['alt_offset_deg']:+.3f}°",
+        f"Az zero offset:   {model['az_offset_deg']:+.3f}°",
+        f"N-S tilt (AN):    {model['tilt_north_deg']:+.3f}°",
+        f"E-W tilt (AE):    {model['tilt_east_deg']:+.3f}°",
+        "",
+        f"RMS residual alt: {model['rms_alt_deg']:.3f}°",
+        f"RMS residual az:  {model['rms_az_deg']:.3f}°",
+    ]
+    if "effective_lat" in model:
+        lines.append("")
+        lines.append(f"Effective lat: {model['effective_lat']:.6f}°")
+        lines.append(f"Effective lon: {model['effective_lon']:.6f}°")
+    ax.text(0.1, 0.95, "\n".join(lines), transform=ax.transAxes,
+            fontsize=12, verticalalignment="top", fontfamily="monospace",
+            color="#ccc", bbox=dict(facecolor="#0f0f23", edgecolor="#333",
+                                    boxstyle="round,pad=0.5"))
+
+    fig.suptitle("Pointing Calibration Day", fontsize=14)
+    fig.tight_layout(rect=[0, 0, 1, 0.96])
+    fig.savefig(output_path, dpi=150, bbox_inches="tight",
+                facecolor="#1a1a2e", edgecolor="none")
+    plt.close(fig)
+    log.info("Calibration plot saved to %s", output_path)
+    return output_path
 
 
 # ---------------------------------------------------------------------------
