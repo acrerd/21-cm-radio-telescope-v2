@@ -56,8 +56,8 @@ void Settings::load() {
         ethGateway = prefs.getString("ethGW", "192.168.1.1");
         ethSubnet = prefs.getString("ethSub", "255.255.255.0");
         ethDNS = prefs.getString("ethDNS", "8.8.8.8");
-        // WiFi power state
-        wifiEnabled = prefs.getBool("wifiOn", true);
+        // wifiEnabled is not loaded from NVS - always true on boot
+        // Can only be disabled from web interface during a session
         Serial.println("Settings loaded from NVS");
     } else {
         Serial.println("Using default settings");
@@ -88,8 +88,7 @@ void Settings::save() {
     prefs.putString("ethGW", ethGateway);
     prefs.putString("ethSub", ethSubnet);
     prefs.putString("ethDNS", ethDNS);
-    // WiFi power state
-    prefs.putBool("wifiOn", wifiEnabled);
+    // wifiEnabled is not persisted - always starts true on boot
 
     prefs.end();
     Serial.println("Settings saved to NVS");

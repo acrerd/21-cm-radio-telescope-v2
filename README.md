@@ -1,4 +1,4 @@
-# SRT Drive Controller
+# SRT Motor Driver
 
 A complete control system for a Small Radio Telescope (SRT) for 21cm hydrogen line observations at Acre Road Observatory, Glasgow.
 
@@ -365,6 +365,7 @@ python b210_h1_receiver.py --sdr demo
 Tabbed web interface that coordinates telescope pointing and data recording:
 
 - **Scheduler Tab:** Add/edit/clone/delete observations with clash prevention, late-start recovery, preemption, and audio notifications
+- **Sun Scan Tab:** Pointing calibration via raster scan of the sun (see below)
 - **Configuration Tab:** Persistent settings (controller URL, observer location, data folder, Python path, sound)
 - **Log Tab:** Live view of rotating scheduler log
 - **Coordinate Systems:** Alt/Az, RA/Dec (J2000), Galactic, Solar System objects (Sun/Moon), and Satellite (TLE)
@@ -406,6 +407,21 @@ Settings are managed via the Configuration tab in the web interface and persiste
    - Data saved to HDF5 in linear power with observation metadata
    - On completion: calibrator off, telescope home/stow if configured
 5. **Monitor:** Status bar shows running observation with countdown, or time to next observation when idle
+
+### Sun Scan — Pointing Calibration (`sun_scan.py`)
+
+Determines telescope pointing errors by performing an n×n raster scan centred on the sun. The antenna beam (~3° FWHM) is sampled at each grid point by measuring broadband power, then a 2-D Gaussian is fitted to locate the true peak. The difference between the fitted peak and the assumed sun position gives the pointing correction.
+
+- **Integrated via the Sun Scan tab** in the web scheduler — uses the same observer location, SRT controller URL, and SDR settings as the scheduler
+- **Grid:** configurable n×n (default 5×5) with adjustable spacing (default 1.5° = half-beam for Nyquist sampling)
+- **Scan pattern:** serpentine (snake) order to minimise slew time
+- **Azimuth correction:** grid offsets are corrected by cos(altitude) for uniform sky spacing
+- **Output:** pointing error (ΔAlt, ΔAz), fitted beam FWHM, and a two-panel image (measured data + Gaussian fit)
+- **SDR backends:** B210, RTL-SDR, or demo mode (simulated Gaussian beam)
+- **Standalone usage:**
+  ```bash
+  python sun_scan.py --n 5 --spacing 1.5 --integration 3.0 --sdr demo
+  ```
 
 ### Output Data Format
 
@@ -478,6 +494,7 @@ new_SRT_drive/
 ├── receiver_scheduler/     # Observation scheduling & data acquisition
 │   ├── h1_web_scheduler.py # Flask web scheduler with ESP32 integration
 │   ├── b210_h1_receiver.py # GNU Radio 21cm receiver (B210/RTL-SDR)
+│   ├── sun_scan.py         # Sun raster scan pointing calibration
 │   ├── read_h1_data.ipynb  # Jupyter notebook for reading/plotting HDF5 data
 │   ├── scheduler_config.json # Persistent configuration (auto-generated)
 │   ├── scheduler.log       # Rotating log file (auto-generated)

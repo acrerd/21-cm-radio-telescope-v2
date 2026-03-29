@@ -281,26 +281,13 @@ void setup() {
     }
     #endif
 
-    // Initialize WiFi (unless disabled and Ethernet is available)
-    #if ETHERNET_ENABLED
-    if (!settings.wifiEnabled && ethConnected) {
-        Serial.println("WiFi disabled (Ethernet connected) - skipping WiFi startup");
-        wifiManager.disableWiFi();
-    } else {
-    #endif
-        if (wifiManager.startup()) {
-            // Connected to WiFi - sync time with NTP
-            #if !ETHERNET_ENABLED
+    // Always initialize WiFi on boot - can only be disabled from web interface
+    if (wifiManager.startup()) {
+        // Connected to WiFi - sync time with NTP
+        if (!state.timeSynced) {
             syncTimeNTP();
-            #else
-            if (!state.timeSynced) {
-                syncTimeNTP();
-            }
-            #endif
         }
-    #if ETHERNET_ENABLED
     }
-    #endif
 
     if (!state.timeSynced) {
         Serial.println("NTP not synced - waiting for browser time sync");

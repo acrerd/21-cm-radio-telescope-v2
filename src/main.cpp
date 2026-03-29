@@ -1,5 +1,5 @@
 /**
- * SRT Drive Controller
+ * SRT Motor Driver
  *
  * Controls alt-az drive for Small Radio Telescope.
  * Arduino Due with H-bridge motor drivers and reed switch encoders.
@@ -96,10 +96,17 @@ static int simDigitalRead(uint32_t pin) {
 }
 #define digitalRead(pin) simDigitalRead(pin)
 
-// Override analogRead - return zero-current ADC value
+// Save reference to real analogRead before we override it
+static inline int realAnalogRead(uint32_t pin) {
+    return analogRead(pin);
+}
+
+// Override analogRead - read real ADC for current sensors, stub others
 static int simAnalogRead(uint32_t pin) {
-    (void)pin;
-    // Return ADC value corresponding to 2.5V offset (zero current)
+    if (pin == PIN_CURRENT_AZ || pin == PIN_CURRENT_ALT) {
+        return realAnalogRead(pin);
+    }
+    // Other analog pins: return mid-rail
     return (int)((CURRENT_SENSOR_OFFSET_V / ADC_REFERENCE_V) * ADC_RESOLUTION_BITS);
 }
 #define analogRead(pin) simAnalogRead(pin)
@@ -125,7 +132,7 @@ static void simPinMode(uint32_t pin, uint32_t mode) {
 #define pinMode(pin, mode) simPinMode(pin, mode)
 
 #define attachInterrupt(a, b, c)    ((void)0)
-#define analogReadResolution(x)     ((void)0)
+// analogReadResolution is NOT overridden - real 12-bit ADC needed for current sensors
 
 #endif // SIMULATION_MODE
 
@@ -248,7 +255,8 @@ bool calibratorOn = false;
 // =============================================================================
 
 // Print to Programming Port (Serial) only
-// Serial1 is reserved exclusively for ESP32 bridge - no cross-talk
+// Native USB (SerialUSB) is reserved for ESP32 bridge traffic
+
 void printAll(const char* str) {
     Serial.print(str);
 }
@@ -556,18 +564,29 @@ void calibrateCurrentSensors() {
     printAllLn("V");
 }
 
-float readCurrentAz() {
+// Exponential moving average for display (alpha = 0.2 gives ~5-sample smoothing)
+// Alpha = 0.02 at 100Hz loop rate gives ~0.5s time constant (~1s to settle)
+#define CURRENT_FILTER_ALPHA 0.02f
+float filteredCurrentAz = 0.0f;
+float filteredCurrentAlt = 0.0f;
+
+float readCurrentAzRaw() {
     int adcValue = analogRead(PIN_CURRENT_AZ);
     float voltage = (ADC_REFERENCE_V / ADC_RESOLUTION_BITS) * adcValue;
-    float current = (voltage - currentOffsetAz) / CURRENT_SENSOR_SENSITIVITY;
-    return current;
+    return (voltage - currentOffsetAz) / CURRENT_SENSOR_SENSITIVITY;
 }
 
-float readCurrentAlt() {
+float readCurrentAltRaw() {
     int adcValue = analogRead(PIN_CURRENT_ALT);
     float voltage = (ADC_REFERENCE_V / ADC_RESOLUTION_BITS) * adcValue;
-    float current = (voltage - currentOffsetAlt) / CURRENT_SENSOR_SENSITIVITY;
-    return current;
+    return (voltage - currentOffsetAlt) / CURRENT_SENSOR_SENSITIVITY;
+}
+
+void updateFilteredCurrents() {
+    float rawAz = readCurrentAzRaw();
+    float rawAlt = readCurrentAltRaw();
+    filteredCurrentAz  += CURRENT_FILTER_ALPHA * (rawAz  - filteredCurrentAz);
+    filteredCurrentAlt += CURRENT_FILTER_ALPHA * (rawAlt - filteredCurrentAlt);
 }
 
 // =============================================================================
@@ -595,14 +614,14 @@ FaultCode checkFaultFlags() {
 
 FaultCode checkCurrentLimits() {
     if (isMovingAz()) {
-        float currentAz = fabs(readCurrentAz());
+        float currentAz = fabs(readCurrentAzRaw());
         if (currentAz > cfg.currentLimit) {
             return FAULT_AZ_OVERCURRENT;
         }
     }
 
     if (isMovingAlt()) {
-        float currentAlt = fabs(readCurrentAlt());
+        float currentAlt = fabs(readCurrentAltRaw());
         if (currentAlt > cfg.currentLimit) {
             return FAULT_ALT_OVERCURRENT;
         }
@@ -1185,17 +1204,14 @@ void updatePrevStatus() {
 void outputStatus() {
     float altDeg = (float)positionAlt / PULSES_PER_DEGREE;
     float azDeg = (float)positionAz / PULSES_PER_DEGREE;
-    float currentAlt = readCurrentAlt();
-    float currentAz = readCurrentAz();
-
     // Build status string for both Serial (USB) and Serial1 (ESP32)
     char statusLine[128];
     int pos = 0;
 
     pos += snprintf(statusLine + pos, sizeof(statusLine) - pos, "Alt:%.1f Az:%.1f",
                     altDeg, azDeg);
-    pos += snprintf(statusLine + pos, sizeof(statusLine) - pos, " Ialt:%.2fA Iaz:%.2fA",
-                    fabs(currentAlt), fabs(currentAz));
+    pos += snprintf(statusLine + pos, sizeof(statusLine) - pos, " Ialt:%.1fA Iaz:%.1fA",
+                    filteredCurrentAlt, filteredCurrentAz);
     pos += snprintf(statusLine + pos, sizeof(statusLine) - pos, " Status:%s",
                     getStatusString());
 
@@ -1216,6 +1232,8 @@ void outputStatus() {
 
     // Output to Programming Port (USB)
     Serial.println(statusLine);
+
+    // Native USB reserved for ESP32 bridge - no Due status output there
 
     // Output to Serial1 (ESP32) so it can read status
     #if ENABLE_SERIAL1
@@ -1603,7 +1621,9 @@ void processSerialInput() {
 
 void setupESPBridge() {
     // Initialize Native USB for ESP32 serial monitoring
-    SerialUSB.begin(ESP_BRIDGE_BAUD);
+    // SerialUSB on Due is native USB CDC - baud rate parameter is ignored
+    // but begin() is required to initialize the USB stack
+    SerialUSB.begin(0);
 }
 
 // Handle ESP32 serial bridge - forward PC commands to ESP32
@@ -1662,14 +1682,12 @@ void setup() {
     analogReadResolution(12);
 
     // Initialize serial communication
+    // Programming Port is UART via ATmega16U2 - always ready, no wait needed
     Serial.begin(SERIAL_BAUD);
-    while (!Serial) {
-        ; // Wait for serial port (Programming Port USB)
-    }
 
     #if ENABLE_SERIAL1
     // Initialize Serial1 for ESP32 connection (TX1=pin 18, RX1=pin 19)
-    Serial1.begin(ESP_BRIDGE_BAUD);  // 460800 for fast ESP32 programming
+    Serial1.begin(ESP_BRIDGE_BAUD);
     #endif
 
     #if ESP_BRIDGE_ENABLED
@@ -1683,7 +1701,7 @@ void setup() {
     }
 
     printAllLn("=================================");
-    printAllLn("SRT Drive Controller v1.2");
+    printAllLn("SRT Motor Driver v1.2");
     printAllLn("Acre Road Observatory, Glasgow");
     #ifdef SIMULATION_MODE
     printAllLn("*** SIMULATION MODE ***");
@@ -1717,6 +1735,9 @@ void loop() {
     // Bridge Native USB <-> Serial1 (ESP32) - runs every loop, always active
     handleESPBridge();
     #endif
+
+    // Update current filter every loop (100Hz at 10ms loop delay)
+    updateFilteredCurrents();
 
     // Safety checks (always run)
     runSafetyChecks();

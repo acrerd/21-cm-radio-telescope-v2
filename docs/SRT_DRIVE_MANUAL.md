@@ -1,4 +1,4 @@
-# SRT Drive Controller - Operations Manual
+# SRT Motor Driver - Operations Manual
 
 **Version 1.1**
 **Acre Road Observatory, Glasgow**
@@ -24,7 +24,7 @@
 
 ## 1. Overview
 
-The SRT Drive Controller manages the alt-azimuth drive system for the Small Radio Telescope. It provides:
+The SRT Motor Driver manages the alt-azimuth drive system for the Small Radio Telescope. It provides:
 
 - Automatic homing on startup
 - Position tracking via reed switch encoders (0.5 degree resolution)
@@ -121,7 +121,7 @@ Or use the VS Code PlatformIO serial monitor button.
 | **Position Encoders** |
 | Az Pulses | 12 | Yellow | Reed switch, falling edge |
 | Alt Pulses | 13 | Blue | Reed switch, falling edge |
-| **Current Sensors** |
+| **Current Sensors** | | | 44mV/A, bipolar, 3.3V ADC ref |
 | Az Current | A1 | Black | Analog input |
 | Alt Current | A0 | White | Analog input |
 | **Calibrator** |
@@ -133,10 +133,18 @@ The Arduino Due has two USB ports:
 
 | Port | Location | Use |
 |------|----------|-----|
-| **Programming Port** | Near DC jack | Programming + serial terminal |
-| **Native USB Port** | Near reset button | Not used |
+| **Programming Port** | Near DC jack | Programming + serial terminal (Due CLI) |
+| **Native USB Port** | Near reset button | ESP32 serial bridge (monitoring ESP32 traffic) |
 
-**Use the Programming Port** for both uploading firmware and serial communication.
+**Use the Programming Port** for uploading firmware and the Due's own serial terminal.
+
+The **Native USB Port** forwards traffic between the PC and the ESP32 via Serial1. It only shows ESP32 traffic, not the Due's own status output.
+
+> **Important:** The Native USB port uses USB CDC, which requires the host to assert DTR before data will appear. PlatformIO's serial monitor (`pio device monitor`) asserts DTR automatically. Tools like Termite and PuTTY do not, and will show no output. To monitor the Native USB port, use:
+>
+> ```
+> pio device monitor -p COM<n> -b 115200
+> ```
 
 ### 3.3 WT32-ETH01 Interface (Serial1)
 
@@ -178,8 +186,8 @@ Alt:45.0 Az:180.0 Ialt:0.52A Iaz:0.38A Status:Ready
 |-------|-------------|-------|
 | `Alt` | Current altitude position | Degrees |
 | `Az` | Current azimuth position | Degrees |
-| `Ialt` | Altitude motor current | Amps |
-| `Iaz` | Azimuth motor current | Amps |
+| `Ialt` | Altitude motor current (IIR filtered, ~1s settling) | Amps |
+| `Iaz` | Azimuth motor current (IIR filtered, ~1s settling) | Amps |
 | `Status` | System state | See section 7 |
 | `Cal` | Calibrator state | ON/OFF |
 
@@ -220,7 +228,7 @@ On power-up, you will see:
 
 ```
 =================================
-SRT Drive Controller v1.1
+SRT Motor Driver v1.1
 Acre Road Observatory, Glasgow
 =================================
 
@@ -238,7 +246,7 @@ In simulation mode, an additional banner is shown:
 
 ```
 =================================
-SRT Drive Controller v1.1
+SRT Motor Driver v1.1
 Acre Road Observatory, Glasgow
 *** SIMULATION MODE ***
 =================================
@@ -630,10 +638,7 @@ The `simulatePulses()` function is called in three places:
 
 #### Current Sensing
 
-The ACS712 hall-effect current sensors are read via `analogRead()`. In simulation mode, `analogRead()` is overridden to always return the ADC value corresponding to 0 Amps (the 2.5V zero-current offset of the ACS712). This means:
-
-- The status output will show `Ialt:0.00A Iaz:0.00A`
-- Overcurrent faults will never trigger
+The current sensors (44mV/A, bipolar) are read via the Due's 12-bit ADC (3.3V reference). In simulation mode, the current sensor pins (A0, A1) read real hardware — only motor control, encoder, and fault flag I/O is simulated. This allows testing the current sensing and calibration with real sensors while the motor control loop runs in simulation.
 
 #### Fault Flag Pins
 
@@ -671,7 +676,7 @@ The initial position values determine how far the simulated telescope must "driv
 
 ```
 =================================
-SRT Drive Controller v1.1
+SRT Motor Driver v1.1
 Acre Road Observatory, Glasgow
 *** SIMULATION MODE ***
 =================================

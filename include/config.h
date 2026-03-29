@@ -94,9 +94,9 @@
 // CURRENT SENSOR CALIBRATION (fixed, hardware-dependent)
 // =============================================================================
 
-#define CURRENT_SENSOR_OFFSET_V     2.5     // Zero-current voltage
-#define CURRENT_SENSOR_SENSITIVITY  0.066   // V/A (66mV/A)
-#define ADC_REFERENCE_V             5.0     // Scaled to match old code
+#define CURRENT_SENSOR_OFFSET_V     1.65    // Zero-current voltage (mid-rail, 3.3V/2)
+#define CURRENT_SENSOR_SENSITIVITY  0.044   // V/A (44mV/A, bipolar)
+#define ADC_REFERENCE_V             3.3     // Due native ADC reference
 #define ADC_RESOLUTION_BITS         4096    // 12-bit ADC (2^12)
 
 // =============================================================================

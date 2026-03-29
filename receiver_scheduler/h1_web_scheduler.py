@@ -472,6 +472,19 @@ observation_end_time: Optional[datetime] = None
 process_lock = threading.Lock()
 scheduler_running = True
 
+# Sun scan state
+sun_scan_thread: Optional[threading.Thread] = None
+sun_scan_cancel = threading.Event()
+sun_scan_state: dict = {
+    "running": False,
+    "progress": 0,
+    "total": 0,
+    "point_info": None,
+    "result": None,
+    "error": None,
+    "image_path": None,
+}
+
 
 # Default observation template
 DEFAULT_OBSERVATION = {
@@ -877,6 +890,7 @@ HTML_TEMPLATE = '''
         </div>
         <div class="tabs">
             <div class="tab active" onclick="switchTab('scheduler')">Scheduler</div>
+            <div class="tab" onclick="switchTab('sunscan')">Sun Scan</div>
             <div class="tab" onclick="switchTab('config')">Configuration</div>
             <div class="tab" onclick="switchTab('log')">Log</div>
         </div>
@@ -892,6 +906,73 @@ HTML_TEMPLATE = '''
             </div>
             <div class="schedule-list" id="scheduleList">
                 <div class="empty-state">No observations scheduled.</div>
+            </div>
+        </div>
+
+        <div class="tab-content" id="tab-sunscan">
+            <div style="display:flex; gap:20px; flex-wrap:wrap;">
+                <div class="config-form" style="flex:0 0 340px;">
+                    <div class="section-title">Scan Parameters</div>
+                    <div class="form-group">
+                        <label>Grid Size (n x n)</label>
+                        <input type="number" id="ssGridN" min="3" max="15" step="2" value="5">
+                    </div>
+                    <div class="form-group">
+                        <label>Grid Spacing (degrees)</label>
+                        <input type="number" id="ssSpacing" min="0.1" max="10" step="0.1" value="1.5">
+                    </div>
+                    <div class="form-group">
+                        <label>Beam FWHM Hint (degrees)</label>
+                        <input type="number" id="ssBeamFwhm" min="0.5" max="20" step="0.1" value="3.0">
+                    </div>
+                    <div class="section-title">Receiver Settings</div>
+                    <div class="form-group">
+                        <label>Integration Time per Point (s)</label>
+                        <input type="number" id="ssIntegration" min="0.1" max="60" step="0.1" value="3.0">
+                    </div>
+                    <div class="form-group">
+                        <label>Center Frequency (MHz)</label>
+                        <input type="number" id="ssCenterFreq" step="0.001" value="1420.405">
+                    </div>
+                    <div class="form-group">
+                        <label>Bandwidth (MHz)</label>
+                        <input type="number" id="ssBandwidth" step="0.1" value="2.4">
+                    </div>
+                    <div class="form-group">
+                        <label>Gain (dB)</label>
+                        <input type="number" id="ssGain" min="0" max="80" value="40">
+                    </div>
+                    <div class="form-group">
+                        <label>SDR Type</label>
+                        <select id="ssSdrType">
+                            <option value="b210">Ettus B210</option>
+                            <option value="rtlsdr">RTL-SDR</option>
+                            <option value="demo">Demo (Simulated)</option>
+                        </select>
+                    </div>
+                    <div style="margin-top:15px; display:flex; gap:10px;">
+                        <button class="btn btn-primary" id="ssStartBtn" onclick="startSunScan()">Start Sun Scan</button>
+                        <button class="btn btn-danger" id="ssStopBtn" style="display:none" onclick="stopSunScan()">Stop</button>
+                    </div>
+                </div>
+                <div style="flex:1; min-width:300px;">
+                    <div class="section-title">Status</div>
+                    <div id="ssStatus" style="background:#0f0f23; border:1px solid #333; border-radius:8px; padding:15px; margin-bottom:15px;">
+                        <span style="color:#888;">Idle — configure parameters and click Start.</span>
+                    </div>
+                    <div id="ssProgress" style="display:none; margin-bottom:15px;">
+                        <div style="background:#333; border-radius:4px; height:20px; overflow:hidden;">
+                            <div id="ssProgressBar" style="background:#00d4ff; height:100%; width:0%; transition:width 0.3s;"></div>
+                        </div>
+                        <div id="ssProgressText" style="color:#888; font-size:12px; margin-top:5px;">0 / 0</div>
+                    </div>
+                    <div class="section-title">Results</div>
+                    <div id="ssResults" style="background:#0f0f23; border:1px solid #333; border-radius:8px; padding:15px; margin-bottom:15px;">
+                        <span style="color:#888;">No results yet.</span>
+                    </div>
+                    <div id="ssImageContainer" style="text-align:center;">
+                    </div>
+                </div>
             </div>
         </div>
 
@@ -1819,6 +1900,101 @@ HTML_TEMPLATE = '''
             document.getElementById('tab-' + name).classList.add('active');
             if (name === 'config') loadConfig();
             if (name === 'log') loadLog();
+            if (name === 'sunscan') pollSunScan();
+        }
+
+        // ---- Sun Scan ----
+        let ssPollTimer = null;
+
+        function startSunScan() {
+            const params = {
+                n: parseInt(document.getElementById('ssGridN').value),
+                grid_spacing_deg: parseFloat(document.getElementById('ssSpacing').value),
+                integration_time_s: parseFloat(document.getElementById('ssIntegration').value),
+                center_freq_mhz: parseFloat(document.getElementById('ssCenterFreq').value),
+                bandwidth_mhz: parseFloat(document.getElementById('ssBandwidth').value),
+                gain_db: parseFloat(document.getElementById('ssGain').value),
+                sdr_type: document.getElementById('ssSdrType').value,
+                beam_fwhm_deg: parseFloat(document.getElementById('ssBeamFwhm').value),
+            };
+            fetch('/api/sunscan/start', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify(params)
+            }).then(r => r.json()).then(data => {
+                if (data.success) {
+                    document.getElementById('ssStartBtn').style.display = 'none';
+                    document.getElementById('ssStopBtn').style.display = 'inline-block';
+                    document.getElementById('ssProgress').style.display = 'block';
+                    document.getElementById('ssStatus').innerHTML = '<span style="color:#00d4ff;">Starting sun scan...</span>';
+                    document.getElementById('ssImageContainer').innerHTML = '';
+                    ssPollTimer = setInterval(pollSunScan, 2000);
+                } else {
+                    document.getElementById('ssStatus').innerHTML = '<span style="color:#ff4757;">Error: ' + (data.error || 'Unknown') + '</span>';
+                }
+            });
+        }
+
+        function stopSunScan() {
+            fetch('/api/sunscan/stop', {method: 'POST'}).then(r => r.json()).then(data => {
+                document.getElementById('ssStatus').innerHTML = '<span style="color:#ff4757;">Scan stopped.</span>';
+            });
+        }
+
+        function pollSunScan() {
+            fetch('/api/sunscan/status').then(r => r.json()).then(data => {
+                if (data.running) {
+                    document.getElementById('ssStartBtn').style.display = 'none';
+                    document.getElementById('ssStopBtn').style.display = 'inline-block';
+                    document.getElementById('ssProgress').style.display = 'block';
+                    const pct = data.total > 0 ? (data.progress / data.total * 100) : 0;
+                    document.getElementById('ssProgressBar').style.width = pct + '%';
+                    document.getElementById('ssProgressText').textContent = data.progress + ' / ' + data.total + ' grid points';
+                    let info = '<span style="color:#00d4ff;">Scanning...</span>';
+                    if (data.point_info) {
+                        info += '<br><span style="color:#ccc; font-size:13px;">'
+                            + 'Point ' + data.point_info.point + '/' + data.point_info.total
+                            + ' &mdash; offset (' + data.point_info.dalt.toFixed(1) + ', ' + data.point_info.daz_sky.toFixed(1) + ')&deg;'
+                            + ' &rarr; Alt=' + data.point_info.cmd_alt.toFixed(1) + '&deg; Az=' + data.point_info.cmd_az.toFixed(1) + '&deg;'
+                            + '</span>';
+                    }
+                    document.getElementById('ssStatus').innerHTML = info;
+                } else {
+                    // Scan finished or idle
+                    document.getElementById('ssStartBtn').style.display = 'inline-block';
+                    document.getElementById('ssStopBtn').style.display = 'none';
+                    if (ssPollTimer) { clearInterval(ssPollTimer); ssPollTimer = null; }
+
+                    if (data.error) {
+                        document.getElementById('ssStatus').innerHTML = '<span style="color:#ff4757;">Error: ' + data.error + '</span>';
+                        document.getElementById('ssProgress').style.display = 'none';
+                    } else if (data.result) {
+                        const r = data.result;
+                        document.getElementById('ssProgress').style.display = 'none';
+                        document.getElementById('ssStatus').innerHTML = '<span style="color:#00ff88;">Scan complete!</span>';
+                        let html = '<table style="width:100%; font-size:13px; color:#ccc;">';
+                        html += '<tr><td style="color:#888; padding:4px 8px;">Sun Position</td><td>Alt ' + r.sun_alt_deg.toFixed(2) + '&deg; &nbsp; Az ' + r.sun_az_deg.toFixed(2) + '&deg;</td></tr>';
+                        html += '<tr><td style="color:#888; padding:4px 8px;">Pointing Error</td><td style="color:#00d4ff; font-size:16px; font-weight:bold;">&Delta;Alt = ' + (r.alt_error_deg >= 0 ? '+' : '') + r.alt_error_deg.toFixed(3) + '&deg; &nbsp; &Delta;Az = ' + (r.az_error_deg >= 0 ? '+' : '') + r.az_error_deg.toFixed(3) + '&deg;</td></tr>';
+                        html += '<tr><td style="color:#888; padding:4px 8px;">Beam FWHM</td><td>' + r.beam_fwhm_deg.toFixed(2) + '&deg;</td></tr>';
+                        html += '<tr><td style="color:#888; padding:4px 8px;">Fit Success</td><td>' + (r.fit.success ? '<span style="color:#00ff88;">Yes</span>' : '<span style="color:#ff4757;">No (peak pixel fallback)</span>') + '</td></tr>';
+                        if (r.fit.fit_errors) {
+                            html += '<tr><td style="color:#888; padding:4px 8px;">Fit Uncertainty</td><td>&plusmn;' + r.fit.fit_errors.alt_err.toFixed(3) + '&deg; alt, &plusmn;' + r.fit.fit_errors.az_err.toFixed(3) + '&deg; az</td></tr>';
+                        }
+                        html += '<tr><td style="color:#888; padding:4px 8px;">Grid</td><td>' + r.n + '&times;' + r.n + ' @ ' + r.grid_spacing_deg + '&deg; spacing</td></tr>';
+                        html += '<tr><td style="color:#888; padding:4px 8px;">Integration</td><td>' + r.integration_time_s + 's per point</td></tr>';
+                        html += '<tr><td style="color:#888; padding:4px 8px;">Timestamp</td><td>' + r.timestamp + '</td></tr>';
+                        html += '</table>';
+                        document.getElementById('ssResults').innerHTML = html;
+
+                        if (data.has_image) {
+                            document.getElementById('ssImageContainer').innerHTML =
+                                '<img src="/api/sunscan/image?' + Date.now() + '" style="max-width:100%; border-radius:8px; border:1px solid #333; margin-top:10px;">';
+                        }
+                    } else {
+                        document.getElementById('ssStatus').innerHTML = '<span style="color:#888;">Idle &mdash; configure parameters and click Start.</span>';
+                    }
+                }
+            });
         }
 
         // ---- Configuration ----
@@ -1902,6 +2078,64 @@ HTML_TEMPLATE = '''
 </body>
 </html>
 '''
+
+
+# =============================================================================
+# Sun Scan Integration
+# =============================================================================
+
+def _sun_scan_progress(idx, total, info):
+    """Progress callback for sun_scan — updates global state."""
+    sun_scan_state["progress"] = idx + 1
+    sun_scan_state["total"] = total
+    sun_scan_state["point_info"] = info
+
+
+def _run_sun_scan(params: dict):
+    """Run sun scan in a background thread."""
+    global sun_scan_state
+    sun_scan_state.update(running=True, progress=0, total=0,
+                          point_info=None, result=None, error=None,
+                          image_path=None)
+    try:
+        from sun_scan import sun_scan as do_sun_scan
+
+        cfg = load_config()
+        data_folder = get_config_value("data_output_folder")
+        os.makedirs(data_folder, exist_ok=True)
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        image_path = os.path.join(data_folder, f"sun_scan_{timestamp}.png")
+
+        result = do_sun_scan(
+            n=params.get("n", 5),
+            grid_spacing_deg=params.get("grid_spacing_deg", 1.5),
+            integration_time_s=params.get("integration_time_s", 3.0),
+            srt_url=cfg.get("srt_controller_url") or None,
+            lat=cfg.get("observer_lat"),
+            lon=cfg.get("observer_lon"),
+            elevation=cfg.get("observer_elevation", 50),
+            sdr_type=params.get("sdr_type", "b210"),
+            center_freq=params.get("center_freq_mhz", 1420.405) * 1e6,
+            sample_rate=params.get("bandwidth_mhz", 2.4) * 1e6,
+            gain=params.get("gain_db", 40.0),
+            output_image=image_path,
+            slew_timeout=cfg.get("slew_timeout", 300),
+            beam_fwhm_deg=params.get("beam_fwhm_deg", 3.0),
+            progress_callback=_sun_scan_progress,
+            cancel_event=sun_scan_cancel,
+        )
+
+        # Convert numpy array to list for JSON serialisation
+        result["power_grid"] = result["power_grid"].tolist()
+        sun_scan_state["result"] = result
+        sun_scan_state["image_path"] = image_path
+        log.info("Sun scan complete: dAlt=%+.3f° dAz=%+.3f°",
+                 result["alt_error_deg"], result["az_error_deg"])
+    except Exception as exc:
+        log.error("Sun scan failed: %s", exc)
+        sun_scan_state["error"] = str(exc)
+    finally:
+        sun_scan_state["running"] = False
 
 
 @app.route('/')
@@ -2079,6 +2313,59 @@ def api_get_log():
     except Exception as e:
         lines = [f"Error reading log: {e}"]
     return jsonify({'lines': lines})
+
+
+# =============================================================================
+# Sun Scan API
+# =============================================================================
+
+@app.route('/api/sunscan/start', methods=['POST'])
+def api_sunscan_start():
+    global sun_scan_thread
+    if sun_scan_state["running"]:
+        return jsonify({'success': False, 'error': 'Scan already running'})
+
+    # Check receiver is not in use
+    with process_lock:
+        if current_process is not None and current_process.poll() is None:
+            return jsonify({'success': False,
+                            'error': 'Receiver is busy with an observation'})
+
+    params = request.json or {}
+    sun_scan_cancel.clear()
+    sun_scan_thread = threading.Thread(target=_run_sun_scan, args=(params,),
+                                       daemon=True)
+    sun_scan_thread.start()
+    return jsonify({'success': True})
+
+
+@app.route('/api/sunscan/stop', methods=['POST'])
+def api_sunscan_stop():
+    sun_scan_cancel.set()
+    return jsonify({'success': True})
+
+
+@app.route('/api/sunscan/status', methods=['GET'])
+def api_sunscan_status():
+    return jsonify({
+        'running': sun_scan_state["running"],
+        'progress': sun_scan_state["progress"],
+        'total': sun_scan_state["total"],
+        'point_info': sun_scan_state["point_info"],
+        'result': sun_scan_state["result"],
+        'error': sun_scan_state["error"],
+        'has_image': sun_scan_state["image_path"] is not None
+                     and os.path.isfile(sun_scan_state["image_path"]),
+    })
+
+
+@app.route('/api/sunscan/image', methods=['GET'])
+def api_sunscan_image():
+    img = sun_scan_state.get("image_path")
+    if img and os.path.isfile(img):
+        from flask import send_file
+        return send_file(img, mimetype='image/png')
+    return ('', 404)
 
 
 def main():

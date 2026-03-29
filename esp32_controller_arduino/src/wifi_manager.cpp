@@ -43,33 +43,21 @@ bool WiFiManager::connectSTA(const String &ssid, const String &password, int tim
     unsigned long start = millis();
     while (WiFi.status() != WL_CONNECTED) {
         if (millis() - start > (unsigned long)timeout * 1000) {
-            Serial.println("WiFi connection timeout");
+            Serial.println("WiFi STA timeout - AP still active");
             return false;
         }
         delay(500);
     }
 
     connectedSSID = ssid;
-    Serial.printf("Connected to %s\n", ssid.c_str());
-    Serial.printf("IP: %s\n", WiFi.localIP().toString().c_str());
+    Serial.printf("Connected to %s, IP: %s\n", ssid.c_str(),
+                  WiFi.localIP().toString().c_str());
     return true;
 }
 
 void WiFiManager::startAP() {
-    // Disconnect any previous connection
-    WiFi.disconnect(true);
-    delay(100);
-
-    WiFi.mode(WIFI_OFF);
-    delay(100);
-
-    WiFi.mode(WIFI_AP);
-    delay(100);
-
-    // Disable WiFi sleep to keep AP alive
+    // Configure AP - assumes WiFi mode is already set (AP or AP_STA)
     WiFi.setSleep(false);
-
-    // Max TX power for better range
     WiFi.setTxPower(WIFI_POWER_19_5dBm);
 
     // Configure AP with static IP
@@ -78,39 +66,49 @@ void WiFiManager::startAP() {
     IPAddress subnet(255, 255, 255, 0);
     WiFi.softAPConfig(local_IP, gateway, subnet);
 
-    // Try channel 6 (often less congested)
+    // Try channel 6 (often less congested), up to 4 clients
     bool result = WiFi.softAP(settings.apSSID.c_str(), settings.apPassword.c_str(), 6, false, 4);
+    apActive = result;
 
     if (result) {
-        Serial.println("softAP started successfully");
+        Serial.printf("AP started: %s at %s\n", settings.apSSID.c_str(),
+                      WiFi.softAPIP().toString().c_str());
     } else {
         Serial.println("softAP FAILED to start!");
     }
 
-    apActive = true;
-    delay(1000);  // Let AP stabilize
-
-    Serial.printf("AP SSID: %s\n", settings.apSSID.c_str());
-    Serial.printf("AP IP: %s\n", WiFi.softAPIP().toString().c_str());
-    Serial.printf("AP MAC: %s\n", WiFi.softAPmacAddress().c_str());
-    Serial.printf("AP Channel: %d\n", WiFi.channel());
-    Serial.printf("Stations connected: %d\n", WiFi.softAPgetStationNum());
+    delay(500);  // Let AP stabilize
 }
 
 bool WiFiManager::startup() {
-    // Try saved credentials first
+    // Step 1: Start AP immediately - guarantees a connection path within seconds
+    WiFi.mode(WIFI_AP);
+    delay(100);
+    startAP();
+
+    // Step 2: Try saved STA credentials on top of the running AP
     String ssid, password;
     if (loadCredentials(ssid, password)) {
-        if (connectSTA(ssid, password)) {
-            Serial.println("Connected to WiFi - AP mode disabled");
-            return true;
+        Serial.printf("Trying saved WiFi: %s\n", ssid.c_str());
+        WiFi.mode(WIFI_AP_STA);  // Keep AP running, add STA
+        WiFi.begin(ssid.c_str(), password.c_str());
+
+        unsigned long start = millis();
+        while (WiFi.status() != WL_CONNECTED) {
+            if (millis() - start > (unsigned long)WIFI_CONNECT_TIMEOUT * 1000) {
+                Serial.println("STA connection timeout - AP still active");
+                return false;
+            }
+            delay(500);
         }
+
+        connectedSSID = ssid;
+        Serial.printf("Also connected to %s, IP: %s\n", ssid.c_str(),
+                      WiFi.localIP().toString().c_str());
+        return true;
     }
 
-    // STA failed or no credentials - use AP mode
-    WiFi.disconnect();
-    startAP();
-    Serial.println("AP mode active - connect to configure WiFi");
+    Serial.println("No saved WiFi credentials - AP mode only");
     return false;
 }
 
