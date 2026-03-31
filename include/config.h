@@ -77,6 +77,7 @@
 // Safety
 #define DEFAULT_CURRENT_LIMIT   5.0     // Stop motor if current exceeds this (Amps)
 #define DEFAULT_STALL_TIMEOUT   2000    // No pulses for this long = stalled (ms)
+#define DEFAULT_BACKLASH_AZ     2.0     // Azimuth backlash compensation (degrees)
 
 // =============================================================================
 // ENCODER CONFIGURATION (fixed, not user-adjustable)
@@ -136,6 +137,7 @@ typedef struct {
     float currentLimit;         // Overcurrent threshold (Amps)
     uint16_t stallTimeoutMs;    // Stall detection timeout
     uint16_t debounceMs;        // Encoder pulse debounce time
+    float backlashAzDeg;        // Azimuth backlash compensation (degrees)
 
     uint32_t checksum;          // Simple checksum for validation
 } Config;

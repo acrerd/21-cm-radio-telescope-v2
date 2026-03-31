@@ -224,6 +224,10 @@ MotionState motionStateAlt = MOTION_IDLE;
 bool currentDirAz = true;   // true = East (HIGH), false = West (LOW)
 bool currentDirAlt = true;  // true = Up (HIGH), false = Down (LOW)
 
+// Azimuth backlash compensation: pulses to absorb after direction change
+volatile int32_t azBacklashRemaining = 0;
+bool lastDrivenDirAz = true;  // Last direction az actually drove (for backlash detection)
+
 // Timing for ramps
 unsigned long driveStartTimeAz = 0;
 unsigned long driveStartTimeAlt = 0;
@@ -316,6 +320,7 @@ void loadDefaults() {
     cfg.stallTimeoutMs = DEFAULT_STALL_TIMEOUT;
     #endif
     cfg.debounceMs = DEFAULT_DEBOUNCE_MS;
+    cfg.backlashAzDeg = DEFAULT_BACKLASH_AZ;
     cfg.checksum = calculateChecksum(&cfg);
 }
 
@@ -369,11 +374,16 @@ int32_t getRampDownPulses() {
 void pulseAzISR() {
     unsigned long now = millis();
     if ((now - lastPulseAz) >= cfg.debounceMs) {
-        // Determine direction from DIR pin state
-        if (digitalRead(PIN_DIR_AZ) == AZ_DIR(HIGH)) {
-            positionAz++;   // Moving East (increasing)
+        if (azBacklashRemaining > 0) {
+            // Absorb backlash pulse - motor is taking up gear slack
+            azBacklashRemaining--;
         } else {
-            positionAz--;   // Moving West (decreasing)
+            // Determine direction from DIR pin state
+            if (digitalRead(PIN_DIR_AZ) == AZ_DIR(HIGH)) {
+                positionAz++;   // Moving East (increasing)
+            } else {
+                positionAz--;   // Moving West (decreasing)
+            }
         }
     }
     lastPulseAz = now;
@@ -891,13 +901,58 @@ void performHoming() {
     }
 
     // At limit switches - reset position counters
-    positionAz = 0;
     positionAlt = 0;
 
-    printAllLn("Homing: At limit switches, moving to home position...");
+    // Take up azimuth backlash: reverse direction and wait for first pulse
+    printAllLn("Homing: Taking up azimuth backlash...");
+    digitalWrite(PIN_DIR_AZ, AZ_DIR(HIGH));
+    positionAz = 0;
+    lastPulseAz = millis();
+    analogWrite(PIN_PWM_AZ, PWM_MIN_SPEED);
 
-    // Now drive to home position offset
-    // Set direction away from limits (HIGH = East/Up)
+    while (positionAz == 0) {
+        updateFilteredCurrents();
+        outputStatusIfChanged();
+
+        FaultCode fault = checkFaultFlags();
+        if (fault != FAULT_NONE) {
+            stopAllMotors();
+            faultCode = fault;
+            systemState = STATE_FAULT;
+            printAll("Homing ABORTED: ");
+            printAllLn(getFaultString());
+            return;
+        }
+        fault = checkCurrentLimits();
+        if (fault != FAULT_NONE) {
+            stopAllMotors();
+            faultCode = fault;
+            systemState = STATE_FAULT;
+            printAll("Homing ABORTED: ");
+            printAllLn(getFaultString());
+            return;
+        }
+        if ((millis() - lastPulseAz) > cfg.stallTimeoutMs) {
+            stopAllMotors();
+            faultCode = FAULT_AZ_STALL;
+            systemState = STATE_FAULT;
+            printAllLn("Homing ABORTED: Azimuth motor not responding during backlash");
+            return;
+        }
+
+        delay(10);
+        #ifdef SIMULATION_MODE
+        simulatePulses();
+        #endif
+    }
+
+    analogWrite(PIN_PWM_AZ, PWM_STOP);
+    positionAz = 0;  // Zero at first forward pulse
+    printAllLn("Homing: Azimuth backlash taken up, zero set");
+
+    printAllLn("Homing: Moving to home position...");
+
+    // Drive to home position offset
     digitalWrite(PIN_DIR_AZ, AZ_DIR(HIGH));
     digitalWrite(PIN_DIR_ALT, HIGH);
 
@@ -1003,6 +1058,8 @@ void performHoming() {
     printAllLn("Ready. Type HELP for commands.");
 
     systemState = STATE_IDLE;
+    lastDrivenDirAz = true;    // Homing ends driving positive, no backlash on first slew
+    azBacklashRemaining = 0;
     prevStatusLine[0] = '\0';  // Force next status output to print
 
     printPrompt();
@@ -1056,6 +1113,11 @@ void updateAxisMotion(
                 *currentDir = needsPositiveDir;
                 int level = needsPositiveDir ? HIGH : LOW;
                 digitalWrite(pinDir, (pinDir == PIN_DIR_AZ) ? AZ_DIR(level) : level);
+                // Apply backlash compensation on az direction change
+                if (pinDir == PIN_DIR_AZ && needsPositiveDir != lastDrivenDirAz) {
+                    azBacklashRemaining = (int32_t)(cfg.backlashAzDeg * PULSES_PER_DEGREE);
+                    lastDrivenDirAz = needsPositiveDir;
+                }
                 *driveStartTime = millis();
                 *lastPulse = millis();
                 *motionState = MOTION_DRIVING;
@@ -1107,6 +1169,11 @@ void updateAxisMotion(
                         *currentDir = needsPositiveDir;
                         int lvl = needsPositiveDir ? HIGH : LOW;
                         digitalWrite(pinDir, (pinDir == PIN_DIR_AZ) ? AZ_DIR(lvl) : lvl);
+                        // Apply backlash compensation on az direction change
+                        if (pinDir == PIN_DIR_AZ && needsPositiveDir != lastDrivenDirAz) {
+                            azBacklashRemaining = (int32_t)(cfg.backlashAzDeg * PULSES_PER_DEGREE);
+                            lastDrivenDirAz = needsPositiveDir;
+                        }
                         *driveStartTime = millis();
                         *lastPulse = millis();
                         *motionState = MOTION_DRIVING;
@@ -1277,6 +1344,7 @@ void showHelp() {
     printAllLn("  CURRENT          - Current limit (A)");
     printAllLn("  STALL            - Stall timeout (ms)");
     printAllLn("  DEBOUNCE         - Encoder debounce (ms)");
+    printAllLn("  BACKLASH         - Az backlash compensation (deg)");
 }
 
 // Show current configuration with SET parameter names
@@ -1301,6 +1369,7 @@ void showConfig() {
     printAll("  CURRENT="); printAllFloat(cfg.currentLimit, 1); printAllLn(" (A)");
     printAll("  STALL="); printAllInt(cfg.stallTimeoutMs); printAllLn(" (ms)");
     printAll("  DEBOUNCE="); printAllInt(cfg.debounceMs); printAllLn(" (ms)");
+    printAll("  BACKLASH="); printAllFloat(cfg.backlashAzDeg, 1); printAllLn(" (deg, az only)");
 }
 
 // Execute a drive command
@@ -1384,6 +1453,9 @@ void processSetCommand(const char* param, float value) {
     } else if (strEqualsIgnoreCase(param, "DEBOUNCE")) {
         cfg.debounceMs = (uint16_t)value;
         printAll("Debounce set to "); printAllInt(cfg.debounceMs); printAllLn(" ms");
+    } else if (strEqualsIgnoreCase(param, "BACKLASH")) {
+        cfg.backlashAzDeg = value;
+        printAll("Az backlash set to "); printAllFloat(cfg.backlashAzDeg, 1); printAllLn(" deg");
     } else {
         printAll("ERROR: Unknown parameter '"); printAll(param); printAllLn("'");
     }
