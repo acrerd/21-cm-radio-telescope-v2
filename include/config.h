@@ -30,6 +30,9 @@
 #define PIN_DIR_AZ      9       // Azimuth direction (yellow)
 #define PIN_DIR_ALT     11      // Altitude direction (yellow)
 
+// Azimuth motor direction is wired in reverse
+#define AZ_DIR_INVERT   1       // 1 = invert azimuth direction sense
+
 // Position encoder pulse inputs (2 pulses per degree, FALLING edge)
 #define PIN_PULSE_AZ    12      // Azimuth encoder (yellow)
 #define PIN_PULSE_ALT   13      // Altitude encoder (blue)
@@ -64,7 +67,7 @@
 
 // Home position (degrees)
 #define DEFAULT_HOME_ALT        0.0     // Altitude home position
-#define DEFAULT_HOME_AZ         180.0   // Azimuth home position
+#define DEFAULT_HOME_AZ         0.0     // Azimuth home position
 
 // Motion control
 #define DEFAULT_RAMP_UP_MS      500     // Time to reach full speed (ms)
@@ -80,7 +83,7 @@
 // =============================================================================
 
 #define PULSES_PER_DEGREE   2       // Encoder resolution
-#define DEBOUNCE_MS         15      // Minimum time between valid pulses
+#define DEFAULT_DEBOUNCE_MS 200     // Minimum time between valid pulses
 
 // =============================================================================
 // PWM VALUES (fixed, hardware-dependent)
@@ -88,7 +91,7 @@
 
 #define PWM_STOP            255     // Motor stopped (inverted logic)
 #define PWM_FULL_SPEED      0       // Motor at maximum speed
-#define PWM_MIN_SPEED       220     // Minimum speed during ramp
+#define PWM_MIN_SPEED       100     // Minimum speed during ramp
 
 // =============================================================================
 // CURRENT SENSOR CALIBRATION (fixed, hardware-dependent)
@@ -132,6 +135,7 @@ typedef struct {
     // Safety
     float currentLimit;         // Overcurrent threshold (Amps)
     uint16_t stallTimeoutMs;    // Stall detection timeout
+    uint16_t debounceMs;        // Encoder pulse debounce time
 
     uint32_t checksum;          // Simple checksum for validation
 } Config;

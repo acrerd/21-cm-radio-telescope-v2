@@ -25,6 +25,13 @@
 #include <math.h>
 #include "config.h"
 
+// Azimuth direction inversion: motor is wired in reverse
+#if AZ_DIR_INVERT
+#define AZ_DIR(level)  ((level) == HIGH ? LOW : HIGH)
+#else
+#define AZ_DIR(level)  (level)
+#endif
+
 // =============================================================================
 // ESP32 SERIAL COMMUNICATION (WT32-ETH01)
 // =============================================================================
@@ -76,7 +83,7 @@ static void simAnalogWrite(uint32_t pin, uint32_t val) {
 
 // Override digitalWrite - capture direction state, but pass through ESP bridge pins
 static void simDigitalWrite(uint32_t pin, uint32_t val) {
-    if (pin == PIN_DIR_AZ)       simDirAz = (val == HIGH);
+    if (pin == PIN_DIR_AZ)       simDirAz = (val == AZ_DIR(HIGH));
     else if (pin == PIN_DIR_ALT) simDirAlt = (val == HIGH);
     else {
         // Pass through to real hardware for non-motor pins (ESP bridge, etc.)
@@ -149,7 +156,6 @@ Config cfg;
 const char* getFaultString();
 void outputStatus();
 void outputStatusIfChanged();
-void updatePrevStatus();
 
 #if ESP_BRIDGE_ENABLED
 void setupESPBridge();
@@ -239,13 +245,8 @@ int serial1Index = 0;
 char lastLineEndChar1 = 0;  // Track CR/LF for Serial1
 #endif
 
-// Previous state tracking (for change detection)
-int32_t prevPositionAz = 0;
-int32_t prevPositionAlt = 0;
-int32_t prevTargetAz = 0;
-int32_t prevTargetAlt = 0;
-SystemState prevSystemState = STATE_INIT;
-FaultCode prevFaultCode = FAULT_NONE;
+// Previous status string (for duplicate suppression on programming port)
+char prevStatusLine[128] = "";
 
 // Calibrator state
 bool calibratorOn = false;
@@ -314,6 +315,7 @@ void loadDefaults() {
     #else
     cfg.stallTimeoutMs = DEFAULT_STALL_TIMEOUT;
     #endif
+    cfg.debounceMs = DEFAULT_DEBOUNCE_MS;
     cfg.checksum = calculateChecksum(&cfg);
 }
 
@@ -366,9 +368,9 @@ int32_t getRampDownPulses() {
 
 void pulseAzISR() {
     unsigned long now = millis();
-    if ((now - lastPulseAz) >= DEBOUNCE_MS) {
+    if ((now - lastPulseAz) >= cfg.debounceMs) {
         // Determine direction from DIR pin state
-        if (digitalRead(PIN_DIR_AZ) == HIGH) {
+        if (digitalRead(PIN_DIR_AZ) == AZ_DIR(HIGH)) {
             positionAz++;   // Moving East (increasing)
         } else {
             positionAz--;   // Moving West (decreasing)
@@ -379,7 +381,7 @@ void pulseAzISR() {
 
 void pulseAltISR() {
     unsigned long now = millis();
-    if ((now - lastPulseAlt) >= DEBOUNCE_MS) {
+    if ((now - lastPulseAlt) >= cfg.debounceMs) {
         // Determine direction from DIR pin state
         if (digitalRead(PIN_DIR_ALT) == HIGH) {
             positionAlt++;  // Moving Up (increasing)
@@ -633,12 +635,17 @@ FaultCode checkCurrentLimits() {
 FaultCode checkStall() {
     unsigned long now = millis();
 
-    // Only check for stall when actively driving (not when stopping to reverse)
-    if (motionStateAz == MOTION_DRIVING && (now - lastPulseAz) > cfg.stallTimeoutMs) {
+    // Only check for stall when actively driving and enough time has elapsed
+    // since the drive started for the timeout to be meaningful
+    if (motionStateAz == MOTION_DRIVING &&
+        (now - driveStartTimeAz) > cfg.stallTimeoutMs &&
+        (now - lastPulseAz) > cfg.stallTimeoutMs) {
         return FAULT_AZ_STALL;
     }
 
-    if (motionStateAlt == MOTION_DRIVING && (now - lastPulseAlt) > cfg.stallTimeoutMs) {
+    if (motionStateAlt == MOTION_DRIVING &&
+        (now - driveStartTimeAlt) > cfg.stallTimeoutMs &&
+        (now - lastPulseAlt) > cfg.stallTimeoutMs) {
         return FAULT_ALT_STALL;
     }
 
@@ -819,7 +826,7 @@ void performHoming() {
     lastPulseAlt = millis();
 
     // Set direction toward limit switches (LOW = West/Down)
-    digitalWrite(PIN_DIR_AZ, LOW);
+    digitalWrite(PIN_DIR_AZ, AZ_DIR(LOW));
     digitalWrite(PIN_DIR_ALT, LOW);
 
     // Start motors at moderate speed
@@ -835,6 +842,8 @@ void performHoming() {
     // Drive until both axes hit their limit switches (no pulses = at limit)
     while (!azAtLimit || !altAtLimit) {
         unsigned long now = millis();
+
+        updateFilteredCurrents();
 
         // Output status when it changes
         outputStatusIfChanged();
@@ -889,7 +898,7 @@ void performHoming() {
 
     // Now drive to home position offset
     // Set direction away from limits (HIGH = East/Up)
-    digitalWrite(PIN_DIR_AZ, HIGH);
+    digitalWrite(PIN_DIR_AZ, AZ_DIR(HIGH));
     digitalWrite(PIN_DIR_ALT, HIGH);
 
     // Reset pulse timestamps
@@ -908,6 +917,8 @@ void performHoming() {
 
     while (motionStateAz != MOTION_IDLE || motionStateAlt != MOTION_IDLE) {
         unsigned long now = millis();
+
+        updateFilteredCurrents();
 
         // Output status when it changes
         outputStatusIfChanged();
@@ -991,9 +1002,8 @@ void performHoming() {
     printAllLn("");
     printAllLn("Ready. Type HELP for commands.");
 
-    // Set state before updating prev status to avoid spurious status output
     systemState = STATE_IDLE;
-    updatePrevStatus();
+    prevStatusLine[0] = '\0';  // Force next status output to print
 
     printPrompt();
 }
@@ -1044,7 +1054,8 @@ void updateAxisMotion(
             if (remaining > 0) {
                 // Start moving toward target
                 *currentDir = needsPositiveDir;
-                digitalWrite(pinDir, needsPositiveDir ? HIGH : LOW);
+                int level = needsPositiveDir ? HIGH : LOW;
+                digitalWrite(pinDir, (pinDir == PIN_DIR_AZ) ? AZ_DIR(level) : level);
                 *driveStartTime = millis();
                 *lastPulse = millis();
                 *motionState = MOTION_DRIVING;
@@ -1094,7 +1105,8 @@ void updateAxisMotion(
                     if (remaining > 0) {
                         needsPositiveDir = (diff > 0);
                         *currentDir = needsPositiveDir;
-                        digitalWrite(pinDir, needsPositiveDir ? HIGH : LOW);
+                        int lvl = needsPositiveDir ? HIGH : LOW;
+                        digitalWrite(pinDir, (pinDir == PIN_DIR_AZ) ? AZ_DIR(lvl) : lvl);
                         *driveStartTime = millis();
                         *lastPulse = millis();
                         *motionState = MOTION_DRIVING;
@@ -1173,45 +1185,17 @@ const char* getFaultString() {
     }
 }
 
-// Check if status has changed since last output
-bool statusChanged() {
-    // Check position change (round to 0.5 degree to avoid noise)
-    int32_t posAzRounded = positionAz / (PULSES_PER_DEGREE / 2);
-    int32_t posAltRounded = positionAlt / (PULSES_PER_DEGREE / 2);
-    int32_t prevAzRounded = prevPositionAz / (PULSES_PER_DEGREE / 2);
-    int32_t prevAltRounded = prevPositionAlt / (PULSES_PER_DEGREE / 2);
-
-    if (posAzRounded != prevAzRounded) return true;
-    if (posAltRounded != prevAltRounded) return true;
-    if (systemState != prevSystemState) return true;
-    if (faultCode != prevFaultCode) return true;
-    if (targetAz != prevTargetAz) return true;
-    if (targetAlt != prevTargetAlt) return true;
-
-    return false;
-}
-
-// Update previous state after outputting status
-void updatePrevStatus() {
-    prevPositionAz = positionAz;
-    prevPositionAlt = positionAlt;
-    prevTargetAz = targetAz;
-    prevTargetAlt = targetAlt;
-    prevSystemState = systemState;
-    prevFaultCode = faultCode;
-}
-
 void outputStatus() {
     float altDeg = (float)positionAlt / PULSES_PER_DEGREE;
     float azDeg = (float)positionAz / PULSES_PER_DEGREE;
-    // Build status string for both Serial (USB) and Serial1 (ESP32)
+    // Build full status string
     char statusLine[128];
     int pos = 0;
 
     pos += snprintf(statusLine + pos, sizeof(statusLine) - pos, "Alt:%.1f Az:%.1f",
                     altDeg, azDeg);
     pos += snprintf(statusLine + pos, sizeof(statusLine) - pos, " Ialt:%.1fA Iaz:%.1fA",
-                    filteredCurrentAlt, filteredCurrentAz);
+                    filteredCurrentAlt, -filteredCurrentAz);
     pos += snprintf(statusLine + pos, sizeof(statusLine) - pos, " Status:%s",
                     getStatusString());
 
@@ -1226,28 +1210,39 @@ void outputStatus() {
                         (float)targetAz / PULSES_PER_DEGREE);
     }
 
-    // Calibrator state
     pos += snprintf(statusLine + pos, sizeof(statusLine) - pos, " Cal:%s",
                     calibratorOn ? "ON" : "OFF");
 
-    // Output to Programming Port (USB)
-    Serial.println(statusLine);
+    // Build comparison string excluding currents (for programming port dedup)
+    char statusCompare[128];
+    int cpos = 0;
+    cpos += snprintf(statusCompare + cpos, sizeof(statusCompare) - cpos, "Alt:%.1f Az:%.1f Status:%s",
+                     altDeg, azDeg, getStatusString());
+    if (systemState == STATE_FAULT) {
+        cpos += snprintf(statusCompare + cpos, sizeof(statusCompare) - cpos, " [%s]", getFaultString());
+    }
+    if (systemState == STATE_DRIVING) {
+        cpos += snprintf(statusCompare + cpos, sizeof(statusCompare) - cpos, " -> Alt:%.1f Az:%.1f",
+                         (float)targetAlt / PULSES_PER_DEGREE, (float)targetAz / PULSES_PER_DEGREE);
+    }
+    cpos += snprintf(statusCompare + cpos, sizeof(statusCompare) - cpos, " Cal:%s",
+                     calibratorOn ? "ON" : "OFF");
 
-    // Native USB reserved for ESP32 bridge - no Due status output there
+    // Only print to programming port if non-current fields changed
+    if (strcmp(statusCompare, prevStatusLine) != 0) {
+        Serial.println(statusLine);
+        strncpy(prevStatusLine, statusCompare, sizeof(prevStatusLine));
+    }
 
-    // Output to Serial1 (ESP32) so it can read status
+    // Always output to Serial1 (ESP32) so it can read status
     #if ENABLE_SERIAL1
     Serial1.println(statusLine);
     #endif
-
-    updatePrevStatus();
 }
 
-// Output status only if something changed
+// Output status periodically (duplicate suppression is in outputStatus itself)
 void outputStatusIfChanged() {
-    if (statusChanged()) {
-        outputStatus();
-    }
+    outputStatus();
 }
 
 // Show help message
@@ -1258,7 +1253,7 @@ void showHelp() {
     printAllLn("  HOME             - Run homing sequence");
     printAllLn("  STOP             - Emergency stop");
     printAllLn("  CAL [ON|OFF]     - Toggle/set calibrator");
-    printAllLn("  RESET            - Clear fault and re-home");
+    printAllLn("  RESET            - Clear fault");
     printAllLn("  STATUS           - Show current status");
     printAllLn("  CONFIG           - Show configuration");
     printAllLn("  SET <param> <val>- Set parameter (see below)");
@@ -1281,6 +1276,7 @@ void showHelp() {
     printAllLn("  STOPRAMP         - Reversal decel time (ms)");
     printAllLn("  CURRENT          - Current limit (A)");
     printAllLn("  STALL            - Stall timeout (ms)");
+    printAllLn("  DEBOUNCE         - Encoder debounce (ms)");
 }
 
 // Show current configuration with SET parameter names
@@ -1304,6 +1300,7 @@ void showConfig() {
     printAll("  STOPRAMP="); printAllInt(cfg.stopRampMs); printAllLn(" (ms)");
     printAll("  CURRENT="); printAllFloat(cfg.currentLimit, 1); printAllLn(" (A)");
     printAll("  STALL="); printAllInt(cfg.stallTimeoutMs); printAllLn(" (ms)");
+    printAll("  DEBOUNCE="); printAllInt(cfg.debounceMs); printAllLn(" (ms)");
 }
 
 // Execute a drive command
@@ -1384,6 +1381,9 @@ void processSetCommand(const char* param, float value) {
     } else if (strEqualsIgnoreCase(param, "STALL")) {
         cfg.stallTimeoutMs = (uint16_t)value;
         printAll("Stall timeout set to "); printAllInt(cfg.stallTimeoutMs); printAllLn(" ms");
+    } else if (strEqualsIgnoreCase(param, "DEBOUNCE")) {
+        cfg.debounceMs = (uint16_t)value;
+        printAll("Debounce set to "); printAllInt(cfg.debounceMs); printAllLn(" ms");
     } else {
         printAll("ERROR: Unknown parameter '"); printAll(param); printAllLn("'");
     }
@@ -1463,10 +1463,9 @@ void processCommand(const char* buffer) {
         if (systemState != STATE_FAULT) {
             printAllLn("No fault to reset.");
         } else {
-            printAllLn("Clearing fault and re-homing...");
+            printAllLn("Fault cleared. Use HOME to re-home.");
             faultCode = FAULT_NONE;
-            systemState = STATE_HOMING;
-            performHoming();
+            systemState = STATE_IDLE;
         }
     }
     else if (strEqualsIgnoreCase(cmd, "STATUS")) {
@@ -1666,7 +1665,7 @@ void setup() {
     // Configure and initialize direction outputs
     pinMode(PIN_DIR_AZ, OUTPUT);
     pinMode(PIN_DIR_ALT, OUTPUT);
-    digitalWrite(PIN_DIR_AZ, HIGH);
+    digitalWrite(PIN_DIR_AZ, AZ_DIR(HIGH));
     digitalWrite(PIN_DIR_ALT, HIGH);
 
     // Configure calibrator output (off by default)
