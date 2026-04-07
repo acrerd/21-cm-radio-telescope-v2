@@ -32,6 +32,13 @@
 #define AZ_DIR(level)  (level)
 #endif
 
+// Altitude direction inversion: motor is wired in reverse
+#if ALT_DIR_INVERT
+#define ALT_DIR(level)  ((level) == HIGH ? LOW : HIGH)
+#else
+#define ALT_DIR(level)  (level)
+#endif
+
 // =============================================================================
 // ESP32 SERIAL COMMUNICATION (WT32-ETH01)
 // =============================================================================
@@ -84,7 +91,7 @@ static void simAnalogWrite(uint32_t pin, uint32_t val) {
 // Override digitalWrite - capture direction state, but pass through ESP bridge pins
 static void simDigitalWrite(uint32_t pin, uint32_t val) {
     if (pin == PIN_DIR_AZ)       simDirAz = (val == AZ_DIR(HIGH));
-    else if (pin == PIN_DIR_ALT) simDirAlt = (val == HIGH);
+    else if (pin == PIN_DIR_ALT) simDirAlt = (val == ALT_DIR(HIGH));
     else {
         // Pass through to real hardware for non-motor pins (ESP bridge, etc.)
         PIO_SetOutput(g_APinDescription[pin].pPort, g_APinDescription[pin].ulPin,
@@ -258,6 +265,10 @@ char lastLineEndChar1 = 0;  // Track CR/LF for Serial1
 // Previous status string (for duplicate suppression on programming port)
 char prevStatusLine[128] = "";
 
+// True when current command was received over Serial1 (ESP32/controller),
+// false when from Serial (programming port).
+bool cmdFromSerial1 = false;
+
 // Calibrator state
 bool calibratorOn = false;
 
@@ -359,13 +370,13 @@ void saveConfig() {
     }
 }
 
-// Helper to get home offset in pulses (calculated from config)
+// Helper to get home offset in pulses (from limit / position 0)
 int32_t getHomeAzOffsetPulses() {
-    return (int32_t)((cfg.homeAz - cfg.azMin) * PULSES_PER_DEGREE);
+    return (int32_t)(cfg.homeAz * PULSES_PER_DEGREE);
 }
 
 int32_t getHomeAltOffsetPulses() {
-    return (int32_t)((cfg.homeAlt - cfg.altMin) * PULSES_PER_DEGREE);
+    return (int32_t)(cfg.homeAlt * PULSES_PER_DEGREE);
 }
 
 // Helper to get ramp down pulses from degrees
@@ -399,7 +410,7 @@ void pulseAltISR() {
     unsigned long now = millis();
     if ((now - lastPulseAlt) >= cfg.debounceMs) {
         // Determine direction from DIR pin state
-        if (digitalRead(PIN_DIR_ALT) == HIGH) {
+        if (digitalRead(PIN_DIR_ALT) == ALT_DIR(HIGH)) {
             positionAlt++;  // Moving Up (increasing)
         } else {
             positionAlt--;  // Moving Down (decreasing)
@@ -600,9 +611,27 @@ float readCurrentAltRaw() {
     return (voltage - currentOffsetAlt) / CURRENT_SENSOR_SENSITIVITY;
 }
 
+// Slowly track the zero-current offset while motor is idle, so that long-term
+// sensor drift (temperature, supply variation) doesn't show up as a constant
+// baseline current. Slow time constant so brief noise doesn't pull the offset.
+#define OFFSET_TRACK_ALPHA 0.005f
+
 void updateFilteredCurrents() {
-    float rawAz = readCurrentAzRaw();
-    float rawAlt = readCurrentAltRaw();
+    int adcAz  = analogRead(PIN_CURRENT_AZ);
+    int adcAlt = analogRead(PIN_CURRENT_ALT);
+    float vAz  = (ADC_REFERENCE_V / ADC_RESOLUTION_BITS) * adcAz;
+    float vAlt = (ADC_REFERENCE_V / ADC_RESOLUTION_BITS) * adcAlt;
+
+    // Re-zero offsets while idle
+    if (motionStateAz == MOTION_IDLE) {
+        currentOffsetAz += OFFSET_TRACK_ALPHA * (vAz - currentOffsetAz);
+    }
+    if (motionStateAlt == MOTION_IDLE) {
+        currentOffsetAlt += OFFSET_TRACK_ALPHA * (vAlt - currentOffsetAlt);
+    }
+
+    float rawAz  = (vAz  - currentOffsetAz)  / CURRENT_SENSOR_SENSITIVITY;
+    float rawAlt = (vAlt - currentOffsetAlt) / CURRENT_SENSOR_SENSITIVITY;
     filteredCurrentAz  += CURRENT_FILTER_ALPHA * (rawAz  - filteredCurrentAz);
     filteredCurrentAlt += CURRENT_FILTER_ALPHA * (rawAlt - filteredCurrentAlt);
 }
@@ -611,7 +640,12 @@ void updateFilteredCurrents() {
 // SAFETY CHECKS
 // =============================================================================
 
-FaultCode checkFaultFlags() {
+// Require the same fault to persist for this many consecutive checks before
+// it is treated as real. Suppresses transient driver fault reports caused by
+// inductive kickback when motors stop or brief supply sag during inrush.
+#define FAULT_FLAG_PERSIST_COUNT 5
+
+FaultCode checkFaultFlagsRaw() {
     int ff1Az = digitalRead(PIN_FF1_AZ);
     int ff2Az = digitalRead(PIN_FF2_AZ);
     int ff1Alt = digitalRead(PIN_FF1_ALT);
@@ -630,17 +664,37 @@ FaultCode checkFaultFlags() {
     return FAULT_NONE;
 }
 
+FaultCode checkFaultFlags() {
+    static FaultCode pendingFault = FAULT_NONE;
+    static int pendingCount = 0;
+
+    FaultCode now = checkFaultFlagsRaw();
+    if (now == FAULT_NONE) {
+        pendingFault = FAULT_NONE;
+        pendingCount = 0;
+        return FAULT_NONE;
+    }
+    if (now == pendingFault) {
+        pendingCount++;
+        if (pendingCount >= FAULT_FLAG_PERSIST_COUNT) {
+            return now;
+        }
+    } else {
+        pendingFault = now;
+        pendingCount = 1;
+    }
+    return FAULT_NONE;
+}
+
 FaultCode checkCurrentLimits() {
     if (isMovingAz()) {
-        float currentAz = fabs(readCurrentAzRaw());
-        if (currentAz > cfg.currentLimit) {
+        if (fabs(filteredCurrentAz) > cfg.currentLimit) {
             return FAULT_AZ_OVERCURRENT;
         }
     }
 
     if (isMovingAlt()) {
-        float currentAlt = fabs(readCurrentAltRaw());
-        if (currentAlt > cfg.currentLimit) {
+        if (fabs(filteredCurrentAlt) > cfg.currentLimit) {
             return FAULT_ALT_OVERCURRENT;
         }
     }
@@ -726,6 +780,27 @@ void runSafetyChecks() {
     if (systemState == STATE_DRIVING) {
         fault = checkStall();
         if (fault != FAULT_NONE) {
+            // If the stalled axis was driving toward a hardware limit, treat the
+            // stall as "arrived at limit": snap position to the limit value and
+            // clear the stall instead of faulting. This handles the case where
+            // accumulated encoder drift makes us think we're slightly above the
+            // limit when we're physically already against it.
+            if (fault == FAULT_AZ_STALL && !currentDirAz &&
+                (positionAz / (float)PULSES_PER_DEGREE) <= cfg.azHwMin + 2.0) {
+                stopMotorAz();
+                positionAz = (int32_t)(cfg.azHwMin * PULSES_PER_DEGREE);
+                targetAz = positionAz;
+                printAllLn("Az limit reached (snap to limit)");
+                return;
+            }
+            if (fault == FAULT_ALT_STALL && !currentDirAlt &&
+                (positionAlt / (float)PULSES_PER_DEGREE) <= cfg.altHwMin + 2.0) {
+                stopMotorAlt();
+                positionAlt = (int32_t)(cfg.altHwMin * PULSES_PER_DEGREE);
+                targetAlt = positionAlt;
+                printAllLn("Alt limit reached (snap to limit)");
+                return;
+            }
             stopAllMotors();
             faultCode = fault;
             systemState = STATE_FAULT;
@@ -834,20 +909,19 @@ bool isValidTarget(float altDeg, float azDeg) {
 // HOMING SEQUENCE
 // =============================================================================
 
-void performHoming() {
-    printAllLn("Homing: Driving to limit switches...");
-
-    // Reset pulse timestamps
+// Helper: drive both axes toward their limits until no pulses for stallTimeoutMs.
+// Uses the normal ramp-up profile, then cruises at full speed (no ramp-down,
+// since we're driving to a hard stop). Returns false if a fault occurred.
+static bool driveToLimits() {
     lastPulseAz = millis();
     lastPulseAlt = millis();
 
-    // Set direction toward limit switches (LOW = West/Down)
     digitalWrite(PIN_DIR_AZ, AZ_DIR(LOW));
-    digitalWrite(PIN_DIR_ALT, LOW);
+    digitalWrite(PIN_DIR_ALT, ALT_DIR(LOW));
 
-    // Start motors at moderate speed
-    analogWrite(PIN_PWM_AZ, 100);   // Moderate speed for homing
-    analogWrite(PIN_PWM_ALT, 100);
+    unsigned long startTime = millis();
+    analogWrite(PIN_PWM_AZ, PWM_MIN_SPEED);
+    analogWrite(PIN_PWM_ALT, PWM_MIN_SPEED);
 
     motionStateAz = MOTION_DRIVING;
     motionStateAlt = MOTION_DRIVING;
@@ -855,30 +929,29 @@ void performHoming() {
     bool azAtLimit = false;
     bool altAtLimit = false;
 
-    // Drive until both axes hit their limit switches (no pulses = at limit)
     while (!azAtLimit || !altAtLimit) {
         unsigned long now = millis();
 
-        updateFilteredCurrents();
+        // Ramp up using calculatePWM (pass huge remaining so ramp-down branch
+        // is never taken, only ramp-up + cruise)
+        int currentPwm = calculatePWM(INT32_MAX, startTime);
+        if (!azAtLimit) analogWrite(PIN_PWM_AZ, currentPwm);
+        if (!altAtLimit) analogWrite(PIN_PWM_ALT, currentPwm);
 
-        // Output status when it changes
+        updateFilteredCurrents();
         outputStatusIfChanged();
 
-        // Check if Az has stopped (at limit)
         if (!azAtLimit && (now - lastPulseAz) > cfg.stallTimeoutMs) {
             stopMotorAz();
             azAtLimit = true;
-            printAllLn("Homing: Azimuth limit switch reached");
+            printAllLn("Homing: Azimuth limit reached");
         }
-
-        // Check if Alt has stopped (at limit)
         if (!altAtLimit && (now - lastPulseAlt) > cfg.stallTimeoutMs) {
             stopMotorAlt();
             altAtLimit = true;
-            printAllLn("Homing: Altitude limit switch reached");
+            printAllLn("Homing: Altitude limit reached");
         }
 
-        // Safety check for faults
         FaultCode fault = checkFaultFlags();
         if (fault != FAULT_NONE) {
             stopAllMotors();
@@ -886,10 +959,8 @@ void performHoming() {
             systemState = STATE_FAULT;
             printAll("Homing ABORTED: ");
             printAllLn(getFaultString());
-            return;
+            return false;
         }
-
-        // Check current limits
         fault = checkCurrentLimits();
         if (fault != FAULT_NONE) {
             stopAllMotors();
@@ -897,7 +968,7 @@ void performHoming() {
             systemState = STATE_FAULT;
             printAll("Homing ABORTED: ");
             printAllLn(getFaultString());
-            return;
+            return false;
         }
 
         delay(10);
@@ -905,22 +976,47 @@ void performHoming() {
         simulatePulses();
         #endif
     }
+    return true;
+}
 
-    // At limit switches - reset position counters
-    positionAlt = 0;
+// Helper: back off both axes a fixed number of degrees from the limit.
+// Resets positionAz/Alt to 0 first so we can use them as a count.
+static bool backOffFromLimits(float degrees) {
+    int32_t targetPulses = (int32_t)(degrees * PULSES_PER_DEGREE);
 
-    // Take up azimuth backlash: reverse direction and wait for first pulse
-    // Use full speed to break free from hard stop quickly
-    printAllLn("Homing: Taking up azimuth backlash...");
-    digitalWrite(PIN_DIR_AZ, AZ_DIR(HIGH));
     positionAz = 0;
+    positionAlt = 0;
     lastPulseAz = millis();
-    analogWrite(PIN_PWM_AZ, PWM_FULL_SPEED);
+    lastPulseAlt = millis();
 
-    while (positionAz == 0) {
+    digitalWrite(PIN_DIR_AZ, AZ_DIR(HIGH));
+    digitalWrite(PIN_DIR_ALT, ALT_DIR(HIGH));
+
+    unsigned long startTime = millis();
+    analogWrite(PIN_PWM_AZ, PWM_MIN_SPEED);
+    analogWrite(PIN_PWM_ALT, PWM_MIN_SPEED);
+
+    bool azDone = false;
+    bool altDone = false;
+
+    while (!azDone || !altDone) {
         updateFilteredCurrents();
         outputStatusIfChanged();
 
+        // Ramp up to full speed (no ramp-down — short distance, hard stop at count)
+        int currentPwm = calculatePWM(INT32_MAX, startTime);
+        if (!azDone) analogWrite(PIN_PWM_AZ, currentPwm);
+        if (!altDone) analogWrite(PIN_PWM_ALT, currentPwm);
+
+        if (!azDone && positionAz >= targetPulses) {
+            analogWrite(PIN_PWM_AZ, PWM_STOP);
+            azDone = true;
+        }
+        if (!altDone && positionAlt >= targetPulses) {
+            analogWrite(PIN_PWM_ALT, PWM_STOP);
+            altDone = true;
+        }
+
         FaultCode fault = checkFaultFlags();
         if (fault != FAULT_NONE) {
             stopAllMotors();
@@ -928,23 +1024,21 @@ void performHoming() {
             systemState = STATE_FAULT;
             printAll("Homing ABORTED: ");
             printAllLn(getFaultString());
-            return;
+            return false;
         }
-        fault = checkCurrentLimits();
-        if (fault != FAULT_NONE) {
-            stopAllMotors();
-            faultCode = fault;
-            systemState = STATE_FAULT;
-            printAll("Homing ABORTED: ");
-            printAllLn(getFaultString());
-            return;
-        }
-        if ((millis() - lastPulseAz) > cfg.stallTimeoutMs) {
+        if ((millis() - lastPulseAz) > cfg.stallTimeoutMs && !azDone) {
             stopAllMotors();
             faultCode = FAULT_AZ_STALL;
             systemState = STATE_FAULT;
-            printAllLn("Homing ABORTED: Azimuth motor not responding during backlash");
-            return;
+            printAllLn("Homing ABORTED: Az stall during back-off");
+            return false;
+        }
+        if ((millis() - lastPulseAlt) > cfg.stallTimeoutMs && !altDone) {
+            stopAllMotors();
+            faultCode = FAULT_ALT_STALL;
+            systemState = STATE_FAULT;
+            printAllLn("Homing ABORTED: Alt stall during back-off");
+            return false;
         }
 
         delay(10);
@@ -952,16 +1046,92 @@ void performHoming() {
         simulatePulses();
         #endif
     }
+    return true;
+}
 
-    analogWrite(PIN_PWM_AZ, PWM_STOP);
-    positionAz = 0;  // Zero at first forward pulse
-    printAllLn("Homing: Azimuth backlash taken up, zero set");
+// Helper: drive both axes back to position 0 (toward limit) using position
+// counting rather than stall detection. Stops cleanly at 0 without slamming
+// into the hard stop.
+static bool returnToZero(int pwm) {
+    lastPulseAz = millis();
+    lastPulseAlt = millis();
+
+    digitalWrite(PIN_DIR_AZ, AZ_DIR(LOW));
+    digitalWrite(PIN_DIR_ALT, ALT_DIR(LOW));
+
+    analogWrite(PIN_PWM_AZ, pwm);
+    analogWrite(PIN_PWM_ALT, pwm);
+
+    bool azDone = false;
+    bool altDone = false;
+
+    while (!azDone || !altDone) {
+        updateFilteredCurrents();
+        outputStatusIfChanged();
+
+        if (!azDone && positionAz <= 0) {
+            analogWrite(PIN_PWM_AZ, PWM_STOP);
+            azDone = true;
+        }
+        if (!altDone && positionAlt <= 0) {
+            analogWrite(PIN_PWM_ALT, PWM_STOP);
+            altDone = true;
+        }
+
+        FaultCode fault = checkFaultFlags();
+        if (fault != FAULT_NONE) {
+            stopAllMotors();
+            faultCode = fault;
+            systemState = STATE_FAULT;
+            printAll("Homing ABORTED: ");
+            printAllLn(getFaultString());
+            return false;
+        }
+        if (!azDone && (millis() - lastPulseAz) > cfg.stallTimeoutMs) {
+            stopAllMotors();
+            faultCode = FAULT_AZ_STALL;
+            systemState = STATE_FAULT;
+            printAllLn("Homing ABORTED: Az stall returning to zero");
+            return false;
+        }
+        if (!altDone && (millis() - lastPulseAlt) > cfg.stallTimeoutMs) {
+            stopAllMotors();
+            faultCode = FAULT_ALT_STALL;
+            systemState = STATE_FAULT;
+            printAllLn("Homing ABORTED: Alt stall returning to zero");
+            return false;
+        }
+
+        delay(10);
+        #ifdef SIMULATION_MODE
+        simulatePulses();
+        #endif
+    }
+    return true;
+}
+
+void performHoming() {
+    // Phase 1: drive to limits with ramp-up
+    printAllLn("Homing: Drive to limits...");
+    if (!driveToLimits()) return;
+
+    // Phase 2: back off a few degrees (back-off zeros position, then drives positive)
+    printAllLn("Homing: Backing off limits...");
+    if (!backOffFromLimits(5.0)) return;
+
+    // Phase 3: re-approach limit with ramp-up for accurate zero
+    printAllLn("Homing: Re-approach limits...");
+    if (!driveToLimits()) return;
+
+    // At limit switches - reset position counters to 0
+    positionAlt = 0;
+    positionAz = 0;
 
     printAllLn("Homing: Moving to home position...");
 
     // Drive to home position offset
     digitalWrite(PIN_DIR_AZ, AZ_DIR(HIGH));
-    digitalWrite(PIN_DIR_ALT, HIGH);
+    digitalWrite(PIN_DIR_ALT, ALT_DIR(HIGH));
 
     // Reset pulse timestamps
     lastPulseAz = millis();
@@ -1123,7 +1293,9 @@ void updateAxisMotion(
                 // Start moving toward target
                 *currentDir = needsPositiveDir;
                 int level = needsPositiveDir ? HIGH : LOW;
-                digitalWrite(pinDir, (pinDir == PIN_DIR_AZ) ? AZ_DIR(level) : level);
+                digitalWrite(pinDir,
+                    (pinDir == PIN_DIR_AZ) ? AZ_DIR(level) :
+                    (pinDir == PIN_DIR_ALT) ? ALT_DIR(level) : level);
                 // Apply backlash compensation on az direction change
                 if (pinDir == PIN_DIR_AZ && needsPositiveDir != lastDrivenDirAz) {
                     azBacklashRemaining = (int32_t)(cfg.backlashAzDeg * PULSES_PER_DEGREE);
@@ -1179,7 +1351,9 @@ void updateAxisMotion(
                         needsPositiveDir = (diff > 0);
                         *currentDir = needsPositiveDir;
                         int lvl = needsPositiveDir ? HIGH : LOW;
-                        digitalWrite(pinDir, (pinDir == PIN_DIR_AZ) ? AZ_DIR(lvl) : lvl);
+                        digitalWrite(pinDir,
+                            (pinDir == PIN_DIR_AZ) ? AZ_DIR(lvl) :
+                            (pinDir == PIN_DIR_ALT) ? ALT_DIR(lvl) : lvl);
                         // Apply backlash compensation on az direction change
                         if (pinDir == PIN_DIR_AZ && needsPositiveDir != lastDrivenDirAz) {
                             azBacklashRemaining = (int32_t)(cfg.backlashAzDeg * PULSES_PER_DEGREE);
@@ -1272,8 +1446,8 @@ void outputStatus() {
     char statusLine[128];
     int pos = 0;
 
-    pos += snprintf(statusLine + pos, sizeof(statusLine) - pos, "Alt:%.1f Az:%.1f AzRaw:%ld",
-                    altDeg, azDeg, (long)positionAz);
+    pos += snprintf(statusLine + pos, sizeof(statusLine) - pos, "Alt:%.1f Az:%.1f",
+                    altDeg, azDeg);
     pos += snprintf(statusLine + pos, sizeof(statusLine) - pos, " Ialt:%.1fA Iaz:%.1fA",
                     filteredCurrentAlt, -filteredCurrentAz);
     pos += snprintf(statusLine + pos, sizeof(statusLine) - pos, " Status:%s",
@@ -1296,8 +1470,8 @@ void outputStatus() {
     // Build comparison string excluding currents (for programming port dedup)
     char statusCompare[128];
     int cpos = 0;
-    cpos += snprintf(statusCompare + cpos, sizeof(statusCompare) - cpos, "Alt:%.1f Az:%.1f AzRaw:%ld Status:%s",
-                     altDeg, azDeg, (long)positionAz, getStatusString());
+    cpos += snprintf(statusCompare + cpos, sizeof(statusCompare) - cpos, "Alt:%.1f Az:%.1f Status:%s",
+                     altDeg, azDeg, getStatusString());
     if (systemState == STATE_FAULT) {
         cpos += snprintf(statusCompare + cpos, sizeof(statusCompare) - cpos, " [%s]", getFaultString());
     }
@@ -1556,7 +1730,33 @@ void processCommand(const char* buffer) {
         }
     }
     else if (strEqualsIgnoreCase(cmd, "STATUS")) {
-        outputStatus();
+        if (cmdFromSerial1) {
+            // Controller request: send only to Serial1, don't touch Serial dedup
+            // Build the status line and send directly to Serial1.
+            float altDeg = (float)positionAlt / PULSES_PER_DEGREE;
+            float azDeg = (float)positionAz / PULSES_PER_DEGREE;
+            char line[128];
+            int p = 0;
+            p += snprintf(line+p, sizeof(line)-p, "Alt:%.1f Az:%.1f", altDeg, azDeg);
+            p += snprintf(line+p, sizeof(line)-p, " Ialt:%.1fA Iaz:%.1fA",
+                          filteredCurrentAlt, -filteredCurrentAz);
+            p += snprintf(line+p, sizeof(line)-p, " Status:%s", getStatusString());
+            if (systemState == STATE_FAULT) {
+                p += snprintf(line+p, sizeof(line)-p, " [%s]", getFaultString());
+            }
+            if (systemState == STATE_DRIVING) {
+                p += snprintf(line+p, sizeof(line)-p, " -> Alt:%.1f Az:%.1f",
+                              (float)targetAlt / PULSES_PER_DEGREE,
+                              (float)targetAz / PULSES_PER_DEGREE);
+            }
+            p += snprintf(line+p, sizeof(line)-p, " Cal:%s", calibratorOn ? "ON" : "OFF");
+            #if ENABLE_SERIAL1
+            Serial1.println(line);
+            #endif
+        } else {
+            prevStatusLine[0] = '\0';  // Force print even if unchanged
+            outputStatus();
+        }
     }
     else if (strEqualsIgnoreCase(cmd, "CONFIG")) {
         showConfig();
@@ -1623,6 +1823,7 @@ void processSerialInput() {
             if (serialIndex > 0) {
                 printAllLn("");  // Echo newline
                 serialBuffer[serialIndex] = '\0';
+                cmdFromSerial1 = false;
                 processCommand(serialBuffer);
                 serialIndex = 0;
                 printPrompt();
@@ -1666,7 +1867,9 @@ void processSerialInput() {
 
             if (serial1Index > 0) {
                 serial1Buffer[serial1Index] = '\0';
+                cmdFromSerial1 = true;
                 processCommand(serial1Buffer);
+                cmdFromSerial1 = false;
                 serial1Index = 0;
                 #if !ESP_BRIDGE_ENABLED
                 Serial1.println();
@@ -1753,7 +1956,7 @@ void setup() {
     pinMode(PIN_DIR_AZ, OUTPUT);
     pinMode(PIN_DIR_ALT, OUTPUT);
     digitalWrite(PIN_DIR_AZ, AZ_DIR(HIGH));
-    digitalWrite(PIN_DIR_ALT, HIGH);
+    digitalWrite(PIN_DIR_ALT, ALT_DIR(HIGH));
 
     // Configure calibrator output (off by default)
     pinMode(PIN_CALIBRATOR, OUTPUT);

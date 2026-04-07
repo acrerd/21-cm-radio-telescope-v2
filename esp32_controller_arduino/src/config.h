@@ -61,7 +61,7 @@
 
 // Home position (degrees)
 #define HOME_ALT 0.0
-#define HOME_AZ 180.0
+#define HOME_AZ 0.0
 
 // Position deadband (degrees)
 #define POSITION_DEADBAND 0.25

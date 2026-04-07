@@ -30,8 +30,9 @@
 #define PIN_DIR_AZ      9       // Azimuth direction (yellow)
 #define PIN_DIR_ALT     11      // Altitude direction (yellow)
 
-// Azimuth motor direction is wired in reverse
+// Motor direction is wired in reverse
 #define AZ_DIR_INVERT   1       // 1 = invert azimuth direction sense
+#define ALT_DIR_INVERT  1       // 1 = invert altitude direction sense
 
 // Position encoder pulse inputs (2 pulses per degree, FALLING edge)
 #define PIN_PULSE_AZ    12      // Azimuth encoder (yellow)
