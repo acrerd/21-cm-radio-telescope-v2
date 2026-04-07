@@ -77,14 +77,14 @@
 // Safety
 #define DEFAULT_CURRENT_LIMIT   5.0     // Stop motor if current exceeds this (Amps)
 #define DEFAULT_STALL_TIMEOUT   2000    // No pulses for this long = stalled (ms)
-#define DEFAULT_BACKLASH_AZ     2.0     // Azimuth backlash compensation (degrees)
+#define DEFAULT_BACKLASH_AZ     0.0     // Azimuth backlash compensation (degrees)
 
 // =============================================================================
 // ENCODER CONFIGURATION (fixed, not user-adjustable)
 // =============================================================================
 
 #define PULSES_PER_DEGREE   2       // Encoder resolution
-#define DEFAULT_DEBOUNCE_MS 200     // Minimum time between valid pulses
+#define DEFAULT_DEBOUNCE_MS 50      // Minimum time between valid pulses
 
 // =============================================================================
 // PWM VALUES (fixed, hardware-dependent)

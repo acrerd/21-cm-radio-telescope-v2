@@ -210,6 +210,12 @@ volatile unsigned long lastPulseAlt = 0;
 int32_t targetAz = 0;
 int32_t targetAlt = 0;
 
+// Set true when a new target is commanded; cleared when motion starts.
+// Prevents auto-correcting from stray pulses while idle (which can stall
+// into limit switches).
+bool newTargetAz = false;
+bool newTargetAlt = false;
+
 // Motion state per axis
 typedef enum {
     MOTION_IDLE,        // Not moving
@@ -385,8 +391,8 @@ void pulseAzISR() {
                 positionAz--;   // Moving West (decreasing)
             }
         }
+        lastPulseAz = now;  // Only update on pulses that pass debounce
     }
-    lastPulseAz = now;
 }
 
 void pulseAltISR() {
@@ -398,8 +404,8 @@ void pulseAltISR() {
         } else {
             positionAlt--;  // Moving Down (decreasing)
         }
+        lastPulseAlt = now;  // Only update on pulses that pass debounce
     }
-    lastPulseAlt = now;
 }
 
 // =============================================================================
@@ -904,11 +910,12 @@ void performHoming() {
     positionAlt = 0;
 
     // Take up azimuth backlash: reverse direction and wait for first pulse
+    // Use full speed to break free from hard stop quickly
     printAllLn("Homing: Taking up azimuth backlash...");
     digitalWrite(PIN_DIR_AZ, AZ_DIR(HIGH));
     positionAz = 0;
     lastPulseAz = millis();
-    analogWrite(PIN_PWM_AZ, PWM_MIN_SPEED);
+    analogWrite(PIN_PWM_AZ, PWM_FULL_SPEED);
 
     while (positionAz == 0) {
         updateFilteredCurrents();
@@ -1100,7 +1107,8 @@ void updateAxisMotion(
     int* stopStartPwm,
     volatile unsigned long* lastPulse,
     int pinPwm,
-    int pinDir
+    int pinDir,
+    bool* newTarget
 ) {
     int32_t diff = target - *position;
     bool needsPositiveDir = (diff > 0);  // true = increase position
@@ -1108,7 +1116,10 @@ void updateAxisMotion(
 
     switch (*motionState) {
         case MOTION_IDLE:
-            if (remaining > 0) {
+            // Only start driving if a new target was just commanded.
+            // Don't auto-correct stray drift (would stall into limit switches).
+            if (remaining > 0 && *newTarget) {
+                *newTarget = false;
                 // Start moving toward target
                 *currentDir = needsPositiveDir;
                 int level = needsPositiveDir ? HIGH : LOW;
@@ -1193,7 +1204,8 @@ void updateMotion() {
         &motionStateAz, &currentDirAz,
         &driveStartTimeAz, &stopStartTimeAz, &stopStartPwmAz,
         &lastPulseAz,
-        PIN_PWM_AZ, PIN_DIR_AZ
+        PIN_PWM_AZ, PIN_DIR_AZ,
+        &newTargetAz
     );
 
     // Update altitude axis
@@ -1202,7 +1214,8 @@ void updateMotion() {
         &motionStateAlt, &currentDirAlt,
         &driveStartTimeAlt, &stopStartTimeAlt, &stopStartPwmAlt,
         &lastPulseAlt,
-        PIN_PWM_ALT, PIN_DIR_ALT
+        PIN_PWM_ALT, PIN_DIR_ALT,
+        &newTargetAlt
     );
 
     // Update system state
@@ -1259,8 +1272,8 @@ void outputStatus() {
     char statusLine[128];
     int pos = 0;
 
-    pos += snprintf(statusLine + pos, sizeof(statusLine) - pos, "Alt:%.1f Az:%.1f",
-                    altDeg, azDeg);
+    pos += snprintf(statusLine + pos, sizeof(statusLine) - pos, "Alt:%.1f Az:%.1f AzRaw:%ld",
+                    altDeg, azDeg, (long)positionAz);
     pos += snprintf(statusLine + pos, sizeof(statusLine) - pos, " Ialt:%.1fA Iaz:%.1fA",
                     filteredCurrentAlt, -filteredCurrentAz);
     pos += snprintf(statusLine + pos, sizeof(statusLine) - pos, " Status:%s",
@@ -1283,8 +1296,8 @@ void outputStatus() {
     // Build comparison string excluding currents (for programming port dedup)
     char statusCompare[128];
     int cpos = 0;
-    cpos += snprintf(statusCompare + cpos, sizeof(statusCompare) - cpos, "Alt:%.1f Az:%.1f Status:%s",
-                     altDeg, azDeg, getStatusString());
+    cpos += snprintf(statusCompare + cpos, sizeof(statusCompare) - cpos, "Alt:%.1f Az:%.1f AzRaw:%ld Status:%s",
+                     altDeg, azDeg, (long)positionAz, getStatusString());
     if (systemState == STATE_FAULT) {
         cpos += snprintf(statusCompare + cpos, sizeof(statusCompare) - cpos, " [%s]", getFaultString());
     }
@@ -1382,6 +1395,8 @@ void executeDrive(float alt, float az) {
         } else {
             targetAlt = (int32_t)round(alt * PULSES_PER_DEGREE);
             targetAz = (int32_t)round(az * PULSES_PER_DEGREE);
+            newTargetAlt = true;
+            newTargetAz = true;
             printAll("Slewing to Alt:");
             printAllFloat(alt, 1);
             printAll(" Az:");
