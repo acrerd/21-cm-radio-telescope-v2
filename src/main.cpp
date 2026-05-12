@@ -227,7 +227,8 @@ bool newTargetAlt = false;
 typedef enum {
     MOTION_IDLE,        // Not moving
     MOTION_DRIVING,     // Moving toward target
-    MOTION_STOPPING     // Decelerating to reverse direction
+    MOTION_STOPPING,    // Decelerating to reverse direction
+    MOTION_FINISHING    // At target, ensuring reed switch ends in steady LOW
 } MotionState;
 
 MotionState motionStateAz = MOTION_IDLE;
@@ -337,6 +338,7 @@ void loadDefaults() {
     cfg.stallTimeoutMs = DEFAULT_STALL_TIMEOUT;
     #endif
     cfg.debounceMs = DEFAULT_DEBOUNCE_MS;
+    cfg.debounceAltMs = DEFAULT_DEBOUNCE_ALT_MS;
     cfg.backlashAzDeg = DEFAULT_BACKLASH_AZ;
     cfg.checksum = calculateChecksum(&cfg);
 }
@@ -388,7 +390,15 @@ int32_t getRampDownPulses() {
 // INTERRUPT SERVICE ROUTINES
 // =============================================================================
 
+// Runt-pulse filter: after the rising edge, the pin should remain HIGH for at
+// least this many microseconds. Glitches shorter than this are ignored.
+#define PULSE_MIN_WIDTH_US 1000
+
 void pulseAzISR() {
+    // Reject runt pulses — confirm the pin is still HIGH after a brief delay
+    delayMicroseconds(PULSE_MIN_WIDTH_US);
+    if (digitalRead(PIN_PULSE_AZ) != HIGH) return;
+
     unsigned long now = millis();
     if ((now - lastPulseAz) >= cfg.debounceMs) {
         if (azBacklashRemaining > 0) {
@@ -407,8 +417,11 @@ void pulseAzISR() {
 }
 
 void pulseAltISR() {
+    delayMicroseconds(PULSE_MIN_WIDTH_US);
+    if (digitalRead(PIN_PULSE_ALT) != HIGH) return;
+
     unsigned long now = millis();
-    if ((now - lastPulseAlt) >= cfg.debounceMs) {
+    if ((now - lastPulseAlt) >= cfg.debounceAltMs) {
         // Determine direction from DIR pin state
         if (digitalRead(PIN_DIR_ALT) == ALT_DIR(HIGH)) {
             positionAlt++;  // Moving Up (increasing)
@@ -1278,6 +1291,7 @@ void updateAxisMotion(
     volatile unsigned long* lastPulse,
     int pinPwm,
     int pinDir,
+    int pinPulse,
     bool* newTarget
 ) {
     int32_t diff = target - *position;
@@ -1309,9 +1323,11 @@ void updateAxisMotion(
 
         case MOTION_DRIVING:
             if (remaining == 0) {
-                // Reached target
+                // Reached target — stop the motor and verify the reed switch
+                // settles in a steady LOW (closed) state in MOTION_FINISHING.
                 analogWrite(pinPwm, PWM_STOP);
-                *motionState = MOTION_IDLE;
+                *stopStartTime = millis();
+                *motionState = MOTION_FINISHING;
             } else if (needsPositiveDir != *currentDir) {
                 // Target changed direction - need to stop first
                 // Capture current PWM for smooth deceleration
@@ -1368,6 +1384,45 @@ void updateAxisMotion(
                 }
             }
             break;
+
+        case MOTION_FINISHING: {
+            // End-of-slew clean-up: ensure the reed switch settles in a steady
+            // LOW (closed) state. Robust against runt pulses by requiring N
+            // consecutive LOW samples taken over a few ms.
+            unsigned long now = millis();
+            unsigned long sinceStop = now - *stopStartTime;
+
+            // Initial settle: let any motor coast finish before sampling
+            if (sinceStop < 50) {
+                analogWrite(pinPwm, PWM_STOP);
+                break;
+            }
+
+            // Safety timeout — never reached steady LOW
+            if (sinceStop > 2000) {
+                analogWrite(pinPwm, PWM_STOP);
+                *motionState = MOTION_IDLE;
+                break;
+            }
+
+            // Sample the pulse pin several times over ~1 ms. If all samples
+            // are LOW the switch is steadily closed; any HIGH means we still
+            // need to drive (a single LOW could be a runt).
+            bool steadyLow = true;
+            for (int i = 0; i < 10; i++) {
+                if (digitalRead(pinPulse) != LOW) { steadyLow = false; break; }
+                delayMicroseconds(100);
+            }
+
+            if (steadyLow) {
+                analogWrite(pinPwm, PWM_STOP);
+                *motionState = MOTION_IDLE;
+            } else {
+                // Not steady LOW — drive slowly until it settles closed
+                analogWrite(pinPwm, PWM_MIN_SPEED);
+            }
+            break;
+        }
     }
 }
 
@@ -1378,7 +1433,7 @@ void updateMotion() {
         &motionStateAz, &currentDirAz,
         &driveStartTimeAz, &stopStartTimeAz, &stopStartPwmAz,
         &lastPulseAz,
-        PIN_PWM_AZ, PIN_DIR_AZ,
+        PIN_PWM_AZ, PIN_DIR_AZ, PIN_PULSE_AZ,
         &newTargetAz
     );
 
@@ -1388,7 +1443,7 @@ void updateMotion() {
         &motionStateAlt, &currentDirAlt,
         &driveStartTimeAlt, &stopStartTimeAlt, &stopStartPwmAlt,
         &lastPulseAlt,
-        PIN_PWM_ALT, PIN_DIR_ALT,
+        PIN_PWM_ALT, PIN_DIR_ALT, PIN_PULSE_ALT,
         &newTargetAlt
     );
 
@@ -1530,7 +1585,8 @@ void showHelp() {
     printAllLn("  STOPRAMP         - Reversal decel time (ms)");
     printAllLn("  CURRENT          - Current limit (A)");
     printAllLn("  STALL            - Stall timeout (ms)");
-    printAllLn("  DEBOUNCE         - Encoder debounce (ms)");
+    printAllLn("  DEBOUNCE         - Az encoder debounce (ms)");
+    printAllLn("  DEBOUNCE_ALT     - Alt encoder debounce (ms)");
     printAllLn("  BACKLASH         - Az backlash compensation (deg)");
 }
 
@@ -1555,7 +1611,8 @@ void showConfig() {
     printAll("  STOPRAMP="); printAllInt(cfg.stopRampMs); printAllLn(" (ms)");
     printAll("  CURRENT="); printAllFloat(cfg.currentLimit, 1); printAllLn(" (A)");
     printAll("  STALL="); printAllInt(cfg.stallTimeoutMs); printAllLn(" (ms)");
-    printAll("  DEBOUNCE="); printAllInt(cfg.debounceMs); printAllLn(" (ms)");
+    printAll("  DEBOUNCE="); printAllInt(cfg.debounceMs); printAllLn(" (ms, az)");
+    printAll("  DEBOUNCE_ALT="); printAllInt(cfg.debounceAltMs); printAllLn(" (ms, alt)");
     printAll("  BACKLASH="); printAllFloat(cfg.backlashAzDeg, 1); printAllLn(" (deg, az only)");
 }
 
@@ -1641,7 +1698,10 @@ void processSetCommand(const char* param, float value) {
         printAll("Stall timeout set to "); printAllInt(cfg.stallTimeoutMs); printAllLn(" ms");
     } else if (strEqualsIgnoreCase(param, "DEBOUNCE")) {
         cfg.debounceMs = (uint16_t)value;
-        printAll("Debounce set to "); printAllInt(cfg.debounceMs); printAllLn(" ms");
+        printAll("Az debounce set to "); printAllInt(cfg.debounceMs); printAllLn(" ms");
+    } else if (strEqualsIgnoreCase(param, "DEBOUNCE_ALT")) {
+        cfg.debounceAltMs = (uint16_t)value;
+        printAll("Alt debounce set to "); printAllInt(cfg.debounceAltMs); printAllLn(" ms");
     } else if (strEqualsIgnoreCase(param, "BACKLASH")) {
         cfg.backlashAzDeg = value;
         printAll("Az backlash set to "); printAllFloat(cfg.backlashAzDeg, 1); printAllLn(" deg");
@@ -1964,8 +2024,8 @@ void setup() {
     calibratorOn = false;
 
     // Attach interrupts for position sensing
-    attachInterrupt(digitalPinToInterrupt(PIN_PULSE_AZ), pulseAzISR, FALLING);
-    attachInterrupt(digitalPinToInterrupt(PIN_PULSE_ALT), pulseAltISR, FALLING);
+    attachInterrupt(digitalPinToInterrupt(PIN_PULSE_AZ), pulseAzISR, RISING);
+    attachInterrupt(digitalPinToInterrupt(PIN_PULSE_ALT), pulseAltISR, RISING);
 
     // Configure ADC for 12-bit resolution
     analogReadResolution(12);

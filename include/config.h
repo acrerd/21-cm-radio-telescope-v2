@@ -85,7 +85,8 @@
 // =============================================================================
 
 #define PULSES_PER_DEGREE   2       // Encoder resolution
-#define DEFAULT_DEBOUNCE_MS 50      // Minimum time between valid pulses
+#define DEFAULT_DEBOUNCE_MS     50   // Azimuth: minimum time between valid pulses
+#define DEFAULT_DEBOUNCE_ALT_MS 100  // Altitude: minimum time between valid pulses
 
 // =============================================================================
 // PWM VALUES (fixed, hardware-dependent)
@@ -137,7 +138,8 @@ typedef struct {
     // Safety
     float currentLimit;         // Overcurrent threshold (Amps)
     uint16_t stallTimeoutMs;    // Stall detection timeout
-    uint16_t debounceMs;        // Encoder pulse debounce time
+    uint16_t debounceMs;        // Azimuth encoder pulse debounce time
+    uint16_t debounceAltMs;     // Altitude encoder pulse debounce time
     float backlashAzDeg;        // Azimuth backlash compensation (degrees)
 
     uint32_t checksum;          // Simple checksum for validation

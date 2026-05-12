@@ -35,9 +35,20 @@ void setupWebServer() {
 
     // Status endpoint
     webServer.on("/status", HTTP_GET, [](AsyncWebServerRequest *request) {
+        // Compute RA/Dec and Galactic l/b for current alt/az
+        double curAlt = srtSerial.getCurrentAlt();
+        double curAz  = srtSerial.getCurrentAz();
+        double ra = 0.0, dec = 0.0, gl = 0.0, gb = 0.0;
+        altAzToRaDec(curAlt, curAz, settings.observerLat, settings.observerLon, ra, dec);
+        equatorialToGalactic(ra, dec, gl, gb);
+
         String json = "{";
-        json += "\"alt\":" + String(srtSerial.getCurrentAlt(), 2) + ",";
-        json += "\"az\":" + String(srtSerial.getCurrentAz(), 2) + ",";
+        json += "\"alt\":" + String(curAlt, 2) + ",";
+        json += "\"az\":" + String(curAz, 2) + ",";
+        json += "\"ra\":" + String(ra, 4) + ",";
+        json += "\"dec\":" + String(dec, 2) + ",";
+        json += "\"gal_l\":" + String(gl, 2) + ",";
+        json += "\"gal_b\":" + String(gb, 2) + ",";
         json += "\"target_alt\":" + String(srtSerial.getTargetAlt(), 2) + ",";
         json += "\"target_az\":" + String(srtSerial.getTargetAz(), 2) + ",";
         json += "\"alt_current_a\":" + String(srtSerial.getAltCurrentA(), 2) + ",";
@@ -125,6 +136,15 @@ void setupWebServer() {
     webServer.on("/goto", HTTP_GET, [](AsyncWebServerRequest *request) {
         float ra = request->arg("ra").toFloat();
         float dec = request->arg("dec").toFloat();
+        double tAlt, tAz;
+        raDecToAltAz(ra, dec, settings.observerLat, settings.observerLon, tAlt, tAz);
+        if (tAlt < 0.0) {
+            char err[96];
+            snprintf(err, sizeof(err),
+                "{\"ok\":false,\"error\":\"Target below horizon (alt=%.1f deg)\"}", tAlt);
+            request->send(400, "application/json", err);
+            return;
+        }
         state.currentRA = ra;
         state.currentDec = dec;
         state.targetName = "";
@@ -140,6 +160,15 @@ void setupWebServer() {
         float b = request->arg("b").toFloat();
         double ra, dec;
         galacticToEquatorial(l, b, ra, dec);
+        double tAlt, tAz;
+        raDecToAltAz(ra, dec, settings.observerLat, settings.observerLon, tAlt, tAz);
+        if (tAlt < 0.0) {
+            char err[96];
+            snprintf(err, sizeof(err),
+                "{\"ok\":false,\"error\":\"Target below horizon (alt=%.1f deg)\"}", tAlt);
+            request->send(400, "application/json", err);
+            return;
+        }
         state.currentRA = ra;
         state.currentDec = dec;
         state.targetName = "Gal l=" + String(l, 1) + " b=" + String(b, 1);
@@ -196,6 +225,15 @@ void setupWebServer() {
     webServer.on("/track/radec", HTTP_GET, [](AsyncWebServerRequest *request) {
         float ra = request->arg("ra").toFloat();
         float dec = request->arg("dec").toFloat();
+        double tAlt, tAz;
+        raDecToAltAz(ra, dec, settings.observerLat, settings.observerLon, tAlt, tAz);
+        if (tAlt < 0.0) {
+            char err[96];
+            snprintf(err, sizeof(err),
+                "{\"ok\":false,\"error\":\"Target below horizon (alt=%.1f deg)\"}", tAlt);
+            request->send(400, "application/json", err);
+            return;
+        }
         state.currentRA = ra;
         state.currentDec = dec;
         state.targetName = "";
@@ -211,6 +249,15 @@ void setupWebServer() {
         float b = request->arg("b").toFloat();
         double ra, dec;
         galacticToEquatorial(l, b, ra, dec);
+        double tAlt, tAz;
+        raDecToAltAz(ra, dec, settings.observerLat, settings.observerLon, tAlt, tAz);
+        if (tAlt < 0.0) {
+            char err[96];
+            snprintf(err, sizeof(err),
+                "{\"ok\":false,\"error\":\"Target below horizon (alt=%.1f deg)\"}", tAlt);
+            request->send(400, "application/json", err);
+            return;
+        }
         state.currentRA = ra;
         state.currentDec = dec;
         state.targetName = "Gal l=" + String(l, 1) + " b=" + String(b, 1);
