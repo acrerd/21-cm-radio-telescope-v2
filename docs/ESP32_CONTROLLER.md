@@ -32,6 +32,7 @@ The WT32-ETH01 controller provides the high-level interface for the SRT drive sy
 - **Time synchronization** via NTP or browser fallback
 - **Runtime configurable settings** saved to flash (NVS)
 - **Networking** via native Ethernet + WiFi (AP + station mode)
+- **mDNS and Ethernet OTA** for `srt-controller.local` discovery and network firmware updates
 
 ### Architecture
 
@@ -83,19 +84,22 @@ The WT32-ETH01 controller provides the high-level interface for the SRT drive sy
 ### Prerequisites
 
 - WT32-ETH01 module (ESP32 with built-in LAN8720 Ethernet)
-- USB-TTL adapter (CH340 or CP2102) for programming
+- Temporary FT232 USB-TTL programmer for first flash or recovery
 - [PlatformIO](https://platformio.org/) (VS Code extension or CLI)
 
 ### Build and Upload
 
 ```bash
-cd new_SRT_drive/esp32_controller_arduino
+cd 21-cm-radio-telescope-v2/esp32_controller_arduino
 
 # Build for WT32-ETH01
 pio run -e wt32-eth01
 
-# Upload (requires boot mode: hold IO0, press EN, release IO0)
+# First serial flash or recovery
 pio run -e wt32-eth01 --target upload
+
+# Routine Ethernet OTA update after first flash
+pio run -e wt32-eth01-ota --target upload
 
 # Monitor serial output
 pio device monitor
@@ -255,6 +259,7 @@ All endpoints return JSON unless noted.
   "az_current_a": 0.20,
   "status": "Ready",
   "fault": "",
+  "fault_active": false,
   "is_slewing": false,
   "calibrator": false
 }
@@ -271,7 +276,12 @@ All endpoints return JSON unless noted.
 | `/track/sun` | (none) | Track Sun |
 | `/track/moon` | (none) | Track Moon |
 | `/tracking/enable` | `enable=0/1` | Enable/disable tracking |
+| `/tracking/axis` | `mode=both/az/alt`, optional `alt` or `az` | Track both axes or hold one axis fixed |
 | `/direct` | `alt`, `az` | Go to Alt/Az directly |
+| `/stop/movement` | (none) | Stop current motion and hold automatic tracking sends for 10 seconds |
+| `/stop/all` | (none) | Stop motion and clear the current tracking target |
+| `/reset` | (none) | Clear an active Due fault |
+| `/home` | (none) | Run the Due homing sequence |
 | `/offset` | `alt`, `az` | Set pointing offset (degrees) |
 | `/offset/clear` | (none) | Clear pointing offset |
 | `/calibrator` | `on=0/1` | Control calibrator noise source |
@@ -295,7 +305,7 @@ All endpoints return JSON unless noted.
 | `/wifi/power` | Enable/disable WiFi (`enable=0/1`) - requires Ethernet connection |
 | `/eth/save` | Save Ethernet settings (dhcp, ip, gateway, subnet, dns) |
 
-The `/wifi/status` response includes `wifi_enabled`, `eth_mac` and `wifi_mac` fields.
+The `/wifi/status` response includes hostname, mDNS URL, OTA status, `wifi_enabled`, `eth_mac` and `wifi_mac` fields.
 
 ---
 
@@ -383,6 +393,7 @@ The ESP32 operates in **AP+STA** mode:
 
 1. **WiFi Access Point** - Active at 192.168.4.1 (can be disabled)
 2. **WiFi Station** - Connects to saved network if available
+3. **Ethernet** - Native WT32-ETH01 LAN with DHCP or static address
 
 ### Startup Sequence
 
@@ -395,6 +406,7 @@ The ESP32 operates in **AP+STA** mode:
 
 | Interface | IP Address |
 |-----------|------------|
+| Hostname | `http://srt-controller.local/` |
 | WiFi AP | 192.168.4.1 (fixed) |
 | WiFi Station | DHCP assigned |
 | Ethernet (WT32-ETH01) | DHCP or static (configurable) |

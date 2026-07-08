@@ -95,7 +95,7 @@ The WT32-ETH01 uses **different pins** for programming vs runtime communication:
 
 | Function | Pins | Notes |
 |----------|------|-------|
-| **Programming** | TX0/RX0 (GPIO1/3) | 6-pin header, USB-TTL adapter |
+| **Programming** | TX0/RX0 (GPIO1/3) | 6-pin header, temporary FT232 programmer for first flash/recovery |
 | **Due Communication** | IO4/IO14 | General purpose, no boot restrictions |
 
 **Note:** Some WT32-ETH01 variants (RS-485 versions) have IO32/IO33 labelled as CFG/485_EN and connected to onboard RS-485 circuitry. Use IO4/IO14 instead to avoid conflicts.
@@ -126,27 +126,78 @@ The board has confusingly-named serial pins:
 - No boot mode restrictions (unlike GPIO12/15)
 - Not used by Ethernet (unlike GPIO17-27)
 - Not connected to RS-485 circuitry (unlike IO32/IO33 on some variants)
-- Programming header (TX0/RX0) stays free for USB-TTL adapter
+- Programming header (TX0/RX0) stays free for the temporary FT232 programmer
 
-### Programming via USB-TTL Adapter
+### One-Time Serial Flash via Temporary FT232 Programmer
 
-Connect USB-TTL adapter to the 6-pin programming header:
+This migration uses a temporary FT232 USB-TTL programmer with manual boot/reset
+buttons to install the first OTA-capable WT32 firmware. The programmer is not
+part of the permanent telescope wiring. After the first successful serial flash,
+routine firmware updates should be done over Ethernet OTA.
 
-| USB-TTL | WT32-ETH01 |
-|---------|------------|
-| TX | RX0 (GPIO3) |
-| RX | TX0 (GPIO1) |
+Connect the temporary programmer to the WT32-ETH01 programming header only while
+flashing or recovering the controller:
+
+| Temporary FT232 programmer | WT32-ETH01 |
+|----------------------------|------------|
+| TXD | RX0 (GPIO3) |
+| RXD | TX0 (GPIO1) |
 | GND | GND |
-| 3.3V | 3V3 |
 
-**No need to disconnect the Due** - it uses IO4/IO14, not TX0/RX0.
+Do not connect the programmer's 3.3V, 5V, or VCC pin while the WT32 is powered
+from the telescope/Due supply. The WT32 and programmer must share ground, but
+the programmer should not be a second power source.
 
-**Boot Mode Sequence (Manual Buttons):**
-1. Hold IO0 button (or jumper GPIO0 to GND)
-2. Press and release EN button
-3. Release IO0 button
-4. Upload firmware via PlatformIO
-5. ESP32 auto-resets to normal operation after upload
+Do not leave IO0/GPIO0 jumpered, held low, connected to a boot button harness,
+or connected to an auto-reset line after flashing. On the WT32-ETH01, GPIO0 is
+also the Ethernet RMII clock input; loading or holding that pin can prevent
+Ethernet link and can make the WiFi AP appear only intermittently.
+
+**No need to disconnect the Due serial wires** - it uses IO4/IO14, not TX0/RX0.
+
+### Recommended Update Strategy
+
+Migrate the controller to network firmware updates. Use the temporary FT232
+programmer only for the first WT32 flash and for recovery if Ethernet OTA is not
+available. The firmware includes Ethernet OTA support, so normal updates should
+be uploaded over the network after the OTA-capable firmware is installed once.
+
+**Best installed hardware setup:**
+- Leave a keyed 3-pin service connector wired to WT32 `TX0`, `RX0`, and `GND`
+- Do not permanently install the temporary FT232 programmer
+- Do not leave programmer `3.3V/5V/VCC`, `DTR`, `RTS`, `IO0`, or `EN` wiring
+  connected during operation
+- Do not leave anything loading or holding `IO0/GPIO0`; it is also the Ethernet
+  RMII clock input on this board
+
+**Routine firmware update over Ethernet:**
+```bash
+cd esp32_controller_arduino
+pio run -e wt32-eth01-ota -t upload
+```
+
+The OTA target defaults to `192.168.106.136` and port `3232`. If DHCP gives the
+controller a different address, update `upload_port` in
+`esp32_controller_arduino/platformio.ini`. The OTA password is configured in
+`src/config.h`.
+
+**First flash or recovery via temporary FT232 programmer:**
+```bash
+cd esp32_controller_arduino
+pio run -e wt32-eth01 -t upload --upload-port /dev/ttyUSB0
+```
+
+Use recovery when the controller is not reachable on Ethernet, an OTA update is
+interrupted, or a broken firmware image boots but does not start the network.
+Disconnect the programmer after the flash succeeds.
+
+**Manual button sequence for the temporary programmer:**
+1. Start the PlatformIO upload command.
+2. Hold the programmer's `BOOT`, `IO0`, or `FLASH` button.
+3. Tap the programmer's `EN`, `RST`, or reset button once.
+4. Keep holding `BOOT` for about two seconds while esptool connects.
+5. Release `BOOT` after esptool connects or starts writing.
+6. After upload, unplug the temporary programmer before normal operation.
 
 ---
 
@@ -310,14 +361,14 @@ PC USB #2 ─────────►│  Native USB     │◄──── E
                     │    Serial1      │────► WT32-ETH01 (IO4/IO14)
                     └─────────────────┘
 
-                   External USB-TTL ─────► WT32-ETH01 TX0/RX0 (programming)
+                   Temporary FT232 ─────► WT32-ETH01 TX0/RX0 (first flash/recovery)
 ```
 
 **Programming USB (Serial):** Due programming, commands (HOME, STOP, etc.), status output
 
 **Native USB (SerialUSB):** Bidirectional serial bridge to ESP32 for monitoring
 
-**External USB-TTL:** ESP32 programming via TX0/RX0 (no need to disconnect Due)
+**Temporary FT232:** ESP32 first flash/recovery via TX0/RX0 (no need to disconnect Due)
 
 ### Hardware Connections
 
@@ -371,30 +422,38 @@ The Due's Native USB port acts as a **transparent USB-to-serial adapter** for ru
 
 ### Programming the ESP32
 
-Programming uses the TX0/RX0 pins (6-pin header), separate from Due communication (IO4/IO14):
+Programming uses the TX0/RX0 pins (6-pin header), separate from Due communication
+(IO4/IO14). Use the temporary FT232 manual-button programmer only for the first
+OTA-capable flash or for recovery:
 
-1. **Connect** USB-TTL adapter to WT32-ETH01 programming header:
-   - TX → RX0 (GPIO3)
-   - RX → TX0 (GPIO1)
-   - GND → GND
-   - 3.3V → 3V3
-2. **Enter boot mode:**
-   - Hold IO0 button
-   - Press and release EN button
-   - Release IO0 button
-3. **Upload** via PlatformIO:
+1. **Connect** temporary programmer to WT32-ETH01 programming header:
+   - TXD -> RX0 (GPIO3)
+   - RXD -> TX0 (GPIO1)
+   - GND -> GND
+   - Leave programmer 3.3V/5V/VCC disconnected when the WT32 is already powered
+2. **Start upload** via PlatformIO:
    ```bash
    cd esp32_controller_arduino
-   pio run -e wt32-eth01 -t upload --upload-port COMx
+   pio run -e wt32-eth01 -t upload --upload-port /dev/ttyUSB0
    ```
+3. **Enter boot mode with the programmer buttons:**
+   - Hold BOOT/IO0/FLASH
+   - Tap EN/RST once
+   - Keep holding BOOT for about two seconds while esptool connects
+   - Release BOOT after esptool connects or starts writing
 
-**No need to disconnect the Due** - it uses IO4/IO14, not TX0/RX0.
+**No need to disconnect the Due serial wires** - it uses IO4/IO14, not TX0/RX0.
+Do remove the temporary programmer and any IO0/EN/DTR/RTS wiring before normal
+Ethernet operation. Routine updates after the first serial flash should use the
+`wt32-eth01-ota` environment over Ethernet.
 
 ### Daily Usage
 
-**Monitor ESP32:**
+**Monitor Due/ESP32 control traffic:**
 - Connect any serial terminal to Due Native USB port at 115200 baud
-- ESP32 debug output appears continuously
+- ESP32-to-Due commands and Due status traffic appear continuously
+- Use the temporary FT232 programmer on TX0/RX0 only when you need WT32
+  boot/Ethernet logs
 - No special commands needed
 
 **Control Due:**
@@ -410,44 +469,69 @@ Programming uses the TX0/RX0 pins (6-pin header), separate from Due communicatio
 - Check baud rate matches (115200)
 
 **Upload fails:**
-- Hold IO0, press EN, release IO0 before upload
-- Verify correct COM port for USB-TTL adapter
-- Ensure USB-TTL is connected to TX0/RX0 (programming header)
+- Start upload first, then hold BOOT/IO0/FLASH, tap EN/RST, and release BOOT
+  after esptool connects
+- Verify correct serial port for the temporary FT232 programmer
+- Ensure the programmer is connected to TX0/RX0 (programming header)
+- Ensure IO0 is released after upload and not connected during normal Ethernet use
+- Ensure programmer 5V/3V3/VCC is not tied to the WT32 while it is powered from
+  the telescope
 
 ## 7. Build & Flash Procedure
 
-### Programming via USB-TTL Adapter
+### First Serial Flash via Temporary FT232 Programmer
 
-Use an external USB-TTL adapter (CH340, CP2102, etc.) for programming. **No need to disconnect the Due** - programming uses TX0/RX0, while Due communication uses IO4/IO14.
+Use the temporary FT232 programmer with manual boot/reset buttons for the first
+OTA-capable flash, or later recovery. It is not permanently installed. **No need
+to disconnect the Due** - programming uses TX0/RX0, while Due communication uses
+IO4/IO14.
 
-1. **Connect USB-TTL to WT32-ETH01 programming header:**
+1. **Connect the programmer to WT32-ETH01 programming header:**
 
    ```text
-   USB-TTL TX  -> WT32 RX0 (GPIO3)
-   USB-TTL RX  -> WT32 TX0 (GPIO1)
-   USB-TTL GND -> WT32 GND
-   USB-TTL 3V3 -> WT32 3V3
+   Programmer TXD -> WT32 RX0 (GPIO3)
+   Programmer RXD -> WT32 TX0 (GPIO1)
+   Programmer GND -> WT32 GND
    ```
 
-2. **Enter boot mode manually:**
-   - Hold IO0 button (or jumper GPIO0 to GND)
-   - Press EN button (reset)
-   - Release IO0
+   Leave programmer 3.3V/5V/VCC disconnected while the WT32 is powered from the
+   telescope/Due supply.
 
-3. **Flash:**
+2. **Flash:**
    ```bash
    cd esp32_controller_arduino
-   pio run -e wt32-eth01 -t upload --upload-port COMx
+   pio run -e wt32-eth01 -t upload --upload-port /dev/ttyUSB0
    ```
 
-The ESP32 auto-resets after programming. Due communication resumes automatically.
+3. **Use the manual button timing while esptool connects:**
+   - Hold BOOT/IO0/FLASH
+   - Tap EN/RST once
+   - Keep holding BOOT for about two seconds
+   - Release BOOT after esptool connects or starts writing
+
+The ESP32 resets after programming. Due communication resumes automatically.
+Disconnect the temporary programmer before normal operation.
+
+### Routine Network OTA Update
+
+After the OTA-capable firmware has been installed once, routine ESP32 updates
+should use Ethernet instead of serial:
+
+```bash
+cd esp32_controller_arduino
+pio run -e wt32-eth01-ota -t upload
+```
 
 ### Monitoring via Due Bridge
 
-Once programmed, monitor ESP32 output through the Due:
+Once programmed, the Due Native USB port can monitor Serial1 control traffic
+between the Due and ESP32:
 
 - Connect terminal to Due Native USB port at 115200 baud
-- ESP32 debug output appears continuously
+- ESP32-to-Due commands and Due status traffic appear continuously
+- WT32 boot/Ethernet logs on TX0/RX0 require the temporary programmer or another
+  serial adapter
+- Disconnect the temporary programmer again after debugging normal operation
 
 ---
 
@@ -456,8 +540,8 @@ Once programmed, monitor ESP32 output through the Due:
 ### Hardware Verification
 
 - [ ] WT32-ETH01 powers up (LED activity)
-- [ ] USB-TTL serial connection works
-- [ ] Can enter boot mode and flash firmware
+- [ ] Temporary FT232 serial connection works
+- [ ] Can enter boot mode and flash the OTA-capable firmware once
 - [ ] Serial monitor shows boot messages
 
 ### Ethernet
@@ -513,7 +597,7 @@ The code uses `#ifdef BOARD_WT32_ETH01` / `#ifdef BOARD_ESP32S3` for board-speci
 | Item | Quantity | Notes |
 |------|----------|-------|
 | WT32-ETH01 | 1 | Main controller |
-| USB-TTL adapter | 1 | CH340 or CP2102, for programming |
+| Temporary FT232 programmer | 1 | Manual-button serial flashing, not permanently installed |
 | Ethernet cable | 1 | Cat5e or better |
 | Dupont wires | 4 | For Due connection |
 | 5V power supply | 1 | If not powering from Due |
@@ -532,7 +616,7 @@ The code uses `#ifdef BOARD_WT32_ETH01` / `#ifdef BOARD_ESP32S3` for board-speci
 |----------------------|---------------------------------------------|
 | Due Programming USB  | Due commands (HOME, STOP, STATUS, etc.)     |
 | Due Native USB       | ESP32 serial monitoring (115200 baud)       |
-| External USB-TTL     | ESP32 programming (no disconnect needed)    |
+| Temporary FT232      | First ESP32 flash or recovery only          |
 
 ### Wiring Summary
 
@@ -540,13 +624,14 @@ The code uses `#ifdef BOARD_WT32_ETH01` / `#ifdef BOARD_ESP32S3` for board-speci
 |------------|------|
 | Due TX1 (pin 18) → ESP32 | IO14 |
 | Due RX1 (pin 19) ← ESP32 | IO4 |
-| USB-TTL TX → ESP32 | RX0 (GPIO3) |
-| USB-TTL RX ← ESP32 | TX0 (GPIO1) |
+| Temporary programmer TXD → ESP32 | RX0 (GPIO3) |
+| Temporary programmer RXD ← ESP32 | TX0 (GPIO1) |
 
 ### Network Interfaces
 
 | Interface  | Address                              |
 |------------|--------------------------------------|
+| Hostname   | http://srt-controller.local/         |
 | WiFi AP    | 192.168.4.1 (SSID: SRT_Controller)   |
 | Ethernet   | DHCP or static (configurable via web UI) |
 | Stellarium | Port 10001 on any interface          |

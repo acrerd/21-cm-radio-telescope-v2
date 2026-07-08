@@ -52,7 +52,7 @@ The system consists of four integrated components:
          |
 +--------+----------+
 |                   |
-|   3.7m Dish       |
+|   3.0m Dish       |
 |   1420 MHz Feed   |
 |                   |
 +-------------------+
@@ -82,6 +82,8 @@ The system consists of four integrated components:
 - Native 100 Mbps Ethernet (RJ45 connector)
 - WiFi 802.11 b/g/n (simultaneous with Ethernet)
 - Connects to Due via UART serial (IO4/IO14)
+- mDNS hostname `srt-controller.local`
+- Ethernet OTA firmware updates after the first serial flash
 
 ### Wiring: WT32-ETH01 to Arduino Due
 
@@ -105,7 +107,7 @@ The system consists of four integrated components:
 ### 1. Arduino Due Firmware
 
 ```bash
-cd new_SRT_drive
+cd 21-cm-radio-telescope-v2
 
 # Build and upload
 pio run -e due -t upload
@@ -117,13 +119,13 @@ pio device monitor -b 115200
 ### 2. WT32-ETH01 Controller
 
 ```bash
-cd new_SRT_drive/esp32_controller_arduino
+cd 21-cm-radio-telescope-v2/esp32_controller_arduino
 
-# Build and upload (use USB-TTL adapter)
+# First flash or recovery with temporary FT232 programmer
 pio run -e wt32-eth01 --target upload
 
-# Monitor serial output
-pio device monitor -b 115200
+# Routine Ethernet OTA update after the first serial flash
+pio run -e wt32-eth01-ota --target upload
 ```
 
 The ESP32 controller uses Arduino/PlatformIO (not MicroPython) for better performance and reliability.
@@ -186,13 +188,13 @@ Compile-time defaults are in `esp32_controller_arduino/src/config.h`:
 1. Connect to WiFi: `SRT_Controller` (password: `radio1420`)
 2. Browse to: `http://192.168.4.1`
 
-#### Option 2: Your Network
+#### Option 2: Hostname or Your Network
 1. Connect to the AP first
 2. Go to **WiFi** tab, click **Scan**
 3. Select your network and enter password
-4. Note the new IP address
+4. Browse to `http://srt-controller.local/` if mDNS is supported, or note the new IP address
 5. Connect your computer to same network
-6. Browse to the new IP
+6. Browse to the hostname or the new IP
 
 Credentials are saved and the ESP32 auto-reconnects on boot. The AP stays active as fallback.
 
@@ -202,11 +204,11 @@ Credentials are saved and the ESP32 auto-reconnects on boot. The AP stays active
 
 | Section | Controls |
 |---------|----------|
-| **Current Position** | Shows Alt, Az, motor currents, status, current tracking target |
-| **Quick Targets** | Track Sun, Track Moon, Stop Tracking |
-| **Equatorial (RA/Dec)** | Enter RA (hours) and Dec (degrees), Go To or Track |
-| **Galactic (l/b)** | Enter galactic longitude/latitude, Go To or Track |
-| **Direct Control** | Enter Alt/Az directly, Go Direct / Home |
+| **Current Status** | Shows Alt, Az, RA/Dec, Galactic coordinates, motor currents, fault state, and tracking target |
+| **Quick Targets** | Track Sun or Moon |
+| **Actions** | Stop all, pause slewing for 10 seconds, home, homing, reset active faults, set calibrator |
+| **Axis Mode** | Track both axes, azimuth only at fixed altitude, or altitude only at fixed azimuth |
+| **Coordinates** | Direct Alt/Az, RA/Dec (J2000), and Galactic Go To / Track commands |
 
 **Coordinate Systems:**
 - **RA/Dec**: Right Ascension (0-24 hours), Declination (-90 to +90 degrees), **J2000 epoch**
@@ -218,11 +220,12 @@ All equatorial (RA/Dec) coordinates use the **J2000 reference frame**, which is 
 **Tracking Modes:**
 - **Go To**: Slew to position once (no tracking)
 - **Track**: Continuously update position as Earth rotates
+- **Axis-only Track**: Follow target azimuth or altitude while holding the other axis fixed
 - **Sun/Moon**: Automatically updates coordinates as they move across the sky
 
 #### Network Tab
 
-- **Ethernet**: Connection status, IP address, MAC address, DHCP/static configuration
+- **Ethernet**: Hostname, connection status, IP address, MAC address, DHCP/static configuration
 - **WiFi Power**: Enable/disable WiFi to save ~100mA (only available when Ethernet connected)
 - **WiFi**: Access Point status, station connection status
 - **WiFi Config**: Scan and connect to WiFi networks, forget saved credentials
@@ -386,6 +389,7 @@ python h1_web_scheduler.py --host 0.0.0.0 --port 5000
 Settings are managed via the Configuration tab in the web interface and persisted in `scheduler_config.json`. Key settings include:
 
 - **Controller URL** — ESP32 address (empty to disable telescope control)
+- **Controller Fallback URLs** — Additional controller addresses such as `http://srt-controller.local` and `http://192.168.4.1`
 - **Observer Location** — Latitude, longitude, elevation (used for satellite pass prediction)
 - **Min Elevation** — Minimum elevation for satellite passes (default 10°)
 - **Data Output Folder** — Where HDF5 files are saved
@@ -441,7 +445,7 @@ To run a calibration day:
 
 ### Output Data Format
 
-HDF5 files contain:
+HDF5 files contain a fixed frequency axis and FFT width:
 
 ```
 h1_sun_20260328_151303.h5
@@ -462,6 +466,8 @@ h1_sun_20260328_151303.h5
     └── ...               # Target coordinates, TLE, schedule times
 ```
 
+If the receiver frequency, sample rate, or FFT size changes during a run, the receiver closes the current HDF5 file and starts a new timestamped segment so every file remains internally consistent.
+
 See `receiver_scheduler/read_h1_data.ipynb` for a complete analysis example.
 
 ---
@@ -481,7 +487,7 @@ See `receiver_scheduler/read_h1_data.ipynb` for a complete analysis example.
 ## File Structure
 
 ```
-new_SRT_drive/
+21-cm-radio-telescope-v2/
 ├── platformio.ini          # PlatformIO build config (Arduino Due)
 ├── README.md               # This file
 │

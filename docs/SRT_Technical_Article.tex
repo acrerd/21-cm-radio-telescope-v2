@@ -331,7 +331,7 @@ The WT32-ETH01 is an ESP32-based board with native Ethernet (LAN8720A) and WiFi,
 
 \subsubsection{WT32-ETH01 to Arduino Due wiring}
 
-The WT32-ETH01 uses GPIO32/33 for Due communication, keeping TX0/RX0 free for programming:
+The WT32-ETH01 uses IO4/IO14 for Due communication, keeping TX0/RX0 free for first flash and recovery:
 
 \begin{table}[H]
 \centering
@@ -340,8 +340,8 @@ The WT32-ETH01 uses GPIO32/33 for Due communication, keeping TX0/RX0 free for pr
 \toprule
 \textbf{WT32-ETH01} & \textbf{Arduino Due} & \textbf{Function} \\
 \midrule
-GPIO32 & Pin 19 (RX1) & ESP32 TX $\rightarrow$ Due RX \\
-GPIO33 & Pin 18 (TX1) & ESP32 RX $\leftarrow$ Due TX \\
+IO4 & Pin 19 (RX1) & ESP32 TX $\rightarrow$ Due RX \\
+IO14 & Pin 18 (TX1) & ESP32 RX $\leftarrow$ Due TX \\
 GND & GND & Common ground \\
 5V & 5V & Power \\
 \bottomrule
@@ -350,20 +350,19 @@ GND & GND & Common ground \\
 
 \begin{table}[H]
 \centering
-\caption{WT32-ETH01 programming connection (USB-TTL adapter)}
+\caption{WT32-ETH01 first-flash connection (temporary FT232 programmer)}
 \begin{tabular}{lll}
 \toprule
-\textbf{USB-TTL} & \textbf{WT32-ETH01} & \textbf{Function} \\
+\textbf{FT232 programmer} & \textbf{WT32-ETH01} & \textbf{Function} \\
 \midrule
-TX & RX0 (GPIO3) & Adapter TX $\rightarrow$ ESP32 RX \\
-RX & TX0 (GPIO1) & Adapter RX $\leftarrow$ ESP32 TX \\
+TXD & RX0 (GPIO3) & Programmer TX $\rightarrow$ ESP32 RX \\
+RXD & TX0 (GPIO1) & Programmer RX $\leftarrow$ ESP32 TX \\
 GND & GND & Common ground \\
-3.3V & 3V3 & Power (during programming) \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-The separate programming and communication pins allow firmware updates without disconnecting the Due.
+The programmer is temporary: its power, IO0, EN, DTR, and RTS wiring should not remain connected during normal operation. After the first OTA-capable serial flash, routine WT32 firmware updates are uploaded over Ethernet using the \texttt{wt32-eth01-ota} PlatformIO environment.
 
 \subsection{Operational limits}
 
@@ -702,6 +701,7 @@ The ESP32 operates in AP+STA mode, providing both access point and station conne
     \item \textbf{WiFi Access Point} --- Always active at 192.168.4.1 for configuration
     \item \textbf{WiFi Station} --- Connects to saved network if available
     \item \textbf{Ethernet (WT32-ETH01)} --- Native LAN8720 Ethernet with DHCP or static IP
+    \item \textbf{mDNS/OTA} --- Discovery as \texttt{srt-controller.local} and Ethernet firmware upload on port 3232
 \end{enumerate}
 
 For the WT32-ETH01 board, Ethernet IP configuration (DHCP or static) can be set via the web interface. Settings are stored in non-volatile memory (NVS) and persist across reboots.
@@ -718,9 +718,11 @@ For the WT32-ETH01 board, Ethernet IP configuration (DHCP or static) can be set 
 WiFi AP SSID & SRT\_Controller \\
 WiFi AP Password & radio1420 \\
 AP IP Address & 192.168.4.1 \\
+Hostname & srt-controller.local \\
 Ethernet IP & DHCP or static (configurable) \\
 Web Server Port & 80 \\
 Stellarium Port & 10001 \\
+OTA Port & 3232 \\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -1088,7 +1090,7 @@ The receiver outputs data in HDF5 format with the following structure:
 \end{tabular}
 \end{table}
 
-Spectra are stored in linear power units (not dB) to preserve radiometric accuracy for calibration workflows.
+Spectra are stored in linear power units (not dB) to preserve radiometric accuracy for calibration workflows. Each file has a fixed frequency axis and FFT width. If the receiver frequency, sample rate, or FFT size changes during operation, the current file is closed and a new timestamped HDF5 segment is started so the datasets remain internally consistent.
 
 \begin{table}[H]
 \centering
@@ -1248,7 +1250,7 @@ pip install platformio esptool mpremote
 \subsubsection{Building and uploading}
 
 \begin{lstlisting}[language=bash]
-cd new_SRT_drive
+cd 21-cm-radio-telescope-v2
 
 # Build for real hardware
 pio run -e due
@@ -1277,10 +1279,13 @@ pio run -e simulation -t upload
 The ESP32 controller uses Arduino/PlatformIO:
 
 \begin{lstlisting}[language=bash]
-cd new_SRT_drive/esp32_controller_arduino
+cd 21-cm-radio-telescope-v2/esp32_controller_arduino
 
 # Build and upload
-pio run --target upload
+pio run -e wt32-eth01 --target upload
+
+# Routine network update after the first serial flash
+pio run -e wt32-eth01-ota --target upload
 
 # Monitor serial output
 pio device monitor -b 115200
@@ -1557,8 +1562,8 @@ All endpoints accept HTTP GET requests. Base URL is the ESP32's IP address (e.g.
 \toprule
 \textbf{Endpoint} & \textbf{Description} \\
 \midrule
-\texttt{/status} & Current position (alt, az, target\_alt, target\_az), motor currents, status string, fault, is\_slewing, calibrator state \\
-\texttt{/tracking} & Tracking state: enabled, RA/Dec, target name, offsets, waiting flags \\
+\texttt{/status} & Current position (alt, az, target\_alt, target\_az), motor currents, status string, fault, fault\_active, is\_slewing, calibrator state \\
+\texttt{/tracking} & Tracking state: enabled, RA/Dec, target name, axis-only mode, offsets, waiting flags \\
 \texttt{/ephemeris} & Current Sun and Moon positions (RA, Dec, Alt, Az) \\
 \texttt{/serial/log} & Serial communication log (JSON array) \\
 \texttt{/time/status} & Time sync status: synced, source, UTC, timestamp \\
@@ -1580,6 +1585,11 @@ All endpoints accept HTTP GET requests. Base URL is the ESP32's IP address (e.g.
 \texttt{/goto} & \texttt{ra} (hours), \texttt{dec} (degrees) & One-time slew to RA/Dec \\
 \texttt{/goto/galactic} & \texttt{l}, \texttt{b} (degrees) & One-time slew to galactic \\
 \texttt{/tracking/enable} & \texttt{enable} (0 or 1) & Enable/disable tracking \\
+\texttt{/tracking/axis} & \texttt{mode} (\texttt{both}, \texttt{az}, or \texttt{alt}), optional \texttt{alt}/\texttt{az} & Track both axes or hold one axis fixed \\
+\texttt{/stop/movement} & (none) & Stop current motion and pause tracking commands for 10 seconds \\
+\texttt{/stop/all} & (none) & Stop motion and clear current tracking target \\
+\texttt{/reset} & (none) & Reset active Due fault \\
+\texttt{/home} & (none) & Run the Due homing sequence \\
 \texttt{/calibrator} & \texttt{on} (0 or 1) & Control noise source \\
 \texttt{/offset} & \texttt{alt}, \texttt{az} (degrees) & Set pointing offset \\
 \texttt{/offset/clear} & (none) & Clear pointing offset \\
