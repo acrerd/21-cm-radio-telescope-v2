@@ -13,8 +13,13 @@ struct SRTState {
     float targetAz = 0.0;        // degrees
     bool trackingEnabled = false;
     String targetName = "";      // "Sun", "Moon", "Gal l=x b=y", or empty for manual
+    bool azOnlyTracking = false; // True to follow target azimuth while holding fixed altitude
+    float azOnlyAlt = 0.0;       // Fixed altitude for azimuth-only tracking
+    bool altOnlyTracking = false; // True to follow target altitude while holding fixed azimuth
+    float altOnlyAz = 0.0;        // Fixed azimuth for altitude-only tracking
     bool waitingForWrap = false; // True when target is outside az limits
     bool waitingForRise = false; // True when target is below horizon
+    unsigned long movementHoldUntil = 0; // Suppress automatic tracking sends until this millis()
 
     // Pointing offset for scanning/mapping (degrees)
     float offsetAlt = 0.0;

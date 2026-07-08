@@ -1,5 +1,4 @@
 // Unit tests for coordinate transformation functions
-// Run with: pio test -e native
 
 #include <unity.h>
 #include <cmath>

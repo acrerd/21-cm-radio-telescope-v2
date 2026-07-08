@@ -8,6 +8,16 @@
 #define WIFI_AP_SSID "SRT_Controller"
 #define WIFI_AP_PASSWORD "radio1420"
 
+// Network discovery name. The controller should be reachable as
+// http://srt-controller.local/ on networks that support mDNS.
+#define CONTROLLER_HOSTNAME "srt-controller"
+
+// Network OTA updates. After one serial flash with this firmware installed,
+// routine WT32 updates can be uploaded over Ethernet.
+#define OTA_ENABLED 1
+#define OTA_PORT 3232
+#define OTA_PASSWORD "srt-ota-1420"
+
 // WiFi connection timeout (seconds)
 #define WIFI_CONNECT_TIMEOUT 15
 

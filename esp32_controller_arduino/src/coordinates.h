@@ -6,7 +6,7 @@
 #ifdef ARDUINO
 #include <Arduino.h>
 #else
-// Native build - define constants normally provided by Arduino.h
+// Host-side tools may not provide constants normally defined by Arduino.h.
 #ifndef DEG_TO_RAD
 #define DEG_TO_RAD 0.017453292519943295
 #endif

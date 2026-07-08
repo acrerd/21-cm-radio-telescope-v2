@@ -3,9 +3,12 @@
 
 #include <Arduino.h>
 #include <WiFi.h>
+#include <ESPmDNS.h>
+#include "config.h"  // Need config.h early for feature flags and Ethernet config
+#if OTA_ENABLED
+#include <ArduinoOTA.h>
+#endif
 #include <time.h>
-
-#include "config.h"  // Need config.h early for ETHERNET_ENABLED
 
 #if ETHERNET_ENABLED
 #include <ETH.h>
@@ -24,6 +27,65 @@
 // External state
 extern SRTState state;
 
+bool mdnsRunning = false;
+bool otaRunning = false;
+
+void startDiscoveryServices() {
+    if (mdnsRunning) {
+        return;
+    }
+
+    if (!MDNS.begin(CONTROLLER_HOSTNAME)) {
+        Serial.println("mDNS start failed");
+        return;
+    }
+
+    MDNS.addService("http", "tcp", WEB_PORT);
+    MDNS.addService("stellarium", "tcp", STELLARIUM_PORT);
+    mdnsRunning = true;
+    Serial.printf("mDNS: http://%s.local/\n", CONTROLLER_HOSTNAME);
+}
+
+void startOTAService() {
+#if OTA_ENABLED
+    if (otaRunning) {
+        return;
+    }
+
+    ArduinoOTA
+        .setPort(OTA_PORT)
+        .setHostname(CONTROLLER_HOSTNAME)
+        .setPassword(OTA_PASSWORD)
+        .setMdnsEnabled(false)
+        .onStart([]() {
+            Serial.println("OTA update starting");
+            srtSerial.logESP("OTA update starting");
+            srtSerial.sendStop();
+        })
+        .onEnd([]() {
+            Serial.println("OTA update complete");
+            srtSerial.logESP("OTA update complete");
+        })
+        .onProgress([](unsigned int progress, unsigned int total) {
+            static int lastPercent = -1;
+            int percent = total ? (progress * 100 / total) : 0;
+            if (percent != lastPercent && percent % 10 == 0) {
+                Serial.printf("OTA progress: %d%%\n", percent);
+                lastPercent = percent;
+            }
+        })
+        .onError([](ota_error_t error) {
+            Serial.printf("OTA error: %u\n", error);
+            srtSerial.logESP("OTA update failed");
+        });
+
+    ArduinoOTA.begin();
+    otaRunning = true;
+    MDNS.enableArduino(OTA_PORT, true);
+    Serial.printf("OTA ready: %s.local:%d\n", CONTROLLER_HOSTNAME, OTA_PORT);
+#endif
+}
+
 // Tracking loop variables
 unsigned long lastTrackingUpdate = 0;
 unsigned long lastEphemerisUpdate = 0;
@@ -41,6 +103,7 @@ void onEthEvent(arduino_event_id_t event) {
     switch (event) {
         case ARDUINO_EVENT_ETH_START:
             Serial.println("ETH Started");
+            ETH.setHostname(CONTROLLER_HOSTNAME);
             break;
         case ARDUINO_EVENT_ETH_CONNECTED:
             Serial.println("ETH Link Up");
@@ -56,6 +119,8 @@ void onEthEvent(arduino_event_id_t event) {
             if (!state.timeSynced) {
                 ethNeedNtpSync = true;
             }
+            startDiscoveryServices();
+            startOTAService();
             break;
         case ARDUINO_EVENT_ETH_DISCONNECTED:
             Serial.println("ETH Disconnected");
@@ -121,6 +186,16 @@ void updateTracking() {
 
     // Request fresh status
     srtSerial.requestStatus();
+
+    if (state.movementHoldUntil != 0) {
+        if ((long)(now - state.movementHoldUntil) < 0) {
+            return;
+        }
+        state.movementHoldUntil = 0;
+        lastSentAlt = -999;
+        lastSentAz = -999;
+        srtSerial.logESP("Movement hold released");
+    }
 
     if (state.trackingEnabled) {
         // Detect tracking just enabled - force immediate send
@@ -199,9 +274,12 @@ void updateTracking() {
                 lastSentAz = -999;
             }
 
-            // Apply pointing offset for scanning/mapping
-            float finalAlt = alt + state.offsetAlt;
-            float finalAz = az + state.offsetAz;
+            // Apply pointing offset for scanning/mapping. Axis-only modes
+            // track one coordinate while holding the other at a manual value.
+            float baseAlt = state.azOnlyTracking ? state.azOnlyAlt : alt;
+            float baseAz = state.altOnlyTracking ? state.altOnlyAz : az;
+            float finalAlt = baseAlt + state.offsetAlt;
+            float finalAz = baseAz + state.offsetAz;
 
             // Clamp to valid range
             if (finalAlt < settings.mountAltMin) finalAlt = settings.mountAltMin;
@@ -216,6 +294,12 @@ void updateTracking() {
                 if (state.offsetAlt != 0 || state.offsetAz != 0) {
                     DBG(Serial.printf("Tracking %s: base Alt=%.1f Az=%.1f, offset %.1f/%.1f, sending %.1f/%.1f\n",
                                   state.targetName.c_str(), alt, az, state.offsetAlt, state.offsetAz, finalAlt, finalAz));
+                } else if (state.azOnlyTracking) {
+                    DBG(Serial.printf("Az-only tracking %s: target Az=%.1f, fixed Alt=%.1f\n",
+                                  state.targetName.c_str(), finalAz, finalAlt));
+                } else if (state.altOnlyTracking) {
+                    DBG(Serial.printf("Alt-only tracking %s: target Alt=%.1f, fixed Az=%.1f\n",
+                                  state.targetName.c_str(), finalAlt, finalAz));
                 } else {
                     DBG(Serial.printf("Tracking %s: sending Alt=%.1f Az=%.1f\n",
                                   state.targetName.c_str(), finalAlt, finalAz));
@@ -295,6 +379,8 @@ void setup() {
 
     // Start web server
     setupWebServer();
+    startDiscoveryServices();
+    startOTAService();
 
     // Stellarium async server
     setupStellariumServer();
@@ -312,6 +398,9 @@ void setup() {
 }
 
 void loop() {
+#if OTA_ENABLED
+    ArduinoOTA.handle();
+#endif
     handleWebServer();
     handleStellariumServer();
     updateTracking();

@@ -38,6 +38,7 @@ bool WiFiManager::connectSTA(const String &ssid, const String &password, int tim
 
     // Use AP+STA mode to keep AP running while connecting
     WiFi.mode(WIFI_AP_STA);
+    WiFi.setHostname(CONTROLLER_HOSTNAME);
     WiFi.begin(ssid.c_str(), password.c_str());
 
     unsigned long start = millis();
@@ -83,6 +84,7 @@ void WiFiManager::startAP() {
 bool WiFiManager::startup() {
     // Step 1: Start AP immediately - guarantees a connection path within seconds
     WiFi.mode(WIFI_AP);
+    WiFi.setHostname(CONTROLLER_HOSTNAME);
     delay(100);
     startAP();
 
@@ -91,6 +93,7 @@ bool WiFiManager::startup() {
     if (loadCredentials(ssid, password)) {
         Serial.printf("Trying saved WiFi: %s\n", ssid.c_str());
         WiFi.mode(WIFI_AP_STA);  // Keep AP running, add STA
+        WiFi.setHostname(CONTROLLER_HOSTNAME);
         WiFi.begin(ssid.c_str(), password.c_str());
 
         unsigned long start = millis();
