@@ -1927,9 +1927,12 @@ void processSerialInput() {
 
             if (serial1Index > 0) {
                 serial1Buffer[serial1Index] = '\0';
-                cmdFromSerial1 = true;
-                processCommand(serial1Buffer);
-                cmdFromSerial1 = false;
+                 // Ignore Due status lines if Serial1 output is looped back into RX.
+                if (strncmp(serial1Buffer, "Alt:", 4) != 0) {
+                    cmdFromSerial1 = true;
+                    processCommand(serial1Buffer);
+                    cmdFromSerial1 = false;
+                }
                 serial1Index = 0;
                 #if !ESP_BRIDGE_ENABLED
                 Serial1.println();
