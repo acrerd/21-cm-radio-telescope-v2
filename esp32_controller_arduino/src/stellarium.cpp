@@ -14,6 +14,19 @@ static unsigned long lastPositionSend = 0;
 
 extern SRTState state;
 
+static void prepareStellariumTrackingTarget() {
+    state.waitingForWrap = false;
+    state.waitingForRise = false;
+    state.movementHoldUntil = 0;
+    if (state.azOnlyTracking) {
+        state.azOnlyAlt = srtSerial.getCurrentAlt();
+    }
+    if (state.altOnlyTracking) {
+        state.altOnlyAz = srtSerial.getCurrentAz();
+    }
+    state.trackingEnabled = true;
+}
+
 void sendPositionToStellarium() {
     if (!stellariumClient || !stellariumClient->connected()) return;
 
@@ -81,9 +94,7 @@ void onStellariumData(void* arg, AsyncClient* client, void* data, size_t len) {
             state.currentRA = raHours;
             state.currentDec = decDeg;
             state.targetName = "";
-            state.waitingForWrap = false;
-            state.waitingForRise = false;
-            state.trackingEnabled = true;
+            prepareStellariumTrackingTarget();
         }
     }
 }

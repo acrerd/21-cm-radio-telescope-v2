@@ -20,6 +20,27 @@ extern String ethIP;
 
 AsyncWebServer webServer(WEB_PORT);
 SRTState state;  // Global state instance
+extern bool mdnsRunning;
+
+static void clearCurrentTracking() {
+    state.trackingEnabled = false;
+    state.targetName = "";
+    state.waitingForWrap = false;
+    state.waitingForRise = false;
+}
+
+static void prepareTrackingTarget() {
+    state.waitingForWrap = false;
+    state.waitingForRise = false;
+    state.movementHoldUntil = 0;
+    if (state.azOnlyTracking) {
+        state.azOnlyAlt = srtSerial.getCurrentAlt();
+    }
+    if (state.altOnlyTracking) {
+        state.altOnlyAz = srtSerial.getCurrentAz();
+    }
+    state.trackingEnabled = true;
+}
 
 void setupWebServer() {
     // Serve main page
@@ -55,6 +76,8 @@ void setupWebServer() {
         json += "\"az_current_a\":" + String(srtSerial.getAzCurrentA(), 2) + ",";
         json += "\"status\":\"" + srtSerial.getStatusStr() + "\",";
         json += "\"fault\":\"" + srtSerial.getFaultStr() + "\",";
+        bool faultActive = (srtSerial.getStatusStr() == "FAULT") || (srtSerial.getFaultStr().length() > 0);
+        json += "\"fault_active\":" + String(faultActive ? "true" : "false") + ",";
         json += "\"is_slewing\":" + String(srtSerial.getIsSlewing() ? "true" : "false") + ",";
         json += "\"calibrator\":" + String(srtSerial.getCalibratorOn() ? "true" : "false") + ",";
         json += "\"raw\":\"" + srtSerial.getLastStatus() + "\"";
@@ -85,6 +108,10 @@ void setupWebServer() {
         json += "\"ra\":" + String(state.currentRA, 4) + ",";
         json += "\"dec\":" + String(state.currentDec, 2) + ",";
         json += "\"target_name\":\"" + state.targetName + "\",";
+        json += "\"az_only\":" + String(state.azOnlyTracking ? "true" : "false") + ",";
+        json += "\"az_only_alt\":" + String(state.azOnlyAlt, 2) + ",";
+        json += "\"alt_only\":" + String(state.altOnlyTracking ? "true" : "false") + ",";
+        json += "\"alt_only_az\":" + String(state.altOnlyAz, 2) + ",";
         json += "\"waiting_for_wrap\":" + String(state.waitingForWrap ? "true" : "false") + ",";
         json += "\"waiting_for_rise\":" + String(state.waitingForRise ? "true" : "false") + ",";
         json += "\"offset_alt\":" + String(state.offsetAlt, 2) + ",";
@@ -148,9 +175,7 @@ void setupWebServer() {
         state.currentRA = ra;
         state.currentDec = dec;
         state.targetName = "";
-        state.waitingForWrap = false;
-        state.waitingForRise = false;
-        state.trackingEnabled = true;
+        prepareTrackingTarget();
         request->send(200, "application/json", "{\"ok\":true}");
     });
 
@@ -172,9 +197,7 @@ void setupWebServer() {
         state.currentRA = ra;
         state.currentDec = dec;
         state.targetName = "Gal l=" + String(l, 1) + " b=" + String(b, 1);
-        state.waitingForWrap = false;
-        state.waitingForRise = false;
-        state.trackingEnabled = true;
+        prepareTrackingTarget();
         char json[64];
         snprintf(json, sizeof(json), "{\"ok\":true,\"ra\":%.4f,\"dec\":%.2f}", ra, dec);
         request->send(200, "application/json", json);
@@ -185,11 +208,48 @@ void setupWebServer() {
         bool enable = request->arg("enable") == "1";
         state.trackingEnabled = enable;
         if (!enable) {
-            state.targetName = "";
-            state.waitingForWrap = false;
-            state.waitingForRise = false;
+            clearCurrentTracking();
             srtSerial.logESP("Tracking stopped");
         }
+        request->send(200, "application/json", "{\"ok\":true}");
+    });
+
+    // Stop current motion but allow automatic tracking to resume after 10 seconds
+    webServer.on("/stop/movement", HTTP_GET, [](AsyncWebServerRequest *request) {
+        state.movementHoldUntil = millis() + 10000UL;
+        srtSerial.sendStop();
+        srtSerial.logESP("Movement stopped for 10s");
+        request->send(200, "application/json", "{\"ok\":true,\"hold_ms\":10000}");
+    });
+
+    // Stop motion and cancel the current tracking target
+    webServer.on("/stop/all", HTTP_GET, [](AsyncWebServerRequest *request) {
+        state.movementHoldUntil = 0;
+        clearCurrentTracking();
+        srtSerial.sendStop();
+        srtSerial.logESP("STOP all");
+        request->send(200, "application/json", "{\"ok\":true}");
+    });
+
+    // Clear mount fault only when the Due reports one
+    webServer.on("/reset", HTTP_GET, [](AsyncWebServerRequest *request) {
+        bool faultActive = (srtSerial.getStatusStr() == "FAULT") || (srtSerial.getFaultStr().length() > 0);
+        if (!faultActive) {
+            request->send(409, "application/json", "{\"ok\":false,\"error\":\"No fault active\"}");
+            return;
+        }
+        state.movementHoldUntil = 0;
+        srtSerial.sendReset();
+        srtSerial.logESP("Reset fault");
+        request->send(200, "application/json", "{\"ok\":true}");
+    });
+
+    // Run the Due homing sequence
+    webServer.on("/home", HTTP_GET, [](AsyncWebServerRequest *request) {
+        state.movementHoldUntil = 0;
+        clearCurrentTracking();
+        srtSerial.sendHome();
+        srtSerial.logESP("HOME");
         request->send(200, "application/json", "{\"ok\":true}");
     });
 
@@ -200,9 +260,7 @@ void setupWebServer() {
         state.currentRA = ra;
         state.currentDec = dec;
         state.targetName = "Sun";
-        state.waitingForWrap = false;
-        state.waitingForRise = false;
-        state.trackingEnabled = true;
+        prepareTrackingTarget();
         srtSerial.logESP("Track Sun");
         request->send(200, "application/json", "{\"ok\":true}");
     });
@@ -214,9 +272,7 @@ void setupWebServer() {
         state.currentRA = ra;
         state.currentDec = dec;
         state.targetName = "Moon";
-        state.waitingForWrap = false;
-        state.waitingForRise = false;
-        state.trackingEnabled = true;
+        prepareTrackingTarget();
         srtSerial.logESP("Track Moon");
         request->send(200, "application/json", "{\"ok\":true}");
     });
@@ -237,9 +293,7 @@ void setupWebServer() {
         state.currentRA = ra;
         state.currentDec = dec;
         state.targetName = "";
-        state.waitingForWrap = false;
-        state.waitingForRise = false;
-        state.trackingEnabled = true;
+        prepareTrackingTarget();
         request->send(200, "application/json", "{\"ok\":true}");
     });
 
@@ -261,11 +315,38 @@ void setupWebServer() {
         state.currentRA = ra;
         state.currentDec = dec;
         state.targetName = "Gal l=" + String(l, 1) + " b=" + String(b, 1);
-        state.waitingForWrap = false;
-        state.waitingForRise = false;
-        state.trackingEnabled = true;
+        prepareTrackingTarget();
         char json[64];
         snprintf(json, sizeof(json), "{\"ok\":true,\"ra\":%.4f,\"dec\":%.2f}", ra, dec);
+        request->send(200, "application/json", json);
+    });
+
+    // Change tracking axis mode for the current target
+    webServer.on("/tracking/axis", HTTP_GET, [](AsyncWebServerRequest *request) {
+        String mode = request->arg("mode");
+        if (mode == "az") {
+            state.azOnlyTracking = true;
+            state.altOnlyTracking = false;
+            state.azOnlyAlt = request->hasArg("alt") ? request->arg("alt").toFloat() : srtSerial.getCurrentAlt();
+            srtSerial.logESP("Tracking azimuth only");
+        } else if (mode == "alt") {
+            state.azOnlyTracking = false;
+            state.altOnlyTracking = true;
+            state.altOnlyAz = request->hasArg("az") ? request->arg("az").toFloat() : srtSerial.getCurrentAz();
+            srtSerial.logESP("Tracking altitude only");
+        } else if (mode == "both") {
+            state.azOnlyTracking = false;
+            state.altOnlyTracking = false;
+            srtSerial.logESP("Tracking both axes");
+        } else {
+            request->send(400, "application/json", "{\"ok\":false,\"error\":\"Use mode=az, mode=alt, or mode=both\"}");
+            return;
+        }
+
+        String json = "{\"ok\":true,\"az_only\":" + String(state.azOnlyTracking ? "true" : "false") +
+                      ",\"alt_only\":" + String(state.altOnlyTracking ? "true" : "false") +
+                      ",\"az_only_alt\":" + String(state.azOnlyAlt, 2) +
+                      ",\"alt_only_az\":" + String(state.altOnlyAz, 2) + "}";
         request->send(200, "application/json", json);
     });
 
@@ -273,12 +354,22 @@ void setupWebServer() {
     webServer.on("/direct", HTTP_GET, [](AsyncWebServerRequest *request) {
         float alt = request->arg("alt").toFloat();
         float az = request->arg("az").toFloat();
+        if (state.trackingEnabled && state.azOnlyTracking) {
+            state.azOnlyAlt = alt;
+            srtSerial.sendTarget(alt, state.targetAz);
+            request->send(200, "application/json", "{\"ok\":true,\"tracking\":true,\"updated\":\"alt\"}");
+            return;
+        }
+        if (state.trackingEnabled && state.altOnlyTracking) {
+            state.altOnlyAz = az;
+            srtSerial.sendTarget(state.targetAlt, az);
+            request->send(200, "application/json", "{\"ok\":true,\"tracking\":true,\"updated\":\"az\"}");
+            return;
+        }
         state.targetAlt = alt;
         state.targetAz = az;
-        state.trackingEnabled = false;
-        state.targetName = "";
-        state.waitingForWrap = false;
-        state.waitingForRise = false;
+        state.movementHoldUntil = 0;
+        clearCurrentTracking();
         srtSerial.sendTarget(alt, az);
         request->send(200, "application/json", "{\"ok\":true}");
     });
@@ -323,6 +414,11 @@ void setupWebServer() {
         String savedSSID, savedPass;
         wifiManager.loadCredentials(savedSSID, savedPass);
         String json = "{";
+        json += "\"hostname\":\"" + String(CONTROLLER_HOSTNAME) + "\",";
+        json += "\"mdns\":\"http://" + String(CONTROLLER_HOSTNAME) + ".local\",";
+        json += "\"mdns_running\":" + String(mdnsRunning ? "true" : "false") + ",";
+        json += "\"ota_enabled\":" + String(OTA_ENABLED ? "true" : "false") + ",";
+        json += "\"ota_port\":" + String(OTA_PORT) + ",";
         // Ethernet status (WT32-ETH01 only)
         #if ETHERNET_ENABLED
         json += "\"eth_available\":true,";

@@ -144,11 +144,11 @@ bool SRTSerial::readStatus() {
         line.trim();
         linesRead++;
 
-        // Validate format - should have exactly one "Alt:" and one " Az:"
+        // Validate format. Slewing lines include a second target "Alt:"/" Az:"
+        // after " -> ", so only require the current-position prefix.
         if (line.startsWith("Alt:") &&
-            line.indexOf("Alt:") == line.lastIndexOf("Alt:") &&
             line.indexOf(" Az:") != -1 &&
-            line.indexOf(" Az:") == line.lastIndexOf(" Az:")) {
+            line.indexOf("Status:") != -1) {
             lastValidLine = line;
             logMessage('R', line);  // Log valid status lines
         }

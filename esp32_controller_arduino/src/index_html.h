@@ -13,7 +13,12 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
         .container { max-width: 1000px; margin: 0 auto; }
         h1 { color: #00d9ff; margin: 0 0 10px 0; font-size: 1.5em; }
         h3 { margin: 0 0 10px 0; color: #aaa; font-size: 1em; }
+        h4 { margin: 12px 0 6px 0; color: #bbb; font-size: 0.9em; }
         .box { background: #16213e; padding: 12px; border-radius: 8px; margin-bottom: 10px; }
+        .header-row { display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 10px; }
+        .header-row h1 { margin: 0; }
+        .header-link { color: #00d9ff; border: 1px solid #00d9ff; border-radius: 4px; padding: 6px 10px; text-decoration: none; font-size: 0.9em; }
+        .header-link:hover { background: #00d9ff; color: #000; }
         .status-row { display: flex; justify-content: space-between; margin: 4px 0; }
         .label { color: #888; }
         .value { font-family: monospace; font-size: 1.1em; }
@@ -30,6 +35,12 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
         button:hover { background: #00b8d4; }
         button.stop { background: #ff4444; color: #fff; }
         button.stop:hover { background: #cc0000; }
+        button.stop-all { background: #b00020; color: #fff; width: 100%; font-weight: bold; }
+        button.stop-all:hover { background: #7f0017; }
+        button.stop-move { background: #ff5a5f; color: #fff; width: 100%; }
+        button.stop-move:hover { background: #d9363e; }
+        button:disabled { background: #555; color: #aaa; cursor: not-allowed; }
+        button:disabled:hover { background: #555; }
         button.secondary { background: #555; color: #fff; }
         button.secondary:hover { background: #666; }
         button.solar { background: #ffaa00; color: #000; }
@@ -56,6 +67,16 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
         .coord-row { display: flex; gap: 10px; align-items: center; margin: 6px 0; flex-wrap: wrap; }
         .coord-row label { white-space: nowrap; }
         .btn-row { margin-top: 8px; }
+        .stacked-actions button { display: block; margin: 6px 0; }
+        .action-grid { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; align-items: center; }
+        .action-grid button { margin: 0; }
+        .action-row { display: flex; justify-content: center; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+        .action-row button { margin: 0; }
+        .axis-switch { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 0; margin: 10px 0; border: 1px solid #444; border-radius: 6px; overflow: hidden; background: #0f0f23; }
+        .cal-switch { grid-template-columns: 1fr 1fr; margin: 0; min-width: 150px; }
+        .axis-option { margin: 0; border-radius: 0; background: transparent; color: #bbb; padding: 9px 8px; }
+        .axis-option:hover { background: #1a2a4e; }
+        .axis-option.active { background: #00d9ff; color: #000; }
         @media (max-width: 800px) { .two-col { grid-template-columns: 1fr; } }
         .serial-panel { position: fixed; bottom: 0; left: 0; right: 0; background: #0f0f23; border-top: 2px solid #00d9ff; transition: height 0.3s; }
         .serial-header { display: flex; justify-content: space-between; padding: 6px 15px; background: #16213e; cursor: pointer; }
@@ -72,7 +93,10 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
 </head>
 <body>
     <div class="container">
-        <h1 id="page-title">SRT Controller</h1>
+        <div class="header-row">
+            <h1 id="page-title">SRT Controller</h1>
+            <a class="header-link" href="http://127.0.0.1:5000/" target="_blank" onclick="openScheduler(event)">Scheduler</a>
+        </div>
         <div class="tab-bar">
             <div class="tab active" onclick="showTab('control')">Control</div>
             <div class="tab" onclick="showTab('network')">Network</div>
@@ -83,7 +107,7 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
             <div class="two-col">
                 <div class="left-col">
                     <div class="box">
-                        <h3>Current Position</h3>
+                        <h3>Current Status</h3>
                         <div class="status-row"><span class="label">Altitude:</span><span class="value" id="alt">--</span></div>
                         <div class="status-row"><span class="label">Azimuth:</span><span class="value" id="az">--</span></div>
                         <div class="status-row"><span class="label">RA:</span><span class="value" id="cur_ra">--</span></div>
@@ -93,6 +117,7 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
                         <div class="status-row"><span class="label">Alt Motor:</span><span class="value" id="alt_a">-- A</span></div>
                         <div class="status-row"><span class="label">Az Motor:</span><span class="value" id="az_a">-- A</span></div>
                         <div class="status-row"><span class="label">Status:</span><span class="value" id="status">--</span></div>
+                        <div class="status-row"><span class="label">Error Status:</span><span class="value" id="error_status">--</span></div>
                         <div class="status-row"><span class="label">Tracking:</span><span class="value" id="tracking_target">--</span></div>
                         <div class="status-row"><span class="label">Time:</span><span class="value" id="time_status">--</span></div>
                     </div>
@@ -100,29 +125,45 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
                         <h3>Quick Targets</h3>
                         <button class="solar" onclick="trackSun()">Track Sun</button>
                         <button class="lunar" onclick="trackMoon()">Track Moon</button>
-                        <button class="stop" onclick="stopTracking()">Stop</button>
                         <div class="target-info">Sun: <span id="sun_pos">--</span><br>Moon: <span id="moon_pos">--</span></div>
                     </div>
                     <div class="box">
-                        <h3>Calibrator</h3>
-                        <button id="cal_btn" onclick="toggleCalibrator()">CAL OFF</button>
-                        <span class="target-info" style="margin-left: 10px;">Noise source for system calibration</span>
-                    </div>
-                    <div class="box">
-                        <h3>Direct Control (Alt/Az)</h3>
-                        <div class="coord-row">
-                            <label>Alt: <input type="number" id="direct_alt" step="0.5" min="0" max="90" value="45"></label>
-                            <label>Az: <input type="number" id="direct_az" step="0.5" min="0" max="355" value="180"></label>
+                        <h3>Actions</h3>
+                        <div class="stacked-actions">
+                            <button class="stop-all" onclick="stopAll()">STOP all</button>
+                            <button class="stop-move" onclick="stopMovement()">Stop Slewing (and tracking for 10s)</button>
                         </div>
-                        <div class="btn-row">
-                            <button onclick="goDirect()">Go Direct</button>
+                        <div class="axis-switch" id="axis_switch">
+                            <button class="axis-option" id="axis_az" onclick="setAxisMode('az')">Only track azimuth</button>
+                            <button class="axis-option active" id="axis_both" onclick="setAxisMode('both')">Tracking in both directions</button>
+                            <button class="axis-option" id="axis_alt" onclick="setAxisMode('alt')">Only track altitude</button>
+                        </div>
+                        <div class="action-grid">
+                            <div class="axis-switch cal-switch" id="cal_switch">
+                                <button class="axis-option active" id="cal_off" onclick="setCalibrator(false)">Off</button>
+                                <button class="axis-option" id="cal_on" onclick="setCalibrator(true)">On</button>
+                            </div>
+                            <span class="target-info" style="margin-top:0;">Noise source for system calibration</span>
+                        </div>
+                        <div class="action-row">
                             <button onclick="goHome()">Home</button>
+                            <button class="secondary" id="reset_btn" onclick="resetFault()" disabled>Reset</button>
+                            <button onclick="runHoming()">Homing</button>
                         </div>
                     </div>
                 </div>
                 <div class="right-col">
                     <div class="box">
-                        <h3>Equatorial (RA/Dec) - J2000</h3>
+                        <h3>Controls</h3>
+                        <h4>Direct Control (Alt/Az)</h4>
+                        <div class="coord-row">
+                            <label>Alt: <input type="number" id="direct_alt" step="0.5" min="0" max="90" value="45"></label>
+                            <label>Az: <input type="number" id="direct_az" step="0.5" min="0" max="355" value="180"></label>
+                        </div>
+                        <div class="btn-row">
+                            <button onclick="goDirect()">Go To</button>
+                        </div>
+                        <h4>Equatorial (RA/Dec) - J2000</h4>
                         <div class="coord-row">
                             <label>RA: <input type="text" id="ra" value="0" placeholder="12h30m or 12.5"></label>
                             <label>Dec: <input type="text" id="dec" value="0" placeholder="+45d30m or 45.5"></label>
@@ -131,9 +172,7 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
                             <button onclick="goToRaDec()">Go To</button>
                             <button onclick="trackRaDec()">Track</button>
                         </div>
-                    </div>
-                    <div class="box">
-                        <h3>Galactic (l/b) - J2000</h3>
+                        <h4>Galactic (l/b) - J2000</h4>
                         <div class="coord-row">
                             <label>l: <input type="number" id="gal_l" step="0.1" min="0" max="360" value="0"></label>
                             <label>b: <input type="number" id="gal_b" step="0.1" min="-90" max="90" value="0"></label>
@@ -164,6 +203,7 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
                 <div>
                     <div class="box" id="eth-section">
                         <h3>Ethernet</h3>
+                        <div class="status-row"><span class="label">Name:</span><span class="value" id="net_name">--</span></div>
                         <div class="status-row"><span class="label">Status:</span><span class="value" id="eth_status">--</span></div>
                         <div class="status-row"><span class="label">IP Address:</span><span class="value" id="eth_ip">--</span></div>
                         <div class="status-row"><span class="label">MAC:</span><span class="value" id="eth_mac">--</span></div>
@@ -334,6 +374,8 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
                         <p style="font-size:0.85em;"><code>/status</code> - Mount position &amp; state</p>
                         <p style="font-size:0.85em;"><code>/track/radec?ra=X&amp;dec=Y</code> - Track J2000</p>
                         <p style="font-size:0.85em;"><code>/track/galactic?l=X&amp;b=Y</code> - Track galactic</p>
+                        <p style="font-size:0.85em;"><code>/tracking/axis?mode=az&amp;alt=X</code> - Track azimuth only</p>
+                        <p style="font-size:0.85em;"><code>/tracking/axis?mode=alt&amp;az=X</code> - Track altitude only</p>
                         <p style="font-size:0.85em;"><code>/offset?alt=X&amp;az=Y</code> - Set pointing offset</p>
                         <p style="font-size:0.85em;"><code>/calibrator?on=1</code> - Control noise source</p>
                     </div>
@@ -362,6 +404,7 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
     </div>
 <script>
 let selectedSsid='';
+function openScheduler(e){e.preventDefault();const url='http://127.0.0.1:5000/';fetch(url,{mode:'no-cors',cache:'no-store'}).then(()=>window.open(url,'_blank')).catch(()=>{window.open(url,'_blank');alert('Scheduler is not responding. Start it with:\\n/home/astro/radioconda/bin/python /home/astro/21-cm-radio-telescope-v2/receiver_scheduler/h1_web_scheduler.py');});}
 function showTab(name){document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));document.querySelectorAll('.tab-content').forEach(t=>t.classList.remove('active'));event.target.classList.add('active');document.getElementById('tab-'+name).classList.add('active');if(name==='network')updateNetworkStatus();if(name==='settings')loadSettings();}
 function formatRA(h){const hh=Math.floor(h);const m=Math.floor((h-hh)*60);const s=Math.floor(((h-hh)*60-m)*60);return hh+'h'+String(m).padStart(2,'0')+'m'+String(s).padStart(2,'0')+'s';}
 function formatDec(d){const sign=d>=0?'+':'-';d=Math.abs(d);const dd=Math.floor(d);const m=Math.floor((d-dd)*60);return sign+dd+'\u00b0'+String(m).padStart(2,'0')+"'";}
@@ -372,7 +415,7 @@ function checkAndSyncTime(){fetch('/time/status').then(r=>r.json()).then(d=>{if(
 function updateEphemeris(){fetch('/ephemeris').then(r=>r.json()).then(d=>{document.getElementById('sun_pos').textContent='Alt '+d.sun.alt.toFixed(1)+'\u00b0 Az '+d.sun.az.toFixed(1)+'\u00b0';document.getElementById('moon_pos').textContent='Alt '+d.moon.alt.toFixed(1)+'\u00b0 Az '+d.moon.az.toFixed(1)+'\u00b0';});}
 function toggleEthMode(){const isDhcp=document.getElementById('eth_dhcp').checked;const fields=document.getElementById('eth-static-fields');fields.style.opacity=isDhcp?'0.5':'1';const inputs=fields.querySelectorAll('input');inputs.forEach(i=>i.disabled=isDhcp);}
 function saveEthSettings(){const dhcp=document.getElementById('eth_dhcp').checked?'1':'0';const params=new URLSearchParams();params.append('dhcp',dhcp);params.append('ip',document.getElementById('eth_static_ip').value);params.append('gateway',document.getElementById('eth_gateway').value);params.append('subnet',document.getElementById('eth_subnet').value);params.append('dns',document.getElementById('eth_dns').value);fetch('/eth/save?'+params.toString()).then(r=>r.json()).then(d=>{const st=document.getElementById('eth-save-status');if(d.ok){st.textContent='Saved! Reboot to apply.';st.style.color='#ffaa00';}else{st.textContent='Error: '+(d.error||'Unknown');st.style.color='#ff4444';}});}
-function updateNetworkStatus(){fetch('/wifi/status').then(r=>r.json()).then(d=>{const ethSec=document.getElementById('eth-section');const wifiPowerSec=document.getElementById('wifi-power-section');if(d.eth_available){ethSec.style.display='block';if(d.eth_connected){document.getElementById('eth_status').textContent='Connected';document.getElementById('eth_status').className='value connected';document.getElementById('eth_ip').textContent=d.eth_ip;wifiPowerSec.style.display='block';const btn=document.getElementById('wifi_power_btn');if(d.wifi_enabled){btn.textContent='Disable WiFi';btn.className='btn';}else{btn.textContent='Enable WiFi';btn.className='btn btn-active';}}else{document.getElementById('eth_status').textContent='Disconnected';document.getElementById('eth_status').className='value disconnected';document.getElementById('eth_ip').textContent='--';wifiPowerSec.style.display='none';}document.getElementById('eth_mac').textContent=d.eth_mac||'--';document.getElementById('eth_dhcp').checked=d.eth_dhcp;document.getElementById('eth_static').checked=!d.eth_dhcp;document.getElementById('eth_static_ip').value=d.eth_static_ip||'';document.getElementById('eth_gateway').value=d.eth_gateway||'';document.getElementById('eth_subnet').value=d.eth_subnet||'';document.getElementById('eth_dns').value=d.eth_dns||'';toggleEthMode();}else{ethSec.style.display='none';wifiPowerSec.style.display='none';}const wifiStatusText=d.wifi_enabled?'':'(DISABLED) ';document.getElementById('ap_status').textContent=d.wifi_enabled?(d.ap_ssid||'--'):'Disabled';document.getElementById('ap_ip').textContent=d.wifi_enabled?(d.ap_ip||'--'):'--';document.getElementById('wifi_mac').textContent=d.wifi_mac||'--';if(d.wifi_enabled&&d.sta_connected){document.getElementById('sta_status').textContent=d.sta_ssid;document.getElementById('sta_status').className='value connected';document.getElementById('sta_ip').textContent=d.sta_ip;}else{document.getElementById('sta_status').textContent=d.wifi_enabled?'Not connected':'Disabled';document.getElementById('sta_status').className='value disconnected';document.getElementById('sta_ip').textContent='--';}document.getElementById('saved-network').textContent=d.saved_ssid||'None';});}
+function updateNetworkStatus(){fetch('/wifi/status').then(r=>r.json()).then(d=>{const ethSec=document.getElementById('eth-section');const wifiPowerSec=document.getElementById('wifi-power-section');if(d.eth_available){ethSec.style.display='block';document.getElementById('net_name').textContent=d.mdns||d.hostname||'--';if(d.eth_connected){document.getElementById('eth_status').textContent='Connected';document.getElementById('eth_status').className='value connected';document.getElementById('eth_ip').textContent=d.eth_ip;wifiPowerSec.style.display='block';const btn=document.getElementById('wifi_power_btn');if(d.wifi_enabled){btn.textContent='Disable WiFi';btn.className='btn';}else{btn.textContent='Enable WiFi';btn.className='btn btn-active';}}else{document.getElementById('eth_status').textContent='Disconnected';document.getElementById('eth_status').className='value disconnected';document.getElementById('eth_ip').textContent='--';wifiPowerSec.style.display='none';}document.getElementById('eth_mac').textContent=d.eth_mac||'--';document.getElementById('eth_dhcp').checked=d.eth_dhcp;document.getElementById('eth_static').checked=!d.eth_dhcp;document.getElementById('eth_static_ip').value=d.eth_static_ip||'';document.getElementById('eth_gateway').value=d.eth_gateway||'';document.getElementById('eth_subnet').value=d.eth_subnet||'';document.getElementById('eth_dns').value=d.eth_dns||'';toggleEthMode();}else{ethSec.style.display='none';wifiPowerSec.style.display='none';}const wifiStatusText=d.wifi_enabled?'':'(DISABLED) ';document.getElementById('ap_status').textContent=d.wifi_enabled?(d.ap_ssid||'--'):'Disabled';document.getElementById('ap_ip').textContent=d.wifi_enabled?(d.ap_ip||'--'):'--';document.getElementById('wifi_mac').textContent=d.wifi_mac||'--';if(d.wifi_enabled&&d.sta_connected){document.getElementById('sta_status').textContent=d.sta_ssid;document.getElementById('sta_status').className='value connected';document.getElementById('sta_ip').textContent=d.sta_ip;}else{document.getElementById('sta_status').textContent=d.wifi_enabled?'Not connected':'Disabled';document.getElementById('sta_status').className='value disconnected';document.getElementById('sta_ip').textContent='--';}document.getElementById('saved-network').textContent=d.saved_ssid||'None';});}
 function scanWifi(){document.getElementById('wifi-networks').innerHTML='<p style="color:#888;">Scanning...</p>';fetch('/wifi/scan').then(r=>r.json()).then(networks=>{if(networks.length===0){document.getElementById('wifi-networks').innerHTML='<p style="color:#888;">No networks found</p>';return;}let html='';networks.forEach(n=>{const sig=n.rssi>-50?'####':n.rssi>-60?'###-':n.rssi>-70?'##--':'#---';const sec=n.secure?'[+]':'';html+='<div class="wifi-network" onclick="selectNetwork(\''+n.ssid+'\')">'+sec+' '+n.ssid+'<span class="wifi-signal">'+sig+'</span></div>';});document.getElementById('wifi-networks').innerHTML=html;});}
 function selectNetwork(ssid){selectedSsid=ssid;document.getElementById('selected-ssid').textContent=ssid;document.getElementById('wifi-password').value='';document.getElementById('wifi-connect-form').classList.remove('hidden');}
 function hideConnectForm(){document.getElementById('wifi-connect-form').classList.add('hidden');}
@@ -381,20 +424,28 @@ function forgetWifi(){if(confirm('Forget saved WiFi?')){fetch('/wifi/forget').th
 function toggleWifiPower(){fetch('/wifi/status').then(r=>r.json()).then(d=>{const enable=!d.wifi_enabled;if(!enable&&!d.eth_connected){alert('Cannot disable WiFi without Ethernet connection');return;}fetch('/wifi/power?enable='+(enable?'1':'0')).then(r=>r.json()).then(r=>{if(r.ok){updateNetworkStatus();}else{alert('Error: '+(r.error||'Unknown'));}});});}
 function trackSun(){fetch('/track/sun').then(()=>updateStatus());}
 function trackMoon(){fetch('/track/moon').then(()=>updateStatus());}
-function toggleCalibrator(){const btn=document.getElementById('cal_btn');const isOn=btn.classList.contains('cal-on');fetch('/calibrator?on='+(isOn?'0':'1')).then(r=>r.json()).then(d=>{updateCalButton(d.calibrator);});}
-function updateCalButton(on){const btn=document.getElementById('cal_btn');if(on){btn.textContent='CAL ON';btn.classList.add('cal-on');}else{btn.textContent='CAL OFF';btn.classList.remove('cal-on');}}
+function handleTrackResponse(promise){promise.then(r=>r.json()).then(d=>{if(!d.ok){alert(d.error||'Track failed');}updateStatus();});}
+function setAxisMode(mode){const params=new URLSearchParams();params.append('mode',mode);handleTrackResponse(fetch('/tracking/axis?'+params.toString()));}
+function updateAxisMode(d){document.getElementById('axis_az').classList.toggle('active',!!d.az_only);document.getElementById('axis_alt').classList.toggle('active',!!d.alt_only);document.getElementById('axis_both').classList.toggle('active',!d.az_only&&!d.alt_only);}
+function setCalibrator(on){fetch('/calibrator?on='+(on?'1':'0')).then(r=>r.json()).then(d=>{updateCalButton(d.calibrator);});}
+function toggleCalibrator(){const isOn=document.getElementById('cal_on').classList.contains('active');setCalibrator(!isOn);}
+function updateCalButton(on){document.getElementById('cal_on').classList.toggle('active',!!on);document.getElementById('cal_off').classList.toggle('active',!on);}
 function goToRaDec(){const ra=parseRA(document.getElementById('ra').value);const dec=parseDec(document.getElementById('dec').value);fetch('/goto?ra='+ra+'&dec='+dec).then(r=>r.json()).then(d=>{if(!d.ok){alert(d.error||'Goto failed');}updateStatus();});}
 function trackRaDec(){const ra=parseRA(document.getElementById('ra').value);const dec=parseDec(document.getElementById('dec').value);fetch('/track/radec?ra='+ra+'&dec='+dec).then(r=>r.json()).then(d=>{if(!d.ok){alert(d.error||'Track failed');}updateStatus();});}
 function goToGalactic(){const l=document.getElementById('gal_l').value;const b=document.getElementById('gal_b').value;fetch('/goto/galactic?l='+l+'&b='+b).then(r=>r.json()).then(d=>{if(!d.ok){alert(d.error||'Goto failed');}else{document.getElementById('galactic_radec').textContent='RA: '+formatRA(d.ra)+' Dec: '+formatDec(d.dec);}updateStatus();});}
 function trackGalactic(){const l=document.getElementById('gal_l').value;const b=document.getElementById('gal_b').value;fetch('/track/galactic?l='+l+'&b='+b).then(r=>r.json()).then(d=>{if(!d.ok){alert(d.error||'Track failed');}else{document.getElementById('galactic_radec').textContent='RA: '+formatRA(d.ra)+' Dec: '+formatDec(d.dec);}updateStatus();});}
-function stopTracking(){fetch('/tracking/enable?enable=0').then(()=>updateStatus());}
-function goDirect(){const alt=document.getElementById('direct_alt').value;const az=document.getElementById('direct_az').value;fetch('/direct?alt='+alt+'&az='+az);}
-function goHome(){fetch('/direct?alt=0&az=0');}
+function stopTracking(){stopAll();}
+function stopMovement(){fetch('/stop/movement').then(()=>updateStatus());}
+function stopAll(){fetch('/stop/all').then(()=>updateStatus());}
+function resetFault(){fetch('/reset').then(r=>r.json()).then(d=>{if(!d.ok){alert(d.error||'Reset failed');}updateStatus();});}
+function goDirect(){const alt=document.getElementById('direct_alt').value;const az=document.getElementById('direct_az').value;fetch('/direct?alt='+alt+'&az='+az).then(()=>updateStatus());}
+function goHome(){fetch('/direct?alt=0&az=0').then(()=>updateStatus());}
+function runHoming(){fetch('/home').then(r=>r.json()).then(d=>{if(!d.ok){alert(d.error||'Homing failed');}updateStatus();});}
 function setOffset(){const alt=document.getElementById('offset_alt').value;const az=document.getElementById('offset_az').value;fetch('/offset?alt='+alt+'&az='+az).then(r=>r.json()).then(d=>{document.getElementById('current_offset').textContent=d.offset_alt.toFixed(1)+'\u00b0 / '+d.offset_az.toFixed(1)+'\u00b0';});}
 function clearOffset(){fetch('/offset/clear').then(r=>r.json()).then(d=>{document.getElementById('offset_alt').value='0';document.getElementById('offset_az').value='0';document.getElementById('current_offset').textContent='0.0\u00b0 / 0.0\u00b0';});}
 let isSlewing=false;let refreshInterval=null;
 function scheduleRefresh(){if(refreshInterval)clearInterval(refreshInterval);refreshInterval=setInterval(updateStatus,isSlewing?500:1000);}
-function updateStatus(){fetch('/status').then(r=>r.json()).then(d=>{document.getElementById('alt').textContent=d.alt.toFixed(2)+'\u00b0';document.getElementById('az').textContent=d.az.toFixed(2)+'\u00b0';if(d.ra!==undefined){document.getElementById('cur_ra').textContent=formatRA(d.ra);document.getElementById('cur_dec').textContent=formatDec(d.dec);document.getElementById('cur_gl').textContent=d.gal_l.toFixed(2)+'\u00b0';document.getElementById('cur_gb').textContent=d.gal_b.toFixed(2)+'\u00b0';}document.getElementById('alt_a').textContent=d.alt_current_a.toFixed(2)+' A';document.getElementById('az_a').textContent=d.az_current_a.toFixed(2)+' A';document.getElementById('status').textContent=d.status+(d.fault?' ['+d.fault+']':'');document.getElementById('status').className='value '+(d.is_slewing?'tracking':'idle');if(d.is_slewing!==isSlewing){isSlewing=d.is_slewing;scheduleRefresh();}updateCalButton(d.calibrator);});fetch('/tracking').then(r=>r.json()).then(d=>{if(d.enabled){let info=d.target_name||'RA/Dec';info+=': '+formatRA(d.ra)+' '+formatDec(d.dec);if(d.waiting_for_rise){info+=' [Below horizon]';document.getElementById('tracking_target').className='value disconnected';}else if(d.waiting_for_wrap){info+=' [Az limits]';document.getElementById('tracking_target').className='value disconnected';}else{document.getElementById('tracking_target').className='value tracking';}if(d.offset_alt!==0||d.offset_az!==0){info+=' [+'+d.offset_alt.toFixed(1)+'/'+d.offset_az.toFixed(1)+']';}document.getElementById('tracking_target').textContent=info;}else{document.getElementById('tracking_target').textContent='Off';document.getElementById('tracking_target').className='value idle';}document.getElementById('current_offset').textContent=d.offset_alt.toFixed(1)+'\u00b0 / '+d.offset_az.toFixed(1)+'\u00b0';});fetch('/time/status').then(r=>r.json()).then(d=>{let ts=d.utc+' UTC';if(d.synced){ts+=' ('+d.source+')';document.getElementById('time_status').className='value connected';}else{ts='NOT SYNCED';document.getElementById('time_status').className='value disconnected';}document.getElementById('time_status').textContent=ts;});}
+function updateStatus(){fetch('/status').then(r=>r.json()).then(d=>{document.getElementById('alt').textContent=d.alt.toFixed(2)+'\u00b0';document.getElementById('az').textContent=d.az.toFixed(2)+'\u00b0';if(d.ra!==undefined){document.getElementById('cur_ra').textContent=formatRA(d.ra);document.getElementById('cur_dec').textContent=formatDec(d.dec);document.getElementById('cur_gl').textContent=d.gal_l.toFixed(2)+'\u00b0';document.getElementById('cur_gb').textContent=d.gal_b.toFixed(2)+'\u00b0';}document.getElementById('alt_a').textContent=d.alt_current_a.toFixed(2)+' A';document.getElementById('az_a').textContent=d.az_current_a.toFixed(2)+' A';document.getElementById('status').textContent=d.status;document.getElementById('status').className='value '+(d.is_slewing?'tracking':'idle');document.getElementById('error_status').textContent=d.fault_active?(d.fault||'FAULT'):'Clear';document.getElementById('error_status').className='value '+(d.fault_active?'disconnected':'connected');const resetBtn=document.getElementById('reset_btn');resetBtn.disabled=!d.fault_active;resetBtn.className=d.fault_active?'stop':'secondary';if(d.is_slewing!==isSlewing){isSlewing=d.is_slewing;scheduleRefresh();}updateCalButton(d.calibrator);});fetch('/tracking').then(r=>r.json()).then(d=>{updateAxisMode(d);if(d.enabled){let info=d.target_name||'RA/Dec';info+=': '+formatRA(d.ra)+' '+formatDec(d.dec);if(d.az_only){info+=' [Az only, Alt '+d.az_only_alt.toFixed(1)+'\u00b0]';}if(d.alt_only){info+=' [Alt only, Az '+d.alt_only_az.toFixed(1)+'\u00b0]';}if(d.waiting_for_rise){info+=' [Below horizon]';document.getElementById('tracking_target').className='value disconnected';}else if(d.waiting_for_wrap){info+=' [Az limits]';document.getElementById('tracking_target').className='value disconnected';}else{document.getElementById('tracking_target').className='value tracking';}if(d.offset_alt!==0||d.offset_az!==0){info+=' [+'+d.offset_alt.toFixed(1)+'/'+d.offset_az.toFixed(1)+']';}document.getElementById('tracking_target').textContent=info;}else{document.getElementById('tracking_target').textContent='Off';document.getElementById('tracking_target').className='value idle';}document.getElementById('current_offset').textContent=d.offset_alt.toFixed(1)+'\u00b0 / '+d.offset_az.toFixed(1)+'\u00b0';});fetch('/time/status').then(r=>r.json()).then(d=>{let ts=d.utc+' UTC';if(d.synced){ts+=' ('+d.source+')';document.getElementById('time_status').className='value connected';}else{ts='NOT SYNCED';document.getElementById('time_status').className='value disconnected';}document.getElementById('time_status').textContent=ts;});}
 function loadSettings(){fetch('/settings').then(r=>r.json()).then(d=>{document.getElementById('set_lat').value=d.observer_lat;document.getElementById('set_lon').value=d.observer_lon;document.getElementById('set_az_min').value=d.mount_az_min;document.getElementById('set_az_max').value=d.mount_az_max;document.getElementById('set_alt_min').value=d.mount_alt_min;document.getElementById('set_alt_max').value=d.mount_alt_max;document.getElementById('set_home_alt').value=d.home_alt;document.getElementById('set_home_az').value=d.home_az;document.getElementById('set_deadband').value=d.position_deadband;document.getElementById('set_ap_ssid').value=d.ap_ssid;document.getElementById('set_ap_pass').value=d.ap_password;document.getElementById('set_page_name').value=d.page_name;document.getElementById('page-title').textContent=d.page_name;document.title=d.page_name;document.getElementById('settings-status').textContent='';});}
 function saveSettings(){const params=new URLSearchParams();params.append('observer_lat',document.getElementById('set_lat').value);params.append('observer_lon',document.getElementById('set_lon').value);params.append('mount_az_min',document.getElementById('set_az_min').value);params.append('mount_az_max',document.getElementById('set_az_max').value);params.append('mount_alt_min',document.getElementById('set_alt_min').value);params.append('mount_alt_max',document.getElementById('set_alt_max').value);params.append('home_alt',document.getElementById('set_home_alt').value);params.append('home_az',document.getElementById('set_home_az').value);params.append('position_deadband',document.getElementById('set_deadband').value);params.append('ap_ssid',document.getElementById('set_ap_ssid').value);params.append('ap_password',document.getElementById('set_ap_pass').value);params.append('page_name',document.getElementById('set_page_name').value);fetch('/settings/save?'+params.toString()).then(r=>r.json()).then(d=>{document.getElementById('settings-status').textContent=d.ok?'Settings saved!':'Save failed';document.getElementById('settings-status').style.color=d.ok?'#00ff00':'#ff4444';if(d.ok){document.getElementById('page-title').textContent=document.getElementById('set_page_name').value;document.title=document.getElementById('set_page_name').value;}});}
 function resetSettings(){if(confirm('Reset all settings to defaults?')){fetch('/settings/reset').then(r=>r.json()).then(d=>{if(d.ok){loadSettings();document.getElementById('settings-status').textContent='Reset to defaults';document.getElementById('settings-status').style.color='#ffaa00';}});}}
