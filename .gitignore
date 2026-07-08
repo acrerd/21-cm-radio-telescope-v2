@@ -1,9 +1,14 @@
 .pio
+.venv/
+.venv312/
 .vscode/
 .claude/settings.local.json
+/h1_schedule.json
 
 # ESP32 runtime files (credentials, etc.)
 wifi_creds.json
+receiver_scheduler/scheduler_config.json
+receiver_scheduler/scheduler.log*
 *.pyc
 __pycache__/
 .micropico

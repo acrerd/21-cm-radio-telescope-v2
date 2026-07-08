@@ -78,7 +78,7 @@ def create_sdr_source(sdr_type, sample_rate, center_freq, gain):
         source.set_antenna("RX2", 0)
 
         actual_freq = source.get_center_freq(0)
-        actual_rate = source.get_samp_rate(0)
+        actual_rate = source.get_samp_rate()
         actual_gain = source.get_gain(0)
 
     elif sdr_type == 'rtlsdr':
@@ -235,7 +235,9 @@ class H1ReceiverWindow(QtWidgets.QMainWindow):
         self.accumulator_start_time = time.time()
 
         # HDF5 setup
-        self.hf = self._init_hdf5()
+        self.output_file = OUTPUT_FILE
+        self.hdf5_segment = 0
+        self.hf = self._init_hdf5(self.output_file)
         self.spectrum_count = 0
         self.last_save_time = time.time()
 
@@ -534,6 +536,7 @@ class H1ReceiverWindow(QtWidgets.QMainWindow):
                 self.flowgraph.sdr_source.set_center_freq(new_freq, 0)
                 self.center_freq = self.flowgraph.sdr_source.get_center_freq(0)
                 self._update_freq_axis()
+                self._roll_hdf5_file("freq")
                 self._update_status()
             except Exception as e:
                 print(f"Error setting frequency: {e}")
@@ -542,6 +545,7 @@ class H1ReceiverWindow(QtWidgets.QMainWindow):
                 self.flowgraph.sdr_source.set_center_freq(new_freq, 0)
                 self.center_freq = self.flowgraph.sdr_source.get_center_freq(0)
                 self._update_freq_axis()
+                self._roll_hdf5_file("freq")
                 self._update_status()
             except Exception as e:
                 print(f"Error setting frequency: {e}")
@@ -576,6 +580,7 @@ class H1ReceiverWindow(QtWidgets.QMainWindow):
                 self.flowgraph.sample_rate = self.sample_rate
                 self._update_freq_axis()
                 self._reset_accumulator()
+                self._roll_hdf5_file("rate")
                 self._update_status()
                 print(f"Bandwidth changed to {self.sample_rate/1e6:.2f} MHz")
             elif self.sdr_type == 'rtlsdr':
@@ -584,6 +589,7 @@ class H1ReceiverWindow(QtWidgets.QMainWindow):
                 self.flowgraph.sample_rate = self.sample_rate
                 self._update_freq_axis()
                 self._reset_accumulator()
+                self._roll_hdf5_file("rate")
                 self._update_status()
                 print(f"Bandwidth changed to {self.sample_rate/1e6:.2f} MHz")
             elif self.sdr_type == 'demo':
@@ -670,6 +676,7 @@ class H1ReceiverWindow(QtWidgets.QMainWindow):
 
             # Reset Python-side accumulator
             self._reset_accumulator()
+            self._roll_hdf5_file("fft")
 
             self.flowgraph.start()
             print(f"Flowgraph rebuilt: {self.sample_rate/1e6:.2f} MHz, FFT={self.fft_size}, resolution={self.sample_rate/self.fft_size/1e3:.3f} kHz")
@@ -813,9 +820,9 @@ class H1ReceiverWindow(QtWidgets.QMainWindow):
         except Exception as e:
             print(f"Display update error: {e}")
 
-    def _init_hdf5(self):
+    def _init_hdf5(self, filename):
         """Initialize HDF5 file."""
-        hf = h5py.File(OUTPUT_FILE, 'w')
+        hf = h5py.File(filename, 'w')
 
         hf.create_dataset('frequency_hz', data=self.freq_axis_hz)
 
@@ -861,6 +868,45 @@ class H1ReceiverWindow(QtWidgets.QMainWindow):
 
         return hf
 
+    def _next_hdf5_filename(self, reason):
+        """Create a unique segment filename for changed spectral geometry."""
+        self.hdf5_segment += 1
+        root, ext = os.path.splitext(OUTPUT_FILE)
+        ext = ext or ".h5"
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        safe_reason = "".join(ch if ch.isalnum() else "_" for ch in reason)
+        return f"{root}_{safe_reason}_{self.hdf5_segment:02d}_{timestamp}{ext}"
+
+    def _roll_hdf5_file(self, reason):
+        """Start a new HDF5 file when frequency axis or FFT width changes."""
+        if not hasattr(self, 'hf'):
+            return
+
+        try:
+            self.hf.flush()
+            self.hf.close()
+        except Exception:
+            pass
+
+        self.output_file = self._next_hdf5_filename(reason)
+        self.hf = self._init_hdf5(self.output_file)
+        self.spectrum_count = 0
+        self.waterfall_data.clear()
+
+        if hasattr(self, 'count_label'):
+            self.count_label.setText(f"Spectra saved: 0 (file: {os.path.basename(self.output_file)})")
+
+        print(f"Started new HDF5 file for {reason} change: {self.output_file}")
+
+    def _ensure_hdf5_geometry(self):
+        """Ensure the active HDF5 datasets match the current FFT geometry."""
+        if self.hf['spectra_linear'].shape[1] != self.fft_size:
+            self._roll_hdf5_file(f"fft{self.fft_size}")
+            return
+
+        if self.hf['frequency_hz'].shape[0] != self.fft_size:
+            self._roll_hdf5_file(f"freq{self.fft_size}")
+
     def _save_spectrum(self):
         """Save accumulated spectrum to HDF5 and update waterfall."""
         try:
@@ -869,6 +915,7 @@ class H1ReceiverWindow(QtWidgets.QMainWindow):
 
             # Calculate average in linear power domain
             avg_linear = self.accumulator / self.accumulator_count
+            self._ensure_hdf5_geometry()
 
             timestamp = time.time()
             integration_time = timestamp - self.accumulator_start_time
@@ -927,7 +974,7 @@ class H1ReceiverWindow(QtWidgets.QMainWindow):
         self.flowgraph.wait()
         self.hf.close()
         print(f"\nTotal spectra saved: {self.spectrum_count}")
-        print(f"Data written to: {OUTPUT_FILE}")
+        print(f"Data written to: {self.output_file}")
         event.accept()
 
 

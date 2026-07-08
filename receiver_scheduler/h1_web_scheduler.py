@@ -18,7 +18,6 @@ from datetime import datetime, timedelta
 from dataclasses import dataclass, asdict
 from typing import Optional
 from pathlib import Path
-
 from flask import Flask, render_template_string, jsonify, request, send_from_directory
 import logging
 import logging.handlers
@@ -57,7 +56,7 @@ logging.getLogger('werkzeug').setLevel(logging.WARNING)
 
 # Configuration
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-SCHEDULE_FILE = "h1_schedule.json"
+SCHEDULE_FILE = os.path.join(_SCRIPT_DIR, "h1_schedule.json")
 CONFIG_FILE = os.path.join(_SCRIPT_DIR, "scheduler_config.json")
 RECEIVER_SCRIPT = os.path.join(_SCRIPT_DIR, "b210_h1_receiver.py")
 
@@ -66,6 +65,10 @@ _DEFAULT_CONFIG = {
     "banner_name": "H1 Receiver Scheduler",
     "banner_subtitle": "Hydrogen Line (21cm) Observation Manager",
     "srt_controller_url": "http://192.168.0.149",
+    "srt_controller_fallback_urls": [
+        "http://srt-controller.local",
+        "http://192.168.4.1",
+    ],
     "slew_timeout": 300,
     "position_tolerance": 0.5,
     "python_path": "",
@@ -110,6 +113,33 @@ SRT_SLEW_TIMEOUT = _config["slew_timeout"]
 SRT_POSITION_TOLERANCE = _config["position_tolerance"]
 PYTHON_PATH = _config["python_path"] or None
 
+
+def _normalize_controller_url(url: Optional[str]) -> Optional[str]:
+    if not url:
+        return None
+    return url.strip().rstrip("/") or None
+
+
+def _controller_url_candidates() -> list[str]:
+    cfg = load_config()
+    primary = _normalize_controller_url(os.environ.get("SRT_CONTROLLER_URL"))
+    if primary is None:
+        primary = _normalize_controller_url(SRT_CONTROLLER_URL)
+    if primary is None:
+        return []
+
+    candidates = [primary]
+    candidates.extend(cfg.get("srt_controller_fallback_urls", []))
+
+    urls = []
+    seen = set()
+    for url in candidates:
+        normalized = _normalize_controller_url(url)
+        if normalized and normalized not in seen:
+            seen.add(normalized)
+            urls.append(normalized)
+    return urls
+
 app = Flask(__name__)
 
 
@@ -133,22 +163,32 @@ def srt_api_call(endpoint: str, params: Optional[dict] = None) -> Optional[dict]
 
     Returns JSON response as dict, or None on error.
     """
-    if not SRT_CONTROLLER_URL:
+    global SRT_CONTROLLER_URL
+
+    candidates = _controller_url_candidates()
+    if not candidates:
         return None
 
-    url = f"{SRT_CONTROLLER_URL}{endpoint}"
-    if params:
-        url += "?" + urllib.parse.urlencode(params)
+    last_error = None
+    for base_url in candidates:
+        url = f"{base_url}{endpoint}"
+        if params:
+            url += "?" + urllib.parse.urlencode(params)
 
-    try:
-        with urllib.request.urlopen(url, timeout=10) as response:
-            return json.loads(response.read().decode())
-    except urllib.error.URLError as e:
-        log.warning("SRT connection error: %s", e)
-        return None
-    except Exception as e:
-        log.error("SRT API error: %s", e)
-        return None
+        try:
+            with urllib.request.urlopen(url, timeout=3) as response:
+                if base_url != SRT_CONTROLLER_URL:
+                    log.info("SRT controller reachable at %s", base_url)
+                    SRT_CONTROLLER_URL = base_url
+                return json.loads(response.read().decode())
+        except urllib.error.URLError as e:
+            last_error = e
+        except Exception as e:
+            log.error("SRT API error via %s: %s", base_url, e)
+            return None
+
+    log.warning("SRT connection error after trying %s: %s", ", ".join(candidates), last_error)
+    return None
 
 
 def srt_get_settings() -> Optional[dict]:

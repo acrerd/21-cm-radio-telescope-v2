@@ -19,9 +19,9 @@ This receiver is designed for radio astronomy observations of neutral hydrogen (
 |------|-------------|
 | `b210_h1_receiver.py` | Main receiver application with GUI |
 | `h1_web_scheduler.py` | Web-based observation scheduler |
-| `h1_schedule.json` | Saved observation schedule (auto-generated) |
-| `scheduler_config.json` | Scheduler configuration (auto-generated) |
-| `scheduler.log` | Rotating log file (auto-generated) |
+| `h1_schedule.json` | Saved observation schedule |
+| `scheduler_config.json` | Local scheduler configuration (auto-generated, ignored) |
+| `scheduler.log` | Rotating log file (auto-generated, ignored) |
 | `read_h1_data.ipynb` | Jupyter notebook for reading/plotting HDF5 data |
 | `requirements.txt` | Python package dependencies |
 | `test_scheduler.py` | Unit tests (71 tests) |
@@ -190,6 +190,7 @@ Persistent settings saved to `scheduler_config.json`:
 |---------|-------------|
 | Banner Name / Subtitle | Customise the page title and heading |
 | Controller URL | SRT telescope controller address (empty to disable) |
+| Controller Fallback URLs | Additional controller addresses tried after the primary URL |
 | Slew Timeout | Max seconds to wait for telescope to reach target (default: 300) |
 | Position Tolerance | Degrees within which the telescope is considered on-target (default: 0.5) |
 | Observer Latitude | Observer latitude in degrees (+N), synced from controller on startup |
@@ -307,6 +308,8 @@ For hydrogen line observations, ~500 Hz resolution is typically sufficient.
 ## Output Data Format
 
 Data is saved to an HDF5 file with the following structure:
+
+Each HDF5 file has one fixed spectral geometry. If the center frequency, sample rate, or FFT size changes during a receiver session, the active file is closed and a new timestamped segment is created.
 
 ### Datasets
 
