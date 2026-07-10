@@ -92,6 +92,7 @@ unsigned long lastEphemerisUpdate = 0;
 float lastSentAlt = -999;
 float lastSentAz = -999;
 bool wasTracking = false;
+uint32_t lastTrackingRevision = 0;
 
 // Ethernet state (WT32-ETH01 only)
 #if ETHERNET_ENABLED
@@ -202,8 +203,15 @@ void updateTracking() {
         if (!wasTracking) {
             lastSentAlt = -999;
             lastSentAz = -999;
+            lastTrackingRevision = state.trackingRevision;
             DBG(Serial.println("Tracking enabled - sending initial position"));
             srtSerial.logESP("Tracking enabled");
+        }
+        if (lastTrackingRevision != state.trackingRevision) {
+            lastSentAlt = -999;
+            lastSentAz = -999;
+            lastTrackingRevision = state.trackingRevision;
+            DBG(Serial.println("Tracking target/mode changed - forcing update"));
         }
         wasTracking = true;
 
@@ -311,6 +319,7 @@ void updateTracking() {
         }
     } else {
         wasTracking = false;
+        lastTrackingRevision = state.trackingRevision;
     }
 }
 

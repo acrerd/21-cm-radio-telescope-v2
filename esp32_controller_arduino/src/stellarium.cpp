@@ -24,6 +24,7 @@ static void prepareStellariumTrackingTarget() {
     if (state.altOnlyTracking) {
         state.altOnlyAz = srtSerial.getCurrentAz();
     }
+    state.trackingRevision++;
     state.trackingEnabled = true;
 }
 

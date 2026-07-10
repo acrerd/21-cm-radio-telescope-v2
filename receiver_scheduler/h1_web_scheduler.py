@@ -9,6 +9,7 @@ Then open: http://localhost:5000
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 import signal
@@ -75,6 +76,9 @@ _DEFAULT_CONFIG = {
     "data_output_folder": os.path.join(_SCRIPT_DIR, "data"),
     "log_lines": 100,
     "sound_enabled": True,
+    "platformio_path": "",
+    "firmware_update_env": "wt32-eth01-ota",
+    "receiver_python_path": "/home/astro/radioconda/bin/python",
     "observer_lat": 55.902444,
     "observer_lon": -4.307861,
     "observer_elevation": 50,
@@ -112,6 +116,19 @@ SRT_CONTROLLER_URL = _config["srt_controller_url"] or None
 SRT_SLEW_TIMEOUT = _config["slew_timeout"]
 SRT_POSITION_TOLERANCE = _config["position_tolerance"]
 PYTHON_PATH = _config["python_path"] or None
+ESP32_FIRMWARE_DIR = os.path.abspath(os.path.join(_SCRIPT_DIR, "..", "esp32_controller_arduino"))
+FIRMWARE_UPDATE_ENV = _config.get("firmware_update_env", "wt32-eth01-ota")
+
+firmware_update_lock = threading.Lock()
+firmware_update_state = {
+    "running": False,
+    "success": None,
+    "started_at": None,
+    "finished_at": None,
+    "returncode": None,
+    "message": "",
+    "output": [],
+}
 
 
 def _normalize_controller_url(url: Optional[str]) -> Optional[str]:
@@ -141,6 +158,15 @@ def _controller_url_candidates() -> list[str]:
     return urls
 
 app = Flask(__name__)
+
+
+@app.after_request
+def add_cors_headers(response):
+    """Allow the ESP32-served control page to call this local scheduler API."""
+    response.headers["Access-Control-Allow-Origin"] = "*"
+    response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+    response.headers["Access-Control-Allow-Headers"] = "Content-Type"
+    return response
 
 
 # =============================================================================
@@ -373,8 +399,116 @@ def srt_stop_tracking() -> bool:
     if not SRT_CONTROLLER_URL:
         return True
 
-    result = srt_api_call("/track", {"enable": "0"})
+    result = srt_api_call("/tracking/enable", {"enable": "0"})
     return bool(result and result.get('ok', False))
+
+
+def _controller_host() -> Optional[str]:
+    """Return the configured ESP32 host for PlatformIO OTA upload."""
+    for url in _controller_url_candidates():
+        parsed = urllib.parse.urlparse(url)
+        if parsed.hostname:
+            return parsed.hostname
+    return None
+
+
+def _find_platformio() -> Optional[str]:
+    """Locate a PlatformIO CLI executable."""
+    cfg = load_config()
+    configured = cfg.get("platformio_path")
+    if configured:
+        return configured
+
+    for name in ("pio", "platformio"):
+        found = shutil.which(name)
+        if found:
+            return found
+
+    candidates = [
+        os.path.expanduser("~/.platformio/penv/bin/pio"),
+        os.path.expanduser("~/.platformio/penv/Scripts/pio.exe"),
+    ]
+    for path in candidates:
+        if os.path.exists(path):
+            return path
+    return None
+
+
+def _set_firmware_state(**kwargs):
+    with firmware_update_lock:
+        firmware_update_state.update(kwargs)
+
+
+def _append_firmware_output(line: str):
+    with firmware_update_lock:
+        firmware_update_state["output"].append(line.rstrip())
+        firmware_update_state["output"] = firmware_update_state["output"][-200:]
+
+
+def _run_firmware_update():
+    """Build and upload ESP32 firmware over OTA in a background thread."""
+    pio = _find_platformio()
+    if not pio:
+        _set_firmware_state(
+            running=False,
+            success=False,
+            finished_at=datetime.now().isoformat(),
+            returncode=None,
+            message="PlatformIO CLI was not found. Set platformio_path in scheduler_config.json or install pio.",
+        )
+        return
+
+    upload_host = _controller_host()
+    if not upload_host:
+        _set_firmware_state(
+            running=False,
+            success=False,
+            finished_at=datetime.now().isoformat(),
+            returncode=None,
+            message="No SRT controller URL is configured for OTA upload.",
+        )
+        return
+
+    env_name = load_config().get("firmware_update_env", FIRMWARE_UPDATE_ENV)
+    cmd = [pio, "run", "-e", env_name, "-t", "upload", "--upload-port", upload_host]
+    _set_firmware_state(message="Running: " + " ".join(cmd), output=[])
+    log.info("Firmware update starting: %s", " ".join(cmd))
+
+    try:
+        proc = subprocess.Popen(
+            cmd,
+            cwd=ESP32_FIRMWARE_DIR,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+        )
+        assert proc.stdout is not None
+        for line in proc.stdout:
+            _append_firmware_output(line)
+            log.info("firmware: %s", line.rstrip())
+        returncode = proc.wait()
+        success = returncode == 0
+        _set_firmware_state(
+            running=False,
+            success=success,
+            finished_at=datetime.now().isoformat(),
+            returncode=returncode,
+            message=(
+                "Firmware upload complete. The ESP32 is rebooting; the controller website may be unavailable for up to about 100 seconds."
+                if success else f"Firmware update failed with exit code {returncode}."
+            ),
+        )
+        log.info("Firmware update %s", "complete" if success else f"failed ({returncode})")
+    except Exception as exc:
+        log.error("Firmware update error: %s", exc, exc_info=True)
+        _set_firmware_state(
+            running=False,
+            success=False,
+            finished_at=datetime.now().isoformat(),
+            returncode=None,
+            message=f"Firmware update error: {exc}",
+        )
 
 
 # =============================================================================
@@ -505,11 +639,52 @@ def stop_satellite_tracking():
     _sat_tracking_thread = None
 
 
+def stop_booted_receiver():
+    """Stop the receiver process that was launched from the scheduler page."""
+    global receiver_boot_process
+    with receiver_boot_lock:
+        proc = receiver_boot_process
+        if proc is None or proc.poll() is not None:
+            return
+        proc.terminate()
+    try:
+        proc.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait()
+
+
+def receiver_python_path() -> str:
+    """Return the Python executable used by the receiver boot button."""
+    cfg_path = (load_config().get("receiver_python_path") or "").strip()
+    if cfg_path:
+        return cfg_path
+    radioconda_python = "/home/astro/radioconda/bin/python"
+    if os.path.exists(radioconda_python):
+        return radioconda_python
+    if PYTHON_PATH:
+        return PYTHON_PATH
+    return sys.executable
+
+
+def receiver_process_env(base_env: Optional[dict] = None, python_path: Optional[str] = None) -> dict:
+    """Build an environment that matches the selected receiver Python."""
+    env = dict(base_env or os.environ.copy())
+    python_path = python_path or receiver_python_path()
+    conda_prefix = os.path.dirname(os.path.dirname(python_path))
+    if os.path.isdir(conda_prefix):
+        env["CONDA_PREFIX"] = conda_prefix
+        env["PATH"] = os.path.dirname(python_path) + os.pathsep + env.get("PATH", "")
+    return env
+
+
 # Current running observation
 current_process: Optional[subprocess.Popen] = None
 current_observation: Optional[dict] = None
 observation_end_time: Optional[datetime] = None
 process_lock = threading.Lock()
+receiver_boot_process: Optional[subprocess.Popen] = None
+receiver_boot_lock = threading.Lock()
 scheduler_running = True
 
 # Sun scan state
@@ -676,7 +851,8 @@ def start_observation(obs: dict, duration_override: int = None) -> bool:
             'tle_text': obs.get('tle_text', ''),
         })
 
-        python_exe = PYTHON_PATH or sys.executable
+        python_exe = PYTHON_PATH or receiver_python_path()
+        env = receiver_process_env(env, python_exe)
         cmd = [
             python_exe,
             RECEIVER_SCRIPT,
@@ -908,8 +1084,9 @@ HTML_TEMPLATE = '''
         h1 { color: #00d4ff; margin-bottom: 10px; }
         .subtitle { color: #888; margin-bottom: 20px; }
         .container { max-width: 1400px; margin: 0 auto; }
-        .status-bar { background: #16213e; padding: 15px; border-radius: 8px; margin-bottom: 20px; display: flex; justify-content: space-between; align-items: center; }
+        .status-bar { background: #16213e; padding: 15px; border-radius: 8px; margin-bottom: 20px; display: flex; justify-content: space-between; align-items: center; gap: 18px; flex-wrap: wrap; }
         .status-indicator { display: flex; align-items: center; gap: 10px; }
+        .status-group { display: flex; align-items: center; gap: 26px; flex-wrap: wrap; }
         .status-dot { width: 12px; height: 12px; border-radius: 50%; background: #666; }
         .status-dot.running { background: #00ff88; animation: pulse 1s infinite; }
         @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
@@ -992,13 +1169,20 @@ HTML_TEMPLATE = '''
             </div>
         </div>
         <div class="status-bar">
-            <div class="status-indicator">
-                <div class="status-dot" id="statusDot"></div>
-                <span id="statusText">Idle</span>
-            </div>
-            <div class="status-indicator" style="margin-left:30px;">
-                <div class="status-dot" id="telescopeDot"></div>
-                <span id="telescopeText">Telescope: --</span>
+            <div class="status-group">
+                <div class="status-indicator">
+                    <div class="status-dot" id="statusDot"></div>
+                    <span id="statusText">Idle</span>
+                </div>
+                <div class="status-indicator">
+                    <div class="status-dot" id="telescopeDot"></div>
+                    <span id="telescopeText">Telescope: --</span>
+                </div>
+                <div class="status-indicator">
+                    <div class="status-dot" id="receiverDot"></div>
+                    <span id="receiverText">Receiver: --</span>
+                    <button class="btn btn-secondary" id="receiverBootBtn" onclick="bootReceiver()" title="Start the B210 receiver with radioconda Python.">Boot receiver</button>
+                </div>
             </div>
             <div>
                 <button class="btn btn-danger" id="stopBtn" style="display:none" onclick="stopObs()">Stop</button>
@@ -1485,8 +1669,10 @@ HTML_TEMPLATE = '''
             loadSchedule();
             updateStatus();
             updateTelescope();
+            updateReceiver();
             setInterval(updateStatus, 2000);
             setInterval(updateTelescope, 5000);
+            setInterval(updateReceiver, 3000);
             fetch('/api/config').then(r => r.json()).then(cfg => {
                 soundEnabled = cfg.sound_enabled !== false;
             });
@@ -1932,6 +2118,47 @@ HTML_TEMPLATE = '''
                 dot.style.background = '#666';
                 text.textContent = 'Telescope: --';
             });
+        }
+
+        function setReceiverUi(data) {
+            const dot = document.getElementById('receiverDot');
+            const text = document.getElementById('receiverText');
+            const btn = document.getElementById('receiverBootBtn');
+            if (!dot || !text || !btn) return;
+            if (data.running) {
+                dot.classList.add('running');
+                dot.style.background = '';
+                text.textContent = `Receiver: Running${data.pid ? ' #' + data.pid : ''}`;
+                btn.disabled = true;
+                btn.title = 'The B210 receiver process is already running.';
+            } else {
+                dot.classList.remove('running');
+                dot.style.background = data.returncode === null ? '#666' : '#ff9500';
+                text.textContent = data.returncode === null ? 'Receiver: Idle' : `Receiver: Stopped (${data.returncode})`;
+                btn.disabled = false;
+                btn.title = `Start the B210 receiver with ${data.python || 'radioconda Python'}.`;
+            }
+        }
+
+        function updateReceiver() {
+            fetch('/api/receiver/status').then(r => r.json()).then(setReceiverUi).catch(() => {
+                setReceiverUi({running: false, returncode: null});
+            });
+        }
+
+        function bootReceiver() {
+            const btn = document.getElementById('receiverBootBtn');
+            if (btn) btn.disabled = true;
+            fetch('/api/receiver/start', {method: 'POST'})
+                .then(r => r.json())
+                .then(data => {
+                    if (!data.success && !data.running) {
+                        alert('Receiver boot failed: ' + (data.error || 'Unknown error'));
+                    }
+                    setReceiverUi(data);
+                })
+                .catch(e => alert('Receiver boot failed: ' + e))
+                .finally(updateReceiver);
         }
 
         function exportSchedule() {
@@ -2571,6 +2798,61 @@ def get_status():
     })
 
 
+@app.route('/api/receiver/status', methods=['GET'])
+def api_receiver_status():
+    """Report whether the manually booted receiver process is still running."""
+    with receiver_boot_lock:
+        proc = receiver_boot_process
+        running = proc is not None and proc.poll() is None
+        returncode = None if proc is None else proc.poll()
+        pid = proc.pid if running else None
+    return jsonify({
+        'success': True,
+        'running': running,
+        'pid': pid,
+        'returncode': returncode,
+        'python': receiver_python_path(),
+    })
+
+
+@app.route('/api/receiver/start', methods=['POST'])
+def api_receiver_start():
+    """Start the B210 receiver using radioconda so the scheduler can launch it."""
+    global receiver_boot_process
+    python_path = receiver_python_path()
+    repo_root = os.path.abspath(os.path.join(_SCRIPT_DIR, ".."))
+
+    if not os.path.exists(RECEIVER_SCRIPT):
+        return jsonify({'success': False, 'running': False,
+                        'error': f'Receiver script not found: {RECEIVER_SCRIPT}'}), 404
+    if not os.path.exists(python_path):
+        return jsonify({'success': False, 'running': False,
+                        'error': f'Python not found: {python_path}'}), 400
+
+    with receiver_boot_lock:
+        if receiver_boot_process is not None and receiver_boot_process.poll() is None:
+            return jsonify({'success': True, 'running': True,
+                            'pid': receiver_boot_process.pid,
+                            'returncode': None,
+                            'python': python_path})
+
+        env = receiver_process_env(python_path=python_path)
+
+        cmd = [python_path, RECEIVER_SCRIPT, "--sdr", "b210"]
+        try:
+            receiver_boot_process = subprocess.Popen(cmd, cwd=repo_root, env=env)
+        except Exception as exc:
+            log.error("Failed to boot receiver: %s", exc)
+            return jsonify({'success': False, 'running': False, 'error': str(exc),
+                            'python': python_path}), 500
+
+        log.info("Receiver boot started: %s", " ".join(cmd))
+        return jsonify({'success': True, 'running': True,
+                        'pid': receiver_boot_process.pid,
+                        'returncode': None,
+                        'python': python_path})
+
+
 @app.route('/api/start', methods=['POST'])
 def api_start():
     obs = request.json
@@ -2582,6 +2864,43 @@ def api_start():
 def api_stop():
     success = stop_observation()
     return jsonify({'success': success})
+
+
+@app.route('/api/stop_all', methods=['POST'])
+def api_stop_all():
+    """Stop receiver/scheduled run and cancel telescope tracking via the ESP32."""
+    obs_stopped = stop_observation()
+    tracking_stopped = srt_stop_tracking()
+    return jsonify({'success': obs_stopped or tracking_stopped,
+                    'observation_stopped': obs_stopped,
+                    'tracking_stopped': tracking_stopped})
+
+
+@app.route('/api/firmware/update', methods=['POST'])
+def api_firmware_update():
+    """Start an ESP32 OTA firmware update from the local project checkout."""
+    with firmware_update_lock:
+        if firmware_update_state["running"]:
+            return jsonify({'success': False, 'error': 'Firmware update already running'}), 409
+        firmware_update_state.update({
+            "running": True,
+            "success": None,
+            "started_at": datetime.now().isoformat(),
+            "finished_at": None,
+            "returncode": None,
+            "message": "Starting firmware update...",
+            "output": [],
+        })
+
+    thread = threading.Thread(target=_run_firmware_update, daemon=True)
+    thread.start()
+    return jsonify({'success': True, 'status': firmware_update_state})
+
+
+@app.route('/api/firmware/status', methods=['GET'])
+def api_firmware_status():
+    with firmware_update_lock:
+        return jsonify(dict(firmware_update_state))
 
 
 @app.route('/api/telescope', methods=['GET'])
@@ -2616,7 +2935,8 @@ def api_get_config():
 @app.route('/api/config', methods=['POST'])
 def api_post_config():
     global SRT_CONTROLLER_URL, SRT_SLEW_TIMEOUT, SRT_POSITION_TOLERANCE, PYTHON_PATH
-    cfg = request.json
+    cfg = load_config()
+    cfg.update(request.json or {})
     save_config(cfg)
     # Apply to running process
     SRT_CONTROLLER_URL = cfg.get("srt_controller_url") or None
@@ -2944,6 +3264,7 @@ def main():
         scheduler_running = False
         if current_process:
             stop_observation()
+        stop_booted_receiver()
 
 
 if __name__ == '__main__':

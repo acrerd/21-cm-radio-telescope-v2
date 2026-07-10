@@ -20,6 +20,7 @@ struct SRTState {
     bool waitingForWrap = false; // True when target is outside az limits
     bool waitingForRise = false; // True when target is below horizon
     unsigned long movementHoldUntil = 0; // Suppress automatic tracking sends until this millis()
+    uint32_t trackingRevision = 0; // Increment when target/mode changes to force a fresh command
 
     // Pointing offset for scanning/mapping (degrees)
     float offsetAlt = 0.0;

@@ -39,6 +39,7 @@ static void prepareTrackingTarget() {
     if (state.altOnlyTracking) {
         state.altOnlyAz = srtSerial.getCurrentAz();
     }
+    state.trackingRevision++;
     state.trackingEnabled = true;
 }
 
@@ -98,25 +99,6 @@ void setupWebServer() {
             srtSerial.sendCalibrator(on);
         }
         String json = "{\"ok\":true,\"calibrator\":" + String(on ? "true" : "false") + "}";
-        request->send(200, "application/json", json);
-    });
-
-    // Tracking status
-    webServer.on("/tracking", HTTP_GET, [](AsyncWebServerRequest *request) {
-        String json = "{";
-        json += "\"enabled\":" + String(state.trackingEnabled ? "true" : "false") + ",";
-        json += "\"ra\":" + String(state.currentRA, 4) + ",";
-        json += "\"dec\":" + String(state.currentDec, 2) + ",";
-        json += "\"target_name\":\"" + state.targetName + "\",";
-        json += "\"az_only\":" + String(state.azOnlyTracking ? "true" : "false") + ",";
-        json += "\"az_only_alt\":" + String(state.azOnlyAlt, 2) + ",";
-        json += "\"alt_only\":" + String(state.altOnlyTracking ? "true" : "false") + ",";
-        json += "\"alt_only_az\":" + String(state.altOnlyAz, 2) + ",";
-        json += "\"waiting_for_wrap\":" + String(state.waitingForWrap ? "true" : "false") + ",";
-        json += "\"waiting_for_rise\":" + String(state.waitingForRise ? "true" : "false") + ",";
-        json += "\"offset_alt\":" + String(state.offsetAlt, 2) + ",";
-        json += "\"offset_az\":" + String(state.offsetAz, 2);
-        json += "}";
         request->send(200, "application/json", json);
     });
 
@@ -222,6 +204,21 @@ void setupWebServer() {
         request->send(200, "application/json", "{\"ok\":true,\"hold_ms\":10000}");
     });
 
+    webServer.on("/stop/slewing", HTTP_GET, [](AsyncWebServerRequest *request) {
+        state.movementHoldUntil = millis() + 10000UL;
+        srtSerial.sendStop();
+        srtSerial.logESP("Slewing stopped for 10s");
+        request->send(200, "application/json", "{\"ok\":true,\"hold_ms\":10000}");
+    });
+
+    // Stop automatic tracking without sending a motion stop.
+    webServer.on("/stop/tracking", HTTP_GET, [](AsyncWebServerRequest *request) {
+        state.movementHoldUntil = 0;
+        clearCurrentTracking();
+        srtSerial.logESP("Tracking stopped");
+        request->send(200, "application/json", "{\"ok\":true}");
+    });
+
     // Stop motion and cancel the current tracking target
     webServer.on("/stop/all", HTTP_GET, [](AsyncWebServerRequest *request) {
         state.movementHoldUntil = 0;
@@ -251,6 +248,20 @@ void setupWebServer() {
         srtSerial.sendHome();
         srtSerial.logESP("HOME");
         request->send(200, "application/json", "{\"ok\":true}");
+    });
+
+    // Slew to the saved home position from Settings.
+    webServer.on("/go-home", HTTP_GET, [](AsyncWebServerRequest *request) {
+        state.targetAlt = settings.homeAlt;
+        state.targetAz = settings.homeAz;
+        state.movementHoldUntil = 0;
+        clearCurrentTracking();
+        srtSerial.sendTarget(settings.homeAlt, settings.homeAz);
+        char json[64];
+        snprintf(json, sizeof(json), "{\"ok\":true,\"alt\":%.2f,\"az\":%.2f}",
+                 settings.homeAlt, settings.homeAz);
+        srtSerial.logESP("Go home");
+        request->send(200, "application/json", json);
     });
 
     // Track Sun
@@ -342,11 +353,33 @@ void setupWebServer() {
             request->send(400, "application/json", "{\"ok\":false,\"error\":\"Use mode=az, mode=alt, or mode=both\"}");
             return;
         }
+        state.trackingRevision++;
 
         String json = "{\"ok\":true,\"az_only\":" + String(state.azOnlyTracking ? "true" : "false") +
                       ",\"alt_only\":" + String(state.altOnlyTracking ? "true" : "false") +
                       ",\"az_only_alt\":" + String(state.azOnlyAlt, 2) +
                       ",\"alt_only_az\":" + String(state.altOnlyAz, 2) + "}";
+        request->send(200, "application/json", json);
+    });
+
+    // Tracking status. Keep this after /tracking/enable and /tracking/axis
+    // because ESPAsyncWebServer route matching can otherwise treat those URLs
+    // as this shorter status route.
+    webServer.on("/tracking", HTTP_GET, [](AsyncWebServerRequest *request) {
+        String json = "{";
+        json += "\"enabled\":" + String(state.trackingEnabled ? "true" : "false") + ",";
+        json += "\"ra\":" + String(state.currentRA, 4) + ",";
+        json += "\"dec\":" + String(state.currentDec, 2) + ",";
+        json += "\"target_name\":\"" + state.targetName + "\",";
+        json += "\"az_only\":" + String(state.azOnlyTracking ? "true" : "false") + ",";
+        json += "\"az_only_alt\":" + String(state.azOnlyAlt, 2) + ",";
+        json += "\"alt_only\":" + String(state.altOnlyTracking ? "true" : "false") + ",";
+        json += "\"alt_only_az\":" + String(state.altOnlyAz, 2) + ",";
+        json += "\"waiting_for_wrap\":" + String(state.waitingForWrap ? "true" : "false") + ",";
+        json += "\"waiting_for_rise\":" + String(state.waitingForRise ? "true" : "false") + ",";
+        json += "\"offset_alt\":" + String(state.offsetAlt, 2) + ",";
+        json += "\"offset_az\":" + String(state.offsetAz, 2);
+        json += "}";
         request->send(200, "application/json", json);
     });
 
