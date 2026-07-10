@@ -53,4 +53,19 @@ void galacticToEquatorial(double lDeg, double bDeg, double &raOut, double &decOu
 // Equatorial (J2000) to Galactic
 void equatorialToGalactic(double raHours, double decDeg, double &lOut, double &bOut);
 
+struct GalacticPlaneTarget {
+    bool found = false;
+    bool bulgeVisible = false;
+    double l = 0.0;
+    double b = 0.0;
+    double ra = 0.0;
+    double dec = 0.0;
+    double alt = 0.0;
+    double az = 0.0;
+};
+
+// Galactic Bulge if visible, otherwise the nearest visible point on b=0.
+void getGalacticBulgeTrackingTarget(double latDeg, double lonDeg, double minAltDeg,
+                                    GalacticPlaneTarget &target);
+
 #endif // COORDINATES_H

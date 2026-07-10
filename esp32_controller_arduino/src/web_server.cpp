@@ -127,17 +127,25 @@ void setupWebServer() {
         double sunRA, sunDec, moonRA, moonDec;
         getSunPosition(sunRA, sunDec);
         getMoonPosition(moonRA, moonDec);
+        GalacticPlaneTarget bulge;
+        getGalacticBulgeTrackingTarget(settings.observerLat, settings.observerLon,
+                                       settings.mountAltMin, bulge);
 
         double sunAlt, sunAz, moonAlt, moonAz;
         raDecToAltAz(sunRA, sunDec, settings.observerLat, settings.observerLon, sunAlt, sunAz);
         raDecToAltAz(moonRA, moonDec, settings.observerLat, settings.observerLon, moonAlt, moonAz);
 
-        char json[256];
+        char json[512];
         snprintf(json, sizeof(json),
             "{\"sun\":{\"ra\":%.4f,\"dec\":%.2f,\"alt\":%.2f,\"az\":%.2f},"
-            "\"moon\":{\"ra\":%.4f,\"dec\":%.2f,\"alt\":%.2f,\"az\":%.2f}}",
+            "\"moon\":{\"ra\":%.4f,\"dec\":%.2f,\"alt\":%.2f,\"az\":%.2f},"
+            "\"bulge\":{\"found\":%s,\"bulge_visible\":%s,\"l\":%.2f,\"b\":%.2f,"
+            "\"ra\":%.4f,\"dec\":%.2f,\"alt\":%.2f,\"az\":%.2f}}",
             sunRA, sunDec, sunAlt, sunAz,
-            moonRA, moonDec, moonAlt, moonAz);
+            moonRA, moonDec, moonAlt, moonAz,
+            bulge.found ? "true" : "false",
+            bulge.bulgeVisible ? "true" : "false",
+            bulge.l, bulge.b, bulge.ra, bulge.dec, bulge.alt, bulge.az);
         request->send(200, "application/json", json);
     });
 
@@ -286,6 +294,31 @@ void setupWebServer() {
         prepareTrackingTarget();
         srtSerial.logESP("Track Moon");
         request->send(200, "application/json", "{\"ok\":true}");
+    });
+
+    // Track Galactic Bulge, falling back to the nearest visible galactic plane point.
+    webServer.on("/track/galactic-bulge", HTTP_GET, [](AsyncWebServerRequest *request) {
+        GalacticPlaneTarget target;
+        getGalacticBulgeTrackingTarget(settings.observerLat, settings.observerLon,
+                                       settings.mountAltMin, target);
+        if (!target.found) {
+            request->send(409, "application/json",
+                          "{\"ok\":false,\"error\":\"No galactic plane point is above the horizon\"}");
+            return;
+        }
+        state.currentRA = target.ra;
+        state.currentDec = target.dec;
+        state.targetName = "Galactic Bulge";
+        prepareTrackingTarget();
+        srtSerial.logESP(target.bulgeVisible ? "Track Galactic Bulge"
+                                             : "Track galactic plane near bulge");
+        char json[128];
+        snprintf(json, sizeof(json),
+                 "{\"ok\":true,\"bulge_visible\":%s,\"l\":%.2f,\"b\":%.2f,"
+                 "\"ra\":%.4f,\"dec\":%.2f}",
+                 target.bulgeVisible ? "true" : "false",
+                 target.l, target.b, target.ra, target.dec);
+        request->send(200, "application/json", json);
     });
 
     // Track RA/Dec

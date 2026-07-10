@@ -422,3 +422,56 @@ void equatorialToGalactic(double raHours, double decDeg, double &lOut, double &b
     if (lOut < 0) lOut += 360.0;
     bOut = bRad * RAD_TO_DEG;
 }
+
+void getGalacticBulgeTrackingTarget(double latDeg, double lonDeg, double minAltDeg,
+                                    GalacticPlaneTarget &target) {
+    const double bulgeL = 0.0;
+    const double bulgeB = 0.0;
+    double ra, dec, alt, az;
+
+    galacticToEquatorial(bulgeL, bulgeB, ra, dec);
+    raDecToAltAz(ra, dec, latDeg, lonDeg, alt, az);
+
+    target.found = true;
+    target.bulgeVisible = alt >= minAltDeg;
+    target.l = bulgeL;
+    target.b = bulgeB;
+    target.ra = ra;
+    target.dec = dec;
+    target.alt = alt;
+    target.az = az;
+
+    if (target.bulgeVisible) {
+        return;
+    }
+
+    target.found = false;
+    for (double distance = 0.5; distance <= 180.0; distance += 0.5) {
+        double candidates[2] = {distance, 360.0 - distance};
+        GalacticPlaneTarget bestAtDistance;
+        bool hasCandidate = false;
+
+        for (int i = 0; i < 2; i++) {
+            double l = candidates[i];
+            if (l >= 360.0) l -= 360.0;
+            galacticToEquatorial(l, 0.0, ra, dec);
+            raDecToAltAz(ra, dec, latDeg, lonDeg, alt, az);
+            if (alt >= minAltDeg && (!hasCandidate || alt < bestAtDistance.alt)) {
+                hasCandidate = true;
+                bestAtDistance.found = true;
+                bestAtDistance.bulgeVisible = false;
+                bestAtDistance.l = l;
+                bestAtDistance.b = 0.0;
+                bestAtDistance.ra = ra;
+                bestAtDistance.dec = dec;
+                bestAtDistance.alt = alt;
+                bestAtDistance.az = az;
+            }
+        }
+
+        if (hasCandidate) {
+            target = bestAtDistance;
+            return;
+        }
+    }
+}

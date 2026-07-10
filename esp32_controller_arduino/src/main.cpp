@@ -227,6 +227,14 @@ void updateTracking() {
                 getMoonPosition(ra, dec);
                 state.currentRA = ra;
                 state.currentDec = dec;
+            } else if (state.targetName == "Galactic Bulge") {
+                GalacticPlaneTarget target;
+                getGalacticBulgeTrackingTarget(settings.observerLat, settings.observerLon,
+                                               settings.mountAltMin, target);
+                if (target.found) {
+                    state.currentRA = target.ra;
+                    state.currentDec = target.dec;
+                }
             }
             lastEphemerisUpdate = now;
         }
