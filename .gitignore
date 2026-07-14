@@ -25,6 +25,7 @@ __pycache__/
 # Data files
 *.h5
 *.hdf5
+receiver_scheduler/data/
 
 # Coverage files
 *.gcov

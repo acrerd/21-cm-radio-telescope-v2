@@ -24,7 +24,8 @@ This receiver is designed for radio astronomy observations of neutral hydrogen (
 | `scheduler.log` | Rotating log file (auto-generated, ignored) |
 | `read_h1_data.ipynb` | Jupyter notebook for reading/plotting HDF5 data |
 | `requirements.txt` | Python package dependencies |
-| `test_scheduler.py` | Unit tests (71 tests) |
+| `test_scheduler.py` | Unit tests for scheduler behavior |
+| `test_sun_scan.py` | Unit tests for Sun scan geometry and cancellation |
 
 ## Hardware Requirements
 
@@ -161,6 +162,8 @@ python h1_web_scheduler.py
 
 Then open http://localhost:5000 in your browser.
 
+The scheduler points at the current controller web UI by default: `http://192.168.106.120`. The AP fallback remains `http://192.168.4.1`.
+
 ### Web Interface Tabs
 
 The scheduler web interface has three tabs:
@@ -178,6 +181,7 @@ The main view for managing observations.
 - **Local and UTC time display** - schedule in local time, see both clocks
 - **Auto-save** - changes are saved automatically
 - **Manual start** - click play button to start any observation immediately
+- **Receiver boot/status** - manually start the B210 receiver for warm-up/testing and see whether the active receiver process is manual or observation-owned
 - **Clone** - duplicate an observation's settings into a new item
 - **Clear Past** - remove observations whose end time has passed
 - **Import/Export** - save and load schedules as JSON
@@ -189,7 +193,7 @@ Persistent settings saved to `scheduler_config.json`:
 | Setting | Description |
 |---------|-------------|
 | Banner Name / Subtitle | Customise the page title and heading |
-| Controller URL | SRT telescope controller address (empty to disable) |
+| Controller URL | SRT telescope controller address, normally `http://192.168.106.120` (empty to disable) |
 | Controller Fallback URLs | Additional controller addresses tried after the primary URL |
 | Slew Timeout | Max seconds to wait for telescope to reach target (default: 300) |
 | Position Tolerance | Degrees within which the telescope is considered on-target (default: 0.5) |
@@ -197,10 +201,12 @@ Persistent settings saved to `scheduler_config.json`:
 | Observer Longitude | Observer longitude in degrees (+E), synced from controller on startup |
 | Observer Elevation | Observer elevation in metres |
 | Min Elevation | Minimum elevation for satellite pass filtering (default: 10°) |
-| Python Executable | Path to Python (empty for default, e.g. radioconda) |
+| Receiver Python Executable | Path to radioconda Python used for the scheduler-managed receiver |
 | Data Output Folder | Where observation HDF5 files are saved |
 | Log Lines to Display | Number of log lines shown in the Log tab |
 | Sound on Start/Stop | Enable/disable audio notifications |
+
+If the scheduler is launched under a different Python, it re-execs itself under the configured receiver Python when that interpreter exists. This keeps scheduled observations, manual receiver boot, Sun scans, and SDR imports on the same radioconda environment. A manually booted receiver is stopped before a scheduled observation starts so the SDR is not shared by two processes.
 
 Configuration changes take effect immediately without restarting.
 
@@ -261,6 +267,8 @@ When an SRT controller is configured, the scheduler:
 5. Starts the SDR receiver
 6. On completion: stops satellite tracking, turns off calibrator (if it was on), sends home/stow command (if configured)
 
+The Configuration tab also exposes firmware update settings. The controller UI's **Update firmware** button asks the local scheduler to run PlatformIO in the configured environment (`wt32-eth01-ota` by default), which uploads to the controller over Ethernet OTA.
+
 ### Logging
 
 All scheduler activity is logged to both the console (INFO level) and `scheduler.log` (DEBUG level):
@@ -270,6 +278,16 @@ All scheduler activity is logged to both the console (INFO level) and `scheduler
 - Preemption events
 - Schedule loading and clash detection
 - Errors with full tracebacks
+- Firmware update progress from PlatformIO OTA
+
+### Sun Scan Calibration
+
+The Sun Scan tab runs `sun_scan.py` as a scheduler-owned pointing calibration workflow. It uses the configured observer location, controller URL, receiver backend, and cancellation state.
+
+- Each measurement recomputes the Sun position immediately before slewing, so long scans follow the moving Sun.
+- Azimuth grid offsets are cross-elevation sky offsets; mount azimuth commands are expanded by `cos(altitude)` and clamped to the safe SRT range.
+- Results include both `az_error_deg` (mount azimuth correction) and `az_error_sky_deg` (fitted sky/cross-elevation correction), plus mid-scan Sun position and scan start/end timestamps.
+- Cancelling a scan stops before fitting partial data.
 
 ## Configuration
 

@@ -83,6 +83,7 @@ The system consists of four integrated components:
 - WiFi 802.11 b/g/n (simultaneous with Ethernet)
 - Connects to Due via UART serial (IO4/IO14)
 - mDNS hostname `srt-controller.local`
+- Current wired controller web UI at `http://192.168.106.120/`
 - Ethernet OTA firmware updates after the first serial flash
 
 ### Wiring: WT32-ETH01 to Arduino Due
@@ -129,6 +130,7 @@ pio run -e wt32-eth01-ota --target upload
 ```
 
 The ESP32 controller uses Arduino/PlatformIO (not MicroPython) for better performance and reliability.
+The OTA target in `esp32_controller_arduino/platformio.ini` is set to the current controller address, `192.168.106.120`.
 
 ---
 
@@ -188,15 +190,23 @@ Compile-time defaults are in `esp32_controller_arduino/src/config.h`:
 1. Connect to WiFi: `SRT_Controller` (password: `radio1420`)
 2. Browse to: `http://192.168.4.1`
 
-#### Option 2: Hostname or Your Network
+#### Option 2: Wired Controller, Hostname, or Your Network
+1. On the observatory network, browse directly to: `http://192.168.106.120/`
+2. If mDNS is supported, `http://srt-controller.local/` should also resolve
+3. If the controller joins a different network, connect to the AP first
+4. Go to **WiFi** tab, click **Scan**
+5. Select your network and enter password
+6. Browse to the hostname or the new IP
+
+Credentials are saved and the ESP32 auto-reconnects on boot. The AP stays active as fallback.
+
+#### Option 3: Direct WiFi Setup for a New Network
 1. Connect to the AP first
 2. Go to **WiFi** tab, click **Scan**
 3. Select your network and enter password
 4. Browse to `http://srt-controller.local/` if mDNS is supported, or note the new IP address
 5. Connect your computer to same network
 6. Browse to the hostname or the new IP
-
-Credentials are saved and the ESP32 auto-reconnects on boot. The AP stays active as fallback.
 
 ### Web Interface
 
@@ -240,7 +250,7 @@ All equatorial (RA/Dec) coordinates use the **J2000 reference frame**, which is 
 2. Enable and restart Stellarium
 3. **Add** telescope:
    - Type: External software or remote computer
-   - Host: `192.168.4.1` (or network IP)
+   - Host: `192.168.106.120` (or AP/network IP)
    - Port: `10001`
 4. Click **Connect**
 5. Select any object and press `Ctrl+1` to slew
@@ -369,12 +379,14 @@ Tabbed web interface that coordinates telescope pointing and data recording:
 
 - **Scheduler Tab:** Add/edit/clone/delete observations with clash prevention, late-start recovery, preemption, and audio notifications
 - **Sun Scan Tab:** Pointing calibration via raster scan of the sun (see below)
-- **Configuration Tab:** Persistent settings (controller URL, observer location, data folder, Python path, sound)
+- **Configuration Tab:** Persistent settings (controller URL, observer location, data folder, receiver Python path, sound)
 - **Log Tab:** Live view of rotating scheduler log
+- **Receiver Boot:** Starts the B210 receiver manually for warm-up/testing and reports whether the receiver is idle, manually booted, or owned by a scheduled observation
 - **Coordinate Systems:** Alt/Az, RA/Dec (J2000), Galactic, Solar System objects (Sun/Moon), and Satellite (TLE)
 - **Satellite Tracking:** Fetch TLEs from CelesTrak, compute next pass, track via 1 Hz position updates
 - **Calibrator Control:** Per-observation noise source on/off, with `_cal` filename suffix
 - **End Actions:** Stay, Go Home, or Stow telescope after observation
+- **Firmware Update:** Requests the local scheduler service to build and upload WT32 firmware over Ethernet OTA
 
 ```bash
 # Start the scheduler
@@ -384,16 +396,19 @@ python h1_web_scheduler.py --host 0.0.0.0 --port 5000
 # Open browser to http://localhost:5000
 ```
 
+The scheduler re-execs itself under the configured receiver Python when needed so GNU Radio, PyEphem, and SDR dependencies come from radioconda. On the observatory machine the receiver Python default is `/home/astro/radioconda/bin/python`.
+
 ### Scheduler Configuration
 
 Settings are managed via the Configuration tab in the web interface and persisted in `scheduler_config.json`. Key settings include:
 
-- **Controller URL** — ESP32 address (empty to disable telescope control)
+- **Controller URL** — ESP32 address, currently `http://192.168.106.120` (empty to disable telescope control)
 - **Controller Fallback URLs** — Additional controller addresses such as `http://srt-controller.local` and `http://192.168.4.1`
 - **Observer Location** — Latitude, longitude, elevation (used for satellite pass prediction)
 - **Min Elevation** — Minimum elevation for satellite passes (default 10°)
 - **Data Output Folder** — Where HDF5 files are saved
-- **Python Path** — Path to Python executable (e.g. radioconda)
+- **Receiver Python Path** — Path to the radioconda Python executable used by the scheduler and receiver
+- **Firmware Update Environment** — PlatformIO environment used for WT32 Ethernet OTA uploads
 
 ### Observation Workflow
 
@@ -419,8 +434,9 @@ Determines telescope pointing errors by performing an n×n raster scan centred o
 - **Integrated via the Sun Scan tab** in the web scheduler — uses the same observer location, SRT controller URL, and SDR settings as the scheduler
 - **Grid:** configurable n×n (default 5×5) with adjustable spacing (default 1.5° = half-beam for Nyquist sampling)
 - **Scan pattern:** all rows scan east-to-west with backlash overshoot at each row start
-- **Azimuth correction:** grid offsets are corrected by cos(altitude) for uniform sky spacing
-- **Output:** pointing error (ΔAlt, ΔAz), fitted beam FWHM, and a two-panel image (measured data + Gaussian fit)
+- **Azimuth correction:** grid offsets are treated as cross-elevation sky offsets; mount azimuth commands are expanded by cos(altitude) and clamped to the safe scan range
+- **Moving Sun:** Sun position is recomputed before each measurement slew, and the saved Sun comparison point is the mid-scan ephemeris
+- **Output:** pointing error (ΔAlt, mount ΔAz, sky ΔAz), fitted beam FWHM, scan start/end timestamps, and a two-panel image (measured data + Gaussian fit)
 - **SDR backends:** B210, RTL-SDR, or demo mode (simulated Gaussian beam)
 - **Standalone usage:**
 
@@ -476,7 +492,8 @@ See `receiver_scheduler/read_h1_data.ipynb` for a complete analysis example.
 
 | Problem | Solution |
 |---------|----------|
-| Can't connect to web UI | Check WiFi connection, try AP mode at 192.168.4.1 |
+| Can't connect to controller web UI | Try `http://192.168.106.120/`, then `http://srt-controller.local/`, then AP mode at `192.168.4.1` |
+| Can't connect to scheduler web UI | Start `h1_web_scheduler.py` and open `http://localhost:5000` on that host |
 | Motors don't move | Check Due serial for FAULT status, verify homing completed |
 | Position incorrect | Run `HOME` command, check limit switches |
 | Stellarium won't connect | Verify IP and port 10001, check ESP32 is running |

@@ -31,6 +31,7 @@ The two `native` environments under the controller often fail to link on this Wi
 cmd //c "c:\Users\graha\Desktop\new_SRT\new_SRT_drive\receiver_scheduler\run_scheduler.bat"
 ```
 Always launch via the absolute path to the .bat — relative paths fail. The bat activates radioconda then runs `python h1_web_scheduler.py`. Web UI on `http://localhost:5000`.
+On the observatory Linux host, the scheduler re-execs under `/home/astro/radioconda/bin/python` when available. The controller web UI and OTA target are currently `http://192.168.106.120/`.
 
 ## Architecture
 
@@ -39,7 +40,7 @@ Four loosely-coupled subsystems talking over serial / HTTP:
 ```
 Stellarium ──TCP:10001──┐                       Scheduler (Flask) ──┐
                         ↓                                            ↓
-              ESP32 controller (web UI :80, web_server.cpp) ─────────┘
+              ESP32 controller (web UI :80 at 192.168.106.120, web_server.cpp) ─────────┘
                         ↓
               UART (Serial1, 115200, line-oriented ASCII)
                         ↓
@@ -70,7 +71,11 @@ Stellarium ──TCP:10001──┐                       Scheduler (Flask) ─�
 
 **Simulation environment** (`-e simulation`): overrides `analogWrite`/`digitalWrite`/`analogRead`/`attachInterrupt` via macros so the firmware runs without real hardware. `simulatePulses()` is called from the main loop and inside the homing while-loops to advance position based on commanded PWM. When you change the homing flow or any in-loop motor control, it must still work in simulation — both `due` and `simulation` environments must build cleanly.
 
-**ESP32 controller** (`esp32_controller_arduino/src/`): Arduino-framework PlatformIO project, two target boards (`esp32s3`, `wt32-eth01`). `state.h` is the single shared `SRTState` struct — all subsystems mutate it directly. Coordinate transforms are in `coordinates.cpp` (Julian date, GMST, precession J2000↔date, RA/Dec↔Alt/Az, galactic↔equatorial, sun/moon ephemeris). The web UI is a single embedded HTML string in `index_html.h` — heavy use of inline JS and `fetch()` against the various web_server.cpp endpoints. The `/status` endpoint computes RA/Dec and galactic l/b on the fly from the live alt/az; goto/track endpoints reject targets below the horizon (alt < 0) before mutating state.
+**ESP32 controller** (`esp32_controller_arduino/src/`): Arduino-framework PlatformIO project, two target boards (`esp32s3`, `wt32-eth01`). `state.h` is the single shared `SRTState` struct — all subsystems mutate it directly. Coordinate transforms are in `coordinates.cpp` (Julian date, GMST, precession J2000↔date, RA/Dec↔Alt/Az, galactic↔equatorial, sun/moon ephemeris). The web UI is a single embedded HTML string in `index_html.h` — heavy use of inline JS and `fetch()` against the various web_server.cpp endpoints. `/ping` and `/network` are minimal diagnostics kept ahead of the full UI handler. The `/status` endpoint computes RA/Dec and galactic l/b on the fly from the live alt/az; goto/track endpoints reject targets below the horizon (alt < 0) before mutating state.
+
+**Receiver scheduler runtime** (`receiver_scheduler/h1_web_scheduler.py`): Flask scheduler defaults to controller `http://192.168.106.120`. Receiver processes always use `receiver_python_path` (radioconda by default), and the scheduler re-execs under that interpreter unless already there. A manual receiver boot is only for warm-up/testing; scheduled observations stop it before acquiring the SDR, and `/api/receiver/status` reports whether the active process is manual or observation-owned.
+
+**Sun scan calibration** (`receiver_scheduler/sun_scan.py`): scan offsets are sky/cross-elevation offsets. Commands recompute the Sun position before each point, expand mount azimuth by `cos(alt)`, clamp to the usable azimuth range, and save both mount azimuth correction (`az_error_deg`) and fitted sky correction (`az_error_sky_deg`) against the mid-scan Sun position.
 
 ## Conventions
 

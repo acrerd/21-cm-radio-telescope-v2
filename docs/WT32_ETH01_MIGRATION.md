@@ -176,7 +176,7 @@ cd esp32_controller_arduino
 pio run -e wt32-eth01-ota -t upload
 ```
 
-The OTA target defaults to `192.168.106.136` and port `3232`. If DHCP gives the
+The OTA target defaults to `192.168.106.120` and port `3232`. If DHCP gives the
 controller a different address, update `upload_port` in
 `esp32_controller_arduino/platformio.ini`. The OTA password is configured in
 `src/config.h`.
@@ -522,6 +522,9 @@ cd esp32_controller_arduino
 pio run -e wt32-eth01-ota -t upload
 ```
 
+The repository OTA upload target is the current controller address,
+`192.168.106.120`.
+
 ### Monitoring via Due Bridge
 
 Once programmed, the Due Native USB port can monitor Serial1 control traffic
@@ -547,7 +550,7 @@ between the Due and ESP32:
 ### Ethernet
 
 - [ ] Ethernet link LED lights when cable connected
-- [ ] DHCP assigns IP address
+- [ ] Controller is reachable at `192.168.106.120` or the configured static/DHCP address
 - [ ] Can ping WT32-ETH01 from PC
 - [ ] Web interface accessible via Ethernet IP
 - [ ] Stellarium connects via Ethernet
@@ -631,9 +634,9 @@ The code uses `#ifdef BOARD_WT32_ETH01` / `#ifdef BOARD_ESP32S3` for board-speci
 
 | Interface  | Address                              |
 |------------|--------------------------------------|
+| Ethernet   | 192.168.106.120 (current observatory controller) |
 | Hostname   | http://srt-controller.local/         |
 | WiFi AP    | 192.168.4.1 (SSID: SRT_Controller)   |
-| Ethernet   | DHCP or static (configurable via web UI) |
 | Stellarium | Port 10001 on any interface          |
 
 ### Ethernet IP Configuration

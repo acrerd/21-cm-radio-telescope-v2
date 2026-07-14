@@ -33,6 +33,7 @@ The WT32-ETH01 controller provides the high-level interface for the SRT drive sy
 - **Runtime configurable settings** saved to flash (NVS)
 - **Networking** via native Ethernet + WiFi (AP + station mode)
 - **mDNS and Ethernet OTA** for `srt-controller.local` discovery and network firmware updates
+- **Current observatory Ethernet address**: `http://192.168.106.120/`
 
 ### Architecture
 
@@ -121,6 +122,8 @@ Free memory: 255000 bytes
 WiFi IP: 192.168.x.x
 AP IP: 192.168.4.1
 ```
+
+The repository OTA target is configured for `192.168.106.120:3232`.
 
 ---
 
@@ -241,6 +244,8 @@ All endpoints return JSON unless noted.
 | Endpoint | Method | Description |
 |----------|--------|-------------|
 | `/` | GET | Web interface (HTML) |
+| `/ping` | GET | Minimal plain-text liveness check (`ok`) |
+| `/network` | GET | Minimal diagnostics for heap and active IPs when the full UI is hard to load |
 | `/status` | GET | Mount position and status |
 | `/tracking` | GET | Current tracking state |
 | `/ephemeris` | GET | Sun and Moon positions |
@@ -319,7 +324,7 @@ The controller implements the Stellarium telescope protocol on TCP port 10001.
 2. Enable plugin and restart Stellarium
 3. Add telescope:
    - Type: "External software or remote computer"
-   - Host: ESP32 IP address (e.g., `192.168.4.1`)
+   - Host: ESP32 IP address (normally `192.168.106.120`; AP fallback `192.168.4.1`)
    - Port: `10001`
 4. Connect
 5. Select any object and press `Ctrl+1` to slew
@@ -406,6 +411,7 @@ The ESP32 operates in **AP+STA** mode:
 
 | Interface | IP Address |
 |-----------|------------|
+| Observatory Ethernet | `http://192.168.106.120/` |
 | Hostname | `http://srt-controller.local/` |
 | WiFi AP | 192.168.4.1 (fixed) |
 | WiFi Station | DHCP assigned |
@@ -476,6 +482,7 @@ pio run --target clean
 
 | Problem | Solution |
 |---------|----------|
+| Can't connect to 192.168.106.120 | Verify Ethernet link, subnet, and controller power; try `/ping` or `/network` |
 | Can't connect to 192.168.4.1 | Verify connected to SRT_Controller WiFi |
 | Page loads but no data | Check Due serial connection |
 | Settings won't save | Check NVS, try reset to defaults |
@@ -514,6 +521,7 @@ pio run --target clean
 |---------|-------|
 | WiFi AP SSID | SRT_Controller |
 | WiFi AP Password | radio1420 |
+| Observatory Ethernet IP | 192.168.106.120 |
 | AP IP | 192.168.4.1 |
 | Web Port | 80 |
 | Stellarium Port | 10001 |
