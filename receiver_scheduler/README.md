@@ -155,6 +155,14 @@ The web scheduler provides a browser-based interface for managing and automating
 
 ### Starting the Scheduler
 
+On the observatory Linux host, double-click **Start H1 Scheduler** on the desktop. The launcher runs the scheduler under radioconda and binds it to port 5000:
+
+```bash
+/home/astro/radioconda/bin/python /home/astro/21-cm-radio-telescope-v2/receiver_scheduler/h1_web_scheduler.py --host 0.0.0.0 --port 5000
+```
+
+For a manual terminal start:
+
 ```bash
 conda activate radioconda
 python h1_web_scheduler.py
@@ -240,6 +248,8 @@ Displays the last N lines of `scheduler.log` with auto-refresh (5 second interva
 | Galactic (l, b) | Galactic longitude / latitude | Tracks as Earth rotates |
 | Solar System Object | Select Sun or Moon by name | Automatic ephemeris tracking |
 | Satellite (TLE) | Two-Line Element set | SGP4 propagation at 1 Hz |
+
+The ESP32 controller treats sky targets below 10° altitude as below the local observing horizon. The Galactic Bulge shortcut uses that same 10° clearance: if the bulge is lower, the controller chooses the nearest galactic-plane point at or above 10° instead.
 
 ### Satellite Tracking
 

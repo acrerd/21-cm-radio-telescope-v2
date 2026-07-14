@@ -149,7 +149,8 @@ void setupWebServer() {
         getMoonPosition(moonRA, moonDec);
         GalacticPlaneTarget bulge;
         getGalacticBulgeTrackingTarget(settings.observerLat, settings.observerLon,
-                                       settings.mountAltMin, bulge);
+                                       effectiveTrackingHorizonAlt(settings.mountAltMin),
+                                       bulge);
 
         double sunAlt, sunAz, moonAlt, moonAz;
         raDecToAltAz(sunRA, sunDec, settings.observerLat, settings.observerLon, sunAlt, sunAz);
@@ -175,10 +176,12 @@ void setupWebServer() {
         float dec = request->arg("dec").toFloat();
         double tAlt, tAz;
         raDecToAltAz(ra, dec, settings.observerLat, settings.observerLon, tAlt, tAz);
-        if (tAlt < 0.0) {
-            char err[96];
+        double minTrackingAlt = effectiveTrackingHorizonAlt(settings.mountAltMin);
+        if (tAlt < minTrackingAlt) {
+            char err[128];
             snprintf(err, sizeof(err),
-                "{\"ok\":false,\"error\":\"Target below horizon (alt=%.1f deg)\"}", tAlt);
+                "{\"ok\":false,\"error\":\"Target below horizon (alt=%.1f deg, min=%.1f deg)\"}",
+                tAlt, minTrackingAlt);
             request->send(400, "application/json", err);
             return;
         }
@@ -197,10 +200,12 @@ void setupWebServer() {
         galacticToEquatorial(l, b, ra, dec);
         double tAlt, tAz;
         raDecToAltAz(ra, dec, settings.observerLat, settings.observerLon, tAlt, tAz);
-        if (tAlt < 0.0) {
-            char err[96];
+        double minTrackingAlt = effectiveTrackingHorizonAlt(settings.mountAltMin);
+        if (tAlt < minTrackingAlt) {
+            char err[128];
             snprintf(err, sizeof(err),
-                "{\"ok\":false,\"error\":\"Target below horizon (alt=%.1f deg)\"}", tAlt);
+                "{\"ok\":false,\"error\":\"Target below horizon (alt=%.1f deg, min=%.1f deg)\"}",
+                tAlt, minTrackingAlt);
             request->send(400, "application/json", err);
             return;
         }
@@ -320,7 +325,8 @@ void setupWebServer() {
     webServer.on("/track/galactic-bulge", HTTP_GET, [](AsyncWebServerRequest *request) {
         GalacticPlaneTarget target;
         getGalacticBulgeTrackingTarget(settings.observerLat, settings.observerLon,
-                                       settings.mountAltMin, target);
+                                       effectiveTrackingHorizonAlt(settings.mountAltMin),
+                                       target);
         if (!target.found) {
             request->send(409, "application/json",
                           "{\"ok\":false,\"error\":\"No galactic plane point is above the horizon\"}");
@@ -347,10 +353,12 @@ void setupWebServer() {
         float dec = request->arg("dec").toFloat();
         double tAlt, tAz;
         raDecToAltAz(ra, dec, settings.observerLat, settings.observerLon, tAlt, tAz);
-        if (tAlt < 0.0) {
-            char err[96];
+        double minTrackingAlt = effectiveTrackingHorizonAlt(settings.mountAltMin);
+        if (tAlt < minTrackingAlt) {
+            char err[128];
             snprintf(err, sizeof(err),
-                "{\"ok\":false,\"error\":\"Target below horizon (alt=%.1f deg)\"}", tAlt);
+                "{\"ok\":false,\"error\":\"Target below horizon (alt=%.1f deg, min=%.1f deg)\"}",
+                tAlt, minTrackingAlt);
             request->send(400, "application/json", err);
             return;
         }
@@ -369,10 +377,12 @@ void setupWebServer() {
         galacticToEquatorial(l, b, ra, dec);
         double tAlt, tAz;
         raDecToAltAz(ra, dec, settings.observerLat, settings.observerLon, tAlt, tAz);
-        if (tAlt < 0.0) {
-            char err[96];
+        double minTrackingAlt = effectiveTrackingHorizonAlt(settings.mountAltMin);
+        if (tAlt < minTrackingAlt) {
+            char err[128];
             snprintf(err, sizeof(err),
-                "{\"ok\":false,\"error\":\"Target below horizon (alt=%.1f deg)\"}", tAlt);
+                "{\"ok\":false,\"error\":\"Target below horizon (alt=%.1f deg, min=%.1f deg)\"}",
+                tAlt, minTrackingAlt);
             request->send(400, "application/json", err);
             return;
         }

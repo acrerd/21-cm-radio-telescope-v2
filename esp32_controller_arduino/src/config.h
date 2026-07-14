@@ -69,6 +69,14 @@
 #define MOUNT_ALT_MIN 0.0
 #define MOUNT_ALT_MAX 90.0
 
+// Minimum altitude for sky targets to clear the local horizon/trees.
+// This is intentionally separate from the mechanical mount lower limit.
+#define TRACKING_HORIZON_ALT 10.0
+
+inline double effectiveTrackingHorizonAlt(double mountAltMin) {
+    return mountAltMin > TRACKING_HORIZON_ALT ? mountAltMin : TRACKING_HORIZON_ALT;
+}
+
 // Home position (degrees)
 #define HOME_ALT 0.0
 #define HOME_AZ 0.0

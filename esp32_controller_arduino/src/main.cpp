@@ -230,7 +230,8 @@ void updateTracking() {
             } else if (state.targetName == "Galactic Bulge") {
                 GalacticPlaneTarget target;
                 getGalacticBulgeTrackingTarget(settings.observerLat, settings.observerLon,
-                                               settings.mountAltMin, target);
+                                               effectiveTrackingHorizonAlt(settings.mountAltMin),
+                                               target);
                 if (target.found) {
                     state.currentRA = target.ra;
                     state.currentDec = target.dec;
@@ -246,11 +247,12 @@ void updateTracking() {
         state.targetAlt = alt;
         state.targetAz = az;
 
-        // Check if below horizon
-        if (alt < settings.mountAltMin) {
+        // Check if below the local observing horizon/tree clearance.
+        double minTrackingAlt = effectiveTrackingHorizonAlt(settings.mountAltMin);
+        if (alt < minTrackingAlt) {
             if (!state.waitingForRise) {
                 state.waitingForRise = true;
-                DBG(Serial.printf("Target below horizon: Alt=%.1f\n", alt));
+                DBG(Serial.printf("Target below horizon: Alt=%.1f Min=%.1f\n", alt, minTrackingAlt));
                 DBG(Serial.println("Parking at home, waiting for target to rise..."));
                 srtSerial.logESP("Target below horizon - parking");
                 srtSerial.sendTarget(settings.homeAlt, settings.homeAz);

@@ -169,12 +169,15 @@ Settings can be changed via the web interface Settings tab:
 |---------|-------------|---------|
 | Observer Lat/Lon | Observatory coordinates | Glasgow |
 | Software Limits | Az/Alt min/max for tracking | 2-353, 0-90 |
+| Observing Horizon | Minimum altitude for sky targets, including Galactic Bulge fallback | 10 deg |
 | Home Position | Park position when target below horizon | Alt=0, Az=180 |
 | Update Tolerance | Minimum position change to trigger update | 0.25 deg |
 | Page Name | Web interface title | "SRT Controller" |
 | AP SSID/Password | WiFi access point credentials | SRT_Controller/radio1420 |
 
 Settings are saved to ESP32 flash (NVS) and persist across reboots.
+
+The 10 degree observing horizon is enforced separately from the mechanical altitude lower limit. This keeps automatic tracking above local obstructions even if the saved mount minimum remains 0 degrees. For Galactic Bulge tracking, the controller falls back to the nearest galactic-plane point at or above 10 degrees when the bulge itself is lower.
 
 ---
 

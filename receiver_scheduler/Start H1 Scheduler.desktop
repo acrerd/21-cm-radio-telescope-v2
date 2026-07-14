@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Start H1 Scheduler
+Comment=Start the 21 cm observation scheduler
+Exec=/home/astro/radioconda/bin/python /home/astro/21-cm-radio-telescope-v2/receiver_scheduler/h1_web_scheduler.py --host 0.0.0.0 --port 5000
+Path=/home/astro/21-cm-radio-telescope-v2/receiver_scheduler
+Terminal=true
+Icon=utilities-terminal
+Categories=Science;
+StartupNotify=false

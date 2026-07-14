@@ -232,6 +232,7 @@ All equatorial (RA/Dec) coordinates use the **J2000 reference frame**, which is 
 - **Track**: Continuously update position as Earth rotates
 - **Axis-only Track**: Follow target azimuth or altitude while holding the other axis fixed
 - **Sun/Moon**: Automatically updates coordinates as they move across the sky
+- **Galactic Bulge**: Tracks the bulge only above the 10° local observing horizon; below that, it tracks the nearest galactic-plane point at or above 10° to clear the trees
 
 #### Network Tab
 
@@ -394,6 +395,12 @@ cd receiver_scheduler
 python h1_web_scheduler.py --host 0.0.0.0 --port 5000
 
 # Open browser to http://localhost:5000
+```
+
+On the observatory Linux host, use the desktop launcher **Start H1 Scheduler**. It runs:
+
+```bash
+/home/astro/radioconda/bin/python /home/astro/21-cm-radio-telescope-v2/receiver_scheduler/h1_web_scheduler.py --host 0.0.0.0 --port 5000
 ```
 
 The scheduler re-execs itself under the configured receiver Python when needed so GNU Radio, PyEphem, and SDR dependencies come from radioconda. On the observatory machine the receiver Python default is `/home/astro/radioconda/bin/python`.
