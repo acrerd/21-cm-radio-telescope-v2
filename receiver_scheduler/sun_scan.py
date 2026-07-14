@@ -64,7 +64,7 @@ _CONFIG_FILE = os.path.join(_SCRIPT_DIR, "scheduler_config.json")
 def _load_scheduler_config() -> dict:
     """Load observer location and SRT URL from the scheduler config file."""
     defaults = {
-        "srt_controller_url": "http://192.168.0.149",
+        "srt_controller_url": "http://192.168.106.120",
         "observer_lat": 55.902444,
         "observer_lon": -4.307861,
         "observer_elevation": 50,
@@ -122,17 +122,49 @@ def _slew_to(base_url: str, alt: float, az: float,
 # Sun position
 # ---------------------------------------------------------------------------
 
-def get_sun_altaz(lat: float, lon: float, elevation: float = 0) -> tuple[float, float]:
-    """Return current (altitude, azimuth) of the sun in degrees."""
+def _ephem_date(when: datetime | None = None):
+    """Return a PyEphem date, treating aware datetimes as UTC."""
+    if when is None:
+        return ephem.now()
+    if when.tzinfo is not None:
+        when = when.astimezone(timezone.utc).replace(tzinfo=None)
+    return ephem.Date(when)
+
+
+def get_sun_altaz(lat: float, lon: float, elevation: float = 0,
+                  when: datetime | None = None) -> tuple[float, float]:
+    """Return the sun (altitude, azimuth) in degrees for now or a UTC time."""
     if ephem is None:
         raise ImportError("PyEphem is required: pip install ephem")
     observer = ephem.Observer()
     observer.lat = str(lat)
     observer.lon = str(lon)
     observer.elevation = elevation
-    observer.date = ephem.now()
+    observer.date = _ephem_date(when)
     sun = ephem.Sun(observer)
     return math.degrees(float(sun.alt)), math.degrees(float(sun.az))
+
+
+def _clamp_azimuth_deg(az: float) -> float:
+    """Clamp command azimuth to the SRT mount's usable 0..353 degree range."""
+    return max(0.0, min(353.0, az))
+
+
+def _sun_offset_to_command(sun_alt: float, sun_az: float,
+                           dalt: float, daz_sky: float) -> tuple[float, float, float, bool]:
+    """Convert sky offsets around the current Sun position into mount commands.
+
+    ``daz_sky`` is a cross-elevation offset.  The mount azimuth command must be
+    expanded by cos(alt), then clamped to the hardware-safe scan range.
+    """
+    cos_alt = math.cos(math.radians(sun_alt))
+    if cos_alt < 0.01:
+        raise ValueError("Sun is too close to zenith for an azimuth scan")
+
+    cmd_alt = max(0.0, min(90.0, sun_alt + dalt))
+    raw_az = sun_az + daz_sky / cos_alt
+    cmd_az = _clamp_azimuth_deg(raw_az)
+    return cmd_alt, cmd_az, cos_alt, (cmd_az != raw_az)
 
 
 # ---------------------------------------------------------------------------
@@ -250,7 +282,8 @@ def fit_pointing_error(alt_offsets: np.ndarray, az_offsets: np.ndarray,
     Returns
     -------
     dict with keys:
-        alt_error_deg, az_error_deg : pointing correction
+        alt_error_deg               : altitude pointing correction
+        az_error_deg/az_error_sky_deg : cross-elevation pointing correction
         amplitude, sigma, offset    : fitted Gaussian parameters
         beam_fwhm_deg               : fitted FWHM
         success                     : bool
@@ -272,6 +305,7 @@ def fit_pointing_error(alt_offsets: np.ndarray, az_offsets: np.ndarray,
         return {
             "alt_error_deg": float(alt0),
             "az_error_deg": float(az0),
+            "az_error_sky_deg": float(az0),
             "amplitude": float(amplitude),
             "sigma_deg": float(sigma),
             "offset": float(offset),
@@ -290,6 +324,7 @@ def fit_pointing_error(alt_offsets: np.ndarray, az_offsets: np.ndarray,
         return {
             "alt_error_deg": float(alt_offsets[idx]),
             "az_error_deg": float(az_offsets[idx]),
+            "az_error_sky_deg": float(az_offsets[idx]),
             "amplitude": float(power[idx]),
             "sigma_deg": float(sigma_guess),
             "offset": float(np.min(power)),
@@ -337,8 +372,9 @@ def generate_image(alt_offsets_grid: np.ndarray, az_offsets_grid: np.ndarray,
     # Mark assumed centre
     ax.plot(0, 0, "w+", markersize=12, markeredgewidth=2, label="Assumed position")
     # Mark fitted peak
+    fit_az_sky = fit_result.get("az_error_sky_deg", fit_result["az_error_deg"])
     if fit_result["success"]:
-        ax.plot(fit_result["az_error_deg"], fit_result["alt_error_deg"],
+        ax.plot(fit_az_sky, fit_result["alt_error_deg"],
                 "cx", markersize=12, markeredgewidth=2, label="Fitted peak")
     ax.legend(loc="upper right", fontsize=8)
 
@@ -351,7 +387,7 @@ def generate_image(alt_offsets_grid: np.ndarray, az_offsets_grid: np.ndarray,
     model = _gaussian_2d((ALT_F.ravel(), AZ_F.ravel()),
                          fit_result["amplitude"],
                          fit_result["alt_error_deg"],
-                         fit_result["az_error_deg"],
+                         fit_az_sky,
                          fit_result["sigma_deg"],
                          fit_result["offset"]).reshape(n_fine, n_fine)
 
@@ -364,7 +400,7 @@ def generate_image(alt_offsets_grid: np.ndarray, az_offsets_grid: np.ndarray,
     fig.colorbar(im2, ax=ax2, label="Power (linear)")
     ax2.plot(0, 0, "w+", markersize=12, markeredgewidth=2)
     if fit_result["success"]:
-        ax2.plot(fit_result["az_error_deg"], fit_result["alt_error_deg"],
+        ax2.plot(fit_az_sky, fit_result["alt_error_deg"],
                  "cx", markersize=12, markeredgewidth=2)
 
     # Title with results
@@ -376,6 +412,8 @@ def generate_image(alt_offsets_grid: np.ndarray, az_offsets_grid: np.ndarray,
         f"dAz={fit_result['az_error_deg']:+.2f}°  "
         f"(FWHM={fit_result['beam_fwhm_deg']:.1f}°)"
     )
+    if "az_error_sky_deg" in fit_result:
+        title_parts[-1] += f"  sky-dAz={fit_result['az_error_sky_deg']:+.2f}°"
     fig.suptitle("\n".join(title_parts), fontsize=11)
     fig.tight_layout(rect=[0, 0, 1, 0.90])
 
@@ -433,9 +471,10 @@ def sun_scan(
     -------
     dict with keys:
         alt_error_deg  : pointing error in altitude (degrees)
-        az_error_deg   : pointing error in azimuth (degrees)
-        sun_alt_deg    : assumed sun altitude
-        sun_az_deg     : assumed sun azimuth
+        az_error_deg   : pointing error in mount azimuth degrees
+        az_error_sky_deg : fitted cross-elevation azimuth error
+        sun_alt_deg    : mid-scan sun altitude
+        sun_az_deg     : mid-scan sun azimuth
         beam_fwhm_deg  : fitted beam FWHM
         power_grid     : n x n array of measured powers
         fit            : full fit result dict
@@ -485,43 +524,56 @@ def sun_scan(
     az_off_flat = []
     power_flat = []
 
-    cos_alt = math.cos(math.radians(sun_alt))
-    if cos_alt < 0.01:
-        raise ValueError("Sun is too close to zenith for an azimuth scan")
-
     log.info("Starting %dx%d sun scan (spacing=%.1f°, integration=%.1fs)",
              n, n, grid_spacing_deg, integration_time_s)
+
+    scan_start_utc = datetime.now(timezone.utc)
+    cancelled = False
+
+    def command_for_current_sun(dalt_now: float, daz_sky_now: float):
+        current_sun_alt, current_sun_az = get_sun_altaz(lat, lon, elevation)
+        if current_sun_alt < 0:
+            raise RuntimeError(f"Sun set during scan (Alt={current_sun_alt:.1f}°)")
+
+        cmd_alt_now, cmd_az_now, cos_alt_now, az_clamped = _sun_offset_to_command(
+            current_sun_alt, current_sun_az, dalt_now, daz_sky_now)
+        if az_clamped:
+            log.warning("Azimuth command clamped to %.2f° (Sun Az=%.2f°, sky offset=%+.2f°)",
+                        cmd_az_now, current_sun_az, daz_sky_now)
+        return current_sun_alt, current_sun_az, cmd_alt_now, cmd_az_now, cos_alt_now
 
     # --- Scan loop ---
     for idx, (row, col) in enumerate(scan_order):
         if cancel_event is not None and cancel_event.is_set():
             log.warning("Sun scan cancelled by user at point %d/%d", idx, total_points)
+            cancelled = True
             break
 
         dalt = ALT_OFF[row, col]
         daz_sky = AZ_OFF[row, col]  # cross-elevation offset
 
-        # Convert sky offset to actual az command (account for cos(alt))
-        cmd_alt = sun_alt + dalt
-        cmd_az = sun_az + daz_sky / cos_alt
-
-        # Enforce altitude limits
-        cmd_alt = max(0.0, min(90.0, cmd_alt))
-
         # Backlash compensation: at the start of each row, slew to an
         # overshoot point east of the first measurement, then approach
         # westward so both axes settle with backlash taken up.
         if sdr_type != "demo" and backlash_deg > 0 and idx in row_starts:
-            overshoot_az = cmd_az + backlash_deg / cos_alt
+            _, _, overshoot_alt, overshoot_az, _ = (
+                command_for_current_sun(dalt, daz_sky + backlash_deg))
             log.info("Row %d: backlash overshoot to Az=%.2f° then approaching west",
                      row, overshoot_az)
-            _slew_to(srt_url, cmd_alt, overshoot_az, slew_timeout)
+            if not _slew_to(srt_url, overshoot_alt, overshoot_az, slew_timeout):
+                log.warning("Backlash overshoot failed for row %d", row)
+
+        # Recompute the Sun immediately before the measurement slew.  A row-start
+        # overshoot can take long enough for the Sun to move appreciably.
+        point_sun_alt, point_sun_az, cmd_alt, cmd_az, _ = (
+            command_for_current_sun(dalt, daz_sky))
 
         point_info = {
             "point": idx + 1, "total": total_points,
             "row": row, "col": col,
             "dalt": dalt, "daz_sky": daz_sky,
             "cmd_alt": cmd_alt, "cmd_az": cmd_az,
+            "sun_alt": point_sun_alt, "sun_az": point_sun_az,
         }
         log.info("Point %d/%d: offset (%.1f, %.1f)° -> Alt=%.2f° Az=%.2f°",
                  idx + 1, total_points, dalt, daz_sky, cmd_alt, cmd_az)
@@ -543,7 +595,7 @@ def sun_scan(
         sim_state = None
         if sdr_type == "demo":
             sim_state = {
-                "sun_alt": sun_alt, "sun_az": sun_az,
+                "sun_alt": point_sun_alt, "sun_az": point_sun_az,
                 "point_alt": cmd_alt, "point_az": cmd_az,
                 "beam_fwhm": beam_fwhm_deg,
                 "peak_power": 10.0, "background": 1.0, "noise_rms": 0.15,
@@ -558,6 +610,16 @@ def sun_scan(
 
         log.info("  Power = %.4f", pwr)
 
+    scan_end_utc = datetime.now(timezone.utc)
+    if cancelled:
+        raise RuntimeError("Sun scan cancelled")
+
+    mid_scan_utc = scan_start_utc + (scan_end_utc - scan_start_utc) / 2
+    mid_sun_alt, mid_sun_az = get_sun_altaz(lat, lon, elevation, when=mid_scan_utc)
+    mid_cos_alt = math.cos(math.radians(mid_sun_alt))
+    if mid_cos_alt < 0.01:
+        raise ValueError("Sun is too close to zenith for azimuth error conversion")
+
     # --- Fit Gaussian ---
     alt_off_arr = np.array(alt_off_flat)
     az_off_arr = np.array(az_off_flat)
@@ -570,9 +632,17 @@ def sun_scan(
 
     fit = fit_pointing_error(alt_off_arr[valid], az_off_arr[valid],
                              power_arr[valid], beam_fwhm_hint=beam_fwhm_deg)
+    az_error_sky = fit.get("az_error_sky_deg", fit["az_error_deg"])
+    fit["az_error_sky_deg"] = float(az_error_sky)
+    fit["az_error_deg"] = float(az_error_sky / mid_cos_alt)
+    if fit.get("fit_errors"):
+        az_err_sky = fit["fit_errors"].get("az_err")
+        if az_err_sky is not None:
+            fit["fit_errors"]["az_err_sky"] = float(az_err_sky)
+            fit["fit_errors"]["az_err"] = float(az_err_sky / mid_cos_alt)
 
-    log.info("Fit result: dAlt=%+.3f°  dAz=%+.3f°  FWHM=%.2f°  (success=%s)",
-             fit["alt_error_deg"], fit["az_error_deg"],
+    log.info("Fit result: dAlt=%+.3f°  dAz=%+.3f° mount (%+.3f° sky)  FWHM=%.2f°  (success=%s)",
+             fit["alt_error_deg"], fit["az_error_deg"], fit["az_error_sky_deg"],
              fit["beam_fwhm_deg"], fit["success"])
 
     # --- Generate image ---
@@ -580,18 +650,21 @@ def sun_scan(
     if output_image and MATPLOTLIB_AVAILABLE:
         image_path = generate_image(ALT_OFF, AZ_OFF, power_grid, fit,
                                     output_path=output_image,
-                                    sun_alt=sun_alt, sun_az=sun_az)
+                                    sun_alt=mid_sun_alt, sun_az=mid_sun_az)
 
     return {
         "alt_error_deg": fit["alt_error_deg"],
         "az_error_deg": fit["az_error_deg"],
-        "sun_alt_deg": sun_alt,
-        "sun_az_deg": sun_az,
+        "az_error_sky_deg": fit["az_error_sky_deg"],
+        "sun_alt_deg": mid_sun_alt,
+        "sun_az_deg": mid_sun_az,
         "beam_fwhm_deg": fit["beam_fwhm_deg"],
         "power_grid": power_grid,
         "fit": fit,
         "image_path": image_path,
-        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "timestamp": mid_scan_utc.isoformat(),
+        "scan_start_timestamp": scan_start_utc.isoformat(),
+        "scan_end_timestamp": scan_end_utc.isoformat(),
         "grid_spacing_deg": grid_spacing_deg,
         "n": n,
         "integration_time_s": integration_time_s,
@@ -630,6 +703,12 @@ def save_scan_to_pointing_data(scan_result: dict):
         "beam_fwhm_deg": scan_result["beam_fwhm_deg"],
         "fit_success": scan_result["fit"]["success"],
     }
+    if "az_error_sky_deg" in scan_result:
+        entry["az_error_sky_deg"] = scan_result["az_error_sky_deg"]
+    if "scan_start_timestamp" in scan_result:
+        entry["scan_start_timestamp"] = scan_result["scan_start_timestamp"]
+    if "scan_end_timestamp" in scan_result:
+        entry["scan_end_timestamp"] = scan_result["scan_end_timestamp"]
     data = load_pointing_data()
     data.append(entry)
     with open(_POINTING_DATA_FILE, "w") as f:

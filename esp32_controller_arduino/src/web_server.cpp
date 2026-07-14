@@ -16,6 +16,7 @@ extern String ethIP;
 #include "coordinates.h"
 #include "index_html.h"
 #include <time.h>
+#include <WiFi.h>
 #include <ESPAsyncWebServer.h>
 
 AsyncWebServer webServer(WEB_PORT);
@@ -44,9 +45,28 @@ static void prepareTrackingTarget() {
 }
 
 void setupWebServer() {
+    // Tiny diagnostics first: these are useful when the full UI cannot load.
+    webServer.on("/ping", HTTP_GET, [](AsyncWebServerRequest *request) {
+        request->send(200, "text/plain", "ok");
+    });
+
+    webServer.on("/network", HTTP_GET, [](AsyncWebServerRequest *request) {
+        String json = "{";
+        json += "\"heap\":" + String(ESP.getFreeHeap()) + ",";
+        json += "\"ap_ip\":\"" + WiFi.softAPIP().toString() + "\",";
+        json += "\"sta_connected\":" + String(WiFi.status() == WL_CONNECTED ? "true" : "false") + ",";
+        json += "\"sta_ip\":\"" + WiFi.localIP().toString() + "\"";
+        #if ETHERNET_ENABLED
+        json += ",\"eth_connected\":" + String(ethConnected ? "true" : "false");
+        json += ",\"eth_ip\":\"" + ethIP + "\"";
+        #endif
+        json += "}";
+        request->send(200, "application/json", json);
+    });
+
     // Serve main page
     webServer.on("/", HTTP_GET, [](AsyncWebServerRequest *request) {
-        AsyncWebServerResponse *response = request->beginResponse(200, "text/html", INDEX_HTML);
+        AsyncWebServerResponse *response = request->beginResponse_P(200, "text/html", INDEX_HTML);
         response->addHeader("Cache-Control", "no-cache");
         request->send(response);
     });

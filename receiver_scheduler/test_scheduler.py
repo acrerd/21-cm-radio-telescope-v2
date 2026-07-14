@@ -266,9 +266,10 @@ class TestConfig:
         """When no config file exists, defaults are returned."""
         with patch.object(sched, 'CONFIG_FILE', str(tmp_path / "nonexistent.json")):
             cfg = sched.load_config()
-            assert cfg["srt_controller_url"] == "http://192.168.0.149"
+            assert cfg["srt_controller_url"] == "http://192.168.106.120"
             assert cfg["observer_lat"] == pytest.approx(55.902444)
             assert cfg["sound_enabled"] is True
+            assert cfg["receiver_python_path"] == "/home/astro/radioconda/bin/python"
 
     def test_save_and_load_config(self, tmp_path):
         config_file = str(tmp_path / "test_config.json")
@@ -286,7 +287,7 @@ class TestConfig:
         with patch.object(sched, 'CONFIG_FILE', str(config_file)):
             cfg = sched.load_config()
             # Should return defaults
-            assert cfg["srt_controller_url"] == "http://192.168.0.149"
+            assert cfg["srt_controller_url"] == "http://192.168.106.120"
 
 
 # =============================================================================
@@ -600,6 +601,7 @@ class TestObservationLifecycle:
         sched.current_process = None
         sched.current_observation = None
         sched.observation_end_time = None
+        sched.receiver_boot_process = None
 
     @patch.object(sched, 'SRT_CONTROLLER_URL', None)
     @patch('subprocess.Popen')
@@ -701,6 +703,87 @@ class TestObservationLifecycle:
         # End time should be ~5 minutes from now, not 60
         expected = datetime.now() + timedelta(minutes=5)
         assert abs((sched.observation_end_time - expected).total_seconds()) < 5
+
+    @patch.object(sched, 'SRT_CONTROLLER_URL', None)
+    @patch.object(sched, 'receiver_python_path', return_value='/tmp/radioconda/bin/python')
+    @patch.object(os.path, 'exists', return_value=True)
+    @patch('subprocess.Popen')
+    def test_start_observation_uses_receiver_python(self, mock_popen, mock_exists, mock_receiver_python):
+        mock_proc = MagicMock()
+        mock_proc.poll.return_value = None
+        mock_popen.return_value = mock_proc
+
+        obs = {"name": "ReceiverPy", "coord_system": "altaz",
+               "coord1_deg": 0, "coord1_min": 0, "coord1_sec": 0,
+               "coord2_deg": 0, "coord2_min": 0, "coord2_sec": 0,
+               "center_freq_mhz": 1420.405, "channels": 4096,
+               "integration_time_s": 3.0, "sdr_type": "demo",
+               "gain_db": 40, "bandwidth_mhz": 2.4,
+               "calibrator": False, "duration_minutes": 10}
+
+        with patch.object(sched, 'PYTHON_PATH', 'python'):
+            with patch.object(sched, 'generate_filename', return_value="/tmp/receiver_py.h5"):
+                assert sched.start_observation(obs) is True
+
+        cmd = mock_popen.call_args.args[0]
+        assert cmd[0] == '/tmp/radioconda/bin/python'
+
+    @patch.object(sched, 'SRT_CONTROLLER_URL', None)
+    @patch.object(sched, 'receiver_python_path', return_value='/tmp/radioconda/bin/python')
+    @patch.object(os.path, 'exists', return_value=True)
+    @patch('subprocess.Popen')
+    def test_start_observation_stops_manual_receiver_first(self, mock_popen, mock_exists, mock_receiver_python):
+        manual_proc = MagicMock()
+        manual_proc.poll.return_value = None
+        manual_proc.wait.return_value = 0
+        sched.receiver_boot_process = manual_proc
+
+        obs_proc = MagicMock()
+        obs_proc.poll.return_value = None
+        mock_popen.return_value = obs_proc
+
+        obs = {"name": "TakesOver", "coord_system": "altaz",
+               "coord1_deg": 0, "coord1_min": 0, "coord1_sec": 0,
+               "coord2_deg": 0, "coord2_min": 0, "coord2_sec": 0,
+               "center_freq_mhz": 1420.405, "channels": 4096,
+               "integration_time_s": 3.0, "sdr_type": "demo",
+               "gain_db": 40, "bandwidth_mhz": 2.4,
+               "calibrator": False, "duration_minutes": 10}
+
+        with patch.object(sched, 'generate_filename', return_value="/tmp/takeover.h5"):
+            assert sched.start_observation(obs) is True
+
+        manual_proc.terminate.assert_called_once()
+        assert sched.current_process is obs_proc
+
+    @patch.object(sched, 'receiver_python_path', return_value='/tmp/radioconda/bin/python')
+    @patch.object(os.path, 'exists', return_value=True)
+    @patch('subprocess.Popen')
+    def test_receiver_start_does_not_preempt_scheduled_observation(self, mock_popen, mock_exists, mock_receiver_python):
+        sched.current_observation = {"name": "Scheduled"}
+        sched.current_process = MagicMock()
+        sched.current_process.poll.return_value = None
+        sched.current_process.pid = 1234
+
+        sched.app.config['TESTING'] = True
+        with sched.app.test_client() as client:
+            resp = client.post('/api/receiver/start')
+
+        data = resp.get_json()
+        assert data["running"] is True
+        assert data["source"] == "observation"
+        assert data["pid"] == 1234
+        mock_popen.assert_not_called()
+
+    @patch.object(sched, 'receiver_python_path', return_value='/tmp/radioconda/bin/python')
+    @patch.object(sched, '_same_executable', return_value=False)
+    @patch.object(os.path, 'exists', return_value=True)
+    @patch.object(os, 'execvpe')
+    def test_scheduler_reexecs_under_receiver_python(self, mock_execvpe, mock_exists, mock_same, mock_receiver_python):
+        with patch.dict(os.environ, {}, clear=True):
+            sched.maybe_reexec_scheduler_under_receiver_python()
+
+        assert mock_execvpe.call_args.args[0] == '/tmp/radioconda/bin/python'
 
 
 if __name__ == '__main__':

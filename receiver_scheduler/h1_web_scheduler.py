@@ -4,7 +4,8 @@ Web-based scheduler interface for H1 Receiver.
 Provides an interactive HTML/JavaScript UI for managing observation schedules.
 
 Run with: python h1_web_scheduler.py
-Then open: http://localhost:5000
+Then open: http://localhost:5000 on the scheduler host.
+The SRT controller web UI is normally at http://192.168.106.120/.
 """
 
 import json
@@ -65,7 +66,7 @@ RECEIVER_SCRIPT = os.path.join(_SCRIPT_DIR, "b210_h1_receiver.py")
 _DEFAULT_CONFIG = {
     "banner_name": "H1 Receiver Scheduler",
     "banner_subtitle": "Hydrogen Line (21cm) Observation Manager",
-    "srt_controller_url": "http://192.168.0.149",
+    "srt_controller_url": "http://192.168.106.120",
     "srt_controller_fallback_urls": [
         "http://srt-controller.local",
         "http://192.168.4.1",
@@ -118,6 +119,7 @@ SRT_POSITION_TOLERANCE = _config["position_tolerance"]
 PYTHON_PATH = _config["python_path"] or None
 ESP32_FIRMWARE_DIR = os.path.abspath(os.path.join(_SCRIPT_DIR, "..", "esp32_controller_arduino"))
 FIRMWARE_UPDATE_ENV = _config.get("firmware_update_env", "wt32-eth01-ota")
+RADIOCONDA_REEXEC_ENV = "H1_SCHEDULER_RADIOCONDA_REEXEC"
 
 firmware_update_lock = threading.Lock()
 firmware_update_state = {
@@ -655,10 +657,22 @@ def stop_booted_receiver():
 
 
 def receiver_python_path() -> str:
-    """Return the Python executable used by the receiver boot button."""
+    """Return the Python executable used by receiver processes."""
     cfg_path = (load_config().get("receiver_python_path") or "").strip()
     if cfg_path:
-        return cfg_path
+        if os.path.isabs(cfg_path) or os.sep in cfg_path:
+            resolved = cfg_path
+        else:
+            radioconda_bin = "/home/astro/radioconda/bin"
+            resolved = shutil.which(
+                cfg_path,
+                path=radioconda_bin + os.pathsep + os.environ.get("PATH", ""),
+            ) or cfg_path
+        default_receiver = _DEFAULT_CONFIG["receiver_python_path"]
+        if resolved != default_receiver or os.path.exists(resolved):
+            return resolved
+        # The baked-in radioconda default is preferred, but only when present.
+        # On other machines, fall through to legacy/current Python.
     radioconda_python = "/home/astro/radioconda/bin/python"
     if os.path.exists(radioconda_python):
         return radioconda_python
@@ -676,6 +690,74 @@ def receiver_process_env(base_env: Optional[dict] = None, python_path: Optional[
         env["CONDA_PREFIX"] = conda_prefix
         env["PATH"] = os.path.dirname(python_path) + os.pathsep + env.get("PATH", "")
     return env
+
+
+def _same_executable(left: str, right: str) -> bool:
+    """Compare two executable paths without requiring both to exist."""
+    try:
+        return os.path.samefile(left, right)
+    except OSError:
+        return os.path.abspath(left) == os.path.abspath(right)
+
+
+def maybe_reexec_scheduler_under_receiver_python() -> bool:
+    """Restart the scheduler under radioconda so Sun scans and SDR code import cleanly."""
+    target = receiver_python_path()
+    if os.environ.get(RADIOCONDA_REEXEC_ENV) == "1":
+        return False
+    if not target or not os.path.exists(target):
+        log.warning("Receiver Python not found, staying on current interpreter: %s", target)
+        return False
+    if _same_executable(sys.executable, target):
+        return False
+
+    env = receiver_process_env(python_path=target)
+    env[RADIOCONDA_REEXEC_ENV] = "1"
+    script = os.path.abspath(__file__)
+    print(f"Restarting scheduler under receiver Python: {target}", flush=True)
+    os.execvpe(target, [target, script, *sys.argv[1:]], env)
+    return True
+
+
+def _proc_running(proc: Optional[subprocess.Popen]) -> bool:
+    return proc is not None and proc.poll() is None
+
+
+def receiver_status_snapshot() -> dict:
+    """Return the active receiver process, whether manual or observation-owned."""
+    with process_lock:
+        obs_proc = current_process
+        obs_running = _proc_running(obs_proc)
+        obs_name = current_observation.get("name") if current_observation else None
+
+    if obs_running:
+        return {
+            "success": True,
+            "running": True,
+            "source": "observation",
+            "pid": obs_proc.pid,
+            "returncode": None,
+            "observation": obs_name,
+            "python": receiver_python_path(),
+            "scheduler_python": sys.executable,
+        }
+
+    with receiver_boot_lock:
+        boot_proc = receiver_boot_process
+        boot_running = _proc_running(boot_proc)
+        boot_returncode = None if boot_proc is None else boot_proc.poll()
+        boot_pid = boot_proc.pid if boot_running else None
+
+    return {
+        "success": True,
+        "running": boot_running,
+        "source": "manual" if boot_running else "idle",
+        "pid": boot_pid,
+        "returncode": boot_returncode,
+        "observation": None,
+        "python": receiver_python_path(),
+        "scheduler_python": sys.executable,
+    }
 
 
 # Current running observation
@@ -807,6 +889,10 @@ def start_observation(obs: dict, duration_override: int = None) -> bool:
         if current_process is not None and current_process.poll() is None:
             return False
 
+        # A manually booted receiver is useful for warm-up/testing, but scheduled
+        # observations need exclusive access to the SDR.
+        stop_booted_receiver()
+
         # Point telescope at target and wait for slew before recording
         if SRT_CONTROLLER_URL:
             if not srt_point_telescope(obs):
@@ -851,7 +937,10 @@ def start_observation(obs: dict, duration_override: int = None) -> bool:
             'tle_text': obs.get('tle_text', ''),
         })
 
-        python_exe = PYTHON_PATH or receiver_python_path()
+        python_exe = receiver_python_path()
+        if not os.path.exists(python_exe):
+            log.error("Receiver Python not found: %s", python_exe)
+            return False
         env = receiver_process_env(env, python_exe)
         cmd = [
             python_exe,
@@ -862,7 +951,7 @@ def start_observation(obs: dict, duration_override: int = None) -> bool:
         ]
 
         try:
-            current_process = subprocess.Popen(cmd, env=env)
+            current_process = subprocess.Popen(cmd, env=env, cwd=os.path.abspath(os.path.join(_SCRIPT_DIR, "..")))
             now = datetime.now()
             duration = duration_override or obs.get('duration_minutes', 30)
             observation_end_time = now + timedelta(minutes=duration)
@@ -1328,7 +1417,7 @@ HTML_TEMPLATE = '''
                 <div class="section-title">SRT Telescope Controller</div>
                 <div class="form-group">
                     <label>Controller URL (leave empty to disable)</label>
-                    <input type="text" id="cfgControllerUrl" placeholder="http://192.168.0.149">
+                    <input type="text" id="cfgControllerUrl" placeholder="http://192.168.106.120">
                 </div>
                 <div class="form-grid">
                     <div class="form-group">
@@ -1363,8 +1452,8 @@ HTML_TEMPLATE = '''
 
                 <div class="section-title">Receiver</div>
                 <div class="form-group">
-                    <label>Python Executable (leave empty for default)</label>
-                    <input type="text" id="cfgPythonPath" placeholder="e.g., C:\\Users\\graha\\radioconda\\python.exe">
+                    <label>Receiver Python Executable</label>
+                    <input type="text" id="cfgReceiverPythonPath" placeholder="/home/astro/radioconda/bin/python">
                 </div>
 
                 <div class="section-title">Data Output</div>
@@ -2128,9 +2217,13 @@ HTML_TEMPLATE = '''
             if (data.running) {
                 dot.classList.add('running');
                 dot.style.background = '';
-                text.textContent = `Receiver: Running${data.pid ? ' #' + data.pid : ''}`;
+                const label = data.source === 'observation' ? 'Observation' : 'Booted';
+                const obs = data.observation ? ` (${data.observation})` : '';
+                text.textContent = `Receiver: ${label}${obs}${data.pid ? ' #' + data.pid : ''}`;
                 btn.disabled = true;
-                btn.title = 'The B210 receiver process is already running.';
+                btn.title = data.source === 'observation'
+                    ? 'A scheduled observation is using the B210 receiver.'
+                    : 'The B210 receiver process is already running.';
             } else {
                 dot.classList.remove('running');
                 dot.style.background = data.returncode === null ? '#666' : '#ff9500';
@@ -2550,7 +2643,7 @@ HTML_TEMPLATE = '''
                 document.getElementById('cfgObsLon').value = cfg.observer_lon ?? -4.3;
                 document.getElementById('cfgObsElev').value = cfg.observer_elevation ?? 50;
                 document.getElementById('cfgMinElev').value = cfg.min_elevation ?? 10;
-                document.getElementById('cfgPythonPath').value = cfg.python_path || '';
+                document.getElementById('cfgReceiverPythonPath').value = cfg.receiver_python_path || cfg.python_path || '';
                 document.getElementById('cfgDataFolder').value = cfg.data_output_folder || '';
                 document.getElementById('cfgLogLines').value = cfg.log_lines || 100;
                 document.getElementById('cfgSoundEnabled').value = cfg.sound_enabled !== false ? 'true' : 'false';
@@ -2569,7 +2662,7 @@ HTML_TEMPLATE = '''
                 observer_lon: parseFloat(document.getElementById('cfgObsLon').value) || 0,
                 observer_elevation: parseFloat(document.getElementById('cfgObsElev').value) || 0,
                 min_elevation: parseFloat(document.getElementById('cfgMinElev').value) || 10,
-                python_path: document.getElementById('cfgPythonPath').value,
+                receiver_python_path: document.getElementById('cfgReceiverPythonPath').value,
                 data_output_folder: document.getElementById('cfgDataFolder').value,
                 log_lines: parseInt(document.getElementById('cfgLogLines').value) || 100,
                 sound_enabled: document.getElementById('cfgSoundEnabled').value === 'true',
@@ -2800,19 +2893,8 @@ def get_status():
 
 @app.route('/api/receiver/status', methods=['GET'])
 def api_receiver_status():
-    """Report whether the manually booted receiver process is still running."""
-    with receiver_boot_lock:
-        proc = receiver_boot_process
-        running = proc is not None and proc.poll() is None
-        returncode = None if proc is None else proc.poll()
-        pid = proc.pid if running else None
-    return jsonify({
-        'success': True,
-        'running': running,
-        'pid': pid,
-        'returncode': returncode,
-        'python': receiver_python_path(),
-    })
+    """Report whether a manual or scheduled receiver process is running."""
+    return jsonify(receiver_status_snapshot())
 
 
 @app.route('/api/receiver/start', methods=['POST'])
@@ -2829,11 +2911,17 @@ def api_receiver_start():
         return jsonify({'success': False, 'running': False,
                         'error': f'Python not found: {python_path}'}), 400
 
+    status = receiver_status_snapshot()
+    if status["running"] and status["source"] == "observation":
+        return jsonify(status)
+
     with receiver_boot_lock:
         if receiver_boot_process is not None and receiver_boot_process.poll() is None:
             return jsonify({'success': True, 'running': True,
+                            'source': 'manual',
                             'pid': receiver_boot_process.pid,
                             'returncode': None,
+                            'observation': None,
                             'python': python_path})
 
         env = receiver_process_env(python_path=python_path)
@@ -2848,8 +2936,10 @@ def api_receiver_start():
 
         log.info("Receiver boot started: %s", " ".join(cmd))
         return jsonify({'success': True, 'running': True,
+                        'source': 'manual',
                         'pid': receiver_boot_process.pid,
                         'returncode': None,
+                        'observation': None,
                         'python': python_path})
 
 
@@ -3224,6 +3314,8 @@ def main():
     parser.add_argument('--port', type=int, default=5000, help='Port to run on')
     parser.add_argument('--host', default='127.0.0.1', help='Host to bind to')
     args = parser.parse_args()
+
+    maybe_reexec_scheduler_under_receiver_python()
 
     # Check if gnuradio is available
     try:
