@@ -205,6 +205,45 @@ def _measure_power_uhd(center_freq: float, sample_rate: float,
     return float(np.mean(np.abs(samples[0]) ** 2))
 
 
+class _B210PowerMeter:
+    """Keep one explicitly configured B210 session for a complete raster."""
+
+    def __init__(self, center_freq: float, sample_rate: float, gain: float):
+        import uhd
+
+        self.center_freq = center_freq
+        self.sample_rate = sample_rate
+        self.gain = gain
+        self.usrp = uhd.usrp.MultiUSRP()
+        self.usrp.set_rx_antenna("RX2", 0)
+        stream_args = uhd.usrp.StreamArgs("fc32", "sc16")
+        stream_args.channels = [0]
+        self.streamer = self.usrp.get_rx_stream(stream_args)
+
+        # Tune and discard a short capture so LO/gain transients are not used as
+        # the first grid measurement.
+        warmup_samples = max(1, int(sample_rate * 0.25))
+        self.usrp.recv_num_samps(
+            warmup_samples, center_freq, sample_rate, [0], gain,
+            streamer=self.streamer)
+        log.info("B210 ready on RX2: %.6f MHz, %.3f Msps, %.1f dB",
+                 center_freq / 1e6, sample_rate / 1e6, gain)
+
+    def measure(self, integration_time: float) -> float:
+        num_samps = int(self.sample_rate * integration_time)
+        samples = self.usrp.recv_num_samps(
+            num_samps, self.center_freq, self.sample_rate, [0], self.gain,
+            streamer=self.streamer)
+        return float(np.mean(np.abs(samples[0]) ** 2))
+
+    def close(self):
+        self.streamer = None
+        self.usrp = None
+
+    def __del__(self):
+        self.close()
+
+
 def _measure_power_rtlsdr(center_freq: float, sample_rate: float,
                           gain: float, integration_time: float) -> float:
     """Measure total broadband power using RTL-SDR."""
@@ -618,6 +657,10 @@ def sun_scan(
     az_off_flat = []
     power_flat = []
 
+    b210_meter = None
+    if sdr_type == "b210":
+        b210_meter = _B210PowerMeter(center_freq, sample_rate, gain)
+
     log.info("Starting %dx%d sun scan (spacing=%.1f°, integration=%.1fs)",
              n, n, grid_spacing_deg, integration_time_s)
 
@@ -718,8 +761,11 @@ def sun_scan(
                 "peak_power": 10.0, "background": 1.0, "noise_rms": 0.15,
             }
 
-        pwr = measure_power(sdr_type, center_freq, sample_rate, gain,
-                            integration_time_s, _sim_state=sim_state)
+        if b210_meter is not None:
+            pwr = b210_meter.measure(integration_time_s)
+        else:
+            pwr = measure_power(sdr_type, center_freq, sample_rate, gain,
+                                integration_time_s, _sim_state=sim_state)
         power_grid[row, col] = pwr
         alt_off_flat.append(dalt)
         az_off_flat.append(daz_sky)
@@ -729,6 +775,8 @@ def sun_scan(
         if progress_callback:
             progress_callback(idx, total_points, point_info)
 
+    if b210_meter is not None:
+        b210_meter.close()
     scan_end_utc = datetime.now(timezone.utc)
     if cancelled:
         raise RuntimeError("Sun scan cancelled")

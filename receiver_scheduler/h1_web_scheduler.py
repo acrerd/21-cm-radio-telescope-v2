@@ -72,6 +72,8 @@ _DEFAULT_CONFIG = {
         "http://192.168.4.1",
     ],
     "slew_timeout": 300,
+    "homing_timeout": 300,
+    "calibration_home_before_scan": True,
     "position_tolerance": 0.5,
     "python_path": "",
     "data_output_folder": os.path.join(_SCRIPT_DIR, "data"),
@@ -385,13 +387,56 @@ def srt_go_position(name: str, alt: float, az: float) -> bool:
     """Send telescope to a named position."""
     if not SRT_CONTROLLER_URL:
         return True
-    result = srt_api_call("/direct", {"alt": alt, "az": az})
+    if name == "home":
+        result = srt_api_call("/home")
+    else:
+        result = srt_api_call("/direct", {"alt": alt, "az": az})
     if result and result.get('ok'):
-        log.info("Telescope going to %s (Alt=%.1f° Az=%.1f°)", name, alt, az)
+        if name == "home":
+            log.info("Telescope running the physical homing sequence")
+        else:
+            log.info("Telescope going to %s (Alt=%.1f° Az=%.1f°)", name, alt, az)
         return True
     else:
         log.error("Failed to send telescope to %s: %s", name, result)
         return False
+
+
+def srt_home_and_wait(timeout: int = 300,
+                      cancel_event: Optional[threading.Event] = None) -> dict:
+    """Run the Due physical homing sequence and wait for a new Ready state."""
+    result = srt_api_call("/home")
+    if not (result and result.get("ok")):
+        raise RuntimeError(f"SRT controller rejected the homing command: {result}")
+
+    log.info("Calibration: physical homing sequence requested")
+    started = False
+    started_at = time.time()
+    last_status = None
+    while time.time() - started_at < timeout:
+        if cancel_event is not None and cancel_event.is_set():
+            raise RuntimeError("Sun scan cancelled during telescope homing")
+        status = srt_get_status()
+        if status:
+            last_status = status
+            state = str(status.get("status", "")).strip().lower()
+            if status.get("fault_active") or state == "fault":
+                detail = status.get("fault") or status.get("status") or "unknown fault"
+                raise RuntimeError(f"Telescope homing failed: {detail}")
+            if state == "homing":
+                started = True
+            elif started and state == "ready" and not status.get("is_slewing", False):
+                log.info("Calibration: physical homing complete at Alt=%.2f° Az=%.2f°",
+                         float(status.get("alt", 0.0)), float(status.get("az", 0.0)))
+                return status
+        if not started and time.time() - started_at >= 10:
+            raise RuntimeError(
+                "Telescope did not begin the physical homing sequence; "
+                f"last controller status was {last_status}")
+        time.sleep(0.5)
+
+    raise RuntimeError(
+        f"Telescope homing timed out after {timeout}s; last status was {last_status}")
 
 
 def srt_stop_tracking() -> bool:
@@ -977,8 +1022,13 @@ def stop_observation() -> bool:
     # Handle calibration observations (thread-based, not subprocess)
     if current_observation and current_observation.get('coord_system') == 'calibration':
         name = current_observation.get('name', '?')
+        end_action = current_observation.get('end_action', 'none')
         cal_day_cancel.set()
         sun_scan_cancel.set()
+        if SRT_CONTROLLER_URL and end_action == 'home':
+            srt_go_position("home", 0, 0)
+        elif SRT_CONTROLLER_URL and end_action == 'stow':
+            srt_go_position("stow", 90, 180)
         log.info("Stopped calibration: %s", name)
         current_observation = None
         observation_end_time = None
@@ -1039,6 +1089,10 @@ def _start_calibration_observation(obs: dict, duration_override: int = None) -> 
         if current_process is not None and current_process.poll() is None:
             log.warning("Receiver busy — cannot start calibration")
             return False
+
+    # Calibration owns the SDR for the entire run, just like a normal scheduled
+    # observation. Stop a receiver launched manually from the website first.
+    stop_booted_receiver()
 
     duration = duration_override or obs.get('duration_minutes', 480)
     now = datetime.now()
@@ -2564,6 +2618,10 @@ HTML_TEMPLATE = '''
                     info += data.scans_completed + ' scans completed';
                     if (data.phase === 'waiting_for_sunrise') {
                         info += '<br><span style="color:#ffaa00;">Waiting for the Sun to reach 5&deg; altitude</span>';
+                    } else if (data.phase === 'homing') {
+                        info += '<br><span style="color:#ffaa00;">Running physical homing sequence before scan</span>';
+                    } else if (data.phase === 'retrying') {
+                        info += '<br><span style="color:#ffaa00;">Re-homing and automatically retrying rejected scan</span>';
                     } else if (data.scan_running) {
                         info += '<br><span style="color:#ccc;">Scan in progress (' + data.scan_progress + '/' + data.scan_total + ' points)</span>';
                     } else if (data.next_scan_time) {
@@ -2571,7 +2629,11 @@ HTML_TEMPLATE = '''
                         info += '<br><span style="color:#888;">Next scan at ' + next + '</span>';
                     }
                     if (data.last_scan_error) {
-                        info += '<br><span style="color:#ff9500;">Last scan failed (' + data.consecutive_failures + '/3): ' + data.last_scan_error + '</span>';
+                        if (data.consecutive_failures === 0 && (data.phase === 'homing' || data.phase === 'retrying')) {
+                            info += '<br><span style="color:#ff9500;">Previous attempt rejected; automatic retry active: ' + data.last_scan_error + '</span>';
+                        } else {
+                            info += '<br><span style="color:#ff9500;">Last scan failed (' + data.consecutive_failures + '/3): ' + data.last_scan_error + '</span>';
+                        }
                     }
                     document.getElementById('cdStatus').innerHTML = info;
                 } else {
@@ -2827,6 +2889,12 @@ def _run_sun_scan(params: dict):
                 detail = status.get("fault") or status.get("status") or "unknown fault"
                 raise RuntimeError(f"SRT controller reports a telescope fault: {detail}")
             log.info("Sun scan using SRT controller at %s", controller_url)
+            if params.get("home_before_scan"):
+                cal_day_state["phase"] = "homing"
+                srt_home_and_wait(
+                    timeout=int(cfg.get("homing_timeout", 300)),
+                    cancel_event=sun_scan_cancel)
+                cal_day_state["phase"] = "scanning"
 
         result = do_sun_scan(
             n=params.get("n", 5),
@@ -2914,13 +2982,33 @@ def _run_calibration_day(params: dict):
                     return
                 time.sleep(1)
 
-            # Run a scan
-            log.info("Calibration day: starting scan %d",
-                     cal_day_state["scans_completed"] + 1)
-            cal_day_state["phase"] = "scanning"
+            # Run a scan. Hardware scans establish a physical limit reference
+            # first. One rejected attempt is automatically re-homed and retried;
+            # only the final outcome counts toward consecutive failures.
             scan_started_at = datetime.now()
-            sun_scan_cancel.clear()
-            _run_sun_scan(params)
+            max_attempts = 2
+            scan_params = dict(params)
+            scan_params["home_before_scan"] = (
+                params.get("sdr_type", "b210") != "demo"
+                and bool(cfg.get("calibration_home_before_scan", True)))
+            for attempt in range(1, max_attempts + 1):
+                log.info("Calibration day: starting scan %d (attempt %d/%d)",
+                         cal_day_state["scans_completed"] + 1, attempt, max_attempts)
+                cal_day_state["phase"] = "scanning"
+                sun_scan_cancel.clear()
+                _run_sun_scan(scan_params)
+                if cal_day_cancel.is_set():
+                    return
+                if sun_scan_state.get("result") and not sun_scan_state.get("error"):
+                    break
+                error = sun_scan_state.get("error") or "Sun scan produced no result"
+                if attempt < max_attempts and not cal_day_cancel.is_set():
+                    cal_day_state["last_scan_error"] = error
+                    cal_day_state["phase"] = "retrying"
+                    log.warning(
+                        "Calibration day scan attempt rejected; re-homing and retrying: %s",
+                        error)
+                    time.sleep(2)
 
             # Save result to pointing data
             if sun_scan_state.get("result") and not sun_scan_state.get("error"):
@@ -3028,6 +3116,14 @@ def api_receiver_start():
     if not os.path.exists(python_path):
         return jsonify({'success': False, 'running': False,
                         'error': f'Python not found: {python_path}'}), 400
+
+    if sun_scan_state["running"] or cal_day_state["running"]:
+        return jsonify({
+            'success': False,
+            'running': False,
+            'error': 'The B210 is reserved by Sun Scan calibration',
+            'python': python_path,
+        }), 409
 
     status = receiver_status_snapshot()
     if status["running"] and status["source"] == "observation":

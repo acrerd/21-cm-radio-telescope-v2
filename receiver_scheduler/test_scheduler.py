@@ -124,6 +124,53 @@ class TestControllerUrlResolution:
         assert result == {"alt": 12.5}
 
 
+class TestCalibrationDayRetry:
+    def test_rejected_scan_is_rehomed_and_retried_before_counting_failure(self):
+        original_scan_state = dict(sched.sun_scan_state)
+        original_cal_state = dict(sched.cal_day_state)
+        calls = []
+
+        def fake_run_scan(params):
+            calls.append(dict(params))
+            if len(calls) == 1:
+                sched.sun_scan_state.update(
+                    running=False,
+                    result={"fit": {"success": False}},
+                    error="Sun scan fit rejected: no beam",
+                )
+            else:
+                sched.sun_scan_state.update(
+                    running=False,
+                    result={"fit": {"success": True}},
+                    error=None,
+                )
+
+        def fake_save(_result):
+            sched.cal_day_cancel.set()
+
+        try:
+            with patch('sun_scan.get_sun_altaz', return_value=(35.0, 150.0)), \
+                 patch('sun_scan.save_scan_to_pointing_data', side_effect=fake_save) as save, \
+                 patch.object(sched, '_run_sun_scan', side_effect=fake_run_scan), \
+                 patch.object(sched.time, 'sleep'):
+                sched._run_calibration_day({
+                    "sdr_type": "b210",
+                    "interval_minutes": 30,
+                })
+
+            assert len(calls) == 2
+            assert all(call["home_before_scan"] is True for call in calls)
+            save.assert_called_once()
+            assert sched.cal_day_state["scans_completed"] == 1
+            assert sched.cal_day_state["consecutive_failures"] == 0
+        finally:
+            sched.sun_scan_state.clear()
+            sched.sun_scan_state.update(original_scan_state)
+            sched.cal_day_state.clear()
+            sched.cal_day_state.update(original_cal_state)
+            sched.cal_day_cancel.clear()
+
+
 # =============================================================================
 # parse_tle
 # =============================================================================
@@ -637,13 +684,35 @@ class TestSrtGoPosition:
     @patch.object(sched, 'srt_api_call', return_value={"ok": True})
     def test_go_home(self, mock_api):
         assert sched.srt_go_position("home", 0, 0) is True
-        mock_api.assert_called_once_with("/direct", {"alt": 0, "az": 0})
+        mock_api.assert_called_once_with("/home")
 
     @patch.object(sched, 'SRT_CONTROLLER_URL', "http://fake")
     @patch.object(sched, 'srt_api_call', return_value={"ok": True})
     def test_go_stow(self, mock_api):
         assert sched.srt_go_position("stow", 90, 180) is True
         mock_api.assert_called_once_with("/direct", {"alt": 90, "az": 180})
+
+    @patch.object(sched, 'srt_api_call', return_value={"ok": True})
+    @patch.object(sched, 'srt_get_status', side_effect=[
+        {"status": "Homing", "fault_active": False},
+        {"status": "Ready", "fault_active": False, "is_slewing": False,
+         "alt": 0.0, "az": 0.0},
+    ])
+    @patch.object(sched.time, 'sleep')
+    def test_physical_home_waits_for_ready(self, _sleep, status, api):
+        result = sched.srt_home_and_wait(timeout=10)
+
+        assert result["status"] == "Ready"
+        api.assert_called_once_with("/home")
+        assert status.call_count == 2
+
+    @patch.object(sched, 'srt_api_call', return_value={"ok": True})
+    @patch.object(sched, 'srt_get_status', return_value={
+        "status": "FAULT", "fault_active": True, "fault": "Altitude motor stalled",
+    })
+    def test_physical_home_reports_fault(self, _status, _api):
+        with pytest.raises(RuntimeError, match="Altitude motor stalled"):
+            sched.srt_home_and_wait(timeout=10)
 
 
 # =============================================================================

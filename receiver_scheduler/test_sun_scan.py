@@ -5,7 +5,7 @@ import math
 import os
 import sys
 import threading
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 import numpy as np
@@ -137,6 +137,7 @@ def test_hardware_scan_stops_on_first_failed_slew():
     with patch.object(sun_scan, "get_sun_altaz", return_value=(30.0, 100.0)), \
          patch.object(sun_scan, "_slew_to",
                       side_effect=RuntimeError("controller rejected movement")) as slew, \
+         patch.object(sun_scan, "_B210PowerMeter"), \
          patch.object(sun_scan, "measure_power") as measure:
         with pytest.raises(RuntimeError, match="controller rejected movement"):
             sun_scan.sun_scan(
@@ -151,6 +152,40 @@ def test_hardware_scan_stops_on_first_failed_slew():
     assert slew.call_count == 1
     measure.assert_not_called()
     assert progress == []
+
+
+def test_hardware_scan_reuses_one_b210_session_for_all_points():
+    meter = MagicMock()
+    meter.measure.side_effect = [float(i) for i in range(1, 10)]
+    fit_result = {
+        "alt_error_deg": 0.0,
+        "az_error_deg": 0.0,
+        "az_error_sky_deg": 0.0,
+        "amplitude": 8.0,
+        "sigma_deg": 1.0,
+        "offset": 1.0,
+        "beam_fwhm_deg": 2.355,
+        "fit_errors": {"alt_err": 0.1, "az_err": 0.1, "sigma_err": 0.1},
+        "success": True,
+    }
+
+    with patch.object(sun_scan, "get_sun_altaz", return_value=(30.0, 100.0)), \
+         patch.object(sun_scan, "_slew_to", return_value=True), \
+         patch.object(sun_scan, "_B210PowerMeter", return_value=meter) as factory, \
+         patch.object(sun_scan, "fit_pointing_error", return_value=fit_result), \
+         patch.object(sun_scan.time, "sleep"):
+        result = sun_scan.sun_scan(
+            n=3,
+            integration_time_s=0.1,
+            sdr_type="b210",
+            srt_url="http://controller",
+            output_image=None,
+        )
+
+    factory.assert_called_once_with(1420.405e6, 2.4e6, 40.0)
+    assert meter.measure.call_count == 9
+    meter.close.assert_called_once()
+    assert result["fit"]["success"] is True
 
 
 def test_fit_pointing_error_recovers_clean_gaussian():
