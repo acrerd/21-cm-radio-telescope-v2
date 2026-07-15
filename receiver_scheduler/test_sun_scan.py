@@ -8,6 +8,7 @@ import threading
 from unittest.mock import patch
 
 import pytest
+import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -99,3 +100,88 @@ def test_cancelled_sun_scan_does_not_fit_partial_data():
             )
 
     fit.assert_not_called()
+
+
+def test_fit_pointing_error_recovers_clean_gaussian():
+    if sun_scan.curve_fit is None:
+        pytest.skip("scipy is not installed")
+
+    offsets = np.linspace(-3.0, 3.0, 5)
+    az_grid, alt_grid = np.meshgrid(offsets, offsets)
+    power = sun_scan._gaussian_2d(
+        (alt_grid.ravel(), az_grid.ravel()),
+        10.0, 0.45, -0.35, 1.25, 1.0)
+
+    fit = sun_scan.fit_pointing_error(
+        alt_grid.ravel(), az_grid.ravel(), power, beam_fwhm_hint=3.0)
+
+    assert fit["success"] is True
+    assert fit["alt_error_deg"] == pytest.approx(0.45, abs=1e-3)
+    assert fit["az_error_deg"] == pytest.approx(-0.35, abs=1e-3)
+    assert fit["r_squared"] == pytest.approx(1.0)
+
+
+def test_fit_pointing_error_rejects_flat_power():
+    offsets = np.linspace(-1.0, 1.0, 3)
+    az_grid, alt_grid = np.meshgrid(offsets, offsets)
+
+    with pytest.raises(ValueError, match="no usable variation"):
+        sun_scan.fit_pointing_error(
+            alt_grid.ravel(), az_grid.ravel(), np.ones(9))
+
+
+def test_sun_scan_rejects_grid_clipped_by_mount_limits():
+    with patch.object(sun_scan, "get_sun_altaz", return_value=(30.0, 352.0)):
+        with pytest.raises(RuntimeError, match="safe mount range"):
+            sun_scan.sun_scan(
+                n=3,
+                grid_spacing_deg=10.0,
+                integration_time_s=0.0,
+                sdr_type="demo",
+                output_image=None,
+            )
+
+
+def _synthetic_pointing_data(azimuths):
+    altitudes = np.array([25.0, 35.0, 45.0, 55.0, 50.0, 30.0])[:len(azimuths)]
+    azimuths = np.asarray(azimuths, dtype=float)
+    expected = np.array([0.35, -0.20, 0.12, -0.08])
+    matrix = sun_scan._pointing_model_matrix(altitudes, azimuths)
+    errors = matrix @ expected
+    n = len(azimuths)
+    data = []
+    for i in range(n):
+        data.append({
+            "sun_alt_deg": altitudes[i],
+            "sun_az_deg": azimuths[i],
+            "alt_error_deg": errors[i],
+            "az_error_deg": errors[n + i],
+            "alt_error_uncertainty_deg": 0.05,
+            "az_error_uncertainty_deg": 0.05,
+            "fit_success": True,
+        })
+    return data, expected
+
+
+def test_pointing_model_recovers_weighted_four_parameter_solution():
+    data, expected = _synthetic_pointing_data([80, 105, 135, 165, 195, 225])
+
+    model = sun_scan.fit_pointing_model(data, true_lat=55.9, true_lon=-4.3)
+
+    assert model["success"] is True
+    assert model["az_coverage_deg"] >= 30.0
+    actual = [model["alt_offset_deg"], model["az_offset_deg"],
+              model["tilt_north_deg"], model["tilt_east_deg"]]
+    assert actual == pytest.approx(expected, abs=1e-9)
+    assert model["effective_lat"] == pytest.approx(55.9 + expected[2])
+    assert model["effective_lon"] == pytest.approx(
+        -4.3 + expected[3] / math.cos(math.radians(55.9)))
+
+
+def test_pointing_model_rejects_narrow_sun_coverage():
+    data, _ = _synthetic_pointing_data([100, 105, 110, 115])
+
+    model = sun_scan.fit_pointing_model(data)
+
+    assert model["success"] is False
+    assert "coverage" in model["error"]

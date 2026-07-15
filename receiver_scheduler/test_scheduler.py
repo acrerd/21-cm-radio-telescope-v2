@@ -69,6 +69,31 @@ class TestDmsToDecimal:
 
 
 # =============================================================================
+# Calibration request validation
+# =============================================================================
+
+class TestSunScanParameterValidation:
+    def test_valid_calibration_parameters_are_normalised(self):
+        params = sched._validate_sun_scan_params({
+            "n": "5",
+            "sdr_type": "DEMO",
+            "interval_minutes": "30",
+        }, include_interval=True)
+
+        assert params["n"] == 5
+        assert params["sdr_type"] == "demo"
+        assert params["interval_minutes"] == 30
+
+    def test_even_grid_is_rejected(self):
+        with pytest.raises(ValueError, match="must be odd"):
+            sched._validate_sun_scan_params({"n": 4})
+
+    def test_non_finite_number_is_rejected(self):
+        with pytest.raises(ValueError, match="grid_spacing_deg"):
+            sched._validate_sun_scan_params({"grid_spacing_deg": float("nan")})
+
+
+# =============================================================================
 # parse_tle
 # =============================================================================
 
@@ -417,6 +442,48 @@ class TestFlaskAPI:
         resp = client.post('/api/stop')
         data = resp.get_json()
         assert data["success"] is False
+
+    @patch.object(sched, 'SRT_CONTROLLER_URL', "http://fake")
+    def test_apply_calibration_updates_location_and_offsets(self, client):
+        model = {
+            "success": True,
+            "n_scans": 6,
+            "az_coverage_deg": 140.0,
+            "condition_number": 8.0,
+            "effective_lat": 55.91,
+            "effective_lon": -4.29,
+            "alt_offset_deg": 0.35,
+            "az_offset_deg": -0.20,
+        }
+        with patch('sun_scan.load_pointing_model', return_value=model), \
+             patch.object(sched, 'srt_api_call', return_value={"ok": True}) as api, \
+             patch.object(sched, 'save_config') as save:
+            resp = client.post('/api/calday/apply')
+
+        assert resp.status_code == 200
+        assert resp.get_json()["success"] is True
+        assert [call.args[0] for call in api.call_args_list] == ["/settings/save", "/offset"]
+        assert api.call_args_list[1].args[1] == {
+            "alt": "0.350000", "az": "-0.200000"}
+        save.assert_called_once()
+
+    @patch.object(sched, 'SRT_CONTROLLER_URL', "http://fake")
+    def test_apply_rejects_legacy_unchecked_model(self, client):
+        model = {
+            "success": True,
+            "n_scans": 3,
+            "effective_lat": 55.91,
+            "effective_lon": -4.29,
+            "alt_offset_deg": 0.35,
+            "az_offset_deg": -0.20,
+        }
+        with patch('sun_scan.load_pointing_model', return_value=model), \
+             patch.object(sched, 'srt_api_call') as api:
+            resp = client.post('/api/calday/apply')
+
+        assert resp.get_json()["success"] is False
+        assert "quality checks" in resp.get_json()["error"]
+        api.assert_not_called()
 
 
 # =============================================================================

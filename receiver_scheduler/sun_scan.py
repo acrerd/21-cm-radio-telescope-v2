@@ -291,10 +291,36 @@ def fit_pointing_error(alt_offsets: np.ndarray, az_offsets: np.ndarray,
     if curve_fit is None:
         raise ImportError("scipy is required for Gaussian fitting: pip install scipy")
 
+    alt_offsets = np.asarray(alt_offsets, dtype=float).ravel()
+    az_offsets = np.asarray(az_offsets, dtype=float).ravel()
+    power = np.asarray(power, dtype=float).ravel()
+    if not (len(alt_offsets) == len(az_offsets) == len(power)):
+        raise ValueError("Altitude, azimuth, and power arrays must have equal lengths")
+    finite = np.isfinite(alt_offsets) & np.isfinite(az_offsets) & np.isfinite(power)
+    alt_offsets = alt_offsets[finite]
+    az_offsets = az_offsets[finite]
+    power = power[finite]
+    if len(power) < 5:
+        raise ValueError(f"Need at least 5 finite measurements for a fit, have {len(power)}")
+    if np.ptp(power) <= max(abs(float(np.mean(power))) * 1e-9, 1e-12):
+        raise ValueError("Measured power has no usable variation; check the SDR and Sun visibility")
+
+    alt_min, alt_max = float(np.min(alt_offsets)), float(np.max(alt_offsets))
+    az_min, az_max = float(np.min(az_offsets)), float(np.max(az_offsets))
+    alt_span = alt_max - alt_min
+    az_span = az_max - az_min
+    if alt_span <= 0 or az_span <= 0:
+        raise ValueError("Scan must cover more than one altitude and azimuth offset")
+
     sigma_guess = beam_fwhm_hint / (2 * math.sqrt(2 * math.log(2)))
-    p0 = [np.max(power) - np.min(power), 0.0, 0.0, sigma_guess, np.min(power)]
-    bounds_lo = [0, -90, -360, 0.1, -np.inf]
-    bounds_hi = [np.inf, 90, 360, 30, np.inf]
+    peak_idx = int(np.argmax(power))
+    sigma_max = max(beam_fwhm_hint * 4.0, alt_span, az_span)
+    p0 = [np.max(power) - np.min(power), alt_offsets[peak_idx],
+          az_offsets[peak_idx], sigma_guess, np.min(power)]
+    # Constrain the peak to the area actually measured.  An unconstrained fit
+    # can otherwise report a precise-looking correction far outside the grid.
+    bounds_lo = [0, alt_min, az_min, 0.05, -np.inf]
+    bounds_hi = [np.inf, alt_max, az_max, sigma_max, np.inf]
 
     try:
         popt, pcov = curve_fit(_gaussian_2d, (alt_offsets, az_offsets), power,
@@ -302,6 +328,31 @@ def fit_pointing_error(alt_offsets: np.ndarray, az_offsets: np.ndarray,
         amplitude, alt0, az0, sigma, offset = popt
         fwhm = sigma * 2 * math.sqrt(2 * math.log(2))
         perr = np.sqrt(np.diag(pcov))
+        fitted = _gaussian_2d((alt_offsets, az_offsets), *popt)
+        residual_rms = float(np.sqrt(np.mean((power - fitted) ** 2)))
+        ss_res = float(np.sum((power - fitted) ** 2))
+        ss_tot = float(np.sum((power - np.mean(power)) ** 2))
+        r_squared = 1.0 - ss_res / ss_tot if ss_tot > 0 else float("-inf")
+
+        quality_errors = []
+        if not np.all(np.isfinite(popt)):
+            quality_errors.append("fit returned non-finite parameters")
+        if not np.all(np.isfinite(perr)):
+            quality_errors.append("fit uncertainty could not be estimated")
+        if r_squared < 0.50:
+            quality_errors.append(f"poor Gaussian agreement (R squared {r_squared:.2f})")
+        # A peak pinned to an edge means the raster did not enclose the Sun and
+        # the inferred correction is not safe to use in a pointing model.
+        edge_tol = max(min(alt_span, az_span) * 1e-3, 1e-6)
+        if (alt0 <= alt_min + edge_tol or alt0 >= alt_max - edge_tol or
+                az0 <= az_min + edge_tol or az0 >= az_max - edge_tol):
+            quality_errors.append("fitted peak lies on the scan boundary")
+        min_fwhm = max(0.1, beam_fwhm_hint * 0.25)
+        max_fwhm = min(beam_fwhm_hint * 4.0, 2.0 * max(alt_span, az_span))
+        if not min_fwhm <= fwhm <= max_fwhm:
+            quality_errors.append(
+                f"fitted FWHM {fwhm:.2f} deg is outside {min_fwhm:.2f}..{max_fwhm:.2f} deg")
+
         return {
             "alt_error_deg": float(alt0),
             "az_error_deg": float(az0),
@@ -315,7 +366,10 @@ def fit_pointing_error(alt_offsets: np.ndarray, az_offsets: np.ndarray,
                 "az_err": float(perr[2]),
                 "sigma_err": float(perr[3]),
             },
-            "success": True,
+            "residual_rms": residual_rms,
+            "r_squared": float(r_squared),
+            "success": not quality_errors,
+            "error": "; ".join(quality_errors) if quality_errors else None,
         }
     except Exception as exc:
         log.error("Gaussian fit failed: %s", exc)
@@ -330,6 +384,9 @@ def fit_pointing_error(alt_offsets: np.ndarray, az_offsets: np.ndarray,
             "offset": float(np.min(power)),
             "beam_fwhm_deg": float(beam_fwhm_hint),
             "fit_errors": None,
+            "residual_rms": None,
+            "r_squared": None,
+            "error": f"Gaussian fit failed: {exc}",
             "success": False,
         }
 
@@ -481,6 +538,16 @@ def sun_scan(
         image_path     : path to output image (or None)
         timestamp      : ISO-format UTC timestamp
     """
+    if n < 3 or n % 2 == 0:
+        raise ValueError("Grid size must be an odd integer of at least 3")
+    if grid_spacing_deg <= 0:
+        raise ValueError("Grid spacing must be greater than zero")
+    if integration_time_s <= 0 and sdr_type != "demo":
+        raise ValueError("Integration time must be greater than zero")
+    if beam_fwhm_deg <= 0:
+        raise ValueError("Beam FWHM hint must be greater than zero")
+    if sdr_type not in {"b210", "rtlsdr", "demo"}:
+        raise ValueError(f"Unsupported SDR type: {sdr_type}")
     # --- Load defaults from scheduler config ---
     cfg = _load_scheduler_config()
     if srt_url is None:
@@ -491,6 +558,8 @@ def sun_scan(
         lon = cfg["observer_lon"]
     if elevation is None:
         elevation = cfg["observer_elevation"]
+    if sdr_type != "demo" and not srt_url:
+        raise ValueError("SRT controller URL is required for a hardware Sun scan")
 
     # --- Get sun position ---
     sun_alt, sun_az = get_sun_altaz(lat, lon, elevation)
@@ -530,17 +599,43 @@ def sun_scan(
     scan_start_utc = datetime.now(timezone.utc)
     cancelled = False
 
-    def command_for_current_sun(dalt_now: float, daz_sky_now: float):
+    def command_for_current_sun(dalt_now: float, daz_sky_now: float,
+                                allow_clamped: bool = False):
         current_sun_alt, current_sun_az = get_sun_altaz(lat, lon, elevation)
         if current_sun_alt < 0:
             raise RuntimeError(f"Sun set during scan (Alt={current_sun_alt:.1f}°)")
 
         cmd_alt_now, cmd_az_now, cos_alt_now, az_clamped = _sun_offset_to_command(
             current_sun_alt, current_sun_az, dalt_now, daz_sky_now)
-        if az_clamped:
-            log.warning("Azimuth command clamped to %.2f° (Sun Az=%.2f°, sky offset=%+.2f°)",
-                        cmd_az_now, current_sun_az, daz_sky_now)
+        raw_alt = current_sun_alt + dalt_now
+        alt_clamped = not math.isclose(cmd_alt_now, raw_alt, abs_tol=1e-9)
+        if (az_clamped or alt_clamped) and not allow_clamped:
+            raise RuntimeError(
+                "Sun scan grid exceeds the safe mount range at "
+                f"Sun Alt={current_sun_alt:.2f} deg Az={current_sun_az:.2f} deg "
+                f"with offset dAlt={dalt_now:+.2f} deg dAz(sky)={daz_sky_now:+.2f} deg; "
+                "reduce grid size/spacing or wait for the Sun to move")
         return current_sun_alt, current_sun_az, cmd_alt_now, cmd_az_now, cos_alt_now
+
+    def slew_and_refine(dalt_now: float, daz_sky_now: float):
+        """Slew to a moving-Sun offset, correcting ephemeris drift after slews."""
+        last = None
+        for attempt in range(3):
+            last = command_for_current_sun(dalt_now, daz_sky_now)
+            point_alt, point_az, cmd_alt_now, cmd_az_now, _ = last
+            if not _slew_to(srt_url, cmd_alt_now, cmd_az_now, slew_timeout):
+                return False, last
+
+            updated = command_for_current_sun(dalt_now, daz_sky_now)
+            drift_alt = abs(updated[2] - cmd_alt_now)
+            drift_az = abs(updated[3] - cmd_az_now)
+            last = updated
+            if max(drift_alt, drift_az) <= 0.03:
+                return True, last
+            log.info("Sun moved during slew; refining target (dAlt=%.3f deg, dAz=%.3f deg)",
+                     drift_alt, drift_az)
+        log.error("Sun target did not settle after 3 ephemeris refinements")
+        return False, last
 
     # --- Scan loop ---
     for idx, (row, col) in enumerate(scan_order):
@@ -557,7 +652,8 @@ def sun_scan(
         # westward so both axes settle with backlash taken up.
         if sdr_type != "demo" and backlash_deg > 0 and idx in row_starts:
             _, _, overshoot_alt, overshoot_az, _ = (
-                command_for_current_sun(dalt, daz_sky + backlash_deg))
+                command_for_current_sun(dalt, daz_sky + backlash_deg,
+                                        allow_clamped=True))
             log.info("Row %d: backlash overshoot to Az=%.2f° then approaching west",
                      row, overshoot_az)
             if not _slew_to(srt_url, overshoot_alt, overshoot_az, slew_timeout):
@@ -583,11 +679,14 @@ def sun_scan(
 
         # Slew to measurement point
         if sdr_type != "demo":
-            ok = _slew_to(srt_url, cmd_alt, cmd_az, slew_timeout)
+            ok, refined = slew_and_refine(dalt, daz_sky)
             if not ok:
                 log.warning("Slew failed for point %d — recording NaN", idx + 1)
                 power_grid[row, col] = np.nan
                 continue
+            point_sun_alt, point_sun_az, cmd_alt, cmd_az, _ = refined
+            point_info.update(cmd_alt=cmd_alt, cmd_az=cmd_az,
+                              sun_alt=point_sun_alt, sun_az=point_sun_az)
             # Short settle time after slew
             time.sleep(0.5)
 
@@ -703,6 +802,11 @@ def save_scan_to_pointing_data(scan_result: dict):
         "beam_fwhm_deg": scan_result["beam_fwhm_deg"],
         "fit_success": scan_result["fit"]["success"],
     }
+    fit_errors = scan_result.get("fit", {}).get("fit_errors") or {}
+    if fit_errors.get("alt_err") is not None:
+        entry["alt_error_uncertainty_deg"] = fit_errors["alt_err"]
+    if fit_errors.get("az_err") is not None:
+        entry["az_error_uncertainty_deg"] = fit_errors["az_err"]
     if "az_error_sky_deg" in scan_result:
         entry["az_error_sky_deg"] = scan_result["az_error_sky_deg"]
     if "scan_start_timestamp" in scan_result:
@@ -785,24 +889,94 @@ def fit_pointing_model(data: list | None = None,
     if data is None:
         data = load_pointing_data()
 
-    # Filter to successful fits only
-    good = [d for d in data if d.get("fit_success", True)]
-    if len(good) < 3:
-        return {"success": False, "error": f"Need at least 3 scans, have {len(good)}",
-                "n_scans": len(good)}
+    # Filter to successful, finite scan fits.  Four parameters technically need
+    # only two scans, but at least four well-spread scans are required to detect
+    # poor geometry and produce meaningful uncertainty estimates.
+    required = ("sun_alt_deg", "sun_az_deg", "alt_error_deg", "az_error_deg")
+    good = []
+    rejected = 0
+    for entry in data:
+        try:
+            values = [float(entry[key]) for key in required]
+        except (KeyError, TypeError, ValueError):
+            rejected += 1
+            continue
+        if not entry.get("fit_success", True) or not np.all(np.isfinite(values)):
+            rejected += 1
+            continue
+        if not 0.0 <= values[0] < 89.5:
+            rejected += 1
+            continue
+        good.append(entry)
 
-    alt_sun = np.array([d["sun_alt_deg"] for d in good])
-    az_sun = np.array([d["sun_az_deg"] for d in good])
-    d_alt = np.array([d["alt_error_deg"] for d in good])
-    d_az = np.array([d["az_error_deg"] for d in good])
+    if len(good) < 4:
+        return {
+            "success": False,
+            "error": f"Need at least 4 valid successful scans, have {len(good)}",
+            "n_scans": len(good),
+            "n_rejected": rejected,
+        }
+
+    alt_sun = np.array([d["sun_alt_deg"] for d in good], dtype=float)
+    az_sun = np.array([d["sun_az_deg"] for d in good], dtype=float)
+    d_alt = np.array([d["alt_error_deg"] for d in good], dtype=float)
+    d_az = np.array([d["az_error_deg"] for d in good], dtype=float)
     n = len(good)
+
+    az_sorted = np.sort(np.mod(az_sun, 360.0))
+    gaps = np.diff(np.concatenate([az_sorted, [az_sorted[0] + 360.0]]))
+    az_coverage = float(360.0 - np.max(gaps))
+    if az_coverage < 30.0:
+        return {
+            "success": False,
+            "error": (f"Sun azimuth coverage is only {az_coverage:.1f} deg; "
+                      "collect scans spanning at least 30 deg"),
+            "n_scans": n,
+            "n_rejected": rejected,
+            "az_coverage_deg": az_coverage,
+        }
 
     # Build design matrix and observation vector
     A = _pointing_model_matrix(alt_sun, az_sun)
     b = np.concatenate([d_alt, d_az])
 
-    # Least-squares fit: A·x = b
-    result = np.linalg.lstsq(A, b, rcond=None)
+    def scan_uncertainty(entry: dict, key: str) -> float:
+        try:
+            value = float(entry.get(key, 1.0))
+        except (TypeError, ValueError):
+            return 1.0
+        return max(value, 0.01) if math.isfinite(value) else 1.0
+
+    alt_unc = np.array([
+        scan_uncertainty(d, "alt_error_uncertainty_deg") for d in good
+    ])
+    az_unc = np.array([
+        scan_uncertainty(d, "az_error_uncertainty_deg") for d in good
+    ])
+    uncertainties = np.concatenate([alt_unc, az_unc])
+    if not np.all(np.isfinite(uncertainties)):
+        uncertainties = np.ones(2 * n)
+    weights = 1.0 / uncertainties
+    A_weighted = A * weights[:, None]
+    b_weighted = b * weights
+
+    rank = int(np.linalg.matrix_rank(A_weighted))
+    condition_number = float(np.linalg.cond(A_weighted))
+    if rank < 4 or not math.isfinite(condition_number) or condition_number > 1e4:
+        return {
+            "success": False,
+            "error": ("Calibration geometry cannot constrain all four parameters "
+                      f"(rank={rank}, condition={condition_number:.1f}); "
+                      "collect scans over a wider part of the day"),
+            "n_scans": n,
+            "n_rejected": rejected,
+            "az_coverage_deg": az_coverage,
+            "condition_number": condition_number,
+        }
+
+    # Weighted least-squares fit: higher-quality individual Gaussian fits carry
+    # more information without allowing tiny uncertainties to become infinite.
+    result = np.linalg.lstsq(A_weighted, b_weighted, rcond=None)
     x = result[0]  # [ΔAlt₀, ΔAz₀, AN, AE]
 
     alt_offset = float(x[0])
@@ -816,6 +990,12 @@ def fit_pointing_model(data: list | None = None,
     res_az = d_az - predicted[n:]
     rms_alt = float(np.sqrt(np.mean(res_alt ** 2)))
     rms_az = float(np.sqrt(np.mean(res_az ** 2)))
+    weighted_residual = (b - predicted) / uncertainties
+    dof = max(2 * n - 4, 1)
+    reduced_chi_squared = float(np.sum(weighted_residual ** 2) / dof)
+    covariance = (np.linalg.pinv(A_weighted.T @ A_weighted) *
+                  max(reduced_chi_squared, 1e-12))
+    parameter_errors = np.sqrt(np.maximum(np.diag(covariance), 0.0))
 
     model = {
         "alt_offset_deg": alt_offset,
@@ -825,6 +1005,16 @@ def fit_pointing_model(data: list | None = None,
         "rms_alt_deg": rms_alt,
         "rms_az_deg": rms_az,
         "n_scans": n,
+        "n_rejected": rejected,
+        "az_coverage_deg": az_coverage,
+        "condition_number": condition_number,
+        "reduced_chi_squared": reduced_chi_squared,
+        "parameter_errors_deg": {
+            "alt_offset": float(parameter_errors[0]),
+            "az_offset": float(parameter_errors[1]),
+            "tilt_north": float(parameter_errors[2]),
+            "tilt_east": float(parameter_errors[3]),
+        },
         "residuals_alt": res_alt.tolist(),
         "residuals_az": res_az.tolist(),
         "scan_azimuths": az_sun.tolist(),
@@ -839,7 +1029,11 @@ def fit_pointing_model(data: list | None = None,
         model["effective_lat"] = true_lat + tilt_north
     if true_lon is not None and true_lat is not None:
         cos_lat = math.cos(math.radians(true_lat))
-        model["effective_lon"] = true_lon + tilt_east / cos_lat if cos_lat > 0.01 else true_lon
+        if abs(cos_lat) <= 0.01:
+            return {"success": False,
+                    "error": "Effective longitude is undefined near the geographic pole",
+                    "n_scans": n}
+        model["effective_lon"] = true_lon + tilt_east / cos_lat
 
     return model
 

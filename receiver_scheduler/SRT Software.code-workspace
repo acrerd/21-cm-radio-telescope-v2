@@ -1,0 +1,67 @@
+{
+    "folders": [
+        {
+            "name": "21-cm-radio-telescope-v2",
+            "path": ".."
+        }
+    ],
+    "settings": {
+        "task.allowAutomaticTasks": "on"
+    },
+    "tasks": {
+        "version": "2.0.0",
+        "tasks": [
+            {
+                "label": "Start H1 Scheduler",
+                "type": "process",
+                "command": "/home/astro/radioconda/bin/python",
+                "args": [
+                    "/home/astro/21-cm-radio-telescope-v2/receiver_scheduler/h1_web_scheduler.py",
+                    "--host",
+                    "0.0.0.0",
+                    "--port",
+                    "5000"
+                ],
+                "options": {
+                    "cwd": "/home/astro/21-cm-radio-telescope-v2/receiver_scheduler"
+                },
+                "isBackground": true,
+                "problemMatcher": [],
+                "runOptions": {
+                    "runOn": "folderOpen"
+                },
+                "presentation": {
+                    "echo": true,
+                    "focus": false,
+                    "panel": "dedicated",
+                    "group": "srt-software"
+                }
+            },
+            {
+                "label": "PlatformIO Serial Monitor",
+                "type": "process",
+                "command": "/home/astro/.platformio/penv/bin/platformio",
+                "args": [
+                    "device",
+                    "monitor",
+                    "--environment",
+                    "due"
+                ],
+                "options": {
+                    "cwd": "/home/astro/21-cm-radio-telescope-v2"
+                },
+                "isBackground": true,
+                "problemMatcher": [],
+                "runOptions": {
+                    "runOn": "folderOpen"
+                },
+                "presentation": {
+                    "echo": true,
+                    "focus": false,
+                    "panel": "dedicated",
+                    "group": "srt-software"
+                }
+            }
+        ]
+    }
+}

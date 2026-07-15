@@ -26,6 +26,9 @@ This receiver is designed for radio astronomy observations of neutral hydrogen (
 | `requirements.txt` | Python package dependencies |
 | `test_scheduler.py` | Unit tests for scheduler behavior |
 | `test_sun_scan.py` | Unit tests for Sun scan geometry and cancellation |
+| `Start SRT Sofware.desktop` | One-click observatory workstation launcher |
+| `start_srt_software.sh` | Starts VS Code, Firefox, Stellarium, and optional window layout |
+| `SRT Software.code-workspace` | VS Code workspace with automatic scheduler and serial-monitor tasks |
 
 ## Hardware Requirements
 
@@ -155,7 +158,17 @@ The web scheduler provides a browser-based interface for managing and automating
 
 ### Starting the Scheduler
 
-On the observatory Linux host, double-click **Start H1 Scheduler** on the desktop. The launcher runs the scheduler under radioconda and binds it to port 5000:
+On the observatory Linux host, double-click **Start SRT Sofware**. The launcher:
+
+1. Opens the repository in Visual Studio Code.
+2. Starts `h1_web_scheduler.py` under radioconda in a VS Code terminal on port 5000.
+3. Starts the PlatformIO Serial Monitor for the `due` environment in a second VS Code terminal.
+4. Opens `/home/astro/Desktop/1 Open This:     SRT Controller.html` in Firefox.
+5. Starts Stellarium.
+
+If `wmctrl` is installed, it also places VS Code across the bottom half, Stellarium at top left, and Firefox at top right. Without `wmctrl`, all programs still start and the desktop chooses their positions. Launcher diagnostics are written to `/tmp/srt-software-launcher.log`.
+
+The VS Code scheduler task runs:
 
 ```bash
 /home/astro/radioconda/bin/python /home/astro/21-cm-radio-telescope-v2/receiver_scheduler/h1_web_scheduler.py --host 0.0.0.0 --port 5000
@@ -174,7 +187,7 @@ The scheduler points at the current controller web UI by default: `http://192.16
 
 ### Web Interface Tabs
 
-The scheduler web interface has three tabs:
+The scheduler web interface has Scheduler, Sun Scan, Configuration, and Log tabs:
 
 #### Scheduler Tab
 The main view for managing observations.
@@ -189,7 +202,7 @@ The main view for managing observations.
 - **Local and UTC time display** - schedule in local time, see both clocks
 - **Auto-save** - changes are saved automatically
 - **Manual start** - click play button to start any observation immediately
-- **Receiver boot/status** - manually start the B210 receiver for warm-up/testing and see whether the active receiver process is manual or observation-owned
+- **Receiver start/status** - manually start the B210 receiver for warm-up/testing and see whether the active receiver process is manual or observation-owned
 - **Clone** - duplicate an observation's settings into a new item
 - **Clear Past** - remove observations whose end time has passed
 - **Import/Export** - save and load schedules as JSON
@@ -214,7 +227,7 @@ Persistent settings saved to `scheduler_config.json`:
 | Log Lines to Display | Number of log lines shown in the Log tab |
 | Sound on Start/Stop | Enable/disable audio notifications |
 
-If the scheduler is launched under a different Python, it re-execs itself under the configured receiver Python when that interpreter exists. This keeps scheduled observations, manual receiver boot, Sun scans, and SDR imports on the same radioconda environment. A manually booted receiver is stopped before a scheduled observation starts so the SDR is not shared by two processes.
+If the scheduler is launched under a different Python, it re-execs itself under the configured receiver Python when that interpreter exists. This keeps scheduled observations, manual receiver starts, Sun scans, and SDR imports on the same radioconda environment. A manually started receiver is stopped before a scheduled observation starts so the SDR is not shared by two processes.
 
 Configuration changes take effect immediately without restarting.
 
@@ -294,10 +307,13 @@ All scheduler activity is logged to both the console (INFO level) and `scheduler
 
 The Sun Scan tab runs `sun_scan.py` as a scheduler-owned pointing calibration workflow. It uses the configured observer location, controller URL, receiver backend, and cancellation state.
 
-- Each measurement recomputes the Sun position immediately before slewing, so long scans follow the moving Sun.
-- Azimuth grid offsets are cross-elevation sky offsets; mount azimuth commands are expanded by `cos(altitude)` and clamped to the safe SRT range.
+- Each measurement recomputes the Sun position immediately before slewing. Hardware scans recheck it after each slew and refine the command when motion took long enough for the Sun to move.
+- Azimuth grid offsets are cross-elevation sky offsets; mount azimuth commands are expanded by `cos(altitude)`. A grid point outside the safe mount range stops the scan with a website error instead of recording a clipped, inaccurate point.
 - Results include both `az_error_deg` (mount azimuth correction) and `az_error_sky_deg` (fitted sky/cross-elevation correction), plus mid-scan Sun position and scan start/end timestamps.
+- Gaussian peaks must lie inside the measured grid and pass beam-width, uncertainty, and goodness-of-fit checks before a scan can enter calibration-day data.
 - Cancelling a scan stops before fitting partial data.
+
+Calibration Day fits the four-parameter offset/tilt model only from successful finite scans. It requires at least four scans and at least 30 degrees of Sun azimuth coverage, uses individual scan-fit uncertainties as weights, and reports parameter uncertainty, RMS residuals, coverage, and matrix conditioning in the web interface. Three consecutive scan failures stop the run with the last hardware/fit error. **Apply to Telescope** sends the effective latitude/longitude and the constant altitude/azimuth offsets to the controller; partial controller/configuration failures are reported explicitly.
 
 ## Configuration
 
