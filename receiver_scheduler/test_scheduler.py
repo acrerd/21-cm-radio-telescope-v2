@@ -93,6 +93,37 @@ class TestSunScanParameterValidation:
             sched._validate_sun_scan_params({"grid_spacing_deg": float("nan")})
 
 
+class TestControllerUrlResolution:
+    def test_candidates_include_runtime_and_fresh_config_primary(self):
+        cfg = {
+            "srt_controller_url": "http://192.168.106.120/",
+            "srt_controller_fallback_urls": ["http://srt-controller.local"],
+        }
+        with patch.dict(os.environ, {}, clear=True), \
+             patch.object(sched, "SRT_CONTROLLER_URL", "http://192.168.106.136"), \
+             patch.object(sched, "load_config", return_value=cfg):
+            assert sched._controller_url_candidates() == [
+                "http://192.168.106.136",
+                "http://192.168.106.120",
+                "http://srt-controller.local",
+            ]
+
+    def test_api_tries_next_controller_after_bad_json(self):
+        bad_response = MagicMock()
+        bad_response.__enter__.return_value.read.return_value = b"not json"
+        good_response = MagicMock()
+        good_response.__enter__.return_value.read.return_value = b'{"alt": 12.5}'
+
+        with patch.object(sched, "_controller_url_candidates", return_value=[
+                 "http://stale", "http://working"]), \
+             patch.object(sched.urllib.request, "urlopen",
+                          side_effect=[bad_response, good_response]), \
+             patch.object(sched, "SRT_CONTROLLER_URL", "http://stale"):
+            result = sched.srt_api_call("/status")
+
+        assert result == {"alt": 12.5}
+
+
 # =============================================================================
 # parse_tle
 # =============================================================================

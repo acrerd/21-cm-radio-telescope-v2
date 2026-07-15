@@ -23,6 +23,32 @@ AsyncWebServer webServer(WEB_PORT);
 SRTState state;  // Global state instance
 extern bool mdnsRunning;
 
+static String jsonEscape(const String &value) {
+    String escaped;
+    escaped.reserve(value.length() + 8);
+    for (size_t i = 0; i < value.length(); i++) {
+        const unsigned char c = static_cast<unsigned char>(value.charAt(i));
+        switch (c) {
+            case '"': escaped += "\\\""; break;
+            case '\\': escaped += "\\\\"; break;
+            case '\b': escaped += "\\b"; break;
+            case '\f': escaped += "\\f"; break;
+            case '\n': escaped += "\\n"; break;
+            case '\r': escaped += "\\r"; break;
+            case '\t': escaped += "\\t"; break;
+            default:
+                if (c < 0x20) {
+                    char unicodeEscape[7];
+                    snprintf(unicodeEscape, sizeof(unicodeEscape), "\\u%04x", c);
+                    escaped += unicodeEscape;
+                } else {
+                    escaped += static_cast<char>(c);
+                }
+        }
+    }
+    return escaped;
+}
+
 static void clearCurrentTracking() {
     state.trackingEnabled = false;
     state.targetName = "";
@@ -95,13 +121,13 @@ void setupWebServer() {
         json += "\"target_az\":" + String(srtSerial.getTargetAz(), 2) + ",";
         json += "\"alt_current_a\":" + String(srtSerial.getAltCurrentA(), 2) + ",";
         json += "\"az_current_a\":" + String(srtSerial.getAzCurrentA(), 2) + ",";
-        json += "\"status\":\"" + srtSerial.getStatusStr() + "\",";
-        json += "\"fault\":\"" + srtSerial.getFaultStr() + "\",";
+        json += "\"status\":\"" + jsonEscape(srtSerial.getStatusStr()) + "\",";
+        json += "\"fault\":\"" + jsonEscape(srtSerial.getFaultStr()) + "\",";
         bool faultActive = (srtSerial.getStatusStr() == "FAULT") || (srtSerial.getFaultStr().length() > 0);
         json += "\"fault_active\":" + String(faultActive ? "true" : "false") + ",";
         json += "\"is_slewing\":" + String(srtSerial.getIsSlewing() ? "true" : "false") + ",";
         json += "\"calibrator\":" + String(srtSerial.getCalibratorOn() ? "true" : "false") + ",";
-        json += "\"raw\":\"" + srtSerial.getLastStatus() + "\"";
+        json += "\"raw\":\"" + jsonEscape(srtSerial.getLastStatus()) + "\"";
         json += "}";
         request->send(200, "application/json", json);
     });

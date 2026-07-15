@@ -102,6 +102,57 @@ def test_cancelled_sun_scan_does_not_fit_partial_data():
     fit.assert_not_called()
 
 
+def test_slew_verifies_final_position():
+    responses = [
+        {"ok": True},
+        {"alt": 32.0, "az": 101.0, "is_slewing": False,
+         "fault_active": False, "status": "Ready"},
+    ]
+
+    with patch.object(sun_scan, "_srt_api", side_effect=responses):
+        assert sun_scan._slew_to(
+            "http://controller", 32.1, 101.2,
+            slew_timeout=1, position_tolerance=0.5,
+        ) is True
+
+
+def test_slew_fails_when_telescope_does_not_move():
+    responses = [
+        {"ok": True},
+        {"alt": 0.0, "az": 0.0, "is_slewing": False,
+         "fault_active": False, "status": "Ready"},
+    ]
+
+    with patch.object(sun_scan, "_srt_api", side_effect=responses):
+        with pytest.raises(RuntimeError, match="stopped before reaching"):
+            sun_scan._slew_to(
+                "http://controller", 32.0, 101.0,
+                slew_timeout=1, position_tolerance=0.5, start_grace_s=0,
+            )
+
+
+def test_hardware_scan_stops_on_first_failed_slew():
+    progress = []
+
+    with patch.object(sun_scan, "get_sun_altaz", return_value=(30.0, 100.0)), \
+         patch.object(sun_scan, "_slew_to",
+                      side_effect=RuntimeError("controller rejected movement")) as slew, \
+         patch.object(sun_scan, "measure_power") as measure:
+        with pytest.raises(RuntimeError, match="controller rejected movement"):
+            sun_scan.sun_scan(
+                n=3,
+                integration_time_s=0.1,
+                sdr_type="b210",
+                srt_url="http://controller",
+                output_image=None,
+                progress_callback=lambda *args: progress.append(args),
+            )
+
+    assert slew.call_count == 1
+    measure.assert_not_called()
+    assert progress == []
+
+
 def test_fit_pointing_error_recovers_clean_gaussian():
     if sun_scan.curve_fit is None:
         pytest.skip("scipy is not installed")

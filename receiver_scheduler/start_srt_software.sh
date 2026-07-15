@@ -76,7 +76,10 @@ tile_windows() {
     fi
 
     local firefox_id stellarium_id code_id
-    firefox_id="$(wait_for_window 'Firefox' "$previous_firefox_ids" 45 || true)"
+    # Ubuntu's confined Firefox snap must use its native session backend. It may
+    # therefore be invisible to wmctrl on Wayland; do not delay other windows
+    # for the full application timeout when that happens.
+    firefox_id="$(wait_for_window 'Firefox' "$previous_firefox_ids" 12 || true)"
     stellarium_id="$(wait_for_window 'Stellarium' "$previous_stellarium_ids" 45 || true)"
     code_id="$(wmctrl -l 2>/dev/null | awk 'BEGIN{IGNORECASE=1} /Visual Studio Code/ {print $1; exit}')"
 
@@ -130,7 +133,7 @@ main() {
     local previous_firefox_ids previous_stellarium_ids
     previous_firefox_ids="$(window_ids)"
     sleep 2
-    MOZ_ENABLE_WAYLAND=0 "$firefox_bin" --new-window "$CONTROLLER_URL" >> "$LOG_FILE" 2>&1 &
+    "$firefox_bin" --new-window "$CONTROLLER_URL" >> "$LOG_FILE" 2>&1 &
     log "Opened live SRT Controller website in Firefox."
 
     previous_stellarium_ids="$(window_ids)"

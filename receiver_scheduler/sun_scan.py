@@ -85,37 +85,60 @@ def _load_scheduler_config() -> dict:
 # ---------------------------------------------------------------------------
 
 def _srt_api(base_url: str, endpoint: str, params: dict | None = None,
-             timeout: int = 10) -> dict | None:
-    """Call an SRT controller HTTP endpoint, return JSON or None."""
+             timeout: int = 10) -> dict:
+    """Call an SRT controller endpoint or raise a useful control error."""
     url = f"{base_url}{endpoint}"
     if params:
         url += "?" + urllib.parse.urlencode(params)
     try:
         with urllib.request.urlopen(url, timeout=timeout) as resp:
-            return json.loads(resp.read().decode())
+            payload = resp.read().decode(errors="replace")
+            return json.loads(payload, strict=False)
     except Exception as exc:
-        log.warning("SRT API error (%s): %s", endpoint, exc)
-        return None
+        raise RuntimeError(
+            f"SRT controller request failed at {base_url}{endpoint}: {exc}") from exc
 
 
 def _slew_to(base_url: str, alt: float, az: float,
-             slew_timeout: int = 120) -> bool:
-    """Command telescope to alt/az and wait until the slew is complete."""
+             slew_timeout: int = 120, position_tolerance: float = 0.5,
+             start_grace_s: float = 5.0) -> bool:
+    """Command telescope to alt/az and verify that it reaches the target."""
     result = _srt_api(base_url, "/direct", {"alt": f"{alt:.3f}", "az": f"{az:.3f}"})
-    if not (result and result.get("ok")):
-        log.error("Slew command rejected: %s", result)
-        return False
+    if not result.get("ok"):
+        detail = result.get("error") or result.get("message") or repr(result)
+        raise RuntimeError(
+            f"SRT controller rejected slew to Alt={alt:.2f} deg Az={az:.2f} deg: {detail}")
 
-    time.sleep(2)  # let slew start
     t0 = time.time()
     while time.time() - t0 < slew_timeout:
         status = _srt_api(base_url, "/status")
-        if status and not status.get("is_slewing", True):
-            return True
+        current_alt = status.get("alt")
+        current_az = status.get("az")
+        if status.get("fault_active"):
+            detail = status.get("fault") or status.get("status") or "unknown fault"
+            raise RuntimeError(
+                f"Telescope fault while slewing to Alt={alt:.2f} deg Az={az:.2f} deg: {detail}")
+
+        if current_alt is not None and current_az is not None:
+            alt_error = abs(float(current_alt) - alt)
+            az_error = abs(float(current_az) - az)
+            at_target = max(alt_error, az_error) <= position_tolerance
+            if at_target and not status.get("is_slewing", False):
+                return True
+
+        elapsed = time.time() - t0
+        if (not status.get("is_slewing", False) and elapsed >= start_grace_s
+                and current_alt is not None and current_az is not None):
+            raise RuntimeError(
+                "Telescope stopped before reaching the Sun-scan target: "
+                f"current Alt={float(current_alt):.2f} deg Az={float(current_az):.2f} deg, "
+                f"target Alt={alt:.2f} deg Az={az:.2f} deg, "
+                f"status={status.get('status', 'unknown')}")
         time.sleep(1)
 
-    log.error("Slew timeout after %ds", slew_timeout)
-    return False
+    raise RuntimeError(
+        f"Telescope slew timed out after {slew_timeout}s while targeting "
+        f"Alt={alt:.2f} deg Az={az:.2f} deg")
 
 
 # ---------------------------------------------------------------------------
@@ -498,6 +521,7 @@ def sun_scan(
     gain: float = 40.0,
     output_image: str | None = "sun_scan.png",
     slew_timeout: int = 120,
+    position_tolerance: float = 0.5,
     beam_fwhm_deg: float = 3.0,
     backlash_deg: float = 2.0,
     progress_callback=None,
@@ -521,6 +545,7 @@ def sun_scan(
     gain             : SDR gain in dB
     output_image     : path for the output image (None to skip)
     slew_timeout     : max seconds to wait for each slew
+    position_tolerance : maximum final Alt/Az error accepted after a slew
     beam_fwhm_deg    : approximate beam FWHM for fit initial guess
     progress_callback: optional callable(point_index, total_points, info_dict)
 
@@ -623,19 +648,19 @@ def sun_scan(
         for attempt in range(3):
             last = command_for_current_sun(dalt_now, daz_sky_now)
             point_alt, point_az, cmd_alt_now, cmd_az_now, _ = last
-            if not _slew_to(srt_url, cmd_alt_now, cmd_az_now, slew_timeout):
-                return False, last
+            _slew_to(srt_url, cmd_alt_now, cmd_az_now, slew_timeout,
+                     position_tolerance)
 
             updated = command_for_current_sun(dalt_now, daz_sky_now)
             drift_alt = abs(updated[2] - cmd_alt_now)
             drift_az = abs(updated[3] - cmd_az_now)
             last = updated
             if max(drift_alt, drift_az) <= 0.03:
-                return True, last
+                return last
             log.info("Sun moved during slew; refining target (dAlt=%.3f deg, dAz=%.3f deg)",
                      drift_alt, drift_az)
-        log.error("Sun target did not settle after 3 ephemeris refinements")
-        return False, last
+        raise RuntimeError(
+            "Sun target kept moving beyond the refinement tolerance after 3 slews")
 
     # --- Scan loop ---
     for idx, (row, col) in enumerate(scan_order):
@@ -656,8 +681,8 @@ def sun_scan(
                                         allow_clamped=True))
             log.info("Row %d: backlash overshoot to Az=%.2f° then approaching west",
                      row, overshoot_az)
-            if not _slew_to(srt_url, overshoot_alt, overshoot_az, slew_timeout):
-                log.warning("Backlash overshoot failed for row %d", row)
+            _slew_to(srt_url, overshoot_alt, overshoot_az, slew_timeout,
+                     position_tolerance)
 
         # Recompute the Sun immediately before the measurement slew.  A row-start
         # overshoot can take long enough for the Sun to move appreciably.
@@ -674,16 +699,9 @@ def sun_scan(
         log.info("Point %d/%d: offset (%.1f, %.1f)° -> Alt=%.2f° Az=%.2f°",
                  idx + 1, total_points, dalt, daz_sky, cmd_alt, cmd_az)
 
-        if progress_callback:
-            progress_callback(idx, total_points, point_info)
-
         # Slew to measurement point
         if sdr_type != "demo":
-            ok, refined = slew_and_refine(dalt, daz_sky)
-            if not ok:
-                log.warning("Slew failed for point %d — recording NaN", idx + 1)
-                power_grid[row, col] = np.nan
-                continue
+            refined = slew_and_refine(dalt, daz_sky)
             point_sun_alt, point_sun_az, cmd_alt, cmd_az, _ = refined
             point_info.update(cmd_alt=cmd_alt, cmd_az=cmd_az,
                               sun_alt=point_sun_alt, sun_az=point_sun_az)
@@ -708,6 +726,8 @@ def sun_scan(
         power_flat.append(pwr)
 
         log.info("  Power = %.4f", pwr)
+        if progress_callback:
+            progress_callback(idx, total_points, point_info)
 
     scan_end_utc = datetime.now(timezone.utc)
     if cancelled:

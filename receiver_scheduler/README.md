@@ -167,7 +167,7 @@ On the observatory Linux host, double-click **Start SRT Sofware**. The launcher:
 4. Opens the live controller at `http://192.168.106.120/` in Firefox.
 5. Starts Stellarium.
 
-If `wmctrl` is installed, it waits for the application windows and then places VS Code across the bottom half, Stellarium at top left, and Firefox at top right. Firefox and Stellarium are started through XWayland so `wmctrl` can position them from a GNOME Wayland session. Without `wmctrl`, all programs still start and the desktop chooses their positions. Launcher diagnostics are written to `/tmp/srt-software-launcher.log`.
+If `wmctrl` is installed, it waits for the application windows and then places VS Code across the bottom half, Stellarium at top left, and Firefox at top right when the window manager exposes them. Stellarium is started through XWayland for reliable placement. The confined Ubuntu Firefox snap uses its native session backend so it opens reliably; GNOME Wayland may prevent `wmctrl` from positioning that one window. Without `wmctrl`, all programs still start and the desktop chooses their positions. Launcher diagnostics are written to `/tmp/srt-software-launcher.log`.
 
 The VS Code scheduler task runs:
 
@@ -309,12 +309,14 @@ All scheduler activity is logged to both the console (INFO level) and `scheduler
 The Sun Scan tab runs `sun_scan.py` as a scheduler-owned pointing calibration workflow. It uses the configured observer location, controller URL, receiver backend, and cancellation state.
 
 - Each measurement recomputes the Sun position immediately before slewing. Hardware scans recheck it after each slew and refine the command when motion took long enough for the Sun to move.
+- Before a hardware scan, the scheduler resolves the live controller using the configured primary and fallback URLs. Every slew must be accepted and finish within the configured position tolerance; a controller error, telescope fault, stationary mount, wrong final position, or timeout stops immediately and is shown on the website with current and target coordinates.
+- The website point counter advances only after the telescope has reached the requested grid point and a power measurement has completed; failed movement is never counted as scan data.
 - Azimuth grid offsets are cross-elevation sky offsets; mount azimuth commands are expanded by `cos(altitude)`. A grid point outside the safe mount range stops the scan with a website error instead of recording a clipped, inaccurate point.
 - Results include both `az_error_deg` (mount azimuth correction) and `az_error_sky_deg` (fitted sky/cross-elevation correction), plus mid-scan Sun position and scan start/end timestamps.
 - Gaussian peaks must lie inside the measured grid and pass beam-width, uncertainty, and goodness-of-fit checks before a scan can enter calibration-day data.
 - Cancelling a scan stops before fitting partial data.
 
-Calibration Day fits the four-parameter offset/tilt model only from successful finite scans. It requires at least four scans and at least 30 degrees of Sun azimuth coverage, uses individual scan-fit uncertainties as weights, and reports parameter uncertainty, RMS residuals, coverage, and matrix conditioning in the web interface. Three consecutive scan failures stop the run with the last hardware/fit error. **Apply to Telescope** sends the effective latitude/longitude and the constant altitude/azimuth offsets to the controller; partial controller/configuration failures are reported explicitly.
+Calibration Day repeatedly performs a complete N×N Sun scan on a start-to-start interval, saves each successful fit, and continues until sunset, cancellation, or three consecutive failures. Its four-parameter offset/tilt model uses only successful finite scans. It requires at least four scans and at least 30 degrees of Sun azimuth coverage, uses individual scan-fit uncertainties as weights, and reports parameter uncertainty, RMS residuals, coverage, and matrix conditioning in the web interface. **Apply to Telescope** sends the effective latitude/longitude and the constant altitude/azimuth offsets to the controller; partial controller/configuration failures are reported explicitly.
 
 ## Configuration
 

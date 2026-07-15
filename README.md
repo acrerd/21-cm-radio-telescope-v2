@@ -397,7 +397,7 @@ python h1_web_scheduler.py --host 0.0.0.0 --port 5000
 # Open browser to http://localhost:5000
 ```
 
-On the observatory Linux host, use the desktop launcher **Start SRT Sofware**. It reuses the current VS Code window, runs the scheduler in a hidden task terminal, reveals a lock-safe PlatformIO Serial Monitor, opens `http://192.168.106.120/` in Firefox, and starts Stellarium. The monitor prevents duplicate launcher instances, waits for `/dev/ttyACM0`, and retries temporary serial-port locks. When `wmctrl` is available, the launcher waits for the XWayland application windows before tiling VS Code across the bottom half with Stellarium and Firefox at the top left/right. The scheduler task runs:
+On the observatory Linux host, use the desktop launcher **Start SRT Sofware**. It reuses the current VS Code window, runs the scheduler in a hidden task terminal, reveals a lock-safe PlatformIO Serial Monitor, opens `http://192.168.106.120/` in Firefox, and starts Stellarium. The monitor prevents duplicate launcher instances, waits for `/dev/ttyACM0`, and retries temporary serial-port locks. When `wmctrl` is available, the launcher waits for visible application windows before tiling VS Code across the bottom half with Stellarium and Firefox at the top left/right where GNOME exposes their geometry. The scheduler task runs:
 
 ```bash
 /home/astro/radioconda/bin/python /home/astro/21-cm-radio-telescope-v2/receiver_scheduler/h1_web_scheduler.py --host 0.0.0.0 --port 5000
@@ -443,6 +443,7 @@ Determines telescope pointing errors by performing an n×n raster scan centred o
 - **Scan pattern:** all rows scan east-to-west with backlash overshoot at each row start
 - **Azimuth correction:** grid offsets are treated as cross-elevation sky offsets and mount azimuth commands are expanded by cos(altitude); scans stop with a clear error if any requested grid point would be clipped by mount limits
 - **Moving Sun:** Sun position is recomputed before each measurement slew, checked again after hardware motion, and refined when necessary; the saved comparison point is the mid-scan ephemeris
+- **Verified movement:** before scanning, the scheduler resolves the reachable controller from the primary/fallback URLs. Each command must reach its requested position within tolerance; rejected commands, telescope faults, a stationary mount, wrong final coordinates, and timeouts stop immediately with a detailed website error. The point counter advances only after a completed measurement.
 - **Fit quality:** Gaussian peaks outside the measured raster, implausible beam widths, non-finite uncertainty, and poor fits are rejected and displayed as website errors rather than entering the day model
 - **Output:** pointing error (ΔAlt, mount ΔAz, sky ΔAz), fitted beam FWHM, scan start/end timestamps, and a two-panel image (measured data + Gaussian fit)
 - **SDR backends:** B210, RTL-SDR, or demo mode (simulated Gaussian beam)
@@ -462,7 +463,7 @@ Running repeated sun scans over a day determines the telescope's effective obser
 
 The effective lat/lon where the tilted mount would be vertical is computed from AN and AE. This can be applied to the ESP32 controller so all coordinate transforms (RA/Dec, galactic, sun/moon tracking) automatically account for the tilt.
 
-The fit requires at least four successful scans and 30 degrees of Sun azimuth coverage. It weights scans by their fitted uncertainties, checks matrix rank/conditioning, and reports parameter uncertainty and residual RMS. Applying the result updates both effective observer coordinates and the constant altitude/azimuth pointing offsets on the controller. Hardware, scan, fit, and partial-apply errors appear in the receiver website; three consecutive scan failures stop a calibration day.
+Calibration Day performs one complete N×N Sun scan per start-to-start interval and saves each successful scan before waiting for the next. The model fit requires at least four successful scans and 30 degrees of Sun azimuth coverage. It weights scans by their fitted uncertainties, checks matrix rank/conditioning, and reports parameter uncertainty and residual RMS. Applying the result updates both effective observer coordinates and the constant altitude/azimuth pointing offsets on the controller. Hardware, scan, fit, and partial-apply errors appear in the receiver website; three consecutive scan failures stop a calibration day.
 
 To run a calibration day:
 - **From the scheduler:** add a "Calibration Day (Sun Scan)" observation with a start time before sunrise and a long duration (e.g. 12 hours). The scheduler waits for sunrise, runs scans at the configured interval, and stops at sunset.

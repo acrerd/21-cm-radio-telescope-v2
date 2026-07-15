@@ -141,13 +141,11 @@ def _normalize_controller_url(url: Optional[str]) -> Optional[str]:
 
 def _controller_url_candidates() -> list[str]:
     cfg = load_config()
-    primary = _normalize_controller_url(os.environ.get("SRT_CONTROLLER_URL"))
-    if primary is None:
-        primary = _normalize_controller_url(SRT_CONTROLLER_URL)
-    if primary is None:
-        return []
-
-    candidates = [primary]
+    candidates = [
+        os.environ.get("SRT_CONTROLLER_URL"),
+        SRT_CONTROLLER_URL,
+        cfg.get("srt_controller_url"),
+    ]
     candidates.extend(cfg.get("srt_controller_fallback_urls", []))
 
     urls = []
@@ -205,15 +203,15 @@ def srt_api_call(endpoint: str, params: Optional[dict] = None) -> Optional[dict]
 
         try:
             with urllib.request.urlopen(url, timeout=3) as response:
+                payload = response.read().decode(errors="replace")
+                result = json.loads(payload, strict=False)
                 if base_url != SRT_CONTROLLER_URL:
                     log.info("SRT controller reachable at %s", base_url)
                     SRT_CONTROLLER_URL = base_url
-                return json.loads(response.read().decode())
-        except urllib.error.URLError as e:
-            last_error = e
+                return result
         except Exception as e:
-            log.error("SRT API error via %s: %s", base_url, e)
-            return None
+            last_error = e
+            log.warning("SRT API error via %s: %s", base_url, e)
 
     log.warning("SRT connection error after trying %s: %s", ", ".join(candidates), last_error)
     return None
@@ -2817,11 +2815,24 @@ def _run_sun_scan(params: dict):
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         image_path = os.path.join(data_folder, f"sun_scan_{timestamp}.png")
 
+        controller_url = None
+        if params.get("sdr_type", "b210") != "demo":
+            status = srt_get_status()
+            controller_url = _normalize_controller_url(SRT_CONTROLLER_URL)
+            if not status or not controller_url:
+                tried = ", ".join(_controller_url_candidates()) or "no configured URLs"
+                raise RuntimeError(
+                    f"Cannot reach the SRT controller for the Sun scan (tried: {tried})")
+            if status.get("fault_active"):
+                detail = status.get("fault") or status.get("status") or "unknown fault"
+                raise RuntimeError(f"SRT controller reports a telescope fault: {detail}")
+            log.info("Sun scan using SRT controller at %s", controller_url)
+
         result = do_sun_scan(
             n=params.get("n", 5),
             grid_spacing_deg=params.get("grid_spacing_deg", 1.5),
             integration_time_s=params.get("integration_time_s", 3.0),
-            srt_url=cfg.get("srt_controller_url") or None,
+            srt_url=controller_url,
             lat=cfg.get("observer_lat"),
             lon=cfg.get("observer_lon"),
             elevation=cfg.get("observer_elevation", 50),
@@ -2831,6 +2842,7 @@ def _run_sun_scan(params: dict):
             gain=params.get("gain_db", 40.0),
             output_image=image_path,
             slew_timeout=cfg.get("slew_timeout", 300),
+            position_tolerance=cfg.get("position_tolerance", 0.5),
             beam_fwhm_deg=params.get("beam_fwhm_deg", 3.0),
             progress_callback=_sun_scan_progress,
             cancel_event=sun_scan_cancel,
