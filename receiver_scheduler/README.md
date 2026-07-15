@@ -28,6 +28,7 @@ This receiver is designed for radio astronomy observations of neutral hydrogen (
 | `test_sun_scan.py` | Unit tests for Sun scan geometry and cancellation |
 | `Start SRT Sofware.desktop` | One-click observatory workstation launcher |
 | `start_srt_software.sh` | Starts VS Code, Firefox, Stellarium, and optional window layout |
+| `start_platformio_monitor.sh` | Single-instance serial monitor with device wait and lock retry handling |
 | `SRT Software.code-workspace` | VS Code workspace with automatic scheduler and serial-monitor tasks |
 
 ## Hardware Requirements
@@ -161,12 +162,12 @@ The web scheduler provides a browser-based interface for managing and automating
 On the observatory Linux host, double-click **Start SRT Sofware**. The launcher:
 
 1. Opens the repository in Visual Studio Code.
-2. Starts `h1_web_scheduler.py` under radioconda in a VS Code terminal on port 5000.
-3. Starts the PlatformIO Serial Monitor for the `due` environment in a second VS Code terminal.
-4. Opens `/home/astro/Desktop/1 Open This:     SRT Controller.html` in Firefox.
+2. Starts `h1_web_scheduler.py` under radioconda in a hidden VS Code task terminal on port 5000.
+3. Starts and reveals the PlatformIO Serial Monitor for the `due` environment. The monitor waits for `/dev/ttyACM0`, prevents duplicate launcher-owned monitors, and retries temporary exclusive-lock failures.
+4. Opens the live controller at `http://192.168.106.120/` in Firefox.
 5. Starts Stellarium.
 
-If `wmctrl` is installed, it also places VS Code across the bottom half, Stellarium at top left, and Firefox at top right. Without `wmctrl`, all programs still start and the desktop chooses their positions. Launcher diagnostics are written to `/tmp/srt-software-launcher.log`.
+If `wmctrl` is installed, it waits for the application windows and then places VS Code across the bottom half, Stellarium at top left, and Firefox at top right. Firefox and Stellarium are started through XWayland so `wmctrl` can position them from a GNOME Wayland session. Without `wmctrl`, all programs still start and the desktop chooses their positions. Launcher diagnostics are written to `/tmp/srt-software-launcher.log`.
 
 The VS Code scheduler task runs:
 

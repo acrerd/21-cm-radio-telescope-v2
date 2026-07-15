@@ -28,38 +28,39 @@
                 "isBackground": true,
                 "problemMatcher": [],
                 "runOptions": {
-                    "runOn": "folderOpen"
+                    "runOn": "folderOpen",
+                    "instanceLimit": 1
                 },
                 "presentation": {
                     "echo": true,
                     "focus": false,
+                    "reveal": "never",
+                    "showReuseMessage": false,
                     "panel": "dedicated",
-                    "group": "srt-software"
+                    "clear": false
                 }
             },
             {
                 "label": "PlatformIO Serial Monitor",
                 "type": "process",
-                "command": "/home/astro/.platformio/penv/bin/platformio",
-                "args": [
-                    "device",
-                    "monitor",
-                    "--environment",
-                    "due"
-                ],
+                "command": "/home/astro/21-cm-radio-telescope-v2/receiver_scheduler/start_platformio_monitor.sh",
+                "args": [],
                 "options": {
                     "cwd": "/home/astro/21-cm-radio-telescope-v2"
                 },
                 "isBackground": true,
                 "problemMatcher": [],
                 "runOptions": {
-                    "runOn": "folderOpen"
+                    "runOn": "folderOpen",
+                    "instanceLimit": 1
                 },
                 "presentation": {
                     "echo": true,
-                    "focus": false,
+                    "focus": true,
+                    "reveal": "always",
+                    "showReuseMessage": false,
                     "panel": "dedicated",
-                    "group": "srt-software"
+                    "clear": true
                 }
             }
         ]

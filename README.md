@@ -397,7 +397,7 @@ python h1_web_scheduler.py --host 0.0.0.0 --port 5000
 # Open browser to http://localhost:5000
 ```
 
-On the observatory Linux host, use the desktop launcher **Start SRT Sofware**. It opens the repository in VS Code, runs the scheduler and PlatformIO Serial Monitor in integrated terminals, opens the local SRT Controller page in Firefox, and starts Stellarium. When `wmctrl` is available, VS Code is tiled across the bottom half with Stellarium and Firefox at the top left/right. The scheduler task runs:
+On the observatory Linux host, use the desktop launcher **Start SRT Sofware**. It reuses the current VS Code window, runs the scheduler in a hidden task terminal, reveals a lock-safe PlatformIO Serial Monitor, opens `http://192.168.106.120/` in Firefox, and starts Stellarium. The monitor prevents duplicate launcher instances, waits for `/dev/ttyACM0`, and retries temporary serial-port locks. When `wmctrl` is available, the launcher waits for the XWayland application windows before tiling VS Code across the bottom half with Stellarium and Firefox at the top left/right. The scheduler task runs:
 
 ```bash
 /home/astro/radioconda/bin/python /home/astro/21-cm-radio-telescope-v2/receiver_scheduler/h1_web_scheduler.py --host 0.0.0.0 --port 5000
