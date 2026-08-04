@@ -9,6 +9,8 @@
 wifi_creds.json
 receiver_scheduler/scheduler_config.json
 receiver_scheduler/scheduler.log*
+# Refitted from the tracked pointing_data.json whenever the model is needed
+receiver_scheduler/pointing_model.json
 *.pyc
 __pycache__/
 .micropico

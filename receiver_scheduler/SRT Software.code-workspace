@@ -3,6 +3,9 @@
         {
             "name": "21-cm-radio-telescope-v2",
             "path": ".."
+        },
+        {
+            "path": "../esp32_controller_arduino"
         }
     ],
     "settings": {
