@@ -70,6 +70,11 @@ static void prepareTrackingTarget() {
     state.trackingEnabled = true;
 }
 
+// Route ordering matters. ESPAsyncWebServer matches a handler when the request
+// URL equals its URI *or starts with that URI plus a slash*, and the first
+// registered match wins. A handler for "/goto" therefore also swallows
+// "/goto/galactic" unless the longer route is registered first. Always register
+// the most specific path before any prefix of it.
 void setupWebServer() {
     // Tiny diagnostics first: these are useful when the full UI cannot load.
     webServer.on("/ping", HTTP_GET, [](AsyncWebServerRequest *request) {
@@ -148,6 +153,14 @@ void setupWebServer() {
         request->send(200, "application/json", json);
     });
 
+    // Clear pointing offset. Must be registered before "/offset" - see the
+    // route ordering note at the top of setupWebServer().
+    webServer.on("/offset/clear", HTTP_GET, [](AsyncWebServerRequest *request) {
+        state.offsetAlt = 0.0;
+        state.offsetAz = 0.0;
+        request->send(200, "application/json", "{\"ok\":true,\"offset_alt\":0,\"offset_az\":0}");
+    });
+
     // Set pointing offset (for scanning/mapping)
     webServer.on("/offset", HTTP_GET, [](AsyncWebServerRequest *request) {
         if (request->hasArg("alt")) {
@@ -159,13 +172,6 @@ void setupWebServer() {
         String json = "{\"ok\":true,\"offset_alt\":" + String(state.offsetAlt, 2) +
                       ",\"offset_az\":" + String(state.offsetAz, 2) + "}";
         request->send(200, "application/json", json);
-    });
-
-    // Clear pointing offset
-    webServer.on("/offset/clear", HTTP_GET, [](AsyncWebServerRequest *request) {
-        state.offsetAlt = 0.0;
-        state.offsetAz = 0.0;
-        request->send(200, "application/json", "{\"ok\":true,\"offset_alt\":0,\"offset_az\":0}");
     });
 
     // Ephemeris
@@ -196,29 +202,8 @@ void setupWebServer() {
         request->send(200, "application/json", json);
     });
 
-    // Goto RA/Dec
-    webServer.on("/goto", HTTP_GET, [](AsyncWebServerRequest *request) {
-        float ra = request->arg("ra").toFloat();
-        float dec = request->arg("dec").toFloat();
-        double tAlt, tAz;
-        raDecToAltAz(ra, dec, settings.observerLat, settings.observerLon, tAlt, tAz);
-        double minTrackingAlt = effectiveTrackingHorizonAlt(settings.mountAltMin);
-        if (tAlt < minTrackingAlt) {
-            char err[128];
-            snprintf(err, sizeof(err),
-                "{\"ok\":false,\"error\":\"Target below horizon (alt=%.1f deg, min=%.1f deg)\"}",
-                tAlt, minTrackingAlt);
-            request->send(400, "application/json", err);
-            return;
-        }
-        state.currentRA = ra;
-        state.currentDec = dec;
-        state.targetName = "";
-        prepareTrackingTarget();
-        request->send(200, "application/json", "{\"ok\":true}");
-    });
-
-    // Goto Galactic
+    // Goto Galactic. Must be registered before "/goto" - see the route
+    // ordering note at the top of setupWebServer().
     webServer.on("/goto/galactic", HTTP_GET, [](AsyncWebServerRequest *request) {
         float l = request->arg("l").toFloat();
         float b = request->arg("b").toFloat();
@@ -242,6 +227,28 @@ void setupWebServer() {
         char json[64];
         snprintf(json, sizeof(json), "{\"ok\":true,\"ra\":%.4f,\"dec\":%.2f}", ra, dec);
         request->send(200, "application/json", json);
+    });
+
+    // Goto RA/Dec
+    webServer.on("/goto", HTTP_GET, [](AsyncWebServerRequest *request) {
+        float ra = request->arg("ra").toFloat();
+        float dec = request->arg("dec").toFloat();
+        double tAlt, tAz;
+        raDecToAltAz(ra, dec, settings.observerLat, settings.observerLon, tAlt, tAz);
+        double minTrackingAlt = effectiveTrackingHorizonAlt(settings.mountAltMin);
+        if (tAlt < minTrackingAlt) {
+            char err[128];
+            snprintf(err, sizeof(err),
+                "{\"ok\":false,\"error\":\"Target below horizon (alt=%.1f deg, min=%.1f deg)\"}",
+                tAlt, minTrackingAlt);
+            request->send(400, "application/json", err);
+            return;
+        }
+        state.currentRA = ra;
+        state.currentDec = dec;
+        state.targetName = "";
+        prepareTrackingTarget();
+        request->send(200, "application/json", "{\"ok\":true}");
     });
 
     // Track enable/disable - use /tracking/enable to avoid route conflict with /track/*
