@@ -904,6 +904,14 @@ def clear_pointing_data():
     log.info("Pointing data cleared")
 
 
+# The drive firmware counts position in encoder pulses at PULSES_PER_DEGREE = 2,
+# so no commanded position is meaningful below half a degree.  The Gaussian
+# centroid uncertainties from a single scan are an order of magnitude finer than
+# that, so they are combined in quadrature with the quantisation error below.
+_MOUNT_QUANTISATION_DEG = 0.5
+_MOUNT_QUANTISATION_SIGMA_DEG = _MOUNT_QUANTISATION_DEG / math.sqrt(12.0)
+
+
 def _pointing_model_matrix(alt_deg: np.ndarray, az_deg: np.ndarray) -> np.ndarray:
     """Build the design matrix for the 4-parameter pointing model.
 
@@ -911,6 +919,14 @@ def _pointing_model_matrix(alt_deg: np.ndarray, az_deg: np.ndarray) -> np.ndarra
     [ΔAlt₀, ΔAz₀, AN, AE].
 
     Rows 0..N-1 are the altitude equations, rows N..2N-1 are the azimuth equations.
+
+    AN and AE are the north and east tilt of the mount's azimuth axis.  The
+    coefficients are the derivatives of a source's alt/az with respect to that
+    tilt, obtained by rotating the horizon frame; see
+    test_pointing_model_matrix_matches_frame_rotation for the check against
+    numerically rotated coordinates.  The azimuth signs are opposite to the
+    altitude ones: tipping the axis north raises a source in the north and
+    swings a source in the east clockwise.
     """
     az_rad = np.radians(az_deg)
     alt_rad = np.radians(alt_deg)
@@ -922,11 +938,11 @@ def _pointing_model_matrix(alt_deg: np.ndarray, az_deg: np.ndarray) -> np.ndarra
     A[:n, 2] = np.cos(az_rad)  # AN
     A[:n, 3] = np.sin(az_rad)  # AE
 
-    # Azimuth equations: ΔAz = ΔAz₀ + (−AN·sin(az) + AE·cos(az))·tan(alt)
+    # Azimuth equations: ΔAz = ΔAz₀ + (AN·sin(az) − AE·cos(az))·tan(alt)
     tan_alt = np.tan(alt_rad)
-    A[n:, 1] = 1.0                      # ΔAz₀
-    A[n:, 2] = -np.sin(az_rad) * tan_alt  # AN
-    A[n:, 3] = np.cos(az_rad) * tan_alt   # AE
+    A[n:, 1] = 1.0                       # ΔAz₀
+    A[n:, 2] = np.sin(az_rad) * tan_alt   # AN
+    A[n:, 3] = -np.cos(az_rad) * tan_alt  # AE
 
     return A
 
@@ -949,10 +965,21 @@ def fit_pointing_model(data: list | None = None,
         tilt_north_deg (AN)           : north-south tilt
         tilt_east_deg (AE)            : east-west tilt
         effective_lat, effective_lon  : corrected observer position (if true given)
+        az_offset_command_deg         : azimuth offset to push to the controller
+                                        alongside the effective position; differs
+                                        from az_offset_deg by az_site_rotation_deg
+        az_site_rotation_deg          : constant azimuth rotation introduced by
+                                        the longitude shift, which is cancelled
+                                        in az_offset_command_deg
+        parameter_significance        : |value|/sigma for each parameter
+        min_tilt_significance         : the weaker of the two tilt significances
+        reduced_chi_squared           : residuals against the per-scan sigmas
         residuals_alt, residuals_az   : residual errors (degrees)
         rms_alt, rms_az               : RMS residuals
         n_scans                       : number of scans used
-        success                       : bool
+        success                       : the fit converged; it does NOT mean the
+                                        model is good enough to apply - check
+                                        the significance and chi-squared too
     """
     if data is None:
         data = load_pointing_data()
@@ -1009,11 +1036,20 @@ def fit_pointing_model(data: list | None = None,
     b = np.concatenate([d_alt, d_az])
 
     def scan_uncertainty(entry: dict, key: str) -> float:
+        """Per-scan sigma, floored by what the mount can actually command.
+
+        A tight Gaussian centroid does not mean the telescope was pointed that
+        precisely, so the fit uncertainty is combined in quadrature with the
+        encoder quantisation.  Without this the weights claim a precision the
+        hardware cannot deliver and a single scan can dominate the solution.
+        """
         try:
             value = float(entry.get(key, 1.0))
         except (TypeError, ValueError):
-            return 1.0
-        return max(value, 0.01) if math.isfinite(value) else 1.0
+            value = 1.0
+        if not math.isfinite(value) or value <= 0.0:
+            value = 1.0
+        return math.hypot(value, _MOUNT_QUANTISATION_SIGMA_DEG)
 
     alt_unc = np.array([
         scan_uncertainty(d, "alt_error_uncertainty_deg") for d in good
@@ -1065,6 +1101,19 @@ def fit_pointing_model(data: list | None = None,
                   max(reduced_chi_squared, 1e-12))
     parameter_errors = np.sqrt(np.maximum(np.diag(covariance), 0.0))
 
+    def significance(value: float, error: float) -> float:
+        """How many sigma a fitted parameter is from zero."""
+        if not math.isfinite(error) or error <= 0.0:
+            return float("inf") if value else 0.0
+        return abs(value) / error
+
+    significances = {
+        "alt_offset": significance(alt_offset, parameter_errors[0]),
+        "az_offset": significance(az_offset, parameter_errors[1]),
+        "tilt_north": significance(tilt_north, parameter_errors[2]),
+        "tilt_east": significance(tilt_east, parameter_errors[3]),
+    }
+
     model = {
         "alt_offset_deg": alt_offset,
         "az_offset_deg": az_offset,
@@ -1083,6 +1132,9 @@ def fit_pointing_model(data: list | None = None,
             "tilt_north": float(parameter_errors[2]),
             "tilt_east": float(parameter_errors[3]),
         },
+        "parameter_significance": {k: float(v) for k, v in significances.items()},
+        "min_tilt_significance": float(min(significances["tilt_north"],
+                                           significances["tilt_east"])),
         "residuals_alt": res_alt.tolist(),
         "residuals_az": res_az.tolist(),
         "scan_azimuths": az_sun.tolist(),
@@ -1092,7 +1144,8 @@ def fit_pointing_model(data: list | None = None,
         "success": True,
     }
 
-    # Effective lat/lon
+    # Effective lat/lon.  Moving the observer north is a rotation about a purely
+    # horizontal axis, so a latitude shift reproduces a north tilt exactly.
     if true_lat is not None:
         model["effective_lat"] = true_lat + tilt_north
     if true_lon is not None and true_lat is not None:
@@ -1101,7 +1154,17 @@ def fit_pointing_model(data: list | None = None,
             return {"success": False,
                     "error": "Effective longitude is undefined near the geographic pole",
                     "n_scans": n}
-        model["effective_lon"] = true_lon + tilt_east / cos_lat
+        delta_lon = tilt_east / cos_lat
+        model["effective_lon"] = true_lon + delta_lon
+
+        # A longitude shift is a rotation about the Earth's polar axis, which
+        # is only partly horizontal.  Its vertical component rotates azimuth by
+        # delta_lon*sin(lat) at every altitude - a constant no axis tilt can
+        # produce.  Cancel it in the constant azimuth offset that is pushed to
+        # the controller, so the applied correction matches the fitted model.
+        site_az_rotation = delta_lon * math.sin(math.radians(true_lat))
+        model["az_site_rotation_deg"] = float(site_az_rotation)
+        model["az_offset_command_deg"] = float(az_offset - site_az_rotation)
 
     return model
 

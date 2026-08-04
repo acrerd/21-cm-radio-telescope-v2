@@ -521,18 +521,28 @@ class TestFlaskAPI:
         data = resp.get_json()
         assert data["success"] is False
 
-    @patch.object(sched, 'SRT_CONTROLLER_URL', "http://fake")
-    def test_apply_calibration_updates_location_and_offsets(self, client):
+    @staticmethod
+    def _applicable_model(**overrides):
         model = {
             "success": True,
             "n_scans": 6,
             "az_coverage_deg": 140.0,
             "condition_number": 8.0,
+            "min_tilt_significance": 6.0,
+            "reduced_chi_squared": 1.2,
             "effective_lat": 55.91,
             "effective_lon": -4.29,
             "alt_offset_deg": 0.35,
             "az_offset_deg": -0.20,
+            "az_site_rotation_deg": 0.05,
+            "az_offset_command_deg": -0.25,
         }
+        model.update(overrides)
+        return model
+
+    @patch.object(sched, 'SRT_CONTROLLER_URL', "http://fake")
+    def test_apply_calibration_updates_location_and_offsets(self, client):
+        model = self._applicable_model()
         with patch('sun_scan.load_pointing_model', return_value=model), \
              patch.object(sched, 'srt_api_call', return_value={"ok": True}) as api, \
              patch.object(sched, 'save_config') as save:
@@ -541,9 +551,45 @@ class TestFlaskAPI:
         assert resp.status_code == 200
         assert resp.get_json()["success"] is True
         assert [call.args[0] for call in api.call_args_list] == ["/settings/save", "/offset"]
+        # The azimuth offset pushed is the one with the effective-longitude
+        # rotation removed, not the raw fitted offset.
         assert api.call_args_list[1].args[1] == {
-            "alt": "0.350000", "az": "-0.200000"}
+            "alt": "0.350000", "az": "-0.250000"}
         save.assert_called_once()
+
+    @patch.object(sched, 'SRT_CONTROLLER_URL', "http://fake")
+    def test_apply_rejects_insignificant_tilt(self, client):
+        """Half a day of Sun leaves the tilts degenerate with the offsets."""
+        model = self._applicable_model(min_tilt_significance=1.7)
+        with patch('sun_scan.load_pointing_model', return_value=model), \
+             patch.object(sched, 'srt_api_call') as api:
+            resp = client.post('/api/calday/apply')
+
+        assert resp.get_json()["success"] is False
+        assert "sigma" in resp.get_json()["error"]
+        api.assert_not_called()
+
+    @patch.object(sched, 'SRT_CONTROLLER_URL', "http://fake")
+    def test_apply_rejects_model_that_does_not_fit_the_scans(self, client):
+        model = self._applicable_model(reduced_chi_squared=24.0)
+        with patch('sun_scan.load_pointing_model', return_value=model), \
+             patch.object(sched, 'srt_api_call') as api:
+            resp = client.post('/api/calday/apply')
+
+        assert resp.get_json()["success"] is False
+        assert "chi-squared" in resp.get_json()["error"]
+        api.assert_not_called()
+
+    @patch.object(sched, 'SRT_CONTROLLER_URL', "http://fake")
+    def test_apply_rejects_model_without_azimuth_compensation(self, client):
+        model = self._applicable_model()
+        del model["az_offset_command_deg"]
+        with patch('sun_scan.load_pointing_model', return_value=model), \
+             patch.object(sched, 'srt_api_call') as api:
+            resp = client.post('/api/calday/apply')
+
+        assert resp.get_json()["success"] is False
+        api.assert_not_called()
 
     @patch.object(sched, 'SRT_CONTROLLER_URL', "http://fake")
     def test_apply_rejects_legacy_unchecked_model(self, client):

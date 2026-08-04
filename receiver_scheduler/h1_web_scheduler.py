@@ -123,6 +123,14 @@ ESP32_FIRMWARE_DIR = os.path.abspath(os.path.join(_SCRIPT_DIR, "..", "esp32_cont
 FIRMWARE_UPDATE_ENV = _config.get("firmware_update_env", "wt32-eth01-ota")
 RADIOCONDA_REEXEC_ENV = "H1_SCHEDULER_RADIOCONDA_REEXEC"
 
+# Before a pointing model is pushed to the telescope, the mount tilt has to be
+# measured rather than merely fitted, and the model has to describe the scans.
+# Sun positions from a single half-day leave the tilts degenerate with the
+# constant offsets, which shows up as low significance rather than as a
+# geometry failure.
+CALDAY_MIN_TILT_SIGNIFICANCE = 3.0
+CALDAY_MAX_REDUCED_CHI_SQUARED = 4.0
+
 firmware_update_lock = threading.Lock()
 firmware_update_state = {
     "running": False,
@@ -3522,20 +3530,50 @@ def api_calday_apply():
     model = load_pointing_model()
     if not model or not model.get("success"):
         return jsonify({'success': False, 'error': 'No valid pointing model to apply'})
+    # Geometry checks only say the four parameters are separable, not that they
+    # were actually measured.  The fit already reports how significant each
+    # parameter is and how well it describes the scans, so require both before
+    # anything is pushed to the telescope.
     try:
-        model_quality_valid = (
+        geometry_valid = (
             int(model.get("n_scans", 0)) >= 4 and
             float(model.get("az_coverage_deg", 0)) >= 30 and
             math.isfinite(float(model.get("condition_number", float("inf")))) and
             float(model.get("condition_number", float("inf"))) <= 1e4
         )
     except (TypeError, ValueError):
-        model_quality_valid = False
-    if not model_quality_valid:
+        geometry_valid = False
+    if not geometry_valid:
         return jsonify({
             'success': False,
             'error': ('Saved model predates the calibration quality checks or has '
                       'insufficient coverage; fit the model again before applying'),
+        })
+
+    try:
+        significance = float(model["min_tilt_significance"])
+        chi_squared = float(model["reduced_chi_squared"])
+    except (KeyError, TypeError, ValueError):
+        return jsonify({
+            'success': False,
+            'error': ('Saved model predates the tilt significance and chi-squared '
+                      'checks; fit the model again before applying'),
+        })
+    if not math.isfinite(significance) or significance < CALDAY_MIN_TILT_SIGNIFICANCE:
+        return jsonify({
+            'success': False,
+            'error': (f'Mount tilt is only measured to {significance:.1f} sigma; '
+                      f'at least {CALDAY_MIN_TILT_SIGNIFICANCE:.0f} is required. '
+                      'Collect scans across a wider spread of Sun positions - '
+                      'a morning set as well as an afternoon one.'),
+        })
+    if not math.isfinite(chi_squared) or chi_squared > CALDAY_MAX_REDUCED_CHI_SQUARED:
+        return jsonify({
+            'success': False,
+            'error': (f'Model does not describe the scans (reduced chi-squared '
+                      f'{chi_squared:.1f}, limit {CALDAY_MAX_REDUCED_CHI_SQUARED:.0f}); '
+                      'the residuals are far larger than the scan uncertainties, so '
+                      'something other than mount tilt is moving the pointing.'),
         })
 
     eff_lat = model.get("effective_lat")
@@ -3549,7 +3587,15 @@ def api_calday_apply():
                         'error': 'SRT controller URL is disabled; cannot apply the model'})
 
     alt_offset = model.get("alt_offset_deg")
-    az_offset = model.get("az_offset_deg")
+    # The effective longitude rotates azimuth by a constant that is not part of
+    # the fitted tilt, so push the offset that has that rotation removed.
+    az_offset = model.get("az_offset_command_deg")
+    if az_offset is None:
+        return jsonify({
+            'success': False,
+            'error': ('Saved model predates the effective-longitude azimuth '
+                      'correction; fit the model again before applying'),
+        })
     if not all(isinstance(v, (int, float)) and math.isfinite(v)
                for v in (eff_lat, eff_lon, alt_offset, az_offset)):
         return jsonify({'success': False, 'error': 'Model contains invalid correction values'})

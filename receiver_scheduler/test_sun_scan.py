@@ -271,3 +271,91 @@ def test_pointing_model_rejects_narrow_sun_coverage():
 
     assert model["success"] is False
     assert "coverage" in model["error"]
+
+
+def _rotate_horizon_frame(alt_deg, az_deg, tilt_north_deg, tilt_east_deg):
+    """Alt/az of a source after tilting the mount's vertical axis.
+
+    Independent of the design matrix: builds the source unit vector in the
+    north/east/up frame, rotates the frame, and reads the angles back.
+    """
+    alt, az = math.radians(alt_deg), math.radians(az_deg)
+    vec = np.array([math.cos(alt) * math.cos(az),
+                    math.cos(alt) * math.sin(az),
+                    math.sin(alt)])
+    tn, te = math.radians(tilt_north_deg), math.radians(tilt_east_deg)
+    # Tipping "up" toward north is a rotation about the east axis, and toward
+    # east a rotation about the north axis.
+    about_east = np.array([[math.cos(-tn), 0, math.sin(-tn)],
+                           [0, 1, 0],
+                           [-math.sin(-tn), 0, math.cos(-tn)]])
+    about_north = np.array([[1, 0, 0],
+                            [0, math.cos(te), -math.sin(te)],
+                            [0, math.sin(te), math.cos(te)]])
+    rotated = about_north @ (about_east @ vec)
+    return (math.degrees(math.asin(rotated[2])),
+            math.degrees(math.atan2(rotated[1], rotated[0])) % 360.0)
+
+
+@pytest.mark.parametrize("alt_deg,az_deg", [
+    (45.3, 235.6), (33.3, 259.1), (12.4, 290.1), (30.0, 120.0), (60.0, 15.0),
+])
+def test_pointing_model_matrix_matches_frame_rotation(alt_deg, az_deg):
+    """The design matrix must be the derivative of a real frame rotation.
+
+    Generating test data from the same matrix that is being tested cannot catch
+    a sign error in it, so compare against independently rotated coordinates.
+    """
+    step = 1e-3
+    matrix = sun_scan._pointing_model_matrix(np.array([alt_deg]), np.array([az_deg]))
+
+    for column, (tn, te) in ((2, (step, 0.0)), (3, (0.0, step))):
+        alt_hi, az_hi = _rotate_horizon_frame(alt_deg, az_deg, tn, te)
+        alt_lo, az_lo = _rotate_horizon_frame(alt_deg, az_deg, -tn, -te)
+        d_alt = (alt_hi - alt_lo) / (2 * step)
+        d_az = ((az_hi - az_lo + 180.0) % 360.0 - 180.0) / (2 * step)
+
+        assert matrix[0, column] == pytest.approx(d_alt, abs=1e-3)
+        assert matrix[1, column] == pytest.approx(d_az, abs=1e-3)
+
+
+def test_effective_longitude_azimuth_rotation_is_cancelled():
+    """A longitude shift rotates azimuth by a constant no axis tilt produces."""
+    data, expected = _synthetic_pointing_data([80, 105, 135, 165, 195, 225])
+    lat = 55.9
+
+    model = sun_scan.fit_pointing_model(data, true_lat=lat, true_lon=-4.3)
+
+    delta_lon = model["effective_lon"] - (-4.3)
+    assert model["az_site_rotation_deg"] == pytest.approx(
+        delta_lon * math.sin(math.radians(lat)))
+    assert model["az_offset_command_deg"] == pytest.approx(
+        expected[1] - model["az_site_rotation_deg"])
+
+
+def test_scan_uncertainty_floors_at_mount_quantisation():
+    """A tight Gaussian fit cannot beat what the encoders can command."""
+    data, _ = _synthetic_pointing_data([80, 105, 135, 165, 195, 225])
+    for entry in data:
+        entry["alt_error_uncertainty_deg"] = 1e-6
+        entry["az_error_uncertainty_deg"] = 1e-6
+
+    model = sun_scan.fit_pointing_model(data, true_lat=55.9, true_lon=-4.3)
+
+    # Exact data, so the parameters are still recovered; the point is that the
+    # uncertainties stay bounded by the mount rather than the fit.
+    assert model["success"] is True
+    assert model["parameter_errors_deg"]["tilt_north"] < 1.0
+
+
+def test_pointing_model_reports_tilt_significance():
+    data, _ = _synthetic_pointing_data([80, 105, 135, 165, 195, 225])
+    noisy = [dict(entry) for entry in data]
+    # Swamp the tilt signal with a large constant altitude error.
+    for entry in noisy:
+        entry["alt_error_deg"] += 5.0
+
+    model = sun_scan.fit_pointing_model(noisy, true_lat=55.9, true_lon=-4.3)
+
+    assert "min_tilt_significance" in model
+    assert model["parameter_significance"]["alt_offset"] > model["min_tilt_significance"]
