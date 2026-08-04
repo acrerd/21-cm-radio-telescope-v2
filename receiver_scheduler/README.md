@@ -26,7 +26,7 @@ This receiver is designed for radio astronomy observations of neutral hydrogen (
 | `requirements.txt` | Python package dependencies |
 | `test_scheduler.py` | Unit tests for scheduler behavior |
 | `test_sun_scan.py` | Unit tests for Sun scan geometry and cancellation |
-| `Start SRT Sofware.desktop` | One-click observatory workstation launcher |
+| `pointing_data.json` | Saved Sun scan pointing corrections |
 | `start_srt_software.sh` | Starts VS Code, Firefox, Stellarium, and optional window layout |
 | `start_platformio_monitor.sh` | Single-instance serial monitor with device wait and lock retry handling |
 | `SRT Software.code-workspace` | VS Code workspace with automatic scheduler and serial-monitor tasks |
