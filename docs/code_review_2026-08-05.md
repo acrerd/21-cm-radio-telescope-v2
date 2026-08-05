@@ -7,10 +7,11 @@
 verify every claim against the actual code before reporting; the three most severe claims were
 independently re-verified afterwards. No code was changed.
 
-**Fix status (updated 5 August 2026):** P1, P3, P5, S1, S4, and S5 are fixed, tested, and
-pushed (commits `c338a42`, `dee77ac`, `7a4e0f6`, `6881581`, `3533542`); S10 is partially
-mitigated by the S1 rework. Per-finding status notes appear inline below. The remaining
-items — all ESP32 firmware findings and the medium/low scheduler items — are still open.
+**Fix status (updated 5 August 2026):** P1, P3, P5, S1, S2, S3, S4, and S5 are fixed,
+tested, and pushed (commits `c338a42`, `dee77ac`, `7a4e0f6`, `6881581`, `3533542`,
+`131fd8e`); S10 is partially mitigated by the S1 rework. Per-finding status notes appear
+inline below. The remaining items — all ESP32 firmware findings and the medium/low
+scheduler items — are still open.
 
 **Overall verdict:** the coordinate mathematics, the Due status-line parsing, the JS-to-endpoint
 wiring, and the sun-scan geometry were all checked and found correct — the foundations are sound.
@@ -143,6 +144,11 @@ scheduler thread all block on the lock — the operator cannot stop or even see 
 the telescope is misbehaving.
 
 ### S2. HIGH — Wildcard CORS on an unauthenticated control API enables drive-by command execution
+**FIXED** in `131fd8e`: CORS is now restricted to the configured controller origins (the
+ESP32 web UI legitimately calls this API cross-origin — verified in `index_html.h` before
+changing), `/api/config` rejects unknown keys against the defaults, and observation
+filenames are contained inside the data folder via realpath checks. Residual (accepted):
+the API remains unauthenticated for same-network HTTP clients by design.
 `:173-179` sets `Access-Control-Allow-Origin: *`; `/api/config` POST (`:3247-3251`) does
 `cfg.update(request.json)` with no validation; `_find_platformio()` (`:471-473`) returns the
 configured `platformio_path` verbatim and `_run_firmware_update()` (`:526-538`) executes it.
@@ -151,6 +157,10 @@ binary and trigger `/api/firmware/update`. Related: `generate_filename()` (`:919
 unvalidated `obs['filename']`; absolute paths or `../` escape the data folder.
 
 ### S3. HIGH — Scheduled observations bypass the SDR reservation held by a sun scan / calibration day
+**FIXED** in `131fd8e` with preemption semantics (a new scheduled observation always
+wins): the start cancels a running Sun scan / calibration day and waits up to 10 minutes
+for the SDR to be released before launching; the wait runs in the unlocked start phase and
+is abortable by stop. If the scan never releases, the attempt fails into the S5 backoff.
 `:943-1009` checks only `current_process`, never `sun_scan_state["running"]` or
 `cal_day_state["running"]` (those checks exist only in the manual-start endpoints). A due
 observation can launch the receiver while `sun_scan.py` holds the B210 — device-open failure or
@@ -313,4 +323,5 @@ Cheap and high-value first:
    goto-implies-tracking.
 5. One FreeRTOS mutex around the ESP32 shared state plus a UART-write lock (C1, C2, C5,
    C10) — bench session with `tools/due_emulator.py`, soak overnight before deploying.
-6. Fix the `/wifi/scan` watchdog subscription (C3) and validate `/api/config` keys (S2).
+6. Fix the `/wifi/scan` watchdog subscription (C3). ~~Validate `/api/config` keys
+   (S2).~~ **Done** (`131fd8e`, together with S3 preemption).
