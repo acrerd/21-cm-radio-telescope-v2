@@ -20,11 +20,11 @@ PlatformIO is invoked via the conda-installed binary at `~/.platformio/penv/Scri
 **ESP32 controller firmware** (`esp32_controller_arduino/`):
 ```
 cd esp32_controller_arduino
-~/.platformio/penv/Scripts/pio.exe run                  # builds esp32s3 + wt32-eth01
+~/.platformio/penv/Scripts/pio.exe run                  # builds wt32-eth01 (default)
 ~/.platformio/penv/Scripts/pio.exe run -e wt32-eth01 -t upload
 ~/.platformio/penv/Scripts/pio.exe test -e native       # host unit tests for coordinates
 ```
-The two `native` environments under the controller often fail to link on this Windows host (missing `WinMain`); the two firmware environments (`esp32s3`, `wt32-eth01`) are the canonical targets and must always build clean.
+The deployed board is the **WT32-ETH01** and it is the default build. The `esp32s3` environment is legacy (that board is no longer used) — keep it compiling when convenient but WT32-ETH01 is the canonical target and must always build clean. The two `native` environments under the controller often fail to link on this Windows host (missing `WinMain`).
 
 **Receiver scheduler** (`receiver_scheduler/`):
 ```
