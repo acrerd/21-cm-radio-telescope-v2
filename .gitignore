@@ -33,6 +33,9 @@ receiver_scheduler/data/
 *.gcov
 *.gcda
 *.gcno
+.coverage
+.coverage.*
+coverage.xml
 
 # OS files
 .DS_Store
