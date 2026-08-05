@@ -310,6 +310,37 @@ direction is mechanically consistent; the 0-based progress callback is consumed 
 
 ---
 
+## Handoff notes for the observatory host (2026-08-05)
+
+Work continues on the observatory Linux host. Things worth knowing there:
+
+- **Verify on real Linux**: S4 was only logic-tested on Windows — confirm `systemctl stop`
+  (or `kill`) of the scheduler actually terminates the receiver and frees the B210.
+  Also worth a live check: cancelling a Sun scan mid-slew now releases the B210 (P1),
+  and a scheduled observation preempts a running calibration day (S3).
+- **Bench ESP32 session** is the next major block (C1–C15). Use `tools/due_emulator.py`
+  (wiring in its docstring; `pip install pyserial` into radioconda). The WT32-ETH01 has
+  no USB: first flash via serial adapter on TX0/RX0, thereafter OTA
+  (`pio run -e wt32-eth01-ota -t upload`, target 192.168.106.120). Keep the previous
+  firmware binary for rollback. Ideally two USB-UART adapters: TX0/RX0 console (watchdog
+  and crash evidence for C3/C1) + IO4/IO14 emulated Due.
+- **C7 caution**: before making `/goto` slew-once, grep for its callers — the scheduler
+  or sun scan may rely on goto-implies-tracking to hold position.
+- **P2** (sun-scan cancel only polled between grid points) is the best next
+  software-only fix: it also makes S3 preemption take effect in seconds instead of
+  potentially minutes.
+- **Environment**: run tests with the radioconda Python
+  (`/home/astro/radioconda/bin/python -m pytest receiver_scheduler/test_scheduler.py
+  receiver_scheduler/test_sun_scan.py`); 125 tests green at handoff. The scheduler
+  re-execs under radioconda automatically. A lingering `H1_INTEGRATION_TIME` (or other
+  `H1_*`) environment variable overrides receiver defaults — check the environment if
+  the GUI starts with odd settings. Two receiver instances conflict over the default
+  `h1_data.h5` lock.
+- **Behaviour changes operators may notice**: status/stop stay responsive during slews;
+  stop now cancels a starting observation; crash-looping receivers give up after three
+  attempts ("use Run Now to retry"); the χ² floor makes the calibration significance
+  gate stricter, so marginal calibration days may now be rejected — intended.
+
 ## Suggested fix priority
 
 Cheap and high-value first:
