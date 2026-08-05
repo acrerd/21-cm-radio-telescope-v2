@@ -340,14 +340,16 @@ def srt_point_telescope(obs: dict) -> bool:
         return False
 
 
-def srt_wait_for_slew(timeout: Optional[int] = None) -> bool:
+def srt_wait_for_slew(timeout: Optional[int] = None,
+                      cancel_event: Optional[threading.Event] = None) -> bool:
     """Wait for telescope to finish slewing.
 
     Polls /status until is_slewing is false, or timeout is reached.
     The is_slewing field is set by the mount when status contains 'Slewing'
     or a ' -> ' target indicator.
 
-    Returns True if slew complete, False if timeout or error.
+    Returns True if slew complete, False if timeout, error, or the
+    cancel_event was set.
     """
     if not SRT_CONTROLLER_URL:
         return True
@@ -361,6 +363,9 @@ def srt_wait_for_slew(timeout: Optional[int] = None) -> bool:
     time.sleep(2)
 
     while time.time() - start_time < timeout:
+        if cancel_event is not None and cancel_event.is_set():
+            log.info("SRT slew wait aborted")
+            return False
         status = srt_get_status()
         if status:
             is_slewing = status.get('is_slewing', False)
@@ -816,6 +821,12 @@ current_process: Optional[subprocess.Popen] = None
 current_observation: Optional[dict] = None
 observation_end_time: Optional[datetime] = None
 process_lock = threading.Lock()
+# True while start_observation is pointing/waiting for the slew with the
+# lock released; start_abort lets stop_observation cancel that in-flight
+# start. Both are only written under process_lock.
+observation_starting = False
+starting_observation_name = ''
+start_abort = threading.Event()
 receiver_boot_process: Optional[subprocess.Popen] = None
 receiver_boot_lock = threading.Lock()
 scheduler_running = True
@@ -935,19 +946,30 @@ def start_observation(obs: dict, duration_override: int = None) -> bool:
     For all others: commands telescope + starts SDR receiver.
     """
     global current_process, current_observation, observation_end_time
+    global observation_starting, starting_observation_name
 
     # Calibration day: runs as a background thread, not a subprocess
     if obs.get('coord_system') == 'calibration':
         return _start_calibration_observation(obs, duration_override)
 
+    # Claim the start under the lock, then do the slow telescope work
+    # (pointing and the slew wait, potentially minutes) with the lock
+    # released so /api/status and /api/stop stay responsive throughout.
     with process_lock:
         if current_process is not None and current_process.poll() is None:
             return False
+        if observation_starting:
+            return False
+        observation_starting = True
+        starting_observation_name = obs.get('name', '')
+        start_abort.clear()
 
         # A manually started receiver is useful for warm-up/testing, but scheduled
         # observations need exclusive access to the SDR.
         stop_booted_receiver()
 
+    satellite_tracking_started = False
+    try:
         # Point telescope at target and wait for slew before recording
         if SRT_CONTROLLER_URL:
             if not srt_point_telescope(obs):
@@ -959,15 +981,23 @@ def start_observation(obs: dict, duration_override: int = None) -> bool:
                 tle_text = obs.get('tle_text', '')
                 if tle_text:
                     start_satellite_tracking(tle_text)
+                    satellite_tracking_started = True
                 else:
                     log.error("No TLE data for satellite observation")
                     return False
-            elif not srt_wait_for_slew():
+            elif not srt_wait_for_slew(cancel_event=start_abort):
+                if start_abort.is_set():
+                    log.info("Observation start aborted during slew")
+                    return False
                 log.warning("SRT slew timeout - starting observation at current position")
 
         # Set calibrator state
         if SRT_CONTROLLER_URL:
             srt_set_calibrator(obs.get('calibrator', False))
+
+        if start_abort.is_set():
+            log.info("Observation start aborted")
+            return False
 
         output_file = generate_filename(obs)
         env = os.environ.copy()
@@ -1005,8 +1035,17 @@ def start_observation(obs: dict, duration_override: int = None) -> bool:
             '--sample-rate', str(obs.get('bandwidth_mhz', 2.4) * 1e6),
         ]
 
-        try:
-            current_process = subprocess.Popen(cmd, env=env, cwd=os.path.abspath(os.path.join(_SCRIPT_DIR, "..")))
+        with process_lock:
+            if start_abort.is_set():
+                log.info("Observation start aborted")
+                return False
+            try:
+                current_process = subprocess.Popen(
+                    cmd, env=env,
+                    cwd=os.path.abspath(os.path.join(_SCRIPT_DIR, "..")))
+            except Exception as e:
+                log.error("Error starting observation: %s", e)
+                return False
             now = datetime.now()
             duration = duration_override or obs.get('duration_minutes', 30)
             observation_end_time = now + timedelta(minutes=duration)
@@ -1017,15 +1056,27 @@ def start_observation(obs: dict, duration_override: int = None) -> bool:
                 'ends_at': observation_end_time.isoformat()
             }
             log.info("Started: %s (ends at %s)", obs.get('name'), observation_end_time.strftime('%H:%M:%S'))
+            # Tracking ownership passes to the running observation
+            satellite_tracking_started = False
             return True
-        except Exception as e:
-            log.error("Error starting observation: %s", e)
-            return False
+    finally:
+        if satellite_tracking_started:
+            # The start failed or was aborted after tracking began; don't
+            # leave the tracking thread slewing the dish indefinitely.
+            stop_satellite_tracking()
+        with process_lock:
+            observation_starting = False
+            starting_observation_name = ''
 
 
 def stop_observation() -> bool:
     """Stop current observation."""
     global current_process, current_observation, observation_end_time
+
+    # Abort any in-flight start (pointing/slew wait runs outside the lock);
+    # the starter notices within one poll cycle and abandons the launch.
+    was_starting = observation_starting
+    start_abort.set()
 
     # Handle calibration observations (thread-based, not subprocess)
     if current_observation and current_observation.get('coord_system') == 'calibration':
@@ -1044,7 +1095,7 @@ def stop_observation() -> bool:
 
     with process_lock:
         if current_process is None:
-            return False
+            return was_starting
 
         name = current_observation.get('name', '?') if current_observation else '?'
 
@@ -1230,8 +1281,12 @@ def scheduler_thread():
                     break
 
             with process_lock:
-                is_running = current_process is not None and current_process.poll() is None
-                running_name = current_observation.get('name', '') if current_observation else ''
+                is_running = ((current_process is not None and current_process.poll() is None)
+                              or observation_starting)
+                if observation_starting:
+                    running_name = starting_observation_name
+                else:
+                    running_name = current_observation.get('name', '') if current_observation else ''
             # Also count calibration day as running
             if not is_running and current_observation and current_observation.get('coord_system') == 'calibration':
                 # A naturally completed/failed calibration remains owned by its

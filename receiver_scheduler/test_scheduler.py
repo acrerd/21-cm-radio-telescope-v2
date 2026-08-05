@@ -1000,6 +1000,94 @@ class TestObservationLifecycle:
 
 
 # =============================================================================
+# Start/stop responsiveness during slews
+# =============================================================================
+
+class TestNonBlockingStart:
+    """The slew wait must not hold process_lock, and stop must abort it."""
+
+    OBS = {"name": "SlewTest", "coord_system": "altaz",
+           "coord1_deg": 45, "coord1_min": 0, "coord1_sec": 0,
+           "coord2_deg": 180, "coord2_min": 0, "coord2_sec": 0,
+           "center_freq_mhz": 1420.405, "channels": 4096,
+           "integration_time_s": 3.0, "sdr_type": "demo",
+           "gain_db": 40, "bandwidth_mhz": 2.4,
+           "calibrator": False, "duration_minutes": 10}
+
+    def setup_method(self):
+        sched.current_process = None
+        sched.current_observation = None
+        sched.observation_end_time = None
+        sched.receiver_boot_process = None
+        sched.observation_starting = False
+        sched.start_abort.clear()
+
+    teardown_method = setup_method
+
+    @patch.object(sched, 'SRT_CONTROLLER_URL', 'http://controller')
+    @patch('subprocess.Popen')
+    def test_process_lock_free_during_slew_wait(self, mock_popen):
+        mock_proc = MagicMock()
+        mock_proc.poll.return_value = None
+        mock_popen.return_value = mock_proc
+        lock_free = {}
+
+        def fake_wait(timeout=None, cancel_event=None):
+            # /api/status and /api/stop must be able to take the lock while
+            # the telescope is still slewing.
+            acquired = sched.process_lock.acquire(timeout=1)
+            lock_free['value'] = acquired
+            if acquired:
+                sched.process_lock.release()
+            return True
+
+        with patch.object(sched, 'srt_point_telescope', return_value=True), \
+             patch.object(sched, 'srt_wait_for_slew', side_effect=fake_wait), \
+             patch.object(sched, 'srt_set_calibrator', return_value=True), \
+             patch.object(sched, 'generate_filename', return_value='/tmp/s.h5'):
+            assert sched.start_observation(dict(self.OBS)) is True
+
+        assert lock_free['value'] is True
+        assert sched.observation_starting is False
+
+    @patch.object(sched, 'SRT_CONTROLLER_URL', 'http://controller')
+    @patch('subprocess.Popen')
+    def test_stop_aborts_inflight_start(self, mock_popen):
+        def fake_wait(timeout=None, cancel_event=None):
+            # Operator hits stop while the dish is still slewing
+            assert sched.stop_observation() is True
+            return not cancel_event.is_set()
+
+        with patch.object(sched, 'srt_point_telescope', return_value=True), \
+             patch.object(sched, 'srt_wait_for_slew', side_effect=fake_wait), \
+             patch.object(sched, 'srt_set_calibrator', return_value=True), \
+             patch.object(sched, 'generate_filename', return_value='/tmp/s.h5'):
+            assert sched.start_observation(dict(self.OBS)) is False
+
+        mock_popen.assert_not_called()
+        assert sched.current_process is None
+        assert sched.observation_starting is False
+
+    def test_second_start_rejected_while_starting(self):
+        sched.observation_starting = True
+        try:
+            assert sched.start_observation(dict(self.OBS)) is False
+        finally:
+            sched.observation_starting = False
+
+    def test_wait_for_slew_honours_cancel_event(self):
+        cancel = sched.threading.Event()
+        cancel.set()
+        with patch.object(sched, 'SRT_CONTROLLER_URL', 'http://controller'), \
+             patch.object(sched.time, 'sleep'), \
+             patch.object(sched, 'srt_get_status',
+                          return_value={'is_slewing': True,
+                                        'alt': 0, 'az': 0}):
+            assert sched.srt_wait_for_slew(timeout=30,
+                                           cancel_event=cancel) is False
+
+
+# =============================================================================
 # SIGTERM handling
 # =============================================================================
 
