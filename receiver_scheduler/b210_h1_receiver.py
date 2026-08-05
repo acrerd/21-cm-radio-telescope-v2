@@ -28,6 +28,11 @@ INTEGRATION_TIME = float(os.environ.get('H1_INTEGRATION_TIME', 3.0))
 OUTPUT_FILE = os.environ.get('H1_OUTPUT_FILE', "h1_data.h5")
 WATERFALL_HISTORY = 100     # Number of spectra to show in waterfall
 
+# Default blank-sky system temperature for the total-power calibration:
+# SAWbird+ H1 LNA noise figure ~0.6 dB (~43 K), CMB + atmosphere +
+# galactic background ~10 K, spillover and feed losses ~17 K.
+DEFAULT_CAL_TEMP_K = 70.0
+
 # SDR-specific defaults
 SDR_DEFAULTS = {
     'b210': {
@@ -73,6 +78,7 @@ def create_sdr_source(sdr_type, sample_rate, center_freq, gain):
             ),
         )
         source.set_samp_rate(sample_rate)
+        source.set_bandwidth(sample_rate, 0)
         source.set_center_freq(center_freq, 0)
         source.set_gain(gain, 0)
         source.set_antenna("RX2", 0)
@@ -85,6 +91,7 @@ def create_sdr_source(sdr_type, sample_rate, center_freq, gain):
         import osmosdr
         source = osmosdr.source(args="numchan=1 rtl=0")
         source.set_sample_rate(sample_rate)
+        source.set_bandwidth(sample_rate, 0)
         source.set_center_freq(center_freq, 0)
         source.set_freq_corr(0, 0)
         source.set_dc_offset_mode(0, 0)
@@ -212,6 +219,7 @@ class H1ReceiverWindow(QtWidgets.QMainWindow):
         # Display settings
         self.waterfall_min = -70
         self.waterfall_max = -30
+        self.spectrum_log_scale = True  # dB by default; toggled in the GUI
 
         # Create flowgraph
         self.flowgraph = GNURadioFlowgraph(
@@ -227,6 +235,15 @@ class H1ReceiverWindow(QtWidgets.QMainWindow):
 
         # Waterfall history
         self.waterfall_data = deque(maxlen=WATERFALL_HISTORY)
+
+        # Total-power strip chart: raw per-tick samples for the sliding
+        # integration window, and the smoothed points actually plotted.
+        # 6000 ticks at 10 Hz = 600 s, matching the maximum integration time.
+        self.power_raw = deque(maxlen=6000)
+        self.power_history = deque(maxlen=6000)
+        self.power_t0 = time.time()
+        # Kelvin per arb. unit for the total-power chart; None = uncalibrated
+        self.kelvin_per_unit = None
 
         # Python-side accumulator for long integration times
         # GNU Radio does short averaging for display; Python accumulates for saves
@@ -336,6 +353,17 @@ class H1ReceiverWindow(QtWidgets.QMainWindow):
         self.waterfall_widget.setXRange(freq_min, freq_max)
 
         layout.addWidget(self.waterfall_widget, stretch=1)
+
+        # Total power vs time strip chart (linear power, sliding integration)
+        self.power_plot_widget = pg.PlotWidget(title="Total Power vs Time")
+        self.power_plot_widget.setLabel('left', 'Total Power (linear, arb.)')
+        self.power_plot_widget.setLabel('bottom', 'Time', units='s')
+        self.power_plot_widget.showGrid(x=True, y=True)
+        self.power_plot_widget.enableAutoRange()
+        self.power_curve = self.power_plot_widget.plot(
+            pen=pg.mkPen('y', width=1)
+        )
+        layout.addWidget(self.power_plot_widget, stretch=1)
 
         # Count label
         count_layout = QtWidgets.QHBoxLayout()
@@ -449,6 +477,11 @@ class H1ReceiverWindow(QtWidgets.QMainWindow):
         self.autoscale_btn.clicked.connect(self._on_autoscale_spectrum)
         spec_layout.addRow(self.autoscale_btn)
 
+        self.scale_btn = QtWidgets.QPushButton("Scale: dB")
+        self.scale_btn.setCheckable(True)  # unchecked = dB, checked = linear
+        self.scale_btn.clicked.connect(self._on_scale_toggle)
+        spec_layout.addRow(self.scale_btn)
+
         panel_layout.addWidget(spec_group)
 
         # Total Power Display
@@ -494,6 +527,32 @@ class H1ReceiverWindow(QtWidgets.QMainWindow):
         power_layout.addRow("Max:", self.power_max_spin)
 
         panel_layout.addWidget(power_group)
+
+        # Temperature calibration for the total-power chart
+        cal_group = QtWidgets.QGroupBox("Temperature Calibration")
+        cal_layout = QtWidgets.QFormLayout(cal_group)
+
+        self.cal_temp_spin = QtWidgets.QDoubleSpinBox()
+        self.cal_temp_spin.setRange(1.0, 100000.0)
+        self.cal_temp_spin.setDecimals(1)
+        self.cal_temp_spin.setSuffix(" K")
+        self.cal_temp_spin.setValue(DEFAULT_CAL_TEMP_K)
+        cal_layout.addRow("Blank-sky T:", self.cal_temp_spin)
+
+        self.cal_btn = QtWidgets.QPushButton("Set current level = T")
+        self.cal_btn.clicked.connect(self._on_calibrate)
+        cal_layout.addRow(self.cal_btn)
+
+        self.cal_clear_btn = QtWidgets.QPushButton("Clear calibration")
+        self.cal_clear_btn.clicked.connect(self._on_clear_calibration)
+        cal_layout.addRow(self.cal_clear_btn)
+
+        self.cal_status_label = QtWidgets.QLabel("Uncalibrated (arb. units)")
+        self.cal_status_label.setStyleSheet(
+            "font-family: monospace; font-size: 11px;")
+        cal_layout.addRow(self.cal_status_label)
+
+        panel_layout.addWidget(cal_group)
 
         # Waterfall Settings
         wf_group = QtWidgets.QGroupBox("Waterfall Display")
@@ -577,18 +636,25 @@ class H1ReceiverWindow(QtWidgets.QMainWindow):
             if self.sdr_type == 'b210':
                 self.flowgraph.sdr_source.set_samp_rate(new_rate)
                 self.sample_rate = self.flowgraph.sdr_source.get_samp_rate()
+                # Re-track the AD9361 analog filter — it does not follow
+                # runtime rate changes on its own
+                self.flowgraph.sdr_source.set_bandwidth(self.sample_rate, 0)
                 self.flowgraph.sample_rate = self.sample_rate
                 self._update_freq_axis()
                 self._reset_accumulator()
+                self._invalidate_calibration("bandwidth")
                 self._roll_hdf5_file("rate")
                 self._update_status()
                 print(f"Bandwidth changed to {self.sample_rate/1e6:.2f} MHz")
             elif self.sdr_type == 'rtlsdr':
                 self.flowgraph.sdr_source.set_sample_rate(new_rate)
                 self.sample_rate = self.flowgraph.sdr_source.get_sample_rate()
+                # Re-track the tuner IF filter after the rate change
+                self.flowgraph.sdr_source.set_bandwidth(self.sample_rate, 0)
                 self.flowgraph.sample_rate = self.sample_rate
                 self._update_freq_axis()
                 self._reset_accumulator()
+                self._invalidate_calibration("bandwidth")
                 self._roll_hdf5_file("rate")
                 self._update_status()
                 print(f"Bandwidth changed to {self.sample_rate/1e6:.2f} MHz")
@@ -668,14 +734,15 @@ class H1ReceiverWindow(QtWidgets.QMainWindow):
             self.flowgraph.connect((self.flowgraph.moving_avg, 0), (self.flowgraph.nlog10, 0))
             self.flowgraph.connect((self.flowgraph.nlog10, 0), (self.flowgraph.probe, 0))
 
-            # Update frequency axis and display
-            self.freq_axis_hz = self._get_frequency_axis()
-            self.freq_axis_mhz = self.freq_axis_hz / 1e6
-            self.spectrum_curve.setData(self.freq_axis_mhz, np.zeros(self.fft_size))
+            # Update frequency axis (incl. waterfall x-range) and display
+            self._update_freq_axis()
+            self.spectrum_curve.setData(self.freq_axis_mhz,
+                                        np.zeros(self.fft_size))
             self.waterfall_data.clear()
 
             # Reset Python-side accumulator
             self._reset_accumulator()
+            self._invalidate_calibration("bandwidth/FFT size")
             self._roll_hdf5_file("fft")
 
             self.flowgraph.start()
@@ -722,6 +789,7 @@ class H1ReceiverWindow(QtWidgets.QMainWindow):
     def _on_clear_waterfall(self):
         """Clear the waterfall history."""
         self.waterfall_data.clear()
+        self.waterfall_img.clear()
 
     def _on_autoscale_waterfall(self):
         """Auto-scale waterfall color range to fit current data."""
@@ -752,11 +820,73 @@ class H1ReceiverWindow(QtWidgets.QMainWindow):
         self.spectrum_widget.enableAutoRange()
         self.spectrum_widget.autoRange()
 
+    def _on_scale_toggle(self):
+        """Switch the spectrum plot between dB and linear power."""
+        self.spectrum_log_scale = not self.scale_btn.isChecked()
+        self.scale_btn.setText(
+            "Scale: dB" if self.spectrum_log_scale else "Scale: Linear")
+        self._update_spectrum_label()
+        self.spectrum_widget.enableAutoRange()
+        self.spectrum_widget.autoRange()
+
+    def _update_spectrum_label(self):
+        """Set the spectrum y-axis label for the current scale mode."""
+        if self.spectrum_log_scale:
+            self.spectrum_widget.setLabel('left', 'Power', units='dB')
+        elif self.kelvin_per_unit is not None:
+            self.spectrum_widget.setLabel('left', 'Temperature', units='K')
+        else:
+            self.spectrum_widget.setLabel('left', 'Power (linear, arb.)')
+
+    def _on_calibrate(self):
+        """Scale the total-power chart so the current level reads as the
+        entered blank-sky temperature."""
+        if not self.power_raw:
+            print("Cannot calibrate: no power samples yet")
+            return
+        current = sum(p for _, p in self.power_raw) / len(self.power_raw)
+        if current <= 0:
+            print("Cannot calibrate: current power is not positive")
+            return
+        temp_k = self.cal_temp_spin.value()
+        self.kelvin_per_unit = temp_k / current
+        self.power_plot_widget.setLabel('left', 'System Temperature',
+                                        units='K')
+        self.cal_status_label.setText(
+            f"Calibrated: {self.kelvin_per_unit:.4g} K/unit")
+        self.power_plot_widget.enableAutoRange()
+        self._update_spectrum_label()
+        if not self.spectrum_log_scale:
+            self.spectrum_widget.enableAutoRange()
+        print(f"Calibrated: current level = {temp_k:.1f} K "
+              f"({self.kelvin_per_unit:.4g} K/unit)")
+
+    def _on_clear_calibration(self):
+        """Revert the total-power chart to arbitrary linear units."""
+        self.kelvin_per_unit = None
+        self.power_plot_widget.setLabel('left', 'Total Power (linear, arb.)')
+        if hasattr(self, 'cal_status_label'):
+            self.cal_status_label.setText("Uncalibrated (arb. units)")
+        self.power_plot_widget.enableAutoRange()
+        self._update_spectrum_label()
+        if not self.spectrum_log_scale:
+            self.spectrum_widget.enableAutoRange()
+
+    def _invalidate_calibration(self, reason):
+        """Drop the temperature calibration when the raw power scale
+        changes (bandwidth or FFT size)."""
+        if self.kelvin_per_unit is not None:
+            print(f"Temperature calibration cleared: {reason} changed")
+            self._on_clear_calibration()
+
     def _reset_accumulator(self):
         """Reset the Python-side spectrum accumulator."""
         self.accumulator = None
         self.accumulator_count = 0
         self.accumulator_start_time = time.time()
+        # Restart the total-power smoothing window too, so samples taken
+        # with different bandwidth/FFT/integration settings don't mix
+        self.power_raw.clear()
 
     def _update_freq_axis(self):
         """Update frequency axis after center frequency change."""
@@ -800,7 +930,36 @@ class H1ReceiverWindow(QtWidgets.QMainWindow):
                 integrated_db = 10 * np.log10(avg_linear)
 
                 # Update spectrum plot with integrated data (shows true SNR)
-                self.spectrum_curve.setData(self.freq_axis_mhz, integrated_db)
+                if self.spectrum_log_scale:
+                    self.spectrum_curve.setData(self.freq_axis_mhz,
+                                                integrated_db)
+                elif self.kelvin_per_unit is not None:
+                    # Per-channel temperature: scaled so a flat noise
+                    # floor reads the calibrated system temperature
+                    self.spectrum_curve.setData(
+                        self.freq_axis_mhz,
+                        avg_linear * (self.kelvin_per_unit * self.fft_size))
+                else:
+                    self.spectrum_curve.setData(self.freq_axis_mhz,
+                                                avg_linear)
+
+                # Total-power strip chart: instantaneous band power smoothed
+                # over a sliding window equal to the integration time, but
+                # replotted every tick
+                now = time.time()
+                self.power_raw.append((now, float(np.sum(linear_power))))
+                window = max(self.integration_time, 0.1)
+                while self.power_raw and self.power_raw[0][0] < now - window:
+                    self.power_raw.popleft()
+                smoothed = (sum(p for _, p in self.power_raw)
+                            / len(self.power_raw))
+                self.power_history.append((now - self.power_t0, smoothed))
+                scale = (self.kelvin_per_unit
+                         if self.kelvin_per_unit is not None else 1.0)
+                self.power_curve.setData(
+                    [pt[0] for pt in self.power_history],
+                    [pt[1] * scale for pt in self.power_history]
+                )
 
                 # Update accumulator display if control panel exists
                 if hasattr(self, 'accum_label'):
@@ -892,6 +1051,7 @@ class H1ReceiverWindow(QtWidgets.QMainWindow):
         self.hf = self._init_hdf5(self.output_file)
         self.spectrum_count = 0
         self.waterfall_data.clear()
+        self.waterfall_img.clear()
 
         if hasattr(self, 'count_label'):
             self.count_label.setText(f"Spectra saved: 0 (file: {os.path.basename(self.output_file)})")
