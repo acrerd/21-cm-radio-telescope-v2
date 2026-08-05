@@ -352,6 +352,25 @@ def test_scan_uncertainty_floors_at_mount_quantisation():
     assert model["parameter_errors_deg"]["tilt_north"] < 1.0
 
 
+def test_pointing_model_errors_floored_for_consistent_scans():
+    """Mutually consistent scans must not overclaim precision.
+
+    The synthetic data are exact by construction, so reduced chi-squared
+    is ~0.  Scaling the covariance by it would shrink the parameter
+    errors far below the per-scan mount-quantisation floor and inflate
+    the tilt significance the weak-calibration gate relies on; the
+    chi-squared scale must therefore be floored at 1.
+    """
+    data, _ = _synthetic_pointing_data([80, 105, 135, 165, 195, 225])
+
+    model = sun_scan.fit_pointing_model(data, true_lat=55.9, true_lon=-4.3)
+
+    assert model["success"] is True
+    assert model["reduced_chi_squared"] < 0.1
+    for err in model["parameter_errors_deg"].values():
+        assert err > 0.03
+
+
 def test_pointing_model_reports_tilt_significance():
     data, _ = _synthetic_pointing_data([80, 105, 135, 165, 195, 225])
     noisy = [dict(entry) for entry in data]

@@ -848,7 +848,7 @@ def sun_scan(
 #
 # Model:
 #   ΔAlt = ΔAlt₀ + AN·cos(az) + AE·sin(az)
-#   ΔAz  = ΔAz₀  + (−AN·sin(az) + AE·cos(az))·tan(alt)
+#   ΔAz  = ΔAz₀  + (AN·sin(az) − AE·cos(az))·tan(alt)
 #
 # where AN = north-south tilt ≈ latitude error
 #       AE = east-west tilt  ≈ longitude error × cos(lat)
@@ -1101,8 +1101,13 @@ def fit_pointing_model(data: list | None = None,
     weighted_residual = (b - predicted) / uncertainties
     dof = max(2 * n - 4, 1)
     reduced_chi_squared = float(np.sum(weighted_residual ** 2) / dof)
+    # Floor the chi-squared scale at 1: mount-quantisation error is partly
+    # systematic, so mutually consistent scans give chi2_red << 1, and
+    # scaling by it would shrink the parameter errors below the deliberate
+    # per-scan quantisation floor — overstating the tilt significance that
+    # gates weak calibrations.
     covariance = (np.linalg.pinv(A_weighted.T @ A_weighted) *
-                  max(reduced_chi_squared, 1e-12))
+                  max(reduced_chi_squared, 1.0))
     parameter_errors = np.sqrt(np.maximum(np.diag(covariance), 0.0))
 
     def significance(value: float, error: float) -> float:
