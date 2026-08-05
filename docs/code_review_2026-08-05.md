@@ -329,6 +329,10 @@ Work continues on the observatory Linux host. Things worth knowing there:
 - **P2** (sun-scan cancel only polled between grid points) is the best next
   software-only fix: it also makes S3 preemption take effect in seconds instead of
   potentially minutes.
+- **Before the first receiver run on the host**: the new clock-time axis needs
+  pyqtgraph >= 0.11 (`python -c "import pyqtgraph as pg; print(pg.__version__,
+  hasattr(pg, 'DateAxisItem'))"`), and the bench emulator needs
+  `pip install pyserial` into radioconda.
 - **Environment**: run tests with the radioconda Python
   (`/home/astro/radioconda/bin/python -m pytest receiver_scheduler/test_scheduler.py
   receiver_scheduler/test_sun_scan.py`); 125 tests green at handoff. The scheduler
