@@ -186,7 +186,7 @@ def test_hardware_scan_reuses_one_b210_session_for_all_points():
             output_image=None,
         )
 
-    factory.assert_called_once_with(1420.405e6, 2.4e6, 40.0)
+    factory.assert_called_once_with(1420.405752e6, 2.4e6, 40.0)
     assert meter.measure.call_count == 9
     meter.close.assert_called_once()
     assert result["fit"]["success"] is True

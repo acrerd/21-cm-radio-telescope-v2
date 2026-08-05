@@ -4,7 +4,7 @@ Hydrogen Line (21cm) Receiver for SDR
 Supports Ettus B210 and RTL-SDR
 Uses GNU Radio for signal processing, PyQtGraph for display
 
-Measures spectrum around 1420.405 MHz, displays real-time integrated spectrum
+Measures spectrum around 1420.405752 MHz, displays real-time integrated spectrum
 and waterfall, and writes integrated data to HDF5.
 """
 
@@ -22,7 +22,7 @@ from PyQt5 import QtWidgets, QtCore
 import pyqtgraph as pg
 
 # Configuration (can be overridden via environment variables)
-CENTER_FREQ = float(os.environ.get('H1_CENTER_FREQ', 1420.405e6))
+CENTER_FREQ = float(os.environ.get('H1_CENTER_FREQ', 1420.405752e6))
 FFT_SIZE = int(os.environ.get('H1_FFT_SIZE', 4096))
 INTEGRATION_TIME = float(os.environ.get('H1_INTEGRATION_TIME', 3.0))
 OUTPUT_FILE = os.environ.get('H1_OUTPUT_FILE', "h1_data.h5")
@@ -32,6 +32,17 @@ WATERFALL_HISTORY = 100     # Number of spectra to show in waterfall
 # SAWbird+ H1 LNA noise figure ~0.6 dB (~43 K), CMB + atmosphere +
 # galactic background ~10 K, spillover and feed losses ~17 K.
 DEFAULT_CAL_TEMP_K = 70.0
+
+# Power-bar range applied when a calibration is taken: bar bottom just
+# below blank sky, bar top at the approximate total system temperature
+# with the beam on the quiet Sun (~1e3 K for a dish this size at 21 cm).
+CAL_BAR_MIN_K = 50.0
+CAL_BAR_SUN_K = float(os.environ.get('H1_SUN_TEMP_K', 1000.0))
+
+# H I rest frequency (MHz) and speed of light (km/s) for the velocity
+# axis drawn along the top of the spectrum plot
+H1_REST_FREQ_MHZ = 1420.405752
+C_KMS = 299792.458
 
 # SDR-specific defaults
 SDR_DEFAULTS = {
@@ -199,6 +210,43 @@ class GNURadioFlowgraph(gr.top_block):
         return np.array(self.probe.level())
 
 
+class VelocityAxisItem(pg.AxisItem):
+    """Secondary x-axis showing topocentric radio velocity in km/s,
+    v = c (f0 - f) / f0, relative to the H I rest frequency.
+
+    The linked view's coordinates are frequency in MHz, so ticks are
+    chosen at round velocities and mapped back to their frequency
+    positions; only the labels are in km/s. No LSR correction is
+    applied (that would need the pointing direction, which the
+    receiver doesn't know)."""
+
+    def __init__(self, rest_freq_mhz):
+        super().__init__(orientation='top')
+        self.rest_freq_mhz = rest_freq_mhz
+        self.setLabel('Radio velocity, topocentric (km/s)')
+
+    def _freq_to_vel(self, f_mhz):
+        return C_KMS * (self.rest_freq_mhz - f_mhz) / self.rest_freq_mhz
+
+    def _vel_to_freq(self, v_kms):
+        return self.rest_freq_mhz * (1.0 - v_kms / C_KMS)
+
+    def tickValues(self, minVal, maxVal, size):
+        # View range arrives in MHz; velocity runs opposite to frequency
+        vmin = self._freq_to_vel(maxVal)
+        vmax = self._freq_to_vel(minVal)
+        return [
+            (spacing, [self._vel_to_freq(v) for v in ticks])
+            for spacing, ticks in super().tickValues(vmin, vmax, size)
+        ]
+
+    def tickStrings(self, values, scale, spacing):
+        # values are frequency coordinates; spacing is the km/s step
+        # chosen in tickValues, which sets the decimals needed
+        places = max(0, int(np.ceil(-np.log10(spacing)))) if spacing < 1 else 0
+        return [f"{self._freq_to_vel(v):.{places}f}" for v in values]
+
+
 class H1ReceiverWindow(QtWidgets.QMainWindow):
     """Main window with PyQtGraph displays for integrated spectrum."""
 
@@ -240,11 +288,16 @@ class H1ReceiverWindow(QtWidgets.QMainWindow):
 
         # Total-power strip chart: raw per-tick samples for the sliding
         # integration window (6000 ticks at 10 Hz = 600 s, matching the
-        # maximum integration time), and the smoothed points actually
-        # plotted, whose span is adjustable from the GUI.
+        # maximum integration time) used by the calibration button, plus
+        # one plotted point per completed integration period. The history
+        # is pruned by timestamp so its span survives integration-time
+        # changes; the plotted span is adjustable from the GUI.
         self.power_raw = deque(maxlen=6000)
         self.power_window_min = 10  # plotted time-series span, minutes
-        self.power_history = deque(maxlen=self.power_window_min * 600)
+        self.power_history = deque()
+        self.power_block_sum = 0.0
+        self.power_block_count = 0
+        self.power_block_start = None
         # Kelvin per arb. unit for the total-power chart; None = uncalibrated
         self.kelvin_per_unit = None
 
@@ -321,12 +374,19 @@ class H1ReceiverWindow(QtWidgets.QMainWindow):
         # Spectrum plot
         self.spectrum_widget = pg.PlotWidget(title="Integrated Spectrum")
         self.spectrum_widget.setLabel('left', 'Power', units='dB')
-        self.spectrum_widget.setLabel('bottom', 'Frequency', units='MHz')
+        # Coordinates are MHz; display the axis in GHz (a fixed scale,
+        # otherwise pyqtgraph's auto SI prefix turns "MHz" into "kMHz")
+        spec_freq_axis = self.spectrum_widget.getAxis('bottom')
+        spec_freq_axis.setLabel('Frequency', units='GHz')
+        spec_freq_axis.enableAutoSIPrefix(False)
+        spec_freq_axis.setScale(1e-3)
+        self.spectrum_widget.setAxisItems(
+            {'top': VelocityAxisItem(H1_REST_FREQ_MHZ)})
         self.spectrum_widget.showGrid(x=True, y=True)
         self.spectrum_widget.enableAutoRange()
 
         # H1 line marker
-        h1_line = pg.InfiniteLine(pos=1420.405, angle=90, pen=pg.mkPen('r', style=QtCore.Qt.DashLine))
+        h1_line = pg.InfiniteLine(pos=H1_REST_FREQ_MHZ, angle=90, pen=pg.mkPen('r', style=QtCore.Qt.DashLine))
         self.spectrum_widget.addItem(h1_line)
 
         self.spectrum_curve = self.spectrum_widget.plot(
@@ -339,7 +399,10 @@ class H1ReceiverWindow(QtWidgets.QMainWindow):
         # Waterfall plot (one row per saved integration)
         self.waterfall_widget = pg.PlotWidget(title="Waterfall (Saved Integrations)")
         self.waterfall_widget.setLabel('left', 'Integration', units='#')
-        self.waterfall_widget.setLabel('bottom', 'Frequency', units='MHz')
+        wf_freq_axis = self.waterfall_widget.getAxis('bottom')
+        wf_freq_axis.setLabel('Frequency', units='GHz')
+        wf_freq_axis.enableAutoSIPrefix(False)
+        wf_freq_axis.setScale(1e-3)
 
         # Image item for waterfall
         self.waterfall_img = pg.ImageItem()
@@ -513,8 +576,13 @@ class H1ReceiverWindow(QtWidgets.QMainWindow):
         power_group = QtWidgets.QGroupBox("Total Power")
         power_layout = QtWidgets.QFormLayout(power_group)
 
-        self.power_min = -80
-        self.power_max = -20
+        # Bar range in dB; restored from the last calibration if one has
+        # been saved (see _on_calibrate / _on_power_range_changed)
+        settings = QtCore.QSettings("SRT", "h1_receiver")
+        self.power_min = int(settings.value("power_bar_min", -80))
+        self.power_max = int(settings.value("power_bar_max", -20))
+        if self.power_min >= self.power_max:
+            self.power_min, self.power_max = -80, -20
 
         self.power_bar = QtWidgets.QProgressBar()
         self.power_bar.setRange(self.power_min, self.power_max)
@@ -813,10 +881,13 @@ class H1ReceiverWindow(QtWidgets.QMainWindow):
         self._update_status()
 
     def _on_power_range_changed(self):
-        """Handle power bar range change."""
+        """Handle power bar range change; persist it for the next run."""
         self.power_min = self.power_min_spin.value()
         self.power_max = self.power_max_spin.value()
         self.power_bar.setRange(self.power_min, self.power_max)
+        settings = QtCore.QSettings("SRT", "h1_receiver")
+        settings.setValue("power_bar_min", self.power_min)
+        settings.setValue("power_bar_max", self.power_max)
 
     def _on_waterfall_range_changed(self):
         """Handle waterfall color range change."""
@@ -872,10 +943,27 @@ class H1ReceiverWindow(QtWidgets.QMainWindow):
     def _on_power_window_changed(self, value):
         """Resize the plotted total-power history to the requested minutes."""
         self.power_window_min = value
-        # 10 Hz display ticks; rebuilding the deque keeps the newest
-        # points when the window shrinks
-        self.power_history = deque(self.power_history, maxlen=value * 600)
+        self._prune_power_history()
+        self._redraw_power_curve()
         self.power_plot_widget.enableAutoRange()
+
+    def _prune_power_history(self, now=None):
+        """Drop plotted total-power points older than the display window."""
+        if now is None:
+            now = time.time()
+        cutoff = now - self.power_window_min * 60
+        while self.power_history and self.power_history[0][0] < cutoff:
+            self.power_history.popleft()
+
+    def _redraw_power_curve(self):
+        """Push the total-power history to the strip chart, applying the
+        temperature calibration if one is active."""
+        scale = (self.kelvin_per_unit
+                 if self.kelvin_per_unit is not None else 1.0)
+        self.power_curve.setData(
+            [pt[0] for pt in self.power_history],
+            [pt[1] * scale for pt in self.power_history]
+        )
 
     def _update_spectrum_label(self):
         """Set the spectrum y-axis label for the current scale mode."""
@@ -902,6 +990,14 @@ class H1ReceiverWindow(QtWidgets.QMainWindow):
                                         units='K')
         self.cal_status_label.setText(
             f"Calibrated: {self.kelvin_per_unit:.4g} K/unit")
+        # Re-span the power bar from just below blank sky to roughly the
+        # on-Sun level; the spinbox signals persist the values via
+        # _on_power_range_changed
+        bar_min = 10 * np.log10(CAL_BAR_MIN_K / self.kelvin_per_unit)
+        bar_max = 10 * np.log10(CAL_BAR_SUN_K / self.kelvin_per_unit)
+        self.power_min_spin.setValue(round(bar_min))
+        self.power_max_spin.setValue(round(bar_max))
+        self._redraw_power_curve()
         self.power_plot_widget.enableAutoRange()
         self._update_spectrum_label()
         if not self.spectrum_log_scale:
@@ -915,6 +1011,7 @@ class H1ReceiverWindow(QtWidgets.QMainWindow):
         self.power_plot_widget.setLabel('left', 'Total Power (linear, arb.)')
         if hasattr(self, 'cal_status_label'):
             self.cal_status_label.setText("Uncalibrated (arb. units)")
+        self._redraw_power_curve()
         self.power_plot_widget.enableAutoRange()
         self._update_spectrum_label()
         if not self.spectrum_log_scale:
@@ -932,9 +1029,13 @@ class H1ReceiverWindow(QtWidgets.QMainWindow):
         self.accumulator = None
         self.accumulator_count = 0
         self.accumulator_start_time = time.time()
-        # Restart the total-power smoothing window too, so samples taken
-        # with different bandwidth/FFT/integration settings don't mix
+        # Restart the total-power smoothing window and the per-integration
+        # plot block too, so samples taken with different bandwidth/FFT/
+        # integration settings don't mix
         self.power_raw.clear()
+        self.power_block_sum = 0.0
+        self.power_block_count = 0
+        self.power_block_start = None
 
     def _update_freq_axis(self):
         """Update frequency axis after center frequency change."""
@@ -991,23 +1092,30 @@ class H1ReceiverWindow(QtWidgets.QMainWindow):
                     self.spectrum_curve.setData(self.freq_axis_mhz,
                                                 avg_linear)
 
-                # Total-power strip chart: instantaneous band power smoothed
-                # over a sliding window equal to the integration time, but
-                # replotted every tick
+                # Total-power strip chart: one point per completed
+                # integration period (adjacent ticks are ~fully correlated
+                # over the integration window, so finer plotting adds no
+                # information and wide-pen redraws at 10 Hz stall the GUI).
+                # power_raw keeps the per-tick sliding window for the
+                # calibration button.
                 now = time.time()
-                self.power_raw.append((now, float(np.sum(linear_power))))
+                tick_power = float(np.sum(linear_power))
+                self.power_raw.append((now, tick_power))
                 window = max(self.integration_time, 0.1)
                 while self.power_raw and self.power_raw[0][0] < now - window:
                     self.power_raw.popleft()
-                smoothed = (sum(p for _, p in self.power_raw)
-                            / len(self.power_raw))
-                self.power_history.append((now, smoothed))
-                scale = (self.kelvin_per_unit
-                         if self.kelvin_per_unit is not None else 1.0)
-                self.power_curve.setData(
-                    [pt[0] for pt in self.power_history],
-                    [pt[1] * scale for pt in self.power_history]
-                )
+                if self.power_block_start is None:
+                    self.power_block_start = now
+                self.power_block_sum += tick_power
+                self.power_block_count += 1
+                if now - self.power_block_start >= window:
+                    self.power_history.append(
+                        (now, self.power_block_sum / self.power_block_count))
+                    self.power_block_sum = 0.0
+                    self.power_block_count = 0
+                    self.power_block_start = now
+                    self._prune_power_history(now)
+                    self._redraw_power_curve()
 
                 # Update accumulator display if control panel exists
                 if hasattr(self, 'accum_label'):

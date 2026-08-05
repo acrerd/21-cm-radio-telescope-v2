@@ -885,7 +885,7 @@ DEFAULT_OBSERVATION = {
     "start_date": "",         # YYYY-MM-DD, empty = today
     "start_time": "12:00",
     "duration_minutes": 30,
-    "center_freq_mhz": 1420.405,
+    "center_freq_mhz": 1420.405752,
     "bandwidth_mhz": 2.4,
     "gain_db": 40,
     "channels": 4096,
@@ -1040,7 +1040,7 @@ def start_observation(obs: dict, duration_override: int = None) -> bool:
         output_file = generate_filename(obs)
         env = os.environ.copy()
         env['H1_OUTPUT_FILE'] = output_file
-        env['H1_CENTER_FREQ'] = str(obs.get('center_freq_mhz', 1420.405) * 1e6)
+        env['H1_CENTER_FREQ'] = str(obs.get('center_freq_mhz', 1420.405752) * 1e6)
         env['H1_FFT_SIZE'] = str(obs.get('channels', 4096))
         env['H1_INTEGRATION_TIME'] = str(obs.get('integration_time_s', 3.0))
         env['H1_OBS_METADATA'] = json.dumps({
@@ -1204,7 +1204,7 @@ def _start_calibration_observation(obs: dict, duration_override: int = None) -> 
         "n": obs.get("cal_grid_n", 5),
         "grid_spacing_deg": obs.get("cal_spacing_deg", 1.5),
         "integration_time_s": obs.get("integration_time_s", 3.0),
-        "center_freq_mhz": obs.get("center_freq_mhz", 1420.405),
+        "center_freq_mhz": obs.get("center_freq_mhz", 1420.405752),
         "bandwidth_mhz": obs.get("bandwidth_mhz", 2.4),
         "gain_db": obs.get("gain_db", 40),
         "sdr_type": obs.get("sdr_type", "b210"),
@@ -1530,7 +1530,7 @@ HTML_TEMPLATE = '''
                     </div>
                     <div class="form-group">
                         <label>Center Frequency (MHz)</label>
-                        <input type="number" id="ssCenterFreq" step="0.001" value="1420.405">
+                        <input type="number" id="ssCenterFreq" step="any" value="1420.405752">
                     </div>
                     <div class="form-group">
                         <label>Bandwidth (MHz)</label>
@@ -1845,7 +1845,7 @@ HTML_TEMPLATE = '''
                 <div class="form-grid">
                     <div class="form-group">
                         <label>Center Frequency (MHz)</label>
-                        <input type="number" id="obsCenterFreq" step="0.001" required value="1420.405">
+                        <input type="number" id="obsCenterFreq" step="any" required value="1420.405752">
                     </div>
                     <div class="form-group">
                         <label>Bandwidth (MHz)</label>
@@ -1939,7 +1939,7 @@ HTML_TEMPLATE = '''
             coord2_deg: 180, coord2_min: 0, coord2_sec: 0,
             start_date: "", start_time: "12:00",
             duration_minutes: 30,
-            center_freq_mhz: 1420.405,
+            center_freq_mhz: 1420.405752,
             bandwidth_mhz: 2.4,
             gain_db: 40,
             channels: 4096,
@@ -2982,7 +2982,7 @@ def _validate_sun_scan_params(raw: dict, include_interval: bool = False) -> dict
         "n": number("n", 5, 3, 15, integer=True),
         "grid_spacing_deg": number("grid_spacing_deg", 1.5, 0.1, 10.0),
         "integration_time_s": number("integration_time_s", 3.0, 0.1, 60.0),
-        "center_freq_mhz": number("center_freq_mhz", 1420.405, 0.001, 100000.0),
+        "center_freq_mhz": number("center_freq_mhz", 1420.405752, 0.001, 100000.0),
         "bandwidth_mhz": number("bandwidth_mhz", 2.4, 0.01, 100.0),
         "gain_db": number("gain_db", 40.0, 0.0, 100.0),
         "beam_fwhm_deg": number("beam_fwhm_deg", 3.0, 0.1, 30.0),
@@ -3048,7 +3048,7 @@ def _run_sun_scan(params: dict):
             lon=cfg.get("observer_lon"),
             elevation=cfg.get("observer_elevation", 50),
             sdr_type=params.get("sdr_type", "b210"),
-            center_freq=params.get("center_freq_mhz", 1420.405) * 1e6,
+            center_freq=params.get("center_freq_mhz", 1420.405752) * 1e6,
             sample_rate=params.get("bandwidth_mhz", 2.4) * 1e6,
             gain=params.get("gain_db", 40.0),
             output_image=image_path,
