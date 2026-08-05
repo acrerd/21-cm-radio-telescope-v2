@@ -123,6 +123,11 @@ ESP32_FIRMWARE_DIR = os.path.abspath(os.path.join(_SCRIPT_DIR, "..", "esp32_cont
 FIRMWARE_UPDATE_ENV = _config.get("firmware_update_env", "wt32-eth01-ota")
 RADIOCONDA_REEXEC_ENV = "H1_SCHEDULER_RADIOCONDA_REEXEC"
 
+# How long a preempting scheduled observation waits for a cancelled Sun
+# scan / calibration day to release the SDR before giving up on this
+# attempt (the scheduler retries, subject to the start-failure backoff).
+SUN_SCAN_PREEMPT_TIMEOUT = 600
+
 # Before a pointing model is pushed to the telescope, the mount tilt has to be
 # measured rather than merely fitted, and the model has to describe the scans.
 # Sun positions from a single half-day leave the tilts degenerate with the
@@ -172,10 +177,17 @@ app = Flask(__name__)
 
 @app.after_request
 def add_cors_headers(response):
-    """Allow the ESP32-served control page to call this local scheduler API."""
-    response.headers["Access-Control-Allow-Origin"] = "*"
-    response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
-    response.headers["Access-Control-Allow-Headers"] = "Content-Type"
+    """Allow the ESP32-served control page to call this local scheduler API.
+
+    Only the configured controller origins are allowed - a wildcard here
+    would let any web page open in a browser on this machine drive the
+    scheduler (including the firmware-update endpoint).
+    """
+    origin = _normalize_controller_url(request.headers.get("Origin"))
+    if origin and origin in _controller_url_candidates():
+        response.headers["Access-Control-Allow-Origin"] = origin
+        response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+        response.headers["Access-Control-Allow-Headers"] = "Content-Type"
     return response
 
 
@@ -929,10 +941,16 @@ def save_schedule(schedule: list):
 
 def generate_filename(obs: dict) -> str:
     """Generate output filename for observation, placed in the data output folder."""
-    data_folder = get_config_value("data_output_folder")
+    data_folder = os.path.realpath(get_config_value("data_output_folder"))
     os.makedirs(data_folder, exist_ok=True)
     if obs.get('filename'):
-        return os.path.join(data_folder, obs['filename'])
+        # Contain the file inside the data folder: relative subfolders are
+        # fine, but absolute paths and ../ escapes are rejected.
+        candidate = os.path.realpath(os.path.join(data_folder, obs['filename']))
+        if candidate != data_folder and candidate.startswith(data_folder + os.sep):
+            return candidate
+        log.warning("Ignoring output filename outside the data folder: %r",
+                    obs['filename'])
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     name = obs.get('name', 'obs').replace(' ', '_').lower()
     cal = "_cal" if obs.get('calibrator') else ""
@@ -970,6 +988,26 @@ def start_observation(obs: dict, duration_override: int = None) -> bool:
 
     satellite_tracking_started = False
     try:
+        # A scheduled observation always wins over a running Sun scan or
+        # calibration day: cancel it and wait for the SDR to be released.
+        # Cancellation is only polled between grid points, so a slew plus
+        # an integration can pass before it takes effect.
+        if sun_scan_state["running"] or cal_day_state["running"]:
+            log.info("Scheduled observation preempts the running Sun scan/calibration")
+            sun_scan_cancel.set()
+            cal_day_cancel.set()
+            deadline = time.time() + SUN_SCAN_PREEMPT_TIMEOUT
+            while sun_scan_state["running"] or cal_day_state["running"]:
+                if start_abort.is_set():
+                    log.info("Observation start aborted while waiting for the Sun scan to stop")
+                    return False
+                if time.time() >= deadline:
+                    log.error("Sun scan did not release the SDR within %ds - aborting start",
+                              SUN_SCAN_PREEMPT_TIMEOUT)
+                    return False
+                time.sleep(1)
+            log.info("Sun scan/calibration stopped; continuing with the observation")
+
         # Point telescope at target and wait for slew before recording
         if SRT_CONTROLLER_URL:
             if not srt_point_telescope(obs):
@@ -3344,8 +3382,15 @@ def api_get_config():
 @app.route('/api/config', methods=['POST'])
 def api_post_config():
     global SRT_CONTROLLER_URL, SRT_SLEW_TIMEOUT, SRT_POSITION_TOLERANCE, PYTHON_PATH
+    updates = request.json or {}
+    # Only keys that exist in the defaults are configurable; anything else
+    # is rejected loudly rather than silently stored.
+    unknown = sorted(set(updates) - set(_DEFAULT_CONFIG))
+    if unknown:
+        return jsonify({'success': False,
+                        'error': f"Unknown config keys: {', '.join(unknown)}"}), 400
     cfg = load_config()
-    cfg.update(request.json or {})
+    cfg.update(updates)
     save_config(cfg)
     # Apply to running process
     SRT_CONTROLLER_URL = cfg.get("srt_controller_url") or None

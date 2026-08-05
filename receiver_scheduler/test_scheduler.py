@@ -324,7 +324,8 @@ class TestGenerateFilename:
     def test_auto_generated_name(self, mock_makedirs, mock_config):
         obs = {"name": "Sun Survey", "calibrator": False}
         result = sched.generate_filename(obs)
-        assert result.startswith("/tmp/test_data")
+        # The data folder is canonicalised for the containment check
+        assert result.startswith(os.path.realpath("/tmp/test_data"))
         assert "sun_survey" in result
         assert result.endswith(".h5")
 
@@ -1085,6 +1086,130 @@ class TestNonBlockingStart:
                                         'alt': 0, 'az': 0}):
             assert sched.srt_wait_for_slew(timeout=30,
                                            cancel_event=cancel) is False
+
+
+# =============================================================================
+# Sun scan preemption by scheduled observations
+# =============================================================================
+
+class TestScanPreemption:
+    """A new scheduled observation always wins over a running Sun scan."""
+
+    OBS = {"name": "Preempt", "coord_system": "altaz",
+           "coord1_deg": 45, "coord1_min": 0, "coord1_sec": 0,
+           "coord2_deg": 180, "coord2_min": 0, "coord2_sec": 0,
+           "center_freq_mhz": 1420.405, "channels": 4096,
+           "integration_time_s": 3.0, "sdr_type": "demo",
+           "gain_db": 40, "bandwidth_mhz": 2.4,
+           "calibrator": False, "duration_minutes": 10}
+
+    def setup_method(self):
+        sched.current_process = None
+        sched.current_observation = None
+        sched.observation_end_time = None
+        sched.receiver_boot_process = None
+        sched.observation_starting = False
+        sched.start_abort.clear()
+        sched.sun_scan_cancel.clear()
+        sched.cal_day_cancel.clear()
+        sched.sun_scan_state["running"] = False
+        sched.cal_day_state["running"] = False
+
+    teardown_method = setup_method
+
+    @patch.object(sched, 'SRT_CONTROLLER_URL', None)
+    @patch('subprocess.Popen')
+    def test_scheduled_start_cancels_running_scan(self, mock_popen):
+        mock_proc = MagicMock()
+        mock_proc.poll.return_value = None
+        mock_popen.return_value = mock_proc
+        sched.sun_scan_state["running"] = True
+
+        def scan_notices_cancel(seconds):
+            assert sched.sun_scan_cancel.is_set()
+            sched.sun_scan_state["running"] = False
+
+        with patch.object(sched.time, 'sleep', side_effect=scan_notices_cancel), \
+             patch.object(sched, 'generate_filename', return_value='/tmp/p.h5'):
+            assert sched.start_observation(dict(self.OBS)) is True
+
+        assert sched.sun_scan_cancel.is_set()
+        assert sched.current_process is not None
+
+    @patch.object(sched, 'SRT_CONTROLLER_URL', None)
+    @patch('subprocess.Popen')
+    def test_preempt_gives_up_if_scan_never_stops(self, mock_popen):
+        sched.sun_scan_state["running"] = True
+
+        with patch.object(sched, 'SUN_SCAN_PREEMPT_TIMEOUT', 0), \
+             patch.object(sched.time, 'sleep'), \
+             patch.object(sched, 'generate_filename', return_value='/tmp/p.h5'):
+            assert sched.start_observation(dict(self.OBS)) is False
+
+        mock_popen.assert_not_called()
+
+
+# =============================================================================
+# Config/CORS/filename hardening
+# =============================================================================
+
+class TestApiHardening:
+    def test_config_rejects_unknown_keys(self):
+        client = sched.app.test_client()
+        resp = client.post('/api/config', json={'platformio_path': '',
+                                                'not_a_real_key': 'x'})
+        assert resp.status_code == 400
+        assert 'not_a_real_key' in resp.get_json()['error']
+
+    def test_config_accepts_known_keys(self):
+        saved = {}
+        prev = (sched.SRT_CONTROLLER_URL, sched.SRT_SLEW_TIMEOUT,
+                sched.SRT_POSITION_TOLERANCE, sched.PYTHON_PATH)
+        try:
+            with patch.object(sched, 'load_config',
+                              return_value=dict(sched._DEFAULT_CONFIG)), \
+                 patch.object(sched, 'save_config',
+                              side_effect=lambda c: saved.update(c)), \
+                 patch.object(sched, 'sync_observer_from_controller'):
+                client = sched.app.test_client()
+                resp = client.post('/api/config', json={'slew_timeout': 123})
+            assert resp.status_code == 200
+            assert saved['slew_timeout'] == 123
+        finally:
+            (sched.SRT_CONTROLLER_URL, sched.SRT_SLEW_TIMEOUT,
+             sched.SRT_POSITION_TOLERANCE, sched.PYTHON_PATH) = prev
+
+    def test_cors_denied_for_unknown_origin(self):
+        client = sched.app.test_client()
+        resp = client.get('/api/config',
+                          headers={'Origin': 'http://evil.example'})
+        assert 'Access-Control-Allow-Origin' not in resp.headers
+
+    def test_cors_allowed_for_controller_origin(self):
+        with patch.object(sched, '_controller_url_candidates',
+                          return_value=['http://192.168.106.120']):
+            client = sched.app.test_client()
+            resp = client.get('/api/config',
+                              headers={'Origin': 'http://192.168.106.120'})
+        assert (resp.headers.get('Access-Control-Allow-Origin')
+                == 'http://192.168.106.120')
+
+    def test_filename_escape_is_contained(self, tmp_path):
+        with patch.object(sched, 'get_config_value',
+                          return_value=str(tmp_path)):
+            path = sched.generate_filename(
+                {'filename': '../../evil.h5', 'name': 'x'})
+        real = os.path.realpath(path)
+        assert real.startswith(os.path.realpath(str(tmp_path)) + os.sep)
+        assert 'evil' not in os.path.basename(real)
+
+    def test_filename_plain_name_kept(self, tmp_path):
+        with patch.object(sched, 'get_config_value',
+                          return_value=str(tmp_path)):
+            path = sched.generate_filename({'filename': 'mine.h5'})
+        assert os.path.basename(path) == 'mine.h5'
+        assert os.path.realpath(path).startswith(
+            os.path.realpath(str(tmp_path)) + os.sep)
 
 
 # =============================================================================
