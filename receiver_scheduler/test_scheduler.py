@@ -1000,6 +1000,18 @@ class TestObservationLifecycle:
 
 
 # =============================================================================
+# SIGTERM handling
+# =============================================================================
+
+def test_sigterm_handler_raises_system_exit():
+    """SIGTERM must unwind main() so the receiver subprocess is stopped
+    rather than orphaned holding the B210."""
+    import signal as _signal
+    with pytest.raises(SystemExit):
+        sched._handle_sigterm(_signal.SIGTERM, None)
+
+
+# =============================================================================
 # Scheduler start-failure backoff
 # =============================================================================
 

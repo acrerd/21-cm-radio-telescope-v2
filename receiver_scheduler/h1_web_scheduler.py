@@ -3699,6 +3699,16 @@ def api_calday_model():
     return jsonify(model or {'success': False, 'error': 'No model fitted yet'})
 
 
+def _handle_sigterm(signum, frame):
+    """Turn SIGTERM into SystemExit so main()'s cleanup runs.
+
+    Without this, `systemctl stop` (or any kill) orphans the receiver
+    subprocess, which keeps the B210 claimed and blocks every observation
+    after a scheduler restart until the orphan is killed by hand.
+    """
+    raise SystemExit(0)
+
+
 def main():
     global scheduler_running
 
@@ -3737,6 +3747,11 @@ def main():
     log = logging.getLogger('werkzeug')
     log.setLevel(logging.ERROR)
 
+    # Run cleanup on SIGTERM (systemd stop, plain kill), not just Ctrl+C.
+    # Signal handlers run in the main thread, which is the one blocked in
+    # app.run(), so the SystemExit unwinds through the finally below.
+    signal.signal(signal.SIGTERM, _handle_sigterm)
+
     # Start background scheduler thread
     sched_thread = threading.Thread(target=scheduler_thread, daemon=True)
     sched_thread.start()
@@ -3747,7 +3762,7 @@ def main():
         pass
     finally:
         scheduler_running = False
-        if current_process:
+        if current_process or current_observation:
             stop_observation()
         stop_booted_receiver()
 
