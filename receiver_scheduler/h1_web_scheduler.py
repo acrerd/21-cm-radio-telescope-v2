@@ -1141,6 +1141,37 @@ def _start_calibration_observation(obs: dict, duration_override: int = None) -> 
     return True
 
 
+# Consecutive failed or short-lived starts per schedule slot, keyed by
+# (name, start_date, start_time). Only the scheduler thread touches this,
+# so no lock is needed; manual starts through the API are never blocked.
+MAX_START_FAILURES = 3
+_failed_starts = {}
+
+
+def _slot_key(obs: dict) -> tuple:
+    return (obs.get('name', ''), obs.get('start_date', ''),
+            obs.get('start_time', ''))
+
+
+def _too_many_start_failures(obs: dict) -> bool:
+    return _failed_starts.get(_slot_key(obs), 0) >= MAX_START_FAILURES
+
+
+def _record_start_failure(obs: dict, reason: str):
+    if len(_failed_starts) > 200:  # prune slots from past days
+        _failed_starts.clear()
+    key = _slot_key(obs)
+    count = _failed_starts.get(key, 0) + 1
+    _failed_starts[key] = count
+    if count >= MAX_START_FAILURES:
+        log.error("Giving up on '%s' for this slot after %d failed starts "
+                  "(%s); fix the fault, then use Run Now to retry",
+                  obs.get('name'), count, reason)
+    else:
+        log.warning("Start of '%s' failed (%s) - attempt %d/%d",
+                    obs.get('name'), reason, count, MAX_START_FAILURES)
+
+
 def scheduler_thread():
     """Background thread that checks schedule and starts/stops observations."""
     global scheduler_running
@@ -1215,15 +1246,26 @@ def scheduler_thread():
                     # Preempt: stop current, start the one that's due
                     log.info("Preempting '%s' for '%s'", running_name, due_obs.get('name'))
                     stop_observation()
-                    start_observation(due_obs, duration_override=due_remaining)
+                    if not start_observation(due_obs, duration_override=due_remaining):
+                        _record_start_failure(due_obs, "failed to start")
                 else:
-                    # Nothing running, start the due observation
-                    diff = (now - due_scheduled).total_seconds()
-                    if diff < 60:
-                        log.info("Scheduled start: %s", due_obs.get('name'))
-                    else:
-                        log.info("Late start: %s (%dmin remaining)", due_obs.get('name'), due_remaining)
-                    start_observation(due_obs, duration_override=due_remaining)
+                    # A dead process while this slot is still due means the
+                    # receiver exited early. Count it and clean up, so a
+                    # crash-looping receiver is not respawned every 5 s
+                    # (hammering the telescope with slews) for the rest of
+                    # the slot.
+                    if (current_observation is not None
+                            and current_observation.get('name', '') == due_obs.get('name', '')):
+                        _record_start_failure(due_obs, "receiver exited early")
+                        stop_observation()
+                    if not _too_many_start_failures(due_obs):
+                        diff = (now - due_scheduled).total_seconds()
+                        if diff < 60:
+                            log.info("Scheduled start: %s", due_obs.get('name'))
+                        else:
+                            log.info("Late start: %s (%dmin remaining)", due_obs.get('name'), due_remaining)
+                        if not start_observation(due_obs, duration_override=due_remaining):
+                            _record_start_failure(due_obs, "failed to start")
 
         except Exception as e:
             log.error("Scheduler error: %s", e, exc_info=True)

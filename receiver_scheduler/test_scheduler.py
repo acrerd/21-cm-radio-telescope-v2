@@ -999,5 +999,81 @@ class TestObservationLifecycle:
         assert mock_execvpe.call_args.args[0] == '/tmp/radioconda/bin/python'
 
 
+# =============================================================================
+# Scheduler start-failure backoff
+# =============================================================================
+
+class TestStartFailureBackoff:
+    """A crash-looping receiver must not be respawned every 5 s all slot."""
+
+    def setup_method(self):
+        sched._failed_starts.clear()
+        sched.current_process = None
+        sched.current_observation = None
+        sched.observation_end_time = None
+
+    def teardown_method(self):
+        sched.scheduler_running = False
+        sched._failed_starts.clear()
+        sched.current_process = None
+        sched.current_observation = None
+        sched.observation_end_time = None
+
+    def _due_obs(self):
+        start = datetime.now() - timedelta(minutes=5)
+        return {
+            "name": "crashy",
+            "start_date": start.strftime("%Y-%m-%d"),
+            "start_time": start.strftime("%H:%M"),
+            "duration_minutes": 60,
+            "enabled": True,
+        }
+
+    def test_gives_up_after_max_failed_starts(self):
+        obs = self._due_obs()
+        ticks = 8  # well past the failure limit
+
+        with patch.object(sched, "load_schedule", return_value=[obs]), \
+             patch.object(sched, "start_observation", return_value=False) as start, \
+             patch.object(sched, "stop_observation"), \
+             patch.object(sched.time, "sleep",
+                          side_effect=[None] * (ticks - 1) + [StopIteration()]):
+            sched.scheduler_running = True
+            with pytest.raises(StopIteration):
+                sched.scheduler_thread()
+
+        assert start.call_count == sched.MAX_START_FAILURES
+
+    def test_receiver_early_exit_counts_and_cleans_up(self):
+        obs = self._due_obs()
+        dead = MagicMock()
+        dead.poll.return_value = 1  # process has exited
+
+        with patch.object(sched, "load_schedule", return_value=[obs]), \
+             patch.object(sched, "start_observation", return_value=True) as start, \
+             patch.object(sched, "stop_observation") as stop, \
+             patch.object(sched.time, "sleep", side_effect=[StopIteration()]):
+            sched.scheduler_running = True
+            sched.current_process = dead
+            sched.current_observation = dict(obs)
+            with pytest.raises(StopIteration):
+                sched.scheduler_thread()
+
+        stop.assert_called_once()
+        assert sched._failed_starts[sched._slot_key(obs)] == 1
+        start.assert_called_once()
+
+    def test_backoff_is_per_slot(self):
+        obs = self._due_obs()
+        for _ in range(sched.MAX_START_FAILURES):
+            sched._record_start_failure(obs, "test")
+        assert sched._too_many_start_failures(obs)
+
+        tomorrow = dict(obs)
+        tomorrow["start_date"] = (
+            datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d")
+        assert not sched._too_many_start_failures(tomorrow)
+
+
 if __name__ == '__main__':
     pytest.main([__file__, '-v'])
