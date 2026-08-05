@@ -706,77 +706,81 @@ def sun_scan(
             "Sun target kept moving beyond the refinement tolerance after 3 slews")
 
     # --- Scan loop ---
-    for idx, (row, col) in enumerate(scan_order):
-        if cancel_event is not None and cancel_event.is_set():
-            log.warning("Sun scan cancelled by user at point %d/%d", idx, total_points)
-            cancelled = True
-            break
+    # The finally guarantees the B210 session is released on every exit
+    # path (slew fault, Sun set, clamp error, SDR error, cancellation) —
+    # a claimed USRP would otherwise block all later scans and observations.
+    try:
+        for idx, (row, col) in enumerate(scan_order):
+            if cancel_event is not None and cancel_event.is_set():
+                log.warning("Sun scan cancelled by user at point %d/%d", idx, total_points)
+                cancelled = True
+                break
 
-        dalt = ALT_OFF[row, col]
-        daz_sky = AZ_OFF[row, col]  # cross-elevation offset
+            dalt = ALT_OFF[row, col]
+            daz_sky = AZ_OFF[row, col]  # cross-elevation offset
 
-        # Backlash compensation: at the start of each row, slew to an
-        # overshoot point east of the first measurement, then approach
-        # westward so both axes settle with backlash taken up.
-        if sdr_type != "demo" and backlash_deg > 0 and idx in row_starts:
-            _, _, overshoot_alt, overshoot_az, _ = (
-                command_for_current_sun(dalt, daz_sky + backlash_deg,
-                                        allow_clamped=True))
-            log.info("Row %d: backlash overshoot to Az=%.2f° then approaching west",
-                     row, overshoot_az)
-            _slew_to(srt_url, overshoot_alt, overshoot_az, slew_timeout,
-                     position_tolerance)
+            # Backlash compensation: at the start of each row, slew to an
+            # overshoot point east of the first measurement, then approach
+            # westward so both axes settle with backlash taken up.
+            if sdr_type != "demo" and backlash_deg > 0 and idx in row_starts:
+                _, _, overshoot_alt, overshoot_az, _ = (
+                    command_for_current_sun(dalt, daz_sky + backlash_deg,
+                                            allow_clamped=True))
+                log.info("Row %d: backlash overshoot to Az=%.2f° then approaching west",
+                         row, overshoot_az)
+                _slew_to(srt_url, overshoot_alt, overshoot_az, slew_timeout,
+                         position_tolerance)
 
-        # Recompute the Sun immediately before the measurement slew.  A row-start
-        # overshoot can take long enough for the Sun to move appreciably.
-        point_sun_alt, point_sun_az, cmd_alt, cmd_az, _ = (
-            command_for_current_sun(dalt, daz_sky))
+            # Recompute the Sun immediately before the measurement slew.  A row-start
+            # overshoot can take long enough for the Sun to move appreciably.
+            point_sun_alt, point_sun_az, cmd_alt, cmd_az, _ = (
+                command_for_current_sun(dalt, daz_sky))
 
-        point_info = {
-            "point": idx + 1, "total": total_points,
-            "row": row, "col": col,
-            "dalt": dalt, "daz_sky": daz_sky,
-            "cmd_alt": cmd_alt, "cmd_az": cmd_az,
-            "sun_alt": point_sun_alt, "sun_az": point_sun_az,
-        }
-        log.info("Point %d/%d: offset (%.1f, %.1f)° -> Alt=%.2f° Az=%.2f°",
-                 idx + 1, total_points, dalt, daz_sky, cmd_alt, cmd_az)
-
-        # Slew to measurement point
-        if sdr_type != "demo":
-            refined = slew_and_refine(dalt, daz_sky)
-            point_sun_alt, point_sun_az, cmd_alt, cmd_az, _ = refined
-            point_info.update(cmd_alt=cmd_alt, cmd_az=cmd_az,
-                              sun_alt=point_sun_alt, sun_az=point_sun_az)
-            # Short settle time after slew
-            time.sleep(0.5)
-
-        # Measure power
-        sim_state = None
-        if sdr_type == "demo":
-            sim_state = {
+            point_info = {
+                "point": idx + 1, "total": total_points,
+                "row": row, "col": col,
+                "dalt": dalt, "daz_sky": daz_sky,
+                "cmd_alt": cmd_alt, "cmd_az": cmd_az,
                 "sun_alt": point_sun_alt, "sun_az": point_sun_az,
-                "point_alt": cmd_alt, "point_az": cmd_az,
-                "beam_fwhm": beam_fwhm_deg,
-                "peak_power": 10.0, "background": 1.0, "noise_rms": 0.15,
             }
+            log.info("Point %d/%d: offset (%.1f, %.1f)° -> Alt=%.2f° Az=%.2f°",
+                     idx + 1, total_points, dalt, daz_sky, cmd_alt, cmd_az)
 
+            # Slew to measurement point
+            if sdr_type != "demo":
+                refined = slew_and_refine(dalt, daz_sky)
+                point_sun_alt, point_sun_az, cmd_alt, cmd_az, _ = refined
+                point_info.update(cmd_alt=cmd_alt, cmd_az=cmd_az,
+                                  sun_alt=point_sun_alt, sun_az=point_sun_az)
+                # Short settle time after slew
+                time.sleep(0.5)
+
+            # Measure power
+            sim_state = None
+            if sdr_type == "demo":
+                sim_state = {
+                    "sun_alt": point_sun_alt, "sun_az": point_sun_az,
+                    "point_alt": cmd_alt, "point_az": cmd_az,
+                    "beam_fwhm": beam_fwhm_deg,
+                    "peak_power": 10.0, "background": 1.0, "noise_rms": 0.15,
+                }
+
+            if b210_meter is not None:
+                pwr = b210_meter.measure(integration_time_s)
+            else:
+                pwr = measure_power(sdr_type, center_freq, sample_rate, gain,
+                                    integration_time_s, _sim_state=sim_state)
+            power_grid[row, col] = pwr
+            alt_off_flat.append(dalt)
+            az_off_flat.append(daz_sky)
+            power_flat.append(pwr)
+
+            log.info("  Power = %.4f", pwr)
+            if progress_callback:
+                progress_callback(idx, total_points, point_info)
+    finally:
         if b210_meter is not None:
-            pwr = b210_meter.measure(integration_time_s)
-        else:
-            pwr = measure_power(sdr_type, center_freq, sample_rate, gain,
-                                integration_time_s, _sim_state=sim_state)
-        power_grid[row, col] = pwr
-        alt_off_flat.append(dalt)
-        az_off_flat.append(daz_sky)
-        power_flat.append(pwr)
-
-        log.info("  Power = %.4f", pwr)
-        if progress_callback:
-            progress_callback(idx, total_points, point_info)
-
-    if b210_meter is not None:
-        b210_meter.close()
+            b210_meter.close()
     scan_end_utc = datetime.now(timezone.utc)
     if cancelled:
         raise RuntimeError("Sun scan cancelled")

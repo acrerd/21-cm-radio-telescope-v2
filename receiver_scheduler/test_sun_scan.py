@@ -133,11 +133,12 @@ def test_slew_fails_when_telescope_does_not_move():
 
 def test_hardware_scan_stops_on_first_failed_slew():
     progress = []
+    meter = MagicMock()
 
     with patch.object(sun_scan, "get_sun_altaz", return_value=(30.0, 100.0)), \
          patch.object(sun_scan, "_slew_to",
                       side_effect=RuntimeError("controller rejected movement")) as slew, \
-         patch.object(sun_scan, "_B210PowerMeter"), \
+         patch.object(sun_scan, "_B210PowerMeter", return_value=meter), \
          patch.object(sun_scan, "measure_power") as measure:
         with pytest.raises(RuntimeError, match="controller rejected movement"):
             sun_scan.sun_scan(
@@ -152,6 +153,9 @@ def test_hardware_scan_stops_on_first_failed_slew():
     assert slew.call_count == 1
     measure.assert_not_called()
     assert progress == []
+    # The B210 session must be released even when the scan aborts early,
+    # otherwise the claimed USRP blocks every subsequent scan/observation.
+    meter.close.assert_called_once()
 
 
 def test_hardware_scan_reuses_one_b210_session_for_all_points():
