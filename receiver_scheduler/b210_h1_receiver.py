@@ -220,6 +220,8 @@ class H1ReceiverWindow(QtWidgets.QMainWindow):
         self.waterfall_min = -70
         self.waterfall_max = -30
         self.spectrum_log_scale = True  # dB by default; toggled in the GUI
+        self.line_width = 1             # curve width; cycles 1x / 2x / 4x
+        self.recording = True           # gates HDF5 writes only
 
         # Create flowgraph
         self.flowgraph = GNURadioFlowgraph(
@@ -241,7 +243,6 @@ class H1ReceiverWindow(QtWidgets.QMainWindow):
         # 6000 ticks at 10 Hz = 600 s, matching the maximum integration time.
         self.power_raw = deque(maxlen=6000)
         self.power_history = deque(maxlen=6000)
-        self.power_t0 = time.time()
         # Kelvin per arb. unit for the total-power chart; None = uncalibrated
         self.kelvin_per_unit = None
 
@@ -311,6 +312,10 @@ class H1ReceiverWindow(QtWidgets.QMainWindow):
         # PyQtGraph setup
         pg.setConfigOptions(antialias=True)
 
+        # Vertical splitter so the three plots' heights can be dragged
+        self.plot_splitter = QtWidgets.QSplitter(QtCore.Qt.Vertical)
+        self.plot_splitter.setHandleWidth(6)
+
         # Spectrum plot
         self.spectrum_widget = pg.PlotWidget(title="Integrated Spectrum")
         self.spectrum_widget.setLabel('left', 'Power', units='dB')
@@ -327,7 +332,7 @@ class H1ReceiverWindow(QtWidgets.QMainWindow):
             np.zeros(self.fft_size),
             pen=pg.mkPen('c', width=1)
         )
-        layout.addWidget(self.spectrum_widget, stretch=2)
+        self.plot_splitter.addWidget(self.spectrum_widget)
 
         # Waterfall plot (one row per saved integration)
         self.waterfall_widget = pg.PlotWidget(title="Waterfall (Saved Integrations)")
@@ -352,18 +357,34 @@ class H1ReceiverWindow(QtWidgets.QMainWindow):
         )
         self.waterfall_widget.setXRange(freq_min, freq_max)
 
-        layout.addWidget(self.waterfall_widget, stretch=1)
+        self.plot_splitter.addWidget(self.waterfall_widget)
 
         # Total power vs time strip chart (linear power, sliding integration)
-        self.power_plot_widget = pg.PlotWidget(title="Total Power vs Time")
+        self.power_plot_widget = pg.PlotWidget(
+            title="Total Power vs Time",
+            axisItems={'bottom': pg.DateAxisItem(orientation='bottom')}
+        )
         self.power_plot_widget.setLabel('left', 'Total Power (linear, arb.)')
-        self.power_plot_widget.setLabel('bottom', 'Time', units='s')
+        self.power_plot_widget.setLabel('bottom', 'Local Time')
         self.power_plot_widget.showGrid(x=True, y=True)
         self.power_plot_widget.enableAutoRange()
         self.power_curve = self.power_plot_widget.plot(
             pen=pg.mkPen('y', width=1)
         )
-        layout.addWidget(self.power_plot_widget, stretch=1)
+        self.plot_splitter.addWidget(self.power_plot_widget)
+
+        # Extra space on window resize is shared 2:1:1; drag the handles
+        # to change the proportions, remembered across restarts
+        self.plot_splitter.setStretchFactor(0, 2)
+        self.plot_splitter.setStretchFactor(1, 1)
+        self.plot_splitter.setStretchFactor(2, 1)
+        settings = QtCore.QSettings("SRT", "h1_receiver")
+        state = settings.value("plot_splitter_state")
+        if state is not None:
+            self.plot_splitter.restoreState(state)
+        else:
+            self.plot_splitter.setSizes([350, 175, 175])
+        layout.addWidget(self.plot_splitter, stretch=1)
 
         # Count label
         count_layout = QtWidgets.QHBoxLayout()
@@ -465,7 +486,6 @@ class H1ReceiverWindow(QtWidgets.QMainWindow):
         """)
         self.record_btn.clicked.connect(self._on_record_toggle)
         int_layout.addRow(self.record_btn)
-        self.recording = True
 
         panel_layout.addWidget(int_group)
 
@@ -525,6 +545,10 @@ class H1ReceiverWindow(QtWidgets.QMainWindow):
         self.power_max_spin.setValue(self.power_max)
         self.power_max_spin.valueChanged.connect(self._on_power_range_changed)
         power_layout.addRow("Max:", self.power_max_spin)
+
+        self.width_btn = QtWidgets.QPushButton("Line Width: 1x")
+        self.width_btn.clicked.connect(self._on_width_toggle)
+        power_layout.addRow(self.width_btn)
 
         panel_layout.addWidget(power_group)
 
@@ -803,16 +827,13 @@ class H1ReceiverWindow(QtWidgets.QMainWindow):
         self.wf_max_spin.setValue(data_max)
 
     def _on_record_toggle(self):
-        """Toggle recording on/off."""
+        """Toggle HDF5 recording; averaging and display are unaffected."""
         self.recording = self.record_btn.isChecked()
         if self.recording:
             self.record_btn.setText("Stop Recording")
-            self._reset_accumulator()
-            self.save_timer.start()
             print("Recording started")
         else:
             self.record_btn.setText("Start Recording")
-            self.save_timer.stop()
             print("Recording stopped")
 
     def _on_autoscale_spectrum(self):
@@ -828,6 +849,12 @@ class H1ReceiverWindow(QtWidgets.QMainWindow):
         self._update_spectrum_label()
         self.spectrum_widget.enableAutoRange()
         self.spectrum_widget.autoRange()
+
+    def _on_width_toggle(self):
+        """Cycle the total-power trace width through 1x, 2x and 4x."""
+        self.line_width = {1: 2, 2: 4, 4: 1}[self.line_width]
+        self.width_btn.setText(f"Line Width: {self.line_width}x")
+        self.power_curve.setPen(pg.mkPen('y', width=self.line_width))
 
     def _update_spectrum_label(self):
         """Set the spectrum y-axis label for the current scale mode."""
@@ -953,7 +980,7 @@ class H1ReceiverWindow(QtWidgets.QMainWindow):
                     self.power_raw.popleft()
                 smoothed = (sum(p for _, p in self.power_raw)
                             / len(self.power_raw))
-                self.power_history.append((now - self.power_t0, smoothed))
+                self.power_history.append((now, smoothed))
                 scale = (self.kelvin_per_unit
                          if self.kelvin_per_unit is not None else 1.0)
                 self.power_curve.setData(
@@ -1068,28 +1095,29 @@ class H1ReceiverWindow(QtWidgets.QMainWindow):
             self._roll_hdf5_file(f"freq{self.fft_size}")
 
     def _save_spectrum(self):
-        """Save accumulated spectrum to HDF5 and update waterfall."""
+        """Finish the integration period: update the waterfall and, when
+        recording, save the averaged spectrum to HDF5."""
         try:
             if self.accumulator is None or self.accumulator_count == 0:
                 return
 
             # Calculate average in linear power domain
             avg_linear = self.accumulator / self.accumulator_count
-            self._ensure_hdf5_geometry()
-
             timestamp = time.time()
             integration_time = timestamp - self.accumulator_start_time
 
-            # Save to HDF5 in linear power (preserves radiometric accuracy)
-            n = self.hf['spectra_linear'].shape[0]
-            self.hf['spectra_linear'].resize((n + 1, self.fft_size))
-            self.hf['timestamps'].resize((n + 1,))
-            self.hf['integration_times'].resize((n + 1,))
+            if self.recording:
+                # Save to HDF5 in linear power (radiometric accuracy)
+                self._ensure_hdf5_geometry()
+                n = self.hf['spectra_linear'].shape[0]
+                self.hf['spectra_linear'].resize((n + 1, self.fft_size))
+                self.hf['timestamps'].resize((n + 1,))
+                self.hf['integration_times'].resize((n + 1,))
 
-            self.hf['spectra_linear'][n, :] = avg_linear.astype(np.float32)
-            self.hf['timestamps'][n] = timestamp
-            self.hf['integration_times'][n] = integration_time
-            self.hf.flush()
+                self.hf['spectra_linear'][n, :] = avg_linear.astype(np.float32)
+                self.hf['timestamps'][n] = timestamp
+                self.hf['integration_times'][n] = integration_time
+                self.hf.flush()
 
             # Add to waterfall (one row per integration, in dB for display)
             spectrum_db = 10 * np.log10(avg_linear)
@@ -1108,11 +1136,13 @@ class H1ReceiverWindow(QtWidgets.QMainWindow):
                     freq_max - freq_min, len(self.waterfall_data)
                 )
 
-            self.spectrum_count += 1
-            self.count_label.setText(
-                f"Spectra saved: {self.spectrum_count} "
-                f"(last: {self.accumulator_count} samples, {integration_time:.1f}s)"
-            )
+            if self.recording:
+                self.spectrum_count += 1
+                self.count_label.setText(
+                    f"Spectra saved: {self.spectrum_count} "
+                    f"(last: {self.accumulator_count} samples, "
+                    f"{integration_time:.1f}s)"
+                )
 
             # Reset accumulator for next integration period
             self.accumulator = None
@@ -1128,6 +1158,8 @@ class H1ReceiverWindow(QtWidgets.QMainWindow):
 
     def closeEvent(self, event):
         """Handle window close."""
+        QtCore.QSettings("SRT", "h1_receiver").setValue(
+            "plot_splitter_state", self.plot_splitter.saveState())
         self.display_timer.stop()
         self.save_timer.stop()
         self.flowgraph.stop()
