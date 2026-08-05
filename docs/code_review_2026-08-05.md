@@ -7,6 +7,11 @@
 verify every claim against the actual code before reporting; the three most severe claims were
 independently re-verified afterwards. No code was changed.
 
+**Fix status (updated 5 August 2026):** P1, P3, P5, S1, S4, and S5 are fixed, tested, and
+pushed (commits `c338a42`, `dee77ac`, `7a4e0f6`, `6881581`, `3533542`); S10 is partially
+mitigated by the S1 rework. Per-finding status notes appear inline below. The remaining
+items — all ESP32 firmware findings and the medium/low scheduler items — are still open.
+
 **Overall verdict:** the coordinate mathematics, the Due status-line parsing, the JS-to-endpoint
 wiring, and the sun-scan geometry were all checked and found correct — the foundations are sound.
 The defects cluster into three themes:
@@ -128,6 +133,8 @@ formulas and quadrant conventions are mutually consistent and correct for east-p
 ## 2. Scheduler (`receiver_scheduler/h1_web_scheduler.py`)
 
 ### S1. HIGH — `process_lock` is held across a multi-minute blocking slew wait
+**FIXED** in `3533542`: the start is claimed briefly under the lock, pointing/slew wait run
+unlocked and abortable, stop cancels an in-flight start; regression-tested.
 `h1_web_scheduler.py:943-1023`. *(Independently re-verified.)*
 `start_observation()` holds the lock through `srt_point_telescope()` (up to ~9 s of HTTP retries),
 `srt_wait_for_slew()` (polls up to `slew_timeout` = 300 s), and `srt_set_calibrator()`. While a
@@ -150,12 +157,17 @@ observation can launch the receiver while `sun_scan.py` holds the B210 — devic
 contention, with the telescope simultaneously commanded to two different targets.
 
 ### S4. HIGH — No SIGTERM handler and no process group: receiver orphaned when the scheduler dies
+**FIXED** in `6881581` (SIGTERM handler unwinds through the Ctrl+C cleanup, which now also
+stops thread-based calibration observations). The process-group half was deliberately left:
+the receiver spawns no children, so the handler alone closes the orphan risk.
 `:3702-3710` cleanup runs only on `KeyboardInterrupt`/clean exit; no `signal.signal(SIGTERM, …)`
 anywhere; `Popen` (`:1009`, `:3153`) uses no process group / job object. `systemctl stop` or a
 crash orphans the receiver, which keeps the B210 claimed (USRP claims are exclusive); every
 observation after restart fails until the orphan is killed by hand.
 
 ### S5. HIGH — A receiver that crashes at startup is restarted in a tight loop all slot
+**FIXED** in `7a4e0f6`: failed and short-lived starts are counted per schedule slot; after
+three the scheduler gives up with a clear log message. Run Now remains available to retry.
 `:1201-1226`. When the receiver exits early (e.g. SDR open failure), the still-due observation
 re-enters the start branch every 5 s: re-point, re-wait, new timestamped output file. A B210 USB
 glitch turns a 60-minute slot into hundreds of spawned processes, empty `.h5` files, and hundreds
@@ -184,6 +196,9 @@ default date is *yesterday*; the server-side due check (`:1195`) then never fire
 observation silently never runs. `clearPast` and the countdown mis-classify in the same window.
 
 ### S10. MEDIUM — Failed satellite observation leaks the tracking thread
+**PARTIALLY FIXED** in `3533542` (S1 rework): a start that fails or is aborted after
+tracking began now stops the tracking thread, and the S5 early-exit cleanup path also runs
+`stop_observation()`. A tracker left by other exotic paths would still persist.
 `:957-964` starts `start_satellite_tracking()` before the receiver `Popen` (`:1009`); if the Popen
 raises or the receiver Python is missing, `start_observation` returns False with the tracking loop
 alive, sending `/direct` every second (`:666`) indefinitely — the dish silently chases satellites
@@ -219,6 +234,8 @@ UI only produces integer degrees).
 ## 3. Sun scan (`receiver_scheduler/sun_scan.py`)
 
 ### P1. HIGH — B210/USRP session is not closed on any exception path out of the scan loop
+**FIXED** in `c338a42`: the scan loop is wrapped in try/finally; the failed-slew test now
+asserts `close()` is called (closes P9's test gap too).
 `sun_scan.py:661-662, 709-779`. *(Independently re-verified.)*
 `b210_meter.close()` (`:778-779`) is reached only on normal completion or the cancellation
 `break`; there is no `try/finally`. Any mid-scan exception — slew timeout/fault (`:119,132,139`),
@@ -233,6 +250,9 @@ such slews plus the row-start backlash slew; SDR integration (`:764-768`) is uni
 Cancel can take more than 15 minutes to bite.
 
 ### P3. MEDIUM — Fit covariance scaled by `max(χ²ᵣ, 1e-12)` instead of `max(χ²ᵣ, 1)`
+**FIXED** in `dee77ac`, with a test pinning that consistent scans keep floored errors.
+Note: the significance gate is now stricter — some previously-passing calibrations may be
+rejected; that is the intended behaviour.
 `:1100-1101`. Per-scan sigmas are deliberately floored at the 0.144° mount quantisation
 (`:911-912`), but when scans are mutually consistent (typical — quantisation error is partly
 systematic), `χ²ᵣ ≪ 1` shrinks the parameter errors back below the floor, inflating
@@ -245,6 +265,7 @@ discarded and a generic `RuntimeError` raised. Dead inside `sun_scan()` itself (
 `_B210PowerMeter`) but it is the public API path.
 
 ### P5. LOW — Module-header pointing-model equation has the opposite azimuth signs to the code
+**FIXED** in `dee77ac` (header corrected to match the implemented, test-verified matrix).
 `:846-847` vs the implemented (and test-verified, `test_sun_scan.py:303`) matrix at `:941-945`.
 The code is right; the header comment is stale — a live trap given this file's history of
 azimuth-sign fixes.
@@ -263,6 +284,7 @@ while scheduler runs use 300 s — a slow slew that succeeds under the scheduler
 error.
 
 ### P9. LOW — Test gap on the P1 leak path
+**FIXED** in `c338a42` alongside P1 (the failed-slew test now asserts `close()`).
 `test_sun_scan.py:134-154` exercises exactly the failed-slew path but never asserts
 `meter.close()` was called (it currently is not); `:187` does assert it on the success path.
 
@@ -282,9 +304,13 @@ direction is mechanically consistent; the 0-based progress callback is consumed 
 
 Cheap and high-value first:
 
-1. Move the slew wait outside `process_lock` (S1).
-2. `try/finally` around the sun-scan loop for `b210_meter.close()` (P1).
-3. Retry limit / backoff in the scheduler restart loop (S5) and a SIGTERM handler (S4).
-4. Make `/goto` genuinely slew-once (C7).
-5. One FreeRTOS mutex around the ESP32 shared state plus a UART-write lock (C1, C2, C5, C10).
+1. ~~Move the slew wait outside `process_lock` (S1).~~ **Done** (`3533542`).
+2. ~~`try/finally` around the sun-scan loop for `b210_meter.close()` (P1).~~ **Done** (`c338a42`).
+3. ~~Retry limit / backoff in the scheduler restart loop (S5) and a SIGTERM handler
+   (S4).~~ **Done** (`7a4e0f6`, `6881581`).
+4. Make `/goto` genuinely slew-once (C7) — needs the bench ESP32 (compile-check only here);
+   check `/goto` callers in the scheduler and sun scan first in case they rely on
+   goto-implies-tracking.
+5. One FreeRTOS mutex around the ESP32 shared state plus a UART-write lock (C1, C2, C5,
+   C10) — bench session with `tools/due_emulator.py`, soak overnight before deploying.
 6. Fix the `/wifi/scan` watchdog subscription (C3) and validate `/api/config` keys (S2).
