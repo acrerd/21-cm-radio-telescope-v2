@@ -239,10 +239,12 @@ class H1ReceiverWindow(QtWidgets.QMainWindow):
         self.waterfall_data = deque(maxlen=WATERFALL_HISTORY)
 
         # Total-power strip chart: raw per-tick samples for the sliding
-        # integration window, and the smoothed points actually plotted.
-        # 6000 ticks at 10 Hz = 600 s, matching the maximum integration time.
+        # integration window (6000 ticks at 10 Hz = 600 s, matching the
+        # maximum integration time), and the smoothed points actually
+        # plotted, whose span is adjustable from the GUI.
         self.power_raw = deque(maxlen=6000)
-        self.power_history = deque(maxlen=6000)
+        self.power_window_min = 10  # plotted time-series span, minutes
+        self.power_history = deque(maxlen=self.power_window_min * 600)
         # Kelvin per arb. unit for the total-power chart; None = uncalibrated
         self.kelvin_per_unit = None
 
@@ -371,6 +373,9 @@ class H1ReceiverWindow(QtWidgets.QMainWindow):
         self.power_curve = self.power_plot_widget.plot(
             pen=pg.mkPen('y', width=1)
         )
+        # Long windows can hold hundreds of thousands of points; let
+        # pyqtgraph downsample to the visible pixel width when drawing
+        self.power_curve.setDownsampling(auto=True)
         self.plot_splitter.addWidget(self.power_plot_widget)
 
         # Extra space on window resize is shared 2:1:1; drag the handles
@@ -549,6 +554,14 @@ class H1ReceiverWindow(QtWidgets.QMainWindow):
         self.width_btn = QtWidgets.QPushButton("Line Width: 1x")
         self.width_btn.clicked.connect(self._on_width_toggle)
         power_layout.addRow(self.width_btn)
+
+        self.power_window_spin = QtWidgets.QSpinBox()
+        self.power_window_spin.setRange(1, 480)
+        self.power_window_spin.setSuffix(" min")
+        self.power_window_spin.setValue(self.power_window_min)
+        self.power_window_spin.valueChanged.connect(
+            self._on_power_window_changed)
+        power_layout.addRow("Window:", self.power_window_spin)
 
         panel_layout.addWidget(power_group)
 
@@ -855,6 +868,14 @@ class H1ReceiverWindow(QtWidgets.QMainWindow):
         self.line_width = {1: 2, 2: 4, 4: 1}[self.line_width]
         self.width_btn.setText(f"Line Width: {self.line_width}x")
         self.power_curve.setPen(pg.mkPen('y', width=self.line_width))
+
+    def _on_power_window_changed(self, value):
+        """Resize the plotted total-power history to the requested minutes."""
+        self.power_window_min = value
+        # 10 Hz display ticks; rebuilding the deque keeps the newest
+        # points when the window shrinks
+        self.power_history = deque(self.power_history, maxlen=value * 600)
+        self.power_plot_widget.enableAutoRange()
 
     def _update_spectrum_label(self):
         """Set the spectrum y-axis label for the current scale mode."""
