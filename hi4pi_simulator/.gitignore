@@ -1,0 +1,15 @@
+# HI4PI data files (auto-downloaded on first run by hi4pi_data.py)
+*.fits
+*.download
+*.tmp
+
+# regenerable cache of the gridded N_HI display map
+nhi_grid_cache.npy
+
+# script outputs
+spectrum_*.png
+spectrum_*.txt
+
+# tooling
+__pycache__/
+.mypy_cache/
