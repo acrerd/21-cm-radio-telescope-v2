@@ -67,6 +67,10 @@ If you request something it cannot honour — a beam finer than ~1.5° or a
 band centre beyond its velocity range — the GUI switches to the full
 cube on the fly if that file is on disk, and otherwise clamps the
 request and tells you (it never starts the 33 GiB download uninvited).
+When the beam and band later return to values the compact data can
+serve (say the beam goes from 0.2° back to 5°), it switches back just
+as automatically — the compact cube stays cached in RAM, so the return
+is immediate.
 Force the full cube with `--full` (this *will* download it if missing);
 point at a different compact file with `--compact PATH`.
 

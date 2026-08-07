@@ -163,7 +163,9 @@ class DishSimulator:
         self.nchan, self.tsys, self.tint, self.npol = nchan, tsys, tint, npol
         self.dish_m = dish_m
         self.full_path = cube_path
+        self.compact_path = compact_path
         self.compact = None
+        self._compact_cache = None      # survives a switch to the full cube
         self.hdul = None
         self.sources = continuum_sources()
         natural = np.degrees(1.22 * (C_LIGHT / F_HI) / dish_m)
@@ -182,9 +184,13 @@ class DishSimulator:
 
     def _load_compact(self, path):
         """Point the simulator at a compact cube (all in RAM)."""
-        c = load_compact(path)
+        if self._compact_cache is None:
+            self._compact_cache = load_compact(path)
+        c = self._compact_cache
         self.compact = c
-        self.hdul = None
+        if self.hdul is not None:
+            self.hdul.close()
+            self.hdul = None
         self.lon, self.lat = c.lon % 360.0, c.lat
         self.v_all = c.v
         self.f_all = F_HI * (1.0 - c.v / C_LIGHT)
@@ -234,6 +240,27 @@ class DishSimulator:
         self._load_full()
         self.set_beam(self.fwhm)
         self.set_band(self.bw_hz, self.fc)
+        return True
+
+    def use_compact_cube(self, fwhm, bw_hz, fc_hz):
+        """The reverse of use_full_cube: drop back to the (cached)
+        compact dataset once the requested beam and band fit it again.
+        The requested band is applied here so the trimmed velocity axis
+        is never indexed with the full cube's channel range."""
+        c = self._compact_cache
+        if self.compact is not None or c is None:
+            return False
+        pix = abs(np.median(np.diff(c.lat)))
+        min_fwhm = round(np.sqrt(c.fwhm ** 2 + (2.355 * pix) ** 2), 2)
+        f = F_HI * (1.0 - c.v / C_LIGHT)
+        if fwhm < min_fwhm or fc_hz + bw_hz / 2 < f.min() \
+                or fc_hz - bw_hz / 2 > f.max():
+            return False
+        print("Returning to the compact dataset "
+              "(the requested beam and band fit it again)...")
+        self._load_compact(self.compact_path)
+        self.set_beam(fwhm)
+        self.set_band(bw_hz, fc_hz)
         return True
 
     def set_band(self, bw_hz, fc_hz):
@@ -750,8 +777,11 @@ def main():
             return None
         # clamp to what the loaded dataset supports (the compact cube is
         # pre-smoothed; a finer beam needs the full cube, if it is here)
+        # and drop back to the compact dataset when the request fits it
+        went_compact = sim.compact is None and sim.use_compact_cube(
+            fwhm if fwhm > 0 else sim.fwhm, bw_hz, fc_hz)
         if 0 < fwhm < sim.min_fwhm and sim.compact is not None \
-                and not sim.use_full_cube():
+                and not went_compact and not sim.use_full_cube():
             print(f"Beams below {sim.min_fwhm:.1f} deg need the full "
                   f"cube ({sim.full_path}): rerun with --full to "
                   f"download and use it.")
@@ -768,7 +798,7 @@ def main():
                 tb.set_val(val)
                 tb.eventson = True
                 print(f"Clamped {tb.label.get_text().strip()} to {val}")
-        if fwhm > 0 and abs(fwhm - sim.fwhm) > 1e-6:
+        if fwhm > 0 and (went_compact or abs(fwhm - sim.fwhm) > 1e-6):
             sim.set_beam(fwhm)
             axm.set_title(f"HI4PI N$_{{HI}}$ - click to point the dish "
                           f"(beam {sim.fwhm:.1f}°)", fontsize=11, color=ink)
