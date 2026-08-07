@@ -362,6 +362,14 @@ class FastTextBox(TextBox):
         self._bg = None                    # recapture per focus session
         super().begin_typing(*args, **kwargs)
 
+    def stop_typing(self):
+        # stock TextBox stop_typing ends with a full synchronous
+        # canvas.draw() and is called on EVERY canvas click for EVERY
+        # box; with seven boxes that was ~0.5 s per map click.  Only a
+        # box that was actually in a typing session needs any of it.
+        if self.capturekeystrokes:
+            super().stop_typing()
+
     def _blit(self):
         canvas = self.ax.figure.canvas
         if not canvas.supports_blit:
@@ -382,6 +390,12 @@ class FastTextBox(TextBox):
         canvas.blit(self.ax.bbox)
 
     def _rendercursor(self):
+        # a programmatic set_val (map click, target pick) needs no
+        # cursor and no synchronous draw: without this, every click paid
+        # for two full canvas redraws before the spectrum one
+        if not self.capturekeystrokes:
+            self.ax.figure.canvas.draw_idle()
+            return
         # the parent ends with canvas.draw(); intercept that one call so
         # its cursor-placement logic runs unchanged but the repaint is
         # only this axes (type(canvas).draw in _blit skips the override)
@@ -534,6 +548,13 @@ def main():
         map_state["fwhm"] = fwhm
 
     update_map(sim.fwhm)
+    # the map is a fixed all-sky view: keep the toolbar's pan/zoom off
+    # it, and make its view save/restore a no-op — geographic axes raise
+    # TypeError from set_xlim, which broke the Home/Back/Forward buttons
+    # for the whole figure once anything had been zoomed
+    axm.set_navigate(False)
+    axm._get_view = dict
+    axm._set_view = lambda view: None
     axm.set_xticks(np.radians([-120, -60, 0, 60, 120]))
     axm.set_xticklabels(["120°", "60°", "0°", "300°", "240°"],
                         color="white", fontsize=8)
@@ -875,9 +896,9 @@ def main():
                 dd_ax.set_visible(False)      # click-away closes it
                 fig.canvas.draw_idle()
             return
-        tbar = getattr(fig.canvas, "toolbar", None)
-        if tbar is not None and getattr(tbar, "mode", ""):
-            return        # toolbar pan/zoom active: don't repoint the dish
+        # no toolbar-mode guard: the map is excluded from pan/zoom
+        # (set_navigate(False)), so a click on it is always a pointing
+        # request, even while the zoom/pan tool is still selected
         lb = to_lb(event)
         if lb is None:
             return
