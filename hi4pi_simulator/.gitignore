@@ -3,8 +3,8 @@
 *.download
 *.tmp
 
-# regenerable cache of the gridded N_HI display map
-nhi_grid_cache.npy
+# nhi_grid_cache.npy and hi4pi_compact.npz.xz are small derived data
+# files committed on purpose, so a fresh clone needs no downloads
 
 # script outputs
 spectrum_*.png

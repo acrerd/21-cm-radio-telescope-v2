@@ -101,7 +101,7 @@ def channel_velocities(wcs, header, nspec):
 
 
 def simulate(path, glon, glat, bw_hz, dish_m=3.0, eta_mb=0.7,
-             f_center=F_HI, nchan=None, tsys=None, tint=60.0, npol=2,
+             f_center=F_HI, nchan=None, tsys=None, tint=60.0, npol=1,
              seed=None):
     """Return dict with the simulated spectrum and bookkeeping info."""
     hdu, wcs, hdr = open_cube(path)
@@ -275,8 +275,8 @@ def main():
                         "is added")
     p.add_argument("--tint", type=float, default=60.0,
                    help="Integration time in s for the noise (default 60)")
-    p.add_argument("--npol", type=int, default=2,
-                   help="Polarisations averaged in the noise calc (default 2)")
+    p.add_argument("--npol", type=int, default=1,
+                   help="Polarisations averaged in the noise calc (default 1)")
     p.add_argument("--seed", type=int, help="Random seed for the noise")
     p.add_argument("--out", default=None,
                    help="Basename for outputs (default derived from l, b)")

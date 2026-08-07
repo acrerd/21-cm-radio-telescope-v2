@@ -11,9 +11,13 @@ Usage:
     python hi4pi_interactive.py
     python hi4pi_interactive.py --bw 2 --tsys 100 --tint 60 --nchan 1024
 
-The all-sky cube (~33 GiB) and the N_HI display map are downloaded from
-CDS on first run if not already present (see hi4pi_data.py); the N_HI
-map is gridded once and cached in nhi_grid_cache.npy.
+Sky data: the compact pre-smoothed cube from hi4pi_compress.py
+(hi4pi_compact.npz.xz, ~23 MB, shipped in the repo) is used when
+present; the full ~33 GiB all-sky cube is loaded automatically instead
+when a request needs it (beam finer than ~1.5 deg, or a band beyond
++/-470 km/s) and it is on disk, or with --full (downloading from CDS if
+missing, see hi4pi_data.py).  The N_HI display map is gridded once and
+cached in nhi_grid_cache.npy.
 Press "s" to save the current spectrum to PNG + txt.
 """
 
@@ -34,6 +38,7 @@ from astropy.io import fits
 from astropy.time import Time
 from astropy.wcs import WCS
 
+from hi4pi_compress import COMPACT_DEFAULT, load_compact
 from hi4pi_data import ensure_file
 
 # the cursor moving outside the Mollweide ellipse makes matplotlib's
@@ -141,17 +146,59 @@ def frame_offset(glon, glat, frame):
 
 
 class DishSimulator:
-    """Holds the open cube + precomputed axes; computes spectra quickly."""
+    """Holds the sky data + precomputed axes; computes spectra quickly.
+
+    Two interchangeable backends: the compact pre-smoothed cube from
+    hi4pi_compress.py (a few hundred MB in RAM, instant spectra) or the
+    full 33 GiB survey cube (memory-mapped).  The compact sky is already
+    smoothed to `data_fwhm`, so only the residual beam is convolved; it
+    cannot honour beams below `min_fwhm` or bands beyond its trimmed
+    velocity range - use_full_cube() upgrades when that happens."""
+
+    FULL_V_MS = 6.07e5      # the full cube covers |v_LSR| < ~607 km/s
 
     def __init__(self, cube_path, bw_hz, dish_m, eta, nchan=None,
-                 tsys=None, tint=60.0, npol=2):
+                 tsys=None, tint=60.0, npol=1, compact_path=None):
         self.bw_hz, self.eta = bw_hz, eta
         self.nchan, self.tsys, self.tint, self.npol = nchan, tsys, tint, npol
         self.dish_m = dish_m
-        self.set_beam(np.degrees(1.22 * (C_LIGHT / F_HI) / dish_m))
+        self.full_path = cube_path
+        self.compact = None
+        self.hdul = None
         self.sources = continuum_sources()
+        natural = np.degrees(1.22 * (C_LIGHT / F_HI) / dish_m)
+        if compact_path:
+            self._load_compact(compact_path)
+            if natural < self.min_fwhm and os.path.exists(self.full_path):
+                print(f"Dish beam {natural:.2f} deg is finer than the "
+                      f"compact dataset supports; using the full cube.")
+                self._load_full()
+        else:
+            self._load_full()
+        self.set_beam(natural)
+        self.rng = np.random.default_rng()
+        if not self.set_band(bw_hz, F_HI):
+            sys.exit("Bandwidth does not overlap the cube's velocity range.")
 
-        self.hdul = fits.open(cube_path, memmap=True)
+    def _load_compact(self, path):
+        """Point the simulator at a compact cube (all in RAM)."""
+        c = load_compact(path)
+        self.compact = c
+        self.hdul = None
+        self.lon, self.lat = c.lon % 360.0, c.lat
+        self.v_all = c.v
+        self.f_all = F_HI * (1.0 - c.v / C_LIGHT)
+        # the data are already smoothed to c.fwhm; a requested beam must
+        # leave a residual of ~2 pixels or the convolution is untrue
+        pix = abs(np.median(np.diff(c.lat)))
+        self.data_fwhm = c.fwhm
+        self.min_fwhm = round(np.sqrt(c.fwhm ** 2 + (2.355 * pix) ** 2), 2)
+
+    def _load_full(self):
+        """Point the simulator at the full survey cube (memory-mapped)."""
+        path = ensure_file(self.full_path)
+        self.compact = None
+        self.hdul = fits.open(path, memmap=True)
         self.hdu = next(h for h in self.hdul
                         if h.data is not None and h.header["NAXIS"] == 3)
         hdr = self.hdu.header
@@ -167,15 +214,27 @@ class DishSimulator:
                                       np.zeros(ny), 0)
         self.lon, self.lat = lon % 360.0, lat
 
-        # spectral axis (VRAD, m/s) and the in-band channel range
+        # spectral axis (VRAD, m/s)
         k = np.arange(nv)
         _, _, v = wcs.wcs_pix2world(np.full(nv, hdr["CRPIX1"] - 1),
                                     np.full(nv, hdr["CRPIX2"] - 1), k, 0)
         self.v_all = v
         self.f_all = F_HI * (1.0 - v / C_LIGHT)
-        self.rng = np.random.default_rng()
-        if not self.set_band(bw_hz, F_HI):
-            sys.exit("Bandwidth does not overlap the cube's velocity range.")
+        self.data_fwhm = 0.0
+        self.min_fwhm = 0.2
+
+    def use_full_cube(self):
+        """Switch from the compact dataset to the full cube, keeping the
+        current beam and band.  False if the full cube is not on disk
+        (never triggers the 33 GiB download uninvited)."""
+        if self.compact is None or not os.path.exists(self.full_path):
+            return False
+        print("Switching to the full HI4PI cube "
+              "(the compact dataset cannot honour this request)...")
+        self._load_full()
+        self.set_beam(self.fwhm)
+        self.set_band(self.bw_hz, self.fc)
+        return True
 
     def set_band(self, bw_hz, fc_hz):
         """Select the cube channels inside fc +/- bw/2; False if no overlap."""
@@ -189,9 +248,16 @@ class DishSimulator:
         return True
 
     def set_beam(self, fwhm_deg):
+        if fwhm_deg < self.min_fwhm:
+            print(f"Beam {fwhm_deg:.2f} deg is finer than this dataset "
+                  f"supports; using {self.min_fwhm:.2f} deg.")
+            fwhm_deg = self.min_fwhm
         self.fwhm = fwhm_deg
-        self.sigma = fwhm_deg / (2 * np.sqrt(2 * np.log(2)))
-        self.rmax = 1.5 * fwhm_deg
+        # the compact sky is pre-smoothed to data_fwhm: weight with the
+        # residual Gaussian so the total beam comes out as requested
+        eff = np.sqrt(max(fwhm_deg ** 2 - self.data_fwhm ** 2, 1e-12))
+        self.sigma = eff / (2 * np.sqrt(2 * np.log(2)))
+        self.rmax = 1.5 * eff
 
     def continuum(self, glon, glat):
         """Beam-weighted continuum T_A from the bright point sources.
@@ -231,12 +297,17 @@ class DishSimulator:
         runs = np.split(ci, splits + 1)
         subs, lons = [], []
         for r in runs:
-            # memmap slicing, not hdu.section: astropy's Section is very
-            # slow with stepped slices, numpy strides the mmap directly
-            subs.append(np.asarray(
-                self.hdu.data[self.k0:self.k1, y0:y1:step,
-                              r[0]:r[-1] + 1:step],
-                dtype=np.float64))
+            if self.compact is not None:      # int16 cube already in RAM
+                subs.append(self.compact.t[self.k0:self.k1, y0:y1:step,
+                                           r[0]:r[-1] + 1:step]
+                            .astype(np.float64) * self.compact.scale)
+            else:
+                # memmap slicing, not hdu.section: astropy's Section is
+                # very slow with stepped slices, numpy strides the mmap
+                subs.append(np.asarray(
+                    self.hdu.data[self.k0:self.k1, y0:y1:step,
+                                  r[0]:r[-1] + 1:step],
+                    dtype=np.float64))
             lons.append(self.lon[r[0]:r[-1] + 1:step])
         sub = np.concatenate(subs, axis=2)
         lonb = np.concatenate(lons)
@@ -391,13 +462,19 @@ def main():
                         "downloaded from CDS (~33 GiB) if missing")
     p.add_argument("--nhi", default="hi4pi.fits",
                    help="N_HI HEALPix file for the display map")
+    p.add_argument("--compact", default=COMPACT_DEFAULT,
+                   help="compact cube from hi4pi_compress.py, used "
+                        "instead of the full cube when present")
+    p.add_argument("--full", action="store_true",
+                   help="use the full cube even if the compact file "
+                        "exists (downloads ~33 GiB if missing)")
     p.add_argument("--bw", type=float, default=2.0, help="Bandwidth (MHz)")
     p.add_argument("--dish", type=float, default=3.0, help="Dish (m)")
     p.add_argument("--eta", type=float, default=0.7, help="Main-beam eff.")
     p.add_argument("--nchan", type=int, help="Spectrometer channels")
     p.add_argument("--tsys", type=float, help="Tsys (K) -> add noise")
     p.add_argument("--tint", type=float, default=60.0, help="Integration (s)")
-    p.add_argument("--npol", type=int, default=2, help="Polarisations")
+    p.add_argument("--npol", type=int, default=1, help="Polarisations")
     p.add_argument("--site", default=SITE_NAME, help="Observer site name")
     p.add_argument("--lat", type=float, default=SITE_LAT,
                    help="Site latitude (deg, +N)")
@@ -408,9 +485,16 @@ def main():
     a = p.parse_args()
     set_site(a.site, a.lat, a.lon, a.height)
 
-    a.cube = ensure_file(a.cube)
+    compact = None
+    if not a.full and os.path.exists(a.compact):
+        compact = a.compact
+        print(f"Using the compact HI4PI dataset ({a.compact}); "
+              f"run with --full for the native-resolution cube.")
+    else:
+        a.cube = ensure_file(a.cube)
     sim = DishSimulator(a.cube, a.bw * 1e6, a.dish, a.eta,
-                        a.nchan, a.tsys, a.tint, a.npol)
+                        a.nchan, a.tsys, a.tint, a.npol,
+                        compact_path=compact)
     grid = load_nhi_grid(a.nhi)
     ny, nx = grid.shape
     lon_c = (np.arange(nx) + 0.5) * 360.0 / nx
@@ -643,9 +727,14 @@ def main():
         except ValueError:
             print("Could not parse the parameter boxes.")
             return None
-        # clamp to sane ranges (beam >= 2 cube pixels, else the beam
-        # footprint can contain no map rows at all and the sum is empty)
-        fwhm = min(90.0, max(0.2, fwhm)) if fwhm > 0 else 0.0
+        # clamp to what the loaded dataset supports (the compact cube is
+        # pre-smoothed; a finer beam needs the full cube, if it is here)
+        if 0 < fwhm < sim.min_fwhm and sim.compact is not None \
+                and not sim.use_full_cube():
+            print(f"Beams below {sim.min_fwhm:.1f} deg need the full "
+                  f"cube ({sim.full_path}): rerun with --full to "
+                  f"download and use it.")
+        fwhm = min(90.0, max(sim.min_fwhm, fwhm)) if fwhm > 0 else 0.0
         tint = min(1e7, max(1e-3, tint))
         tsys = min(1e6, max(0.0, tsys))
         bw_hz = min(8e6, max(2e4, bw_hz))
@@ -667,10 +756,20 @@ def main():
         sim.tint = tint if tint > 0 else 1.0
         if bw_hz > 0 and (abs(bw_hz - sim.bw_hz) > 1
                           or abs(fc_hz - sim.fc) > 1):
-            if not sim.set_band(bw_hz, fc_hz):
-                print("Requested band lies entirely outside the HI4PI "
-                      "coverage (1420.4 MHz +/- ~2.9 MHz); keeping the "
-                      "previous band.")
+            ok = sim.set_band(bw_hz, fc_hz)
+            if not ok and sim.compact is not None:
+                # the compact cube trims the velocity range; the full
+                # cube may still cover the requested band
+                df = F_HI * sim.FULL_V_MS / C_LIGHT
+                if (fc_hz + bw_hz / 2 >= F_HI - df
+                        and fc_hz - bw_hz / 2 <= F_HI + df
+                        and sim.use_full_cube()):
+                    ok = sim.set_band(bw_hz, fc_hz)
+            if not ok:
+                span = (F_HI * np.abs(sim.v_all).max() / C_LIGHT) / 1e6
+                print(f"Requested band lies entirely outside this "
+                      f"dataset's coverage (1420.4 MHz +/- "
+                      f"~{span:.1f} MHz); keeping the previous band.")
                 tb_bw.eventson = tb_fc.eventson = False
                 tb_bw.set_val(f"{sim.bw_hz/1e6:g}")
                 tb_fc.set_val(f"{sim.fc/1e6:.4f}")
