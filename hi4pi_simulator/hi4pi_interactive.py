@@ -593,6 +593,10 @@ def main():
 
     # ------- targets dropdown ---------------------------------------------
     dd_ax = fig.add_axes([0.51, 0.145, 0.34, 0.40], zorder=10)
+    # never let the toolbar pan/zoom touch this axes: it overlaps the
+    # spectrum panel, and zooming there would silently rescale the
+    # (invisible) menu, blanking its labels and breaking row hit-testing
+    dd_ax.set_navigate(False)
     dd_ax.set_xlim(0, 1)
     dd_ax.set_ylim(0, 1)
     dd_ax.set_xticks([])
