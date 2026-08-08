@@ -22,7 +22,10 @@ Press "s" to save the current spectrum to PNG + txt.
 """
 
 import argparse
+import json
 import os
+import urllib.parse
+import urllib.request
 import warnings
 
 import numpy as np
@@ -603,6 +606,8 @@ def main():
                         "the box in the GUI to disable noise)")
     p.add_argument("--tint", type=float, default=60.0, help="Integration (s)")
     p.add_argument("--npol", type=int, default=1, help="Polarisations")
+    p.add_argument("--controller", default="http://192.168.106.120",
+                   help="SRT controller base URL for the Realise button")
     p.add_argument("--site", default=SITE_NAME, help="Observer site name")
     p.add_argument("--lat", type=float, default=SITE_LAT,
                    help="Site latitude (deg, +N)")
@@ -984,15 +989,27 @@ def main():
         f_ax = F_HI * (1.0 - v_ax / C_LIGHT)
         bw_use = (len(f_ax) * abs(np.median(np.diff(f_ax)))
                   if f_ax.size > 1 else sim.bw_hz)
-        tau_s = dur * 60.0 / n
+        # the tau box sets the integration time per sample; the scan
+        # duration only sets how many samples there are, so the noise
+        # per sample must not depend on it
+        tau_s = sim.tint
         mins = dt_h * 60.0
         axs.clear()
         noise = ""
-        if keep_tsys is not None:
-            sig = (keep_tsys + tbar) / np.sqrt(sim.npol * bw_use * tau_s)
-            axs.plot(mins, tbar + sim.rng.normal(0.0, sig), ".",
-                     ms=3.5, color="#9aa3ac")
-            noise = (f",  $\\tau$/sample {tau_s:.0f} s, "
+        if keep_tsys is not None and dur * 60.0 >= tau_s:
+            n_smp = int(dur * 60.0 / tau_s)
+            if n_smp > 20000:
+                print(f"Drift scan: showing 20000 of {n_smp} samples "
+                      f"(tau {tau_s:g} s over {dur:g} min)")
+                n_smp = 20000
+            t_smp = np.linspace(-dur / 120.0, dur / 120.0, n_smp)
+            tb_smp = np.interp(t_smp, dt_h, tbar)
+            sig = (keep_tsys + tb_smp) / np.sqrt(
+                sim.npol * bw_use * tau_s)
+            axs.plot(t_smp * 60.0, tb_smp + sim.rng.normal(0.0, sig),
+                     ".", ms=2.5 if n_smp > 500 else 3.5,
+                     color="#9aa3ac", rasterized=n_smp > 2000)
+            noise = (f",  $\\tau$/sample {tau_s:g} s, "
                      f"$\\sigma\\approx${np.median(sig) * 1e3:.0f} mK")
         axs.plot(mins, tbar, color=accent, lw=1.5)
         half = (sim.fwhm / 2) / (15.041 * cosd) * 60.0
@@ -1014,6 +1031,67 @@ def main():
             render_drift()
 
     tb_sd.on_submit(on_scan_len)
+
+    # ------- realise: hand the simulated observation to the SRT -------
+    btn_rl = Button(fig.add_axes([0.015, 0.600, 0.13, 0.045]), "Realise",
+                    color="#e2ecf8", hovercolor="#cfe0f2")
+    btn_rl.label.set_fontsize(9)
+
+    def controller_call(endpoint, params=None):
+        url = a.controller.rstrip("/") + endpoint
+        if params:
+            url += "?" + urllib.parse.urlencode(params)
+        try:
+            with urllib.request.urlopen(url, timeout=4) as r:
+                return json.loads(r.read().decode(errors="replace"))
+        except Exception as err:
+            print(f"SRT controller not reachable ({url}): {err}")
+            return None
+
+    def realise(_event=None):
+        """Send the current simulation to the real telescope: with the
+        H I map, ask the controller to track the pointing (galactic
+        coordinates); with the continuum map, cancel tracking and park
+        the dish at the drift-scan start, so the target transits the
+        beam centre half a scan from now."""
+        p = apply_params()
+        if not p:
+            return
+        glon, glat = p
+        if map_state["mode"] != "cont":
+            print(f"Realise: asking the SRT to track "
+                  f"l={glon:.2f}°, b={glat:.2f}°...")
+            r = controller_call("/track/galactic",
+                                {"l": round(glon, 3),
+                                 "b": round(glat, 3)})
+        else:
+            try:
+                dur = min(1435.0, max(2.0, float(tb_sd.text)))
+            except ValueError:
+                dur = 240.0
+            c = SkyCoord(l=glon * u.deg, b=glat * u.deg,
+                         frame="galactic")
+            # the beam centre sweeps east at the sidereal rate, so park
+            # half a scan west of the target (in RA) and let it drift in
+            start = SkyCoord(ra=(c.icrs.ra.deg
+                                 - 15.041 * dur / 120.0) * u.deg,
+                             dec=c.icrs.dec.deg * u.deg)
+            aa = start.transform_to(AltAz(obstime=Time.now(),
+                                          location=SITE_LOC))
+            if aa.alt.deg <= 0:
+                print(f"Realise: the drift-scan start is below the "
+                      f"horizon (alt {aa.alt.deg:.1f}°) - not sent.")
+                return
+            print(f"Realise: parking the SRT at alt {aa.alt.deg:.1f}°, "
+                  f"az {aa.az.deg:.1f}°; the target transits the beam "
+                  f"centre in {dur / 2:.0f} min...")
+            controller_call("/tracking/enable", {"enable": 0})
+            r = controller_call("/direct", {"alt": round(aa.alt.deg, 2),
+                                            "az": round(aa.az.deg, 2)})
+        if r is not None:
+            print(f"  controller: {r}")
+
+    btn_rl.on_clicked(realise)
 
     # ------- pointing readout at the figure's top-right edge ----------
     info_txt = axm.text(1.12, 1.02, "", transform=axm.transAxes,
@@ -1336,7 +1414,7 @@ def main():
             home_btn.config(command=_home_and_reset)
 
     fig._hi4pi_widgets = (tb_l, tb_b, tb_fw, tb_ts, tb_ti, tb_bw, tb_fc,
-                          btn_fr, btn_tg, tb_sd, btn_map)
+                          btn_fr, btn_tg, tb_sd, btn_map, btn_rl)
     fig._hi4pi_reset = reset_params
     update_info()
     plt.show()
