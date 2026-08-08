@@ -39,6 +39,12 @@ FILES = {
         (CDS + "ALLSKY/GAL/CAR.fits", False, "~33 GiB"),
     "hi4pi.fits":
         (CDS + "NHI_HPX.fits.gz", True, "318 MiB, unpacks to ~600 MiB"),
+    # Stockert/Villa-Elisa 1420 MHz continuum survey (Reich 1982; Reich &
+    # Reich 1986; Reich, Testori & Reich 2001), CADE HEALPix regridding,
+    # mirrored at LAMBDA; used by continuum_compress.py
+    "stockert_villaelisa_1420MHz_healpix.fits":
+        ("https://lambda.gsfc.nasa.gov/data/foregrounds/reich_reich/"
+         "STOCKERT+VILLA-ELISA_1420MHz_1_256.fits", False, "3.2 MiB"),
 }
 TILE_RE = re.compile(r"CAR_[A-I](0[1-9]|1[0-8])\.fits")
 

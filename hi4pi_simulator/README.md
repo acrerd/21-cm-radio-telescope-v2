@@ -31,9 +31,10 @@ compact data cannot honour (a beam below ~1.5°, a band beyond
 
 | Script | Purpose |
 |---|---|
-| `hi4pi_interactive.py` | Interactive GUI: click the all-sky map, get the dish spectrum. Editable pointing, beam, T_sys, integration time, bandwidth, band centre and velocity frame (LSR/SSB/topocentric); target list, site horizon/visibility overlays, continuum sources (Sun, Cyg A, Cas A), and a live pointing panel (RA/Dec, Alt/Az now, band-averaged continuum SNR for the set T_sys, bandwidth and integration time). Press `s` to save the current spectrum (PNG + txt). |
+| `hi4pi_interactive.py` | Interactive GUI: click the all-sky map, get the dish spectrum. Editable pointing, beam, T_sys, integration time, bandwidth, band centre and velocity frame (LSR/SSB/topocentric); target list (H I targets plus the continuum sources Cyg A, Cas A, Tau A and the Sun), a map toggle between the N_HI and 1420 MHz continuum skies, site horizon/visibility overlays, and a live RA/Dec + Alt/Az readout for the current pointing beside the map. The lower panel is modal: with the H I map it shows the spectrum; with the continuum map it shows a **drift scan** — band-averaged T_A (H I included when in-band) for the sky drifting through a beam parked on the current target, any target, above the horizon or not, centred on beam-centre transit over the duration set in the **scan (min)** box, with per-sample noise. Press `s` to save the current spectrum (PNG + txt). |
 | `hi4pi_3m_dish.py` | Command-line, single-pointing version working from one ~20°×20° HI4PI tile (~250 MiB, chosen automatically from the pointing and downloaded if missing) instead of the 33 GiB cube. Writes a PNG + txt spectrum. |
 | `hi4pi_compress.py` | Regenerates `hi4pi_compact.npz.xz` from the full cube: block-averages to 0.5° pixels, smooths to 1° total resolution, trims to \|v\| ≤ 470 km/s, zeroes below 3σ, quantizes to int16 (0.01 K) and LZMA-compresses — 33 GiB → ~23 MB, exact to <0.5% for beams ≥ 1.6°. |
+| `continuum_compress.py` | Regenerates `continuum_1420_compact.npz.xz` from the Stockert/Villa-Elisa 1420 MHz continuum survey (CADE HEALPix, fetched automatically, 3.2 MiB): same 0.5° grid and 1° resolution as the H I cube, zero level (CMB + isotropic, ~3.2 K) stored separately, strong sources (Cyg A, Cas A, Tau A — saturated/blanked in the survey) removed for analytic re-insertion. ~0.7 MB. |
 | `hi4pi_data.py` | Data download helper (see below). Run directly to pre-fetch the all-sky files. |
 
 Examples:
@@ -71,6 +72,23 @@ When the beam and band later return to values the compact data can
 serve (say the beam goes from 0.2° back to 5°), it switches back just
 as automatically — the compact cube stays cached in RAM, so the return
 is immediate.
+
+## Continuum sky
+
+`continuum_1420_compact.npz.xz` (in the repo, ~0.7 MB) adds the diffuse
+1420 MHz continuum from the Stockert/Villa-Elisa all-sky survey (Reich
+1982; Reich & Reich 1986; Reich, Testori & Reich 2001) under the
+analytic point sources. Every spectrum then rides on the real continuum
+background — Cygnus X, the galactic ridge, the North Polar Spur — which
+both shapes drift-scan baselines and feeds the noise estimate: the
+radiometer rms uses T_sys + T_A(pointing), so pointing at the plane
+degrades the SNR just as it does at the telescope. Notes: the survey's
+uniform zero level (CMB + isotropic, ~3.2 K) is subtracted and assumed
+to live inside your T_sys; the survey saturates or blanks the strongest
+compact sources, so Cyg A, Cas A and Tau A are removed from the map and
+carried analytically at their true fluxes; the map's resolution floor
+is 1°, irrelevant for beams ≥ 1.5°. Delete or rename the file (or pass
+`--continuum ""`) to fall back to point sources on an empty sky.
 Force the full cube with `--full` (this *will* download it if missing);
 point at a different compact file with `--compact PATH`.
 
@@ -86,6 +104,7 @@ downloads resume if interrupted):
 | `hi4pi_allsky_gal_CAR.fits` | `ALLSKY/GAL/CAR.fits` — all-sky galactic plate-carrée spectral cube | ~33 GiB |
 | `hi4pi.fits` | `NHI_HPX.fits.gz` — N_HI HEALPix table (display map) | 318 MiB (~600 MiB unpacked) |
 | `CAR_A01.fits` … `CAR_I18.fits` | `CUBES/GAL/CAR/` — individual tiles, on demand for `hi4pi_3m_dish.py` (chosen from l, b) | ~250 MiB each |
+| `stockert_villaelisa_1420MHz_healpix.fits` | [LAMBDA mirror](https://lambda.gsfc.nasa.gov/product/foreground/fg_stockert_villa_info.html) of the CADE HEALPix Stockert/Villa-Elisa 1420 MHz continuum survey — only needed to regenerate the compact continuum map | 3.2 MiB |
 
 `hi4pi_compact.npz.xz` (committed to the repo) and `nhi_grid_cache.npy`
 (the gridded N_HI display map, also committed) are both derived from

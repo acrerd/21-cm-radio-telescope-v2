@@ -23,7 +23,6 @@ Press "s" to save the current spectrum to PNG + txt.
 
 import argparse
 import os
-import sys
 import warnings
 
 import numpy as np
@@ -38,6 +37,7 @@ from astropy.io import fits
 from astropy.time import Time
 from astropy.wcs import WCS
 
+from continuum_compress import CONTINUUM_DEFAULT, load_continuum
 from hi4pi_compress import COMPACT_DEFAULT, load_compact
 from hi4pi_data import ensure_file
 
@@ -97,9 +97,13 @@ TARGETS = [
 
 def continuum_sources():
     """The bright continuum sources: (name, l, b, flux at 1420 MHz in Jy).
-    Sun position is for launch time; quiet-Sun flux (active Sun is 10-100x)."""
+    Sun position is for launch time; quiet-Sun flux (active Sun is 10-100x).
+    These stay analytic even when the 1420 MHz continuum map is loaded:
+    the survey saturates/blanks them, so their imprint is removed from
+    the compact map and the true fluxes are added back here."""
     cyg = SkyCoord(ra=299.868 * u.deg, dec=40.734 * u.deg).galactic
     cas = SkyCoord(ra=350.850 * u.deg, dec=58.815 * u.deg).galactic
+    tau = SkyCoord(ra=83.633 * u.deg, dec=22.015 * u.deg).galactic
     # direction-only: get_sun carries the Earth-Sun distance, and a 3-D
     # transform to Galactic would re-centre on the solar-system
     # barycentre, giving a meaningless direction (the Sun IS the
@@ -108,6 +112,7 @@ def continuum_sources():
     sun = SkyCoord(ra=sun_gcrs.ra, dec=sun_gcrs.dec).galactic
     return [("Cyg A", cyg.l.deg, cyg.b.deg, 1590.0),
             ("Cas A", cas.l.deg, cas.b.deg, 1500.0),
+            ("Tau A", tau.l.deg, tau.b.deg, 875.0),
             ("Sun", sun.l.deg, sun.b.deg, 5.0e5)]
 
 
@@ -158,7 +163,8 @@ class DishSimulator:
     FULL_V_MS = 6.07e5      # the full cube covers |v_LSR| < ~607 km/s
 
     def __init__(self, cube_path, bw_hz, dish_m, eta, nchan=None,
-                 tsys=None, tint=60.0, npol=1, compact_path=None):
+                 tsys=None, tint=60.0, npol=1, compact_path=None,
+                 continuum_path=None):
         self.bw_hz, self.eta = bw_hz, eta
         self.nchan, self.tsys, self.tint, self.npol = nchan, tsys, tint, npol
         self.dish_m = dish_m
@@ -168,6 +174,11 @@ class DishSimulator:
         self._compact_cache = None      # survives a switch to the full cube
         self.hdul = None
         self.sources = continuum_sources()
+        self.cmap = None                # diffuse 1420 MHz continuum sky
+        if continuum_path and os.path.exists(continuum_path):
+            self.cmap = load_continuum(continuum_path)
+            print(f"Continuum sky: {continuum_path} (Stockert/"
+                  f"Villa-Elisa 1420 MHz; strong sources analytic).")
         natural = np.degrees(1.22 * (C_LIGHT / F_HI) / dish_m)
         if compact_path:
             self._load_compact(compact_path)
@@ -299,17 +310,43 @@ class DishSimulator:
         self.rmax = 1.5 * eff
 
     def continuum(self, glon, glat):
-        """Beam-weighted continuum T_A from the bright point sources.
-        A_e follows from the beam via the antenna theorem:
-        A_e * Omega_A = lambda^2, with Omega_A = 1.133 FWHM^2 / eta_mb."""
+        """Beam-weighted continuum T_A: the bright point sources
+        analytically (A_e follows from the beam via the antenna theorem:
+        A_e * Omega_A = lambda^2, with Omega_A = 1.133 FWHM^2 / eta_mb),
+        plus the diffuse 1420 MHz survey sky when the map is loaded."""
         lam2 = (C_LIGHT / F_HI) ** 2
         a_e = lam2 * self.eta / (1.133 * np.radians(self.fwhm) ** 2)
+        sigma_b = self.fwhm / (2 * np.sqrt(2 * np.log(2)))
         total = 0.0
         for name, sl, sb, s_jy in self.sources:
             theta = haversine_deg(sl, sb, glon, glat)
             total += (s_jy * 1e-26 * a_e / (2 * K_B)
-                      * np.exp(-0.5 * (theta / self.sigma) ** 2))
+                      * np.exp(-0.5 * (theta / sigma_b) ** 2))
+        if self.cmap is not None:
+            total += self._map_continuum(glon, glat)
         return total
+
+    def _map_continuum(self, glon, glat):
+        """Beam-weighted diffuse continuum (K of T_A) from the compact
+        1420 MHz map.  The map is pre-smoothed to cmap.fwhm, so only the
+        residual beam is convolved; requested beams below that get the
+        map's own resolution (a documented floor, irrelevant above
+        ~1.5 deg)."""
+        c = self.cmap
+        pix = abs(c.lat[1] - c.lat[0])
+        sig = max(np.sqrt(max(self.fwhm ** 2 - c.fwhm ** 2, 0.0)) / 2.355,
+                  0.3 * pix)
+        rmax = max(3 * sig, 1.5 * pix)
+        rows = np.abs(c.lat - glat) <= rmax
+        cosb = max(0.05, np.cos(np.radians(min(89.0, abs(glat) + rmax))))
+        dl = (c.lon - glon + 180.0) % 360.0 - 180.0
+        cols = np.abs(dl) * cosb <= rmax
+        sub = c.t[np.ix_(rows, cols)]
+        sep = haversine_deg(c.lon[cols][None, :], c.lat[rows][:, None],
+                            glon, glat)
+        w = np.exp(-0.5 * (sep / sig) ** 2) \
+            * np.cos(np.radians(c.lat[rows]))[:, None]
+        return self.eta * float((sub * w).sum() / w.sum())
 
     def spectrum(self, glon, glat):
         """Return (v_out [m/s], T_A [K], sigma_noise or None)."""
@@ -540,6 +577,10 @@ def main():
     p.add_argument("--full", action="store_true",
                    help="use the full cube even if the compact file "
                         "exists (downloads ~33 GiB if missing)")
+    p.add_argument("--continuum", default=CONTINUUM_DEFAULT,
+                   help="compact 1420 MHz continuum map from "
+                        "continuum_compress.py (diffuse sky under the "
+                        "point sources; blank to disable)")
     p.add_argument("--bw", type=float, default=2.0, help="Bandwidth (MHz)")
     p.add_argument("--dish", type=float, default=3.0, help="Dish (m)")
     p.add_argument("--eta", type=float, default=0.7, help="Main-beam eff.")
@@ -566,7 +607,8 @@ def main():
         a.cube = ensure_file(a.cube)
     sim = DishSimulator(a.cube, a.bw * 1e6, a.dish, a.eta,
                         a.nchan, a.tsys, a.tint, a.npol,
-                        compact_path=compact)
+                        compact_path=compact,
+                        continuum_path=a.continuum)
     grid = load_nhi_grid(a.nhi)
     ny, nx = grid.shape
     lon_c = (np.arange(nx) + 0.5) * 360.0 / nx
@@ -584,16 +626,33 @@ def main():
     o = np.argsort(lon_plot)
     LON, LAT = np.meshgrid(lon_plot[o], np.radians(lat_c))
     map_norm = LogNorm(vmin=4e19, vmax=2e22)
+    cont_norm = LogNorm(vmin=0.05, vmax=60.0)
     map_step = 360.0 / nx
-    map_state = {"fwhm": None, "mesh": None}
+    map_state = {"fwhm": None, "mesh": None, "mode": "hi"}
 
-    def update_map(fwhm):
-        """Show the N_HI map smoothed to the current beam, so the display
-        matches what the dish can actually resolve."""
-        if map_state["fwhm"] is not None \
+    def update_map(fwhm, force=False):
+        """Show the selected all-sky map (N_HI or 1420 MHz continuum)
+        smoothed to the current beam, so the display matches what the
+        dish can actually resolve."""
+        if not force and map_state["fwhm"] is not None \
                 and abs(fwhm - map_state["fwhm"]) < 0.01:
             return
-        sm = smooth_to_beam(grid, lat_c, map_step, fwhm)
+        if map_state["mode"] == "cont":
+            # the continuum map is stored already smoothed to its own
+            # resolution; only the residual to the dish beam remains
+            resid = np.sqrt(max(fwhm ** 2 - sim.cmap.fwhm ** 2, 0.0))
+            sm = (smooth_to_beam(np.asarray(sim.cmap.t, dtype=np.float64),
+                                 lat_c, map_step, resid)
+                  if resid > 0.3 else np.asarray(sim.cmap.t))
+            sm = np.maximum(sm, 0.01)
+            norm = cont_norm
+            title = ("1420 MHz continuum (Stockert/Villa-Elisa) - click "
+                     f"to point the dish (beam {fwhm:.1f}°)")
+        else:
+            sm = smooth_to_beam(grid, lat_c, map_step, fwhm)
+            norm = map_norm
+            title = (f"HI4PI N$_{{HI}}$ - click to point the dish "
+                     f"(beam {fwhm:.1f}°)")
         # display stride: once smoothed to the beam there is no detail
         # finer than ~fwhm/4, so bigger beams need far fewer quads and
         # every full canvas redraw (each widget keystroke!) gets cheaper
@@ -602,8 +661,9 @@ def main():
             map_state["mesh"].remove()
         map_state["mesh"] = axm.pcolormesh(
             LON[::ds, ::ds], LAT[::ds, ::ds], sm[:, o][::ds, ::ds],
-            cmap="inferno", norm=map_norm, rasterized=True, zorder=0)
+            cmap="inferno", norm=norm, rasterized=True, zorder=0)
         map_state["fwhm"] = fwhm
+        axm.set_title(title, fontsize=11, color=ink)
 
     update_map(sim.fwhm)
     # the map is a fixed all-sky view; geographic axes already refuse
@@ -621,9 +681,6 @@ def main():
     axm.set_yticks(np.radians([-60, -30, 0, 30, 60]))
     axm.tick_params(axis="y", labelsize=8, colors="#555859")
     axm.grid(color="white", alpha=0.6, lw=0.8)
-    axm.set_title(f"HI4PI N$_{{HI}}$ - click to point the "
-                  f"{a.dish:.0f}-m dish (beam {sim.fwhm:.1f}°)",
-                  fontsize=11, color=ink)
     beam_artist = [None]
 
     def map_coord(x, y):
@@ -757,6 +814,12 @@ def main():
     btn_fr.label.set_fontsize(9)
 
     # ------- targets dropdown ---------------------------------------------
+    # H I targets plus the analytic continuum point sources (the Sun's
+    # entry uses its position at launch time)
+    targets = TARGETS + [
+        (nm + (" (at launch)" if nm == "Sun" else "  [continuum]"),
+         sl, sb, 2.0)
+        for nm, sl, sb, _flux in sim.sources]
     dd_ax = fig.add_axes([0.51, 0.145, 0.34, 0.40], zorder=10)
     # never let the toolbar pan/zoom touch this axes: it overlaps the
     # spectrum panel, and zooming there would silently rescale the
@@ -769,10 +832,10 @@ def main():
     dd_ax.set_facecolor("#fbfcfd")
     for sp in dd_ax.spines.values():
         sp.set_color("#c7cacd")
-    for i, (nm, tl, tb_deg, _bw) in enumerate(TARGETS):
-        yy = 1 - (i + 0.5) / len(TARGETS)
+    for i, (nm, tl, tb_deg, _bw) in enumerate(targets):
+        yy = 1 - (i + 0.5) / len(targets)
         if i:
-            dd_ax.axhline(1 - i / len(TARGETS), color="#eceeef", lw=0.6)
+            dd_ax.axhline(1 - i / len(targets), color="#eceeef", lw=0.6)
         tdec = SkyCoord(l=tl * u.deg, b=tb_deg * u.deg,
                         frame="galactic").icrs.dec.deg
         gone = never_rises(tdec)
@@ -793,23 +856,138 @@ def main():
 
     btn_tg.on_clicked(toggle_targets)
 
-    # ------- pointing / SNR panel in the free column left of the map --
-    axm.set_anchor("E")     # park the map right, so the column is fixed
-    info_ax = fig.add_axes([0.015, 0.60, 0.15, 0.34])
-    info_ax.set_xticks([])
-    info_ax.set_yticks([])
-    info_ax.set_facecolor("#fbfcfd")
-    for sp in info_ax.spines.values():
-        sp.set_color("#c7cacd")
-    info_ax.set_title(f"pointing - {SITE_NAME}", fontsize=9, color=ink)
-    info_txt = info_ax.text(0.07, 0.965, "", transform=info_ax.transAxes,
-                            va="top", fontsize=8, color=ink,
-                            linespacing=1.75)
+    # ------- map display toggle (N_HI <-> 1420 MHz continuum) --------
+    btn_map = Button(fig.add_axes([0.86, ROW1, 0.12, 0.04]), "Map: H I",
+                     color="#f4ede8", hovercolor="#eaddd4")
+    btn_map.label.set_fontsize(9)
+
+    def toggle_map(_event=None):
+        if sim.cmap is None:
+            print("No continuum map loaded (continuum_1420_compact"
+                  ".npz.xz missing) - only the N_HI display available.")
+            return
+        map_state["mode"] = "cont" if map_state["mode"] == "hi" else "hi"
+        btn_map.label.set_text(
+            "Map: 1420" if map_state["mode"] == "cont" else "Map: H I")
+        update_map(sim.fwhm, force=True)
+        # the lower panel is modal: spectrum with the H I map, drift
+        # scan with the continuum map
+        if state["last"]:
+            if map_state["mode"] == "cont":
+                render_drift()
+            else:
+                clear_scan_track()
+                render()
+        else:
+            if map_state["mode"] != "cont":
+                clear_scan_track()
+            fig.canvas.draw_idle()
+
+    btn_map.on_clicked(toggle_map)
+
+    # ------- drift-scan duration (continuum-map mode) ----------------
+    tb_sd = add_box(0.905, ROW2, 0.075, "scan (min) ", "240")
+    scan_artist = [None]
+
+    def clear_scan_track():
+        if scan_artist[0]:
+            for art in scan_artist[0]:
+                art.remove()
+            scan_artist[0] = None
+
+    def draw_scan_track(sl, sb):
+        """Dashed constant-declination line on the map showing the
+        stretch of sky the drift scan sweeps through."""
+        clear_scan_track()
+        sx = -np.radians((sl + 180.0) % 360.0 - 180.0)
+        sy = np.radians(sb)
+        seg = np.where(np.abs(np.diff(sx)) > 1.0)[0]      # split at wrap
+        arts = []
+        for part in np.split(np.arange(len(sx)), seg + 1):
+            arts.append(axm.plot(sx[part], sy[part], color="#4dd2ff",
+                                 lw=1.2, ls="--", zorder=3)[0])
+        arts.append(axm.plot(sx[[0, -1]], sy[[0, -1]], ls="none",
+                             marker=".", ms=5, color="#4dd2ff",
+                             zorder=3)[0])
+        scan_artist[0] = arts
+
+    def render_drift():
+        """Draw a drift scan through the current pointing in the lower
+        panel (continuum-map mode): band-averaged T_A along the
+        constant-declination track of a parked beam, centred on
+        beam-centre transit, spanning the duration in the scan box -
+        valid for any target, above the horizon or not, with the H I
+        line included whenever the band covers it."""
+        glon, glat = state["last"][0], state["last"][1]
+        try:
+            dur = float(tb_sd.text)
+        except ValueError:
+            dur = 240.0
+        dur = min(1435.0, max(2.0, dur))
+        if abs(float(tb_sd.text or "0") - dur) > 1e-9:
+            tb_sd.eventson = False
+            tb_sd.set_val(f"{dur:g}")
+            tb_sd.eventson = True
+            print(f"Clamped scan duration to {dur:g} min")
+        c = SkyCoord(l=glon * u.deg, b=glat * u.deg, frame="galactic")
+        ra0, dec = c.icrs.ra.deg, c.icrs.dec.deg
+        cosd = max(0.02, np.cos(np.radians(dec)))
+        n = 151
+        dt_h = np.linspace(-dur / 120.0, dur / 120.0, n)
+        # the beam centre moves east through the sky at the sidereal
+        # rate, so at time t it sits at RA = ra0 + 15.041 t
+        sky = SkyCoord(ra=(ra0 + 15.041 * dt_h) * u.deg,
+                       dec=np.full(n, dec) * u.deg).galactic
+        draw_scan_track(sky.l.deg, sky.b.deg)
+        keep_tsys, sim.tsys = sim.tsys, None      # noiseless band means
+        try:
+            tbar = np.array([np.nanmean(sim.spectrum(li, bi)[1])
+                             for li, bi in zip(sky.l.deg, sky.b.deg)])
+        finally:
+            sim.tsys = keep_tsys
+        v_ax = state["last"][2]
+        f_ax = F_HI * (1.0 - v_ax / C_LIGHT)
+        bw_use = (len(f_ax) * abs(np.median(np.diff(f_ax)))
+                  if f_ax.size > 1 else sim.bw_hz)
+        tau_s = dur * 60.0 / n
+        mins = dt_h * 60.0
+        axs.clear()
+        noise = ""
+        if keep_tsys is not None:
+            sig = (keep_tsys + tbar) / np.sqrt(sim.npol * bw_use * tau_s)
+            axs.plot(mins, tbar + sim.rng.normal(0.0, sig), ".",
+                     ms=3.5, color="#9aa3ac")
+            noise = (f",  $\\tau$/sample {tau_s:.0f} s, "
+                     f"$\\sigma\\approx${np.median(sig) * 1e3:.0f} mK")
+        axs.plot(mins, tbar, color=accent, lw=1.5)
+        half = (sim.fwhm / 2) / (15.041 * cosd) * 60.0
+        for xx in (-half, half):
+            axs.axvline(xx, color="#c7cacd", lw=1.0, ls="--")
+        axs.set_xlabel("minutes from beam-centre transit")
+        axs.set_ylabel("band-averaged $T_A$  (K)")
+        axs.set_title(f"drift scan  l={glon:.1f}°, b={glat:.1f}° "
+                      f"(dec {dec:+.1f}°)   BW {bw_use / 1e6:.2g} MHz "
+                      f"at {sim.fc / 1e6:.1f} MHz{noise}",
+                      fontsize=10, color=ink)
+        axs.grid(color="#eceeef", lw=0.7)
+        axs.set_axisbelow(True)
+        draw_beam(glon, glat)
+        fig.canvas.draw_idle()
+
+    def on_scan_len(_event=None):
+        if map_state["mode"] == "cont" and state["last"]:
+            render_drift()
+
+    tb_sd.on_submit(on_scan_len)
+
+    # ------- pointing readout at the figure's top-right edge ----------
+    info_txt = axm.text(1.17, 1.02, "", transform=axm.transAxes,
+                        va="top", ha="right", fontsize=8, color=ink,
+                        linespacing=1.5)
 
     def update_info(_=None):
-        """Refresh the pointing panel: where the current l/b sits in
-        equatorial and horizontal coordinates right now, and the
-        band-averaged continuum SNR of the simulated observation."""
+        """Refresh the pointing readout: the current l/b in equatorial
+        coordinates, and where it sits in the sky over the site now."""
         try:
             glon = float(tb_l.text) % 360.0
             glat = float(tb_b.text)
@@ -822,37 +1000,11 @@ def main():
         ra_m = (icrs.ra.hour - ra_h) * 60
         dec = icrs.dec.deg
         d_d, d_m = int(abs(dec)), (abs(dec) - int(abs(dec))) * 60
-        lines = [
-            f"l, b: {glon:.2f}°, {glat:+.2f}°",
-            f"RA:   {ra_h:02d}h {ra_m:04.1f}m",
-            f"Dec:  {'-' if dec < 0 else '+'}{d_d:02d}° {d_m:04.1f}′",
-            f"Alt:  {aa.alt.deg:+.1f}°"
-            + ("" if aa.alt.deg > 0 else "  (below horizon)"),
-            f"Az:   {aa.az.deg:.1f}°",
-            "",
-        ]
-        # continuum SNR: band-averaged signal above the zero noise floor
-        # vs the radiometer rms of a total-power measurement over the
-        # usable bandwidth and the integration time
-        if state["last"] is None:
-            lines.append("SNR: click the map")
-        elif sim.tsys is None:
-            lines.append("SNR: needs $T_{sys}$")
-        else:
-            v_ax, t_a = state["last"][2], state["last"][3]
-            fin = np.isfinite(t_a)
-            tbar = float(np.mean(t_a[fin])) if fin.any() else 0.0
-            f_ax = F_HI * (1.0 - v_ax / C_LIGHT)
-            df = (abs(np.median(np.diff(f_ax))) if f_ax.size > 1
-                  else sim.bw_hz)
-            bw_use = fin.sum() * df
-            drms = (sim.tsys + max(tbar, 0.0)) \
-                / np.sqrt(sim.npol * bw_use * sim.tint)
-            lines += [f"$\\bar{{T}}_A$ (band):  {tbar:.3g} K",
-                      f"$\\Delta T$ rms:  {drms * 1e3:.3g} mK",
-                      f"  ({bw_use / 1e6:.2g} MHz, {sim.tint:g} s)",
-                      f"continuum SNR:  {tbar / drms:.3g}"]
-        info_txt.set_text("\n".join(lines))
+        info_txt.set_text(
+            f"RA {ra_h:02d}h {ra_m:04.1f}m   "
+            f"Dec {'-' if dec < 0 else '+'}{d_d:02d}° {d_m:04.1f}′\n"
+            f"Alt {aa.alt.deg:+.1f}°   Az {aa.az.deg:.1f}°"
+            + ("" if aa.alt.deg > 0 else "   (below horizon)"))
         fig.canvas.draw_idle()
 
     timer.add_callback(update_info)       # alt/az drift with the sky
@@ -872,6 +1024,10 @@ def main():
         except ValueError:
             print("Could not parse the parameter boxes.")
             return None
+        # the box shows the rest frequency rounded to 0.1 kHz; treat a
+        # value within half that step as the exact H I rest frequency
+        if abs(fc_hz - F_HI) < 50.0:
+            fc_hz = F_HI
         # clamp to what the loaded dataset supports (the compact cube is
         # pre-smoothed; a finer beam needs the full cube, if it is here)
         # and drop back to the compact dataset when the request fits it
@@ -897,8 +1053,6 @@ def main():
                 print(f"Clamped {tb.label.get_text().strip()} to {val}")
         if fwhm > 0 and (went_compact or abs(fwhm - sim.fwhm) > 1e-6):
             sim.set_beam(fwhm)
-            axm.set_title(f"HI4PI N$_{{HI}}$ - click to point the dish "
-                          f"(beam {sim.fwhm:.1f}°)", fontsize=11, color=ink)
             update_map(sim.fwhm)
         sim.tsys = tsys if tsys > 0 else None
         sim.tint = tint if tint > 0 else 1.0
@@ -992,10 +1146,13 @@ def main():
         state["params"] = (glon, glat, sim.fwhm, sim.tsys, sim.tint,
                            sim.bw_hz, sim.fc)
         update_info()
-        render()
+        if map_state["mode"] == "cont":
+            render_drift()
+        else:
+            render()
 
     def select_target(i):
-        name, tl, tb_deg, req_bw = TARGETS[i]
+        name, tl, tb_deg, req_bw = targets[i]
         for tb, val in ((tb_l, f"{tl:.2f}"), (tb_b, f"{tb_deg:.2f}")):
             tb.eventson = False
             tb.set_val(val)
@@ -1015,8 +1172,8 @@ def main():
             if event.inaxes is btn_tg.ax:
                 return                # let the button's own toggle run
             if event.inaxes is dd_ax and event.ydata is not None:
-                i = min(len(TARGETS) - 1,
-                        max(0, int((1 - event.ydata) * len(TARGETS))))
+                i = min(len(targets) - 1,
+                        max(0, int((1 - event.ydata) * len(targets))))
                 select_target(i)
             else:
                 dd_ax.set_visible(False)      # click-away closes it
@@ -1052,7 +1209,9 @@ def main():
         order = ["lsr", "ssb", "topo"]
         state["frame"] = order[(order.index(state["frame"]) + 1) % 3]
         btn_fr.label.set_text("Frame: " + FRAME_NAMES[state["frame"]])
-        if state["last"]:
+        # the frame only relabels the spectrum axes; the drift view
+        # (continuum-map mode) is frame-independent
+        if state["last"] and map_state["mode"] != "cont":
             render()
         else:
             fig.canvas.draw_idle()
@@ -1089,8 +1248,48 @@ def main():
     fig.canvas.mpl_connect("button_press_event", on_click)
     fig.canvas.mpl_connect("key_press_event", on_key)
     fig.canvas.mpl_connect("scroll_event", on_scroll)
+
+    # ------- toolbar Home also resets every parameter ----------------
+    initials = {tb: tb.text for tb in (tb_l, tb_b, tb_fw, tb_ts, tb_ti,
+                                       tb_bw, tb_fc, tb_sd)}
+
+    def reset_params(_event=None):
+        """Return every parameter box and the velocity frame to their
+        startup values, then recompute the current display."""
+        for tb, val in initials.items():
+            tb.eventson = False
+            tb.set_val(val)
+            tb.eventson = True
+        state["frame"] = "lsr"
+        btn_fr.label.set_text("Frame: LSR")
+        print("Parameters reset to startup values.")
+        p = apply_params()
+        if p and state["last"]:
+            point(*p)
+        else:
+            update_info()
+            fig.canvas.draw_idle()
+
+    tbar = getattr(fig.canvas, "toolbar", None)
+    if tbar is not None:
+        _orig_home = tbar.home
+
+        def _home_and_reset(*args, **kwargs):
+            _orig_home(*args, **kwargs)
+            reset_params()
+
+        # covers the keyboard shortcut ('h'/'home'), which looks the
+        # method up at call time...
+        tbar.home = _home_and_reset
+        # ...but the Tk toolbar button captured the original bound
+        # method when it was created, so rebind its command too
+        home_btn = getattr(tbar, "_buttons", {}).get("Home")
+        if home_btn is not None:
+            home_btn.config(command=_home_and_reset)
+
     fig._hi4pi_widgets = (tb_l, tb_b, tb_fw, tb_ts, tb_ti, tb_bw, tb_fc,
-                          btn_fr, btn_tg)
+                          btn_fr, btn_tg, tb_sd, btn_map)
+    fig._hi4pi_reset = reset_params
     update_info()
     plt.show()
 
