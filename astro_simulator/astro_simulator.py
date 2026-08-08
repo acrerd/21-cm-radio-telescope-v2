@@ -831,16 +831,21 @@ def main():
 
     # grouped: pointing | band & beam | radiometer
     ROW = 0.025
-    tb_l = add_box(0.06, ROW, 0.10, "l (°)", "132.0")
-    tb_b = add_box(0.18, ROW, 0.10, "b (°)", "-1.0")
-    tb_fw = add_box(0.35, ROW, 0.10, "beam (°)", f"{sim.fwhm:.2f}")
-    tb_bw = add_box(0.47, ROW, 0.10, "BW (MHz)", f"{a.bw:g}")
-    tb_fc = add_box(0.59, ROW, 0.10, "$f_c$ (MHz)", f"{F_HI/1e6:.2f}")
+    tb_l = add_box(0.035, ROW, 0.095, "l (°)", "132.0")
+    tb_b = add_box(0.145, ROW, 0.095, "b (°)", "-1.0")
+    tb_fw = add_box(0.28, ROW, 0.095, "beam (°)", f"{sim.fwhm:.2f}")
+    tb_bw = add_box(0.39, ROW, 0.095, "BW (MHz)", f"{a.bw:g}")
+    tb_fc = add_box(0.50, ROW, 0.095, "$f_c$ (MHz)", f"{F_HI/1e6:.2f}")
     fc_shown = [tb_fc.text]     # what the box displays (2 dp); the
     #                             exact value in use lives in sim.fc
-    tb_ts = add_box(0.76, ROW, 0.10, "$T_{sys}$ (K)",
+    # shows the effective startup count: --nchan if given, else the
+    # band's native channel count; an emptied box = native resolution
+    nc_default = a.nchan or (len(sim.f) if len(sim.f) > 1
+                             else max(2, int(round(sim.bw_hz / 6.1e3))))
+    tb_nc = add_box(0.61, ROW, 0.095, "channels", f"{nc_default:d}")
+    tb_ts = add_box(0.755, ROW, 0.095, "$T_{sys}$ (K)",
                     "" if a.tsys is None else f"{a.tsys:g}")
-    tb_ti = add_box(0.88, ROW, 0.10, "$\\tau$ (s)", f"{a.tint:g}")
+    tb_ti = add_box(0.865, ROW, 0.095, "$\\tau$ (s)", f"{a.tint:g}")
 
     # ------- control stack in the free column left of the map -------------
     btn_fr = Button(fig.add_axes([0.015, 0.770, 0.13, 0.045]),
@@ -1140,6 +1145,8 @@ def main():
             bw_hz = abs(float(tb_bw.text)) * 1e6
             fc_text = tb_fc.text.strip()
             fc_hz = float(fc_text) * 1e6
+            nc_text = tb_nc.text.strip()
+            nchan = int(float(nc_text)) if nc_text else None
         except ValueError:
             print("Could not parse the parameter boxes.")
             return None
@@ -1167,9 +1174,12 @@ def main():
         tint = min(1e7, max(1e-3, tint))
         tsys = min(1e6, max(0.0, tsys))
         bw_hz = min(8e6, max(2e4, bw_hz))
+        if nchan is not None:
+            nchan = min(65536, max(2, nchan))
         fixups = ((tb_b, f"{glat:g}"),
                   (tb_fw, f"{fwhm:g}" if fwhm > 0 else f"{sim.fwhm:g}"),
-                  (tb_ti, f"{tint:g}"), (tb_bw, f"{bw_hz/1e6:g}"))
+                  (tb_ti, f"{tint:g}"), (tb_bw, f"{bw_hz/1e6:g}"),
+                  (tb_nc, "" if nchan is None else f"{nchan:d}"))
         for tb, val in fixups:
             if tb.text.strip() and abs(float(tb.text) - float(val)) > 1e-9:
                 tb.eventson = False
@@ -1181,6 +1191,7 @@ def main():
             update_map(sim.fwhm)
         sim.tsys = tsys if tsys > 0 else None
         sim.tint = tint if tint > 0 else 1.0
+        sim.nchan = nchan
         if bw_hz > 0 and (abs(bw_hz - sim.bw_hz) > 1
                           or abs(fc_hz - sim.fc) > 1):
             ok = sim.set_band(bw_hz, fc_hz)
@@ -1243,7 +1254,7 @@ def main():
         vf = v + dv
         axs.clear()
         f_mhz = F_HI * (1.0 - vf / C_LIGHT) / 1e6
-        axs.plot(f_mhz, t_a, color=accent, lw=1.3)
+        axs.plot(f_mhz, t_a, color=accent, lw=1.3, drawstyle="steps-mid")
         axs.axhline(0, color="#c7cacd", lw=0.8, zorder=0)
         axs.set_xlabel(f"Frequency  (MHz, {FRAME_NAMES[frame]})")
         axs.set_ylabel("$T_A$  (K)")
@@ -1275,7 +1286,7 @@ def main():
             return
         state["last"] = (glon, glat, v, t_a, sig, t_cont)
         state["params"] = (glon, glat, sim.fwhm, sim.tsys, sim.tint,
-                           sim.bw_hz, sim.fc)
+                           sim.bw_hz, sim.fc, sim.nchan)
         update_info()
         if map_state["mode"] == "cont":
             render_drift()
@@ -1332,7 +1343,7 @@ def main():
         if not p:
             return
         params = (p[0], p[1], sim.fwhm, sim.tsys, sim.tint,
-                  sim.bw_hz, sim.fc)
+                  sim.bw_hz, sim.fc, sim.nchan)
         if params != state["params"]:
             point(*p)
 
@@ -1348,7 +1359,7 @@ def main():
             fig.canvas.draw_idle()
 
     btn_fr.on_clicked(on_frame)
-    for tb in (tb_l, tb_b, tb_fw, tb_ts, tb_ti, tb_bw, tb_fc):
+    for tb in (tb_l, tb_b, tb_fw, tb_ts, tb_ti, tb_bw, tb_fc, tb_nc):
         tb.on_submit(on_go)
 
     def on_key(event):
@@ -1382,7 +1393,7 @@ def main():
 
     # ------- toolbar Home also resets every parameter ----------------
     initials = {tb: tb.text for tb in (tb_l, tb_b, tb_fw, tb_ts, tb_ti,
-                                       tb_bw, tb_fc, tb_sd)}
+                                       tb_bw, tb_fc, tb_nc, tb_sd)}
 
     def reset_params(_event=None):
         """Return every parameter box and the velocity frame to their
@@ -1419,7 +1430,7 @@ def main():
             home_btn.config(command=_home_and_reset)
 
     fig._hi4pi_widgets = (tb_l, tb_b, tb_fw, tb_ts, tb_ti, tb_bw, tb_fc,
-                          btn_fr, btn_tg, tb_sd, btn_map, btn_rl)
+                          tb_nc, btn_fr, btn_tg, tb_sd, btn_map, btn_rl)
     fig._hi4pi_reset = reset_params
     update_info()
     plt.show()
