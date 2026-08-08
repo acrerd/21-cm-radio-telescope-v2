@@ -32,7 +32,7 @@ from matplotlib.colors import LogNorm
 from matplotlib.widgets import Button, TextBox
 from astropy import units as u
 from astropy.coordinates import (AltAz, EarthLocation, FK4, SkyCoord,
-                                 get_sun)
+                                 get_body, get_sun)
 from astropy.io import fits
 from astropy.time import Time
 from astropy.wcs import WCS
@@ -78,29 +78,37 @@ K_B = 1.380649e-23
 LANDMARKS = [("M31", 121.17, -21.57)]   # map markers, no continuum flux
 
 # notable pointings: (label, l, b, min bandwidth MHz to cover the line)
+# notable pointings: (label, l, b, min bandwidth MHz, short description)
 TARGETS = [
-    ("Galactic centre wings", 0.0, 0.0, 3.0),
-    ("Inner Galaxy terminal vel. (l=30)", 30.0, 0.0, 2.0),
-    ("Cygnus X (l=80)", 80.0, 0.0, 2.0),
-    ("Outer Arm (l=110)", 110.0, 0.0, 2.0),
-    ("Perseus arm (l=134)", 134.0, -1.0, 2.0),
-    ("Anticentre (l=180)", 180.0, 0.0, 2.0),
-    ("M31 (Andromeda)", 121.17, -21.57, 5.0),
-    ("M33 (Triangulum)", 133.6, -31.3, 3.0),
-    ("LMC", 280.5, -32.9, 5.0),
-    ("SMC", 302.8, -44.3, 3.0),
-    ("HVC Complex A", 150.0, 35.0, 3.0),
-    ("HVC Complex C", 100.0, 45.0, 3.0),
-    ("Smith Cloud", 39.0, -13.0, 2.0),
+    ("Galactic centre wings", 0.0, 0.0, 3.0, "broad velocity wings"),
+    ("Inner Galaxy (l=30)", 30.0, 0.0, 2.0, "terminal velocities"),
+    ("Vulpecula rift (l=60)", 60.0, 0.0, 2.0, "local + Sagittarius arm"),
+    ("Cygnus X (l=80)", 80.0, 0.0, 2.0, "star-forming complex"),
+    ("Outer Arm (l=110)", 110.0, 0.0, 2.0, "distant spiral arm"),
+    ("Perseus arm (l=134)", 134.0, -1.0, 2.0, "double-peaked line"),
+    ("Anticentre (l=180)", 180.0, 0.0, 2.0, "zero-velocity direction"),
+    ("Rosette (l=206)", 206.0, -2.0, 2.0, "3rd quadrant plane"),
+    ("Third quadrant (l=220)", 220.0, 0.0, 2.0, "negative velocities"),
+    ("M31 (Andromeda)", 121.17, -21.57, 5.0, "H I at -300 km/s"),
+    ("M33 (Triangulum)", 133.6, -31.3, 3.0, "H I at -180 km/s"),
+    ("LMC", 280.5, -32.9, 5.0, "H I at +280 km/s"),
+    ("SMC", 302.8, -44.3, 3.0, "H I at +160 km/s"),
+    ("HVC Complex A", 150.0, 35.0, 3.0, "infalling, -180 km/s"),
+    ("HVC Complex C", 100.0, 45.0, 3.0, "infalling, -120 km/s"),
+    ("Smith Cloud", 39.0, -13.0, 2.0, "infalling, +100 km/s"),
+    ("Lockman Hole", 150.0, 53.0, 2.0, "minimum H I, off-position"),
+    ("Celestial pole", 122.9, 27.1, 2.0, "zero drift rate"),
 ]
 
 
 def continuum_sources():
     """The bright continuum sources: (name, l, b, flux at 1420 MHz in Jy).
-    Sun position is for launch time; quiet-Sun flux (active Sun is 10-100x).
-    These stay analytic even when the 1420 MHz continuum map is loaded:
-    the survey saturates/blanks them, so their imprint is removed from
-    the compact map and the true fluxes are added back here."""
+    Sun and Moon positions are for launch time; quiet-Sun flux (active
+    Sun is 10-100x).  These stay analytic even when the 1420 MHz
+    continuum map is loaded: the survey saturates/blanks the strong
+    sources (their imprint is removed from the compact map and the true
+    fluxes added back here), and the moving ones can't be in a map."""
+    now = Time.now()
     cyg = SkyCoord(ra=299.868 * u.deg, dec=40.734 * u.deg).galactic
     cas = SkyCoord(ra=350.850 * u.deg, dec=58.815 * u.deg).galactic
     tau = SkyCoord(ra=83.633 * u.deg, dec=22.015 * u.deg).galactic
@@ -108,12 +116,17 @@ def continuum_sources():
     # transform to Galactic would re-centre on the solar-system
     # barycentre, giving a meaningless direction (the Sun IS the
     # barycentre, near enough)
-    sun_gcrs = get_sun(Time.now())
+    sun_gcrs = get_sun(now)
     sun = SkyCoord(ra=sun_gcrs.ra, dec=sun_gcrs.dec).galactic
+    # topocentric Moon (parallax ~1 deg matters); a ~225 K disc of
+    # ~0.52 deg diameter is ~890 Jy at 21 cm - Cas A class in this beam
+    moon_gcrs = get_body("moon", now, location=SITE_LOC)
+    moon = SkyCoord(ra=moon_gcrs.ra, dec=moon_gcrs.dec).galactic
     return [("Cyg A", cyg.l.deg, cyg.b.deg, 1590.0),
             ("Cas A", cas.l.deg, cas.b.deg, 1500.0),
             ("Tau A", tau.l.deg, tau.b.deg, 875.0),
-            ("Sun", sun.l.deg, sun.b.deg, 5.0e5)]
+            ("Sun", sun.l.deg, sun.b.deg, 5.0e5),
+            ("Moon", moon.l.deg, moon.b.deg, 890.0)]
 
 
 C_LIGHT = 299792458.0
@@ -585,7 +598,9 @@ def main():
     p.add_argument("--dish", type=float, default=3.0, help="Dish (m)")
     p.add_argument("--eta", type=float, default=0.7, help="Main-beam eff.")
     p.add_argument("--nchan", type=int, help="Spectrometer channels")
-    p.add_argument("--tsys", type=float, help="Tsys (K) -> add noise")
+    p.add_argument("--tsys", type=float, default=200.0,
+                   help="Tsys (K) for the noise (default 200; clear "
+                        "the box in the GUI to disable noise)")
     p.add_argument("--tint", type=float, default=60.0, help="Integration (s)")
     p.add_argument("--npol", type=int, default=1, help="Polarisations")
     p.add_argument("--site", default=SITE_NAME, help="Observer site name")
@@ -617,10 +632,11 @@ def main():
     ink, accent = "#333639", "#3b7bbf"
     fig = plt.figure(figsize=(11, 10))
     fig.canvas.manager.set_window_title("HI4PI - click for a spectrum")
-    gs = fig.add_gridspec(2, 1, height_ratios=[1.4, 1.0], hspace=0.3,
-                          top=0.96, bottom=0.21)
-    axm = fig.add_subplot(gs[0], projection="mollweide")
-    axs = fig.add_subplot(gs[1])
+    # explicit placement: the map keeps clear of the control column on
+    # the left, the spectrum floor clears the parameter-box labels
+    axm = fig.add_axes([0.165, 0.525, 0.735, 0.43],
+                       projection="mollweide")
+    axs = fig.add_axes([0.125, 0.16, 0.775, 0.30])
 
     lon_plot = -np.radians((lon_c + 180.0) % 360.0 - 180.0)
     o = np.argsort(lon_plot)
@@ -751,7 +767,7 @@ def main():
         horizon_art.append(axm.annotate(
             "zenith", (zx, zy), xytext=(5, 4),
             textcoords="offset points", fontsize=7.5, color="white"))
-        axm.legend(loc="lower right", bbox_to_anchor=(1.14, -0.02),
+        axm.legend(loc="lower right", bbox_to_anchor=(1.12, -0.02),
                    fontsize=7.5, frameon=True, framealpha=0.9,
                    edgecolor="#c7cacd", labelcolor=ink,
                    title=f"from {SITE_NAME} (inside loop)",
@@ -768,7 +784,7 @@ def main():
     for name, sl, sb, _flux in sim.sources:
         mx = -np.radians((sl + 180.0) % 360.0 - 180.0)
         my = np.radians(sb)
-        colr = "#ffe14d" if name == "Sun" else "white"
+        colr = {"Sun": "#ffe14d", "Moon": "#d5d8dc"}.get(name, "white")
         axm.plot(mx, my, "o", ms=6, mfc=colr, mec="#333639", mew=0.8)
         axm.annotate(name, (mx, my), xytext=(6, 5),
                      textcoords="offset points", fontsize=8,
@@ -793,34 +809,48 @@ def main():
                   "ssb": "SSB (barycentric) radial velocity",
                   "topo": f"topocentric radial velocity ({SITE_NAME}, now)"}
 
-    # ------- parameter bar (two rows) -------------------------------------
+    # ------- parameter bar: one row of boxes, labels above ----------------
     def add_box(x, y, w, label, initial):
-        tb = FastTextBox(fig.add_axes([x, y, w, 0.04]), label,
+        tb = FastTextBox(fig.add_axes([x, y, w, 0.038]), label,
                          initial=initial, textalignment="center")
-        tb.label.set_fontsize(9)
+        tb.label.set_fontsize(8)
+        tb.label.set_position((0.5, 1.25))
+        tb.label.set_ha("center")
+        tb.label.set_va("bottom")
         return tb
 
-    ROW1, ROW2 = 0.095, 0.03
-    tb_l = add_box(0.10, ROW1, 0.09, "l (°) ", "132.0")
-    tb_b = add_box(0.27, ROW1, 0.09, "b (°) ", "-1.0")
-    tb_fw = add_box(0.46, ROW1, 0.08, "beam (°) ", f"{sim.fwhm:.2f}")
-    tb_ts = add_box(0.62, ROW1, 0.08, "$T_{sys}$ (K) ",
+    # grouped: pointing | band & beam | radiometer
+    ROW = 0.025
+    tb_l = add_box(0.06, ROW, 0.10, "l (°)", "132.0")
+    tb_b = add_box(0.18, ROW, 0.10, "b (°)", "-1.0")
+    tb_fw = add_box(0.35, ROW, 0.10, "beam (°)", f"{sim.fwhm:.2f}")
+    tb_bw = add_box(0.47, ROW, 0.10, "BW (MHz)", f"{a.bw:g}")
+    tb_fc = add_box(0.59, ROW, 0.10, "$f_c$ (MHz)", f"{F_HI/1e6:.2f}")
+    fc_shown = [tb_fc.text]     # what the box displays (2 dp); the
+    #                             exact value in use lives in sim.fc
+    tb_ts = add_box(0.76, ROW, 0.10, "$T_{sys}$ (K)",
                     "" if a.tsys is None else f"{a.tsys:g}")
-    tb_ti = add_box(0.76, ROW1, 0.07, "$\\tau$ (s) ", f"{a.tint:g}")
-    tb_bw = add_box(0.10, ROW2, 0.09, "BW (MHz) ", f"{a.bw:g}")
-    tb_fc = add_box(0.32, ROW2, 0.13, "$f_c$ (MHz) ", f"{F_HI/1e6:.4f}")
-    btn_fr = Button(fig.add_axes([0.50, ROW2, 0.20, 0.04]), "Frame: LSR",
-                    color="#f0ede4", hovercolor="#e4dfd0")
+    tb_ti = add_box(0.88, ROW, 0.10, "$\\tau$ (s)", f"{a.tint:g}")
+
+    # ------- control stack in the free column left of the map -------------
+    btn_fr = Button(fig.add_axes([0.015, 0.770, 0.13, 0.045]),
+                    "Frame: LSR", color="#f0ede4", hovercolor="#e4dfd0")
     btn_fr.label.set_fontsize(9)
 
     # ------- targets dropdown ---------------------------------------------
     # H I targets plus the analytic continuum point sources (the Sun's
     # entry uses its position at launch time)
-    targets = TARGETS + [
-        (nm + (" (at launch)" if nm == "Sun" else "  [continuum]"),
-         sl, sb, 2.0)
-        for nm, sl, sb, _flux in sim.sources]
-    dd_ax = fig.add_axes([0.51, 0.145, 0.34, 0.40], zorder=10)
+    # the [continuum] tag marks what the signal is: H I targets
+    # (galactic or extragalactic) are untagged even when they sit on a
+    # bright continuum background; the point sources are continuum
+    src_desc = {"Cyg A": "radio galaxy", "Cas A": "supernova remnant",
+                "Tau A": "Crab nebula", "Sun": "launch position",
+                "Moon": "launch position"}
+    targets = [(f"{nm} ({ds})", tl, tb_deg, bw)
+               for nm, tl, tb_deg, bw, ds in TARGETS]
+    targets += [(f"{nm} ({src_desc[nm]})  [continuum]", sl, sb, 2.0)
+                for nm, sl, sb, _flux in sim.sources]
+    dd_ax = fig.add_axes([0.155, 0.545, 0.34, 0.40], zorder=10)
     # never let the toolbar pan/zoom touch this axes: it overlaps the
     # spectrum panel, and zooming there would silently rescale the
     # (invisible) menu, blanking its labels and breaking row hit-testing
@@ -846,8 +876,8 @@ def main():
                    va="center", ha="right", color="#8b8e91")
     dd_ax.set_visible(False)
 
-    btn_tg = Button(fig.add_axes([0.74, ROW2, 0.11, 0.04]), "Targets ▾",
-                    color="#e8f4e8", hovercolor="#d4ead4")
+    btn_tg = Button(fig.add_axes([0.015, 0.900, 0.13, 0.045]),
+                    "Targets ▾", color="#e8f4e8", hovercolor="#d4ead4")
     btn_tg.label.set_fontsize(9)
 
     def toggle_targets(_event=None):
@@ -857,8 +887,8 @@ def main():
     btn_tg.on_clicked(toggle_targets)
 
     # ------- map display toggle (N_HI <-> 1420 MHz continuum) --------
-    btn_map = Button(fig.add_axes([0.86, ROW1, 0.12, 0.04]), "Map: H I",
-                     color="#f4ede8", hovercolor="#eaddd4")
+    btn_map = Button(fig.add_axes([0.015, 0.835, 0.13, 0.045]),
+                     "Map: H I", color="#f4ede8", hovercolor="#eaddd4")
     btn_map.label.set_fontsize(9)
 
     def toggle_map(_event=None):
@@ -867,8 +897,12 @@ def main():
                   ".npz.xz missing) - only the N_HI display available.")
             return
         map_state["mode"] = "cont" if map_state["mode"] == "hi" else "hi"
-        btn_map.label.set_text(
-            "Map: 1420" if map_state["mode"] == "cont" else "Map: H I")
+        cont = map_state["mode"] == "cont"
+        btn_map.label.set_text("Map: 1420" if cont else "Map: H I")
+        # grey out what the mode makes irrelevant: the frame only
+        # relabels the spectrum, the scan length only shapes drift scans
+        btn_fr.label.set_color("#b0b3b6" if cont else "black")
+        tb_sd.label.set_color("#333639" if cont else "#b0b3b6")
         update_map(sim.fwhm, force=True)
         # the lower panel is modal: spectrum with the H I map, drift
         # scan with the continuum map
@@ -886,7 +920,8 @@ def main():
     btn_map.on_clicked(toggle_map)
 
     # ------- drift-scan duration (continuum-map mode) ----------------
-    tb_sd = add_box(0.905, ROW2, 0.075, "scan (min) ", "240")
+    tb_sd = add_box(0.015, 0.675, 0.13, "scan (min)", "240")
+    tb_sd.label.set_color("#b0b3b6")      # greyed until drift mode
     scan_artist = [None]
 
     def clear_scan_track():
@@ -981,7 +1016,7 @@ def main():
     tb_sd.on_submit(on_scan_len)
 
     # ------- pointing readout at the figure's top-right edge ----------
-    info_txt = axm.text(1.17, 1.02, "", transform=axm.transAxes,
+    info_txt = axm.text(1.12, 1.02, "", transform=axm.transAxes,
                         va="top", ha="right", fontsize=8, color=ink,
                         linespacing=1.5)
 
@@ -1020,14 +1055,21 @@ def main():
             tint = abs(float(tb_ti.text))
             tsys = float(tb_ts.text) if tb_ts.text.strip() else 0.0
             bw_hz = abs(float(tb_bw.text)) * 1e6
-            fc_hz = float(tb_fc.text) * 1e6
+            fc_text = tb_fc.text.strip()
+            fc_hz = float(fc_text) * 1e6
         except ValueError:
             print("Could not parse the parameter boxes.")
             return None
-        # the box shows the rest frequency rounded to 0.1 kHz; treat a
-        # value within half that step as the exact H I rest frequency
-        if abs(fc_hz - F_HI) < 50.0:
-            fc_hz = F_HI
+        # the box displays fc to 2 dp but the value in use keeps every
+        # supplied digit: an unchanged display means "keep the exact
+        # current fc", and a typed value that ROUNDS to the rest
+        # frequency at its own precision means the exact rest frequency
+        if fc_text == fc_shown[0]:
+            fc_hz = sim.fc
+        else:
+            dec = len(fc_text.split(".")[1]) if "." in fc_text else 0
+            if abs(fc_hz - F_HI) < 0.5 * 10.0 ** (6 - min(dec, 6)):
+                fc_hz = F_HI
         # clamp to what the loaded dataset supports (the compact cube is
         # pre-smoothed; a finer beam needs the full cube, if it is here)
         # and drop back to the compact dataset when the request fits it
@@ -1074,6 +1116,12 @@ def main():
                         else "")
                 print(f"Band has no H I coverage: the spectrum is "
                       f"continuum + noise only{note}.")
+        # show the applied fc back at display precision
+        fc_shown[0] = f"{sim.fc / 1e6:.2f}"
+        if tb_fc.text.strip() != fc_shown[0]:
+            tb_fc.eventson = False
+            tb_fc.set_val(fc_shown[0])
+            tb_fc.eventson = True
         return glon, glat
 
     def to_lb(event):

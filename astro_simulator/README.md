@@ -31,7 +31,7 @@ compact data cannot honour (a beam below ~1.5°, a band beyond
 
 | Script | Purpose |
 |---|---|
-| `astro_simulator.py` | Interactive GUI: click the all-sky map, get the dish spectrum. Editable pointing, beam, T_sys, integration time, bandwidth, band centre and velocity frame (LSR/SSB/topocentric); target list (H I targets plus the continuum sources Cyg A, Cas A, Tau A and the Sun), a map toggle between the N_HI and 1420 MHz continuum skies, site horizon/visibility overlays, and a live RA/Dec + Alt/Az readout for the current pointing beside the map. The lower panel is modal: with the H I map it shows the spectrum; with the continuum map it shows a **drift scan** — band-averaged T_A (H I included when in-band) for the sky drifting through a beam parked on the current target, any target, above the horizon or not, centred on beam-centre transit over the duration set in the **scan (min)** box, with per-sample noise. Press `s` to save the current spectrum (PNG + txt). |
+| `astro_simulator.py` | Interactive GUI: click the all-sky map, get the dish spectrum. Editable pointing, beam, T_sys, integration time, bandwidth, band centre and velocity frame (LSR/SSB/topocentric); target list (H I targets plus the continuum sources Cyg A, Cas A, Tau A, the Sun and the Moon), a map toggle between the N_HI and 1420 MHz continuum skies, site horizon/visibility overlays, and a live RA/Dec + Alt/Az readout for the current pointing beside the map. The lower panel is modal: with the H I map it shows the spectrum; with the continuum map it shows a **drift scan** — band-averaged T_A (H I included when in-band) for the sky drifting through a beam parked on the current target, any target, above the horizon or not, centred on beam-centre transit over the duration set in the **scan (min)** box, with per-sample noise. Press `s` to save the current spectrum (PNG + txt). |
 | `hi4pi_compress.py` | Regenerates `hi4pi_compact.npz.xz` from the full cube: block-averages to 0.5° pixels, smooths to 1° total resolution, trims to \|v\| ≤ 470 km/s, zeroes below 3σ, quantizes to int16 (0.01 K) and LZMA-compresses — 33 GiB → ~23 MB, exact to <0.5% for beams ≥ 1.6°. |
 | `continuum_compress.py` | Regenerates `continuum_1420_compact.npz.xz` from the Stockert/Villa-Elisa 1420 MHz continuum survey (CADE HEALPix, fetched automatically, 3.2 MiB): same 0.5° grid and 1° resolution as the H I cube, zero level (CMB + isotropic, ~3.2 K) stored separately, strong sources (Cyg A, Cas A, Tau A — saturated/blanked in the survey) removed for analytic re-insertion. ~0.7 MB. |
 | `hi4pi_data.py` | Data download helper (see below). Run directly to pre-fetch the all-sky files. |
@@ -84,8 +84,9 @@ degrades the SNR just as it does at the telescope. Notes: the survey's
 uniform zero level (CMB + isotropic, ~3.2 K) is subtracted and assumed
 to live inside your T_sys; the survey saturates or blanks the strongest
 compact sources, so Cyg A, Cas A and Tau A are removed from the map and
-carried analytically at their true fluxes; the map's resolution floor
-is 1°, irrelevant for beams ≥ 1.5°. Delete or rename the file (or pass
+carried analytically at their true fluxes (the Sun and Moon, which no
+static map can hold, are analytic too, at their launch-time positions);
+the map's resolution floor is 1°, irrelevant for beams ≥ 1.5°. Delete or rename the file (or pass
 `--continuum ""`) to fall back to point sources on an empty sky.
 Force the full cube with `--full` (this *will* download it if missing);
 point at a different compact file with `--compact PATH`.
