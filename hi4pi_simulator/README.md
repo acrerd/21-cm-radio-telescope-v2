@@ -31,7 +31,7 @@ compact data cannot honour (a beam below ~1.5°, a band beyond
 
 | Script | Purpose |
 |---|---|
-| `hi4pi_interactive.py` | Interactive GUI: click the all-sky map, get the dish spectrum. Editable pointing, beam, T_sys, integration time, bandwidth, band centre and velocity frame (LSR/SSB/topocentric); target list, site horizon/visibility overlays, continuum sources (Sun, Cyg A, Cas A). Press `s` to save the current spectrum (PNG + txt). |
+| `hi4pi_interactive.py` | Interactive GUI: click the all-sky map, get the dish spectrum. Editable pointing, beam, T_sys, integration time, bandwidth, band centre and velocity frame (LSR/SSB/topocentric); target list, site horizon/visibility overlays, continuum sources (Sun, Cyg A, Cas A), and a live pointing panel (RA/Dec, Alt/Az now, band-averaged continuum SNR for the set T_sys, bandwidth and integration time). Press `s` to save the current spectrum (PNG + txt). |
 | `hi4pi_3m_dish.py` | Command-line, single-pointing version working from one ~20°×20° HI4PI tile (~250 MiB, chosen automatically from the pointing and downloaded if missing) instead of the 33 GiB cube. Writes a PNG + txt spectrum. |
 | `hi4pi_compress.py` | Regenerates `hi4pi_compact.npz.xz` from the full cube: block-averages to 0.5° pixels, smooths to 1° total resolution, trims to \|v\| ≤ 470 km/s, zeroes below 3σ, quantizes to int16 (0.01 K) and LZMA-compresses — 33 GiB → ~23 MB, exact to <0.5% for beams ≥ 1.6°. |
 | `hi4pi_data.py` | Data download helper (see below). Run directly to pre-fetch the all-sky files. |

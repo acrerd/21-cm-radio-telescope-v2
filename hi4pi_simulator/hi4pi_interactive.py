@@ -179,8 +179,7 @@ class DishSimulator:
             self._load_full()
         self.set_beam(natural)
         self.rng = np.random.default_rng()
-        if not self.set_band(bw_hz, F_HI):
-            sys.exit("Bandwidth does not overlap the cube's velocity range.")
+        self.set_band(bw_hz, F_HI)
 
     def _load_compact(self, path):
         """Point the simulator at a compact cube (all in RAM)."""
@@ -252,9 +251,16 @@ class DishSimulator:
             return False
         pix = abs(np.median(np.diff(c.lat)))
         min_fwhm = round(np.sqrt(c.fwhm ** 2 + (2.355 * pix) ** 2), 2)
+        # stay on the full cube only while it offers line data that the
+        # compact one cannot; a band outside both is continuum-only
+        # everywhere, so the compact dataset serves it just as well
         f = F_HI * (1.0 - c.v / C_LIGHT)
-        if fwhm < min_fwhm or fc_hz + bw_hz / 2 < f.min() \
-                or fc_hz - bw_hz / 2 > f.max():
+        in_compact = (fc_hz + bw_hz / 2 >= f.min()
+                      and fc_hz - bw_hz / 2 <= f.max())
+        df = F_HI * self.FULL_V_MS / C_LIGHT
+        in_full = (fc_hz + bw_hz / 2 >= F_HI - df
+                   and fc_hz - bw_hz / 2 <= F_HI + df)
+        if fwhm < min_fwhm or (in_full and not in_compact):
             return False
         print("Returning to the compact dataset "
               "(the requested beam and band fit it again)...")
@@ -264,11 +270,17 @@ class DishSimulator:
         return True
 
     def set_band(self, bw_hz, fc_hz):
-        """Select the cube channels inside fc +/- bw/2; False if no overlap."""
+        """Select the cube channels inside fc +/- bw/2.  A band with no
+        overlap is accepted too (empty channel range: the spectrum is
+        then continuum + noise only, for planning away from the line);
+        the False return just reports that there is no line coverage."""
+        self.bw_hz, self.fc = bw_hz, fc_hz
         band = np.abs(self.f_all - fc_hz) <= bw_hz / 2
         if not band.any():
+            self.k0 = self.k1 = 0
+            self.v = self.v_all[:0]
+            self.f = self.f_all[:0]
             return False
-        self.bw_hz, self.fc = bw_hz, fc_hz
         self.k0, self.k1 = np.where(band)[0][[0, -1]] + np.array([0, 1])
         self.v = self.v_all[self.k0:self.k1]
         self.f = self.f_all[self.k0:self.k1]
@@ -301,6 +313,18 @@ class DishSimulator:
 
     def spectrum(self, glon, glat):
         """Return (v_out [m/s], T_A [K], sigma_noise or None)."""
+        if self.k1 <= self.k0:
+            # band entirely outside the H I coverage: the line signal is
+            # zero everywhere, but continuum + noise are still right -
+            # that is all a continuum SNR estimate needs
+            df_nat = abs(np.median(np.diff(self.f_all))) \
+                if self.f_all.size > 1 else 6.1e3
+            n = self.nchan or max(2, int(round(self.bw_hz / df_nat)))
+            f_edges = np.linspace(self.fc - self.bw_hz / 2,
+                                  self.fc + self.bw_hz / 2, n + 1)
+            f_out = 0.5 * (f_edges[:-1] + f_edges[1:])
+            return self._finish(C_LIGHT * (F_HI - f_out) / F_HI,
+                                np.zeros(n), self.bw_hz / n, glon, glat)
         rows = np.where(np.abs(self.lat - glat) <= self.rmax)[0]
         cosb = max(0.05, np.cos(np.radians(
             min(89.0, abs(glat) + self.rmax))))
@@ -358,9 +382,16 @@ class DishSimulator:
             f_out = 0.5 * (f_edges[:-1] + f_edges[1:])
             df = self.bw_hz / self.nchan
             order = np.argsort(self.f)
+            # zero line (not NaN) beyond the survey coverage, so a band
+            # hanging over the edge still gives a full noise spectrum
             t_out = np.interp(f_out, self.f[order], t_a[order],
-                              left=np.nan, right=np.nan)
+                              left=0.0, right=0.0)
             v_out = C_LIGHT * (F_HI - f_out) / F_HI
+        return self._finish(v_out, t_out, df, glon, glat)
+
+    def _finish(self, v_out, t_out, df, glon, glat):
+        """Add the continuum offset and radiometer noise to a line
+        spectrum and return the (v, T_A, sigma, T_cont) tuple."""
         t_cont = self.continuum(glon, glat)
         t_out = t_out + t_cont                # flat continuum offset
         sigma_n = None
@@ -575,11 +606,13 @@ def main():
         map_state["fwhm"] = fwhm
 
     update_map(sim.fwhm)
-    # the map is a fixed all-sky view: keep the toolbar's pan/zoom off
-    # it, and make its view save/restore a no-op — geographic axes raise
-    # TypeError from set_xlim, which broke the Home/Back/Forward buttons
-    # for the whole figure once anything had been zoomed
-    axm.set_navigate(False)
+    # the map is a fixed all-sky view; geographic axes already refuse
+    # toolbar zoom/pan gestures (can_zoom/can_pan are False), but the
+    # Home/Back/Forward restore path calls set_xlim, which geo axes
+    # reject with TypeError, breaking those buttons for the whole figure
+    # once anything had been zoomed — make the map's view save/restore a
+    # no-op instead.  Don't set_navigate(False) here: that would also
+    # stop the toolbar showing the l/b cursor readout via format_coord.
     axm._get_view = dict
     axm._set_view = lambda view: None
     axm.set_xticks(np.radians([-120, -60, 0, 60, 120]))
@@ -661,7 +694,7 @@ def main():
         horizon_art.append(axm.annotate(
             "zenith", (zx, zy), xytext=(5, 4),
             textcoords="offset points", fontsize=7.5, color="white"))
-        axm.legend(loc="lower right", bbox_to_anchor=(1.19, -0.02),
+        axm.legend(loc="lower right", bbox_to_anchor=(1.14, -0.02),
                    fontsize=7.5, frameon=True, framealpha=0.9,
                    edgecolor="#c7cacd", labelcolor=ink,
                    title=f"from {SITE_NAME} (inside loop)",
@@ -760,6 +793,70 @@ def main():
 
     btn_tg.on_clicked(toggle_targets)
 
+    # ------- pointing / SNR panel in the free column left of the map --
+    axm.set_anchor("E")     # park the map right, so the column is fixed
+    info_ax = fig.add_axes([0.015, 0.60, 0.15, 0.34])
+    info_ax.set_xticks([])
+    info_ax.set_yticks([])
+    info_ax.set_facecolor("#fbfcfd")
+    for sp in info_ax.spines.values():
+        sp.set_color("#c7cacd")
+    info_ax.set_title(f"pointing - {SITE_NAME}", fontsize=9, color=ink)
+    info_txt = info_ax.text(0.07, 0.965, "", transform=info_ax.transAxes,
+                            va="top", fontsize=8, color=ink,
+                            linespacing=1.75)
+
+    def update_info(_=None):
+        """Refresh the pointing panel: where the current l/b sits in
+        equatorial and horizontal coordinates right now, and the
+        band-averaged continuum SNR of the simulated observation."""
+        try:
+            glon = float(tb_l.text) % 360.0
+            glat = float(tb_b.text)
+        except ValueError:
+            return
+        c = SkyCoord(l=glon * u.deg, b=glat * u.deg, frame="galactic")
+        icrs = c.icrs
+        aa = c.transform_to(AltAz(obstime=Time.now(), location=SITE_LOC))
+        ra_h = int(icrs.ra.hour)
+        ra_m = (icrs.ra.hour - ra_h) * 60
+        dec = icrs.dec.deg
+        d_d, d_m = int(abs(dec)), (abs(dec) - int(abs(dec))) * 60
+        lines = [
+            f"l, b: {glon:.2f}°, {glat:+.2f}°",
+            f"RA:   {ra_h:02d}h {ra_m:04.1f}m",
+            f"Dec:  {'-' if dec < 0 else '+'}{d_d:02d}° {d_m:04.1f}′",
+            f"Alt:  {aa.alt.deg:+.1f}°"
+            + ("" if aa.alt.deg > 0 else "  (below horizon)"),
+            f"Az:   {aa.az.deg:.1f}°",
+            "",
+        ]
+        # continuum SNR: band-averaged signal above the zero noise floor
+        # vs the radiometer rms of a total-power measurement over the
+        # usable bandwidth and the integration time
+        if state["last"] is None:
+            lines.append("SNR: click the map")
+        elif sim.tsys is None:
+            lines.append("SNR: needs $T_{sys}$")
+        else:
+            v_ax, t_a = state["last"][2], state["last"][3]
+            fin = np.isfinite(t_a)
+            tbar = float(np.mean(t_a[fin])) if fin.any() else 0.0
+            f_ax = F_HI * (1.0 - v_ax / C_LIGHT)
+            df = (abs(np.median(np.diff(f_ax))) if f_ax.size > 1
+                  else sim.bw_hz)
+            bw_use = fin.sum() * df
+            drms = (sim.tsys + max(tbar, 0.0)) \
+                / np.sqrt(sim.npol * bw_use * sim.tint)
+            lines += [f"$\\bar{{T}}_A$ (band):  {tbar:.3g} K",
+                      f"$\\Delta T$ rms:  {drms * 1e3:.3g} mK",
+                      f"  ({bw_use / 1e6:.2g} MHz, {sim.tint:g} s)",
+                      f"continuum SNR:  {tbar / drms:.3g}"]
+        info_txt.set_text("\n".join(lines))
+        fig.canvas.draw_idle()
+
+    timer.add_callback(update_info)       # alt/az drift with the sky
+
     def apply_params():
         """Read the parameter boxes into the simulator; returns (l, b).
         Out-of-range values are clamped to physical limits and written
@@ -808,23 +905,21 @@ def main():
         if bw_hz > 0 and (abs(bw_hz - sim.bw_hz) > 1
                           or abs(fc_hz - sim.fc) > 1):
             ok = sim.set_band(bw_hz, fc_hz)
-            if not ok and sim.compact is not None:
-                # the compact cube trims the velocity range; the full
-                # cube may still cover the requested band
-                df = F_HI * sim.FULL_V_MS / C_LIGHT
-                if (fc_hz + bw_hz / 2 >= F_HI - df
-                        and fc_hz - bw_hz / 2 <= F_HI + df
-                        and sim.use_full_cube()):
-                    ok = sim.set_band(bw_hz, fc_hz)
+            # the compact cube trims the velocity range; the full cube
+            # may still hold line data for the requested band
+            df = F_HI * sim.FULL_V_MS / C_LIGHT
+            in_full = (fc_hz + bw_hz / 2 >= F_HI - df
+                       and fc_hz - bw_hz / 2 <= F_HI + df)
+            if not ok and sim.compact is not None and in_full \
+                    and sim.use_full_cube():
+                ok = sim.set_band(bw_hz, fc_hz)
             if not ok:
-                span = (F_HI * np.abs(sim.v_all).max() / C_LIGHT) / 1e6
-                print(f"Requested band lies entirely outside this "
-                      f"dataset's coverage (1420.4 MHz +/- "
-                      f"~{span:.1f} MHz); keeping the previous band.")
-                tb_bw.eventson = tb_fc.eventson = False
-                tb_bw.set_val(f"{sim.bw_hz/1e6:g}")
-                tb_fc.set_val(f"{sim.fc/1e6:.4f}")
-                tb_bw.eventson = tb_fc.eventson = True
+                # band accepted anyway: zero line, continuum + noise
+                note = (" (the full cube would cover it: rerun with "
+                        "--full)" if in_full and sim.compact is not None
+                        else "")
+                print(f"Band has no H I coverage: the spectrum is "
+                      f"continuum + noise only{note}.")
         return glon, glat
 
     def to_lb(event):
@@ -896,6 +991,7 @@ def main():
         state["last"] = (glon, glat, v, t_a, sig, t_cont)
         state["params"] = (glon, glat, sim.fwhm, sim.tsys, sim.tint,
                            sim.bw_hz, sim.fc)
+        update_info()
         render()
 
     def select_target(i):
@@ -926,9 +1022,9 @@ def main():
                 dd_ax.set_visible(False)      # click-away closes it
                 fig.canvas.draw_idle()
             return
-        # no toolbar-mode guard: the map is excluded from pan/zoom
-        # (set_navigate(False)), so a click on it is always a pointing
-        # request, even while the zoom/pan tool is still selected
+        # no toolbar-mode guard: geo axes refuse pan/zoom gestures, so a
+        # click on the map is always a pointing request, even while the
+        # zoom/pan tool is still selected
         lb = to_lb(event)
         if lb is None:
             return
@@ -995,6 +1091,7 @@ def main():
     fig.canvas.mpl_connect("scroll_event", on_scroll)
     fig._hi4pi_widgets = (tb_l, tb_b, tb_fw, tb_ts, tb_ti, tb_bw, tb_fc,
                           btn_fr, btn_tg)
+    update_info()
     plt.show()
 
 
