@@ -125,8 +125,13 @@ def continuum_sources():
     # ~0.52 deg diameter is ~890 Jy at 21 cm - Cas A class in this beam
     moon_gcrs = get_body("moon", now, location=SITE_LOC)
     moon = SkyCoord(ra=moon_gcrs.ra, dec=moon_gcrs.dec).galactic
+    # Cas A fades secularly: anchor the Baars et al. (1977) epoch-1965
+    # spectrum (2500 Jy at 1420 MHz) and apply the 0.670 +/- 0.019 %/yr
+    # long-term L-band rate of Trotter et al. (2017, MNRAS 469, 1299);
+    # ~1650 Jy in 2026, good to a few % (the rate wanders by decade)
+    cas_jy = 2500.0 * np.exp(-0.00670 * (now.decimalyear - 1965.0))
     return [("Cyg A", cyg.l.deg, cyg.b.deg, 1590.0),
-            ("Cas A", cas.l.deg, cas.b.deg, 1500.0),
+            ("Cas A", cas.l.deg, cas.b.deg, cas_jy),
             ("Tau A", tau.l.deg, tau.b.deg, 875.0),
             ("Sun", sun.l.deg, sun.b.deg, 5.0e5),
             ("Moon", moon.l.deg, moon.b.deg, 890.0)]
