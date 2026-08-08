@@ -8,8 +8,8 @@ spectrum for that pointing is computed from the all-sky spectral cube
 and drawn in the lower panel, with the beam footprint shown on the map.
 
 Usage:
-    python hi4pi_interactive.py
-    python hi4pi_interactive.py --bw 2 --tsys 100 --tint 60 --nchan 1024
+    python astro_simulator.py
+    python astro_simulator.py --bw 2 --tsys 100 --tint 60 --nchan 1024
 
 Sky data: the compact pre-smoothed cube from hi4pi_compress.py
 (hi4pi_compact.npz.xz, ~23 MB, shipped in the repo) is used when

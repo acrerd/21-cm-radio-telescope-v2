@@ -13,7 +13,7 @@ Processing mirrors hi4pi_compress.py: bin to the same 0.5 deg CAR grid,
 smooth to a 1.0 deg total resolution (recorded in the file, so the
 simulator convolves only the residual beam), subtract the uniform zero
 level (CMB + isotropic background, stored as t_zero) and LZMA-compress.
-Output is a few hundred kB; hi4pi_interactive.py uses it, when present,
+Output is a few hundred kB; astro_simulator.py uses it, when present,
 as the continuum sky under the H I line - which also makes the noise
 estimate pointing-dependent, since the galactic background heats the
 system just like a source does.

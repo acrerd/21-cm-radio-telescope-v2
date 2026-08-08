@@ -23,7 +23,7 @@ Output is ~25 MB instead of 33 GiB.  Usage (needs the full cube once):
     python hi4pi_compress.py
 
 The result (default hi4pi_compact.npz.xz) is loaded with
-load_compact() below; hi4pi_interactive.py picks it up automatically.
+load_compact() below; astro_simulator.py picks it up automatically.
 """
 
 import argparse
@@ -53,7 +53,7 @@ def smooth_grid(grid, lat_c, step, fwhm_deg):
     """NaN-aware separable Gaussian smoothing on a CAR grid, wrapping in
     longitude; the longitude kernel widens as 1/cos(b) so the smoothing
     is ~isotropic on the sky (same scheme as the display map in
-    hi4pi_interactive.smooth_to_beam)."""
+    astro_simulator.smooth_to_beam)."""
     sigma_deg = fwhm_deg / (2 * np.sqrt(2 * np.log(2)))
     filled = np.nan_to_num(grid, nan=0.0)
     mask = np.isfinite(grid).astype(np.float64)

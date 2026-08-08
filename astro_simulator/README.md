@@ -1,4 +1,4 @@
-# HI4PI small-dish simulator
+# Astro simulator
 
 Simulate what a small radio telescope (default: a 3-m dish) observes when
 pointed at the 21-cm sky, using the [HI4PI survey](https://ui.adsabs.harvard.edu/abs/2016A%26A...594A.116H)
@@ -12,12 +12,12 @@ sources, radiometer noise and velocity-frame conversion.
 
 ```
 pip install -r requirements.txt
-python hi4pi_interactive.py
+python astro_simulator.py
 ```
 
 Or use the launchers: `run.bat` (Windows) / `./run.sh` (Linux; make it
 executable once with `chmod +x run.sh`). Both pass extra arguments
-through to `hi4pi_interactive.py`.
+through to `astro_simulator.py`.
 
 The repo ships `hi4pi_compact.npz.xz` (~23 MB), a pre-smoothed compact
 version of the survey tuned to small-dish beams, so **no download is
@@ -31,7 +31,7 @@ compact data cannot honour (a beam below ~1.5°, a band beyond
 
 | Script | Purpose |
 |---|---|
-| `hi4pi_interactive.py` | Interactive GUI: click the all-sky map, get the dish spectrum. Editable pointing, beam, T_sys, integration time, bandwidth, band centre and velocity frame (LSR/SSB/topocentric); target list (H I targets plus the continuum sources Cyg A, Cas A, Tau A and the Sun), a map toggle between the N_HI and 1420 MHz continuum skies, site horizon/visibility overlays, and a live RA/Dec + Alt/Az readout for the current pointing beside the map. The lower panel is modal: with the H I map it shows the spectrum; with the continuum map it shows a **drift scan** — band-averaged T_A (H I included when in-band) for the sky drifting through a beam parked on the current target, any target, above the horizon or not, centred on beam-centre transit over the duration set in the **scan (min)** box, with per-sample noise. Press `s` to save the current spectrum (PNG + txt). |
+| `astro_simulator.py` | Interactive GUI: click the all-sky map, get the dish spectrum. Editable pointing, beam, T_sys, integration time, bandwidth, band centre and velocity frame (LSR/SSB/topocentric); target list (H I targets plus the continuum sources Cyg A, Cas A, Tau A and the Sun), a map toggle between the N_HI and 1420 MHz continuum skies, site horizon/visibility overlays, and a live RA/Dec + Alt/Az readout for the current pointing beside the map. The lower panel is modal: with the H I map it shows the spectrum; with the continuum map it shows a **drift scan** — band-averaged T_A (H I included when in-band) for the sky drifting through a beam parked on the current target, any target, above the horizon or not, centred on beam-centre transit over the duration set in the **scan (min)** box, with per-sample noise. Press `s` to save the current spectrum (PNG + txt). |
 | `hi4pi_compress.py` | Regenerates `hi4pi_compact.npz.xz` from the full cube: block-averages to 0.5° pixels, smooths to 1° total resolution, trims to \|v\| ≤ 470 km/s, zeroes below 3σ, quantizes to int16 (0.01 K) and LZMA-compresses — 33 GiB → ~23 MB, exact to <0.5% for beams ≥ 1.6°. |
 | `continuum_compress.py` | Regenerates `continuum_1420_compact.npz.xz` from the Stockert/Villa-Elisa 1420 MHz continuum survey (CADE HEALPix, fetched automatically, 3.2 MiB): same 0.5° grid and 1° resolution as the H I cube, zero level (CMB + isotropic, ~3.2 K) stored separately, strong sources (Cyg A, Cas A, Tau A — saturated/blanked in the survey) removed for analytic re-insertion. ~0.7 MB. |
 | `hi4pi_data.py` | Data download helper (see below). Run directly to pre-fetch the all-sky files. |
@@ -39,7 +39,7 @@ compact data cannot honour (a beam below ~1.5°, a band beyond
 Example:
 
 ```
-python hi4pi_interactive.py --bw 2 --tsys 100 --tint 60 --nchan 1024
+python astro_simulator.py --bw 2 --tsys 100 --tint 60 --nchan 1024
 ```
 
 ## The two sky datasets
@@ -113,7 +113,7 @@ a launch with `hi4pi.fits` present.
 ## Observer site
 
 The horizon, visibility loops and topocentric velocity frame default to
-Glasgow; change the defaults at the top of `hi4pi_interactive.py` or per
+Glasgow; change the defaults at the top of `astro_simulator.py` or per
 run with `--site/--lat/--lon/--height`.
 
 ## Requirements
