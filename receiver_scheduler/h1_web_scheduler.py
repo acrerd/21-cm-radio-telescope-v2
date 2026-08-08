@@ -16,7 +16,7 @@ import sys
 import signal
 import threading
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from dataclasses import dataclass, asdict
 from typing import Optional
 from pathlib import Path
@@ -285,13 +285,15 @@ def srt_point_telescope(obs: dict) -> bool:
         return True  # Don't block observation if telescope control disabled
 
     coord_system = obs.get('coord_system', 'altaz')
+    drift_frame = obs.get('drift_frame', 'radec')
 
     # Convert DMS to decimal
     coord1 = dms_to_decimal(
         obs.get('coord1_deg', 0),
         obs.get('coord1_min', 0),
         obs.get('coord1_sec', 0.0),
-        is_ra=(coord_system == 'radec')
+        is_ra=(coord_system == 'radec'
+               or (coord_system == 'drift' and drift_frame == 'radec'))
     )
     coord2 = dms_to_decimal(
         obs.get('coord2_deg', 0),
@@ -333,6 +335,28 @@ def srt_point_telescope(obs: dict) -> bool:
         else:
             log.error("SRT unknown object: %s", object_name)
             return False
+
+    elif coord_system == 'drift':
+        # Drift scan: park the dish where the source will be at the slot
+        # mid-point (the beam-crossing time T) and leave tracking off.
+        beam_time = drift_beam_time(obs)
+        pointing = compute_drift_pointing(drift_frame, coord1, coord2, beam_time)
+        if pointing is None:
+            log.error("SRT drift scan requires PyEphem on the scheduler host")
+            return False
+        alt, az = pointing
+        if not (DRIFT_MIN_ALT <= alt <= DRIFT_MAX_ALT and 0.0 <= az <= DRIFT_MAX_AZ):
+            log.error("SRT drift pointing unreachable: Alt=%.2f° Az=%.2f° at %s",
+                      alt, az, beam_time.strftime('%Y-%m-%d %H:%M'))
+            return False
+        # Stash the computed pointing so it lands in the observation metadata
+        obs['drift_beam_time'] = beam_time.strftime('%Y-%m-%d %H:%M')
+        obs['drift_alt'] = round(alt, 3)
+        obs['drift_az'] = round(az, 3)
+        endpoint = "/direct"
+        params = {"alt": alt, "az": az}
+        log.info("SRT drift scan: fixed pointing Alt=%.2f° Az=%.2f°, beam crossing at %s",
+                 alt, az, beam_time.strftime('%H:%M'))
 
     elif coord_system == 'satellite':
         # Satellite: tracking thread handles continuous updates
@@ -592,6 +616,71 @@ def _get_observer() -> 'ephem.Observer':
     obs.lon = str(get_config_value("observer_lon"))
     obs.elevation = get_config_value("observer_elevation")
     return obs
+
+
+# Mount limits used to sanity-check computed drift-scan pointings. Alt is
+# clamped to the horizon and the mechanical 90 deg stop; the azimuth limit
+# switch sits at ~355 deg so 355-360 is a dead zone the mount cannot reach.
+DRIFT_MIN_ALT = 0.0
+DRIFT_MAX_ALT = 90.0
+DRIFT_MAX_AZ = 355.0
+
+
+def _local_to_ephem_utc(when_local: datetime) -> datetime:
+    """Convert a naive local datetime to the naive UTC datetime PyEphem expects."""
+    return when_local.astimezone().astimezone(timezone.utc).replace(tzinfo=None)
+
+
+def _drift_body(frame: str, coord1: float, coord2: float) -> 'ephem.FixedBody':
+    """Build a FixedBody from RA/Dec (decimal hours, degrees) or galactic l/b (degrees)."""
+    if frame == 'galactic':
+        gal = ephem.Galactic(math.radians(coord1), math.radians(coord2),
+                             epoch=ephem.J2000)
+        eq = ephem.Equatorial(gal)
+        ra, dec = eq.ra, eq.dec
+    else:
+        ra = math.radians(coord1 * 15.0)
+        dec = math.radians(coord2)
+    body = ephem.FixedBody()
+    body._ra = ra
+    body._dec = dec
+    body._epoch = ephem.J2000
+    return body
+
+
+def compute_drift_pointing(frame: str, coord1: float, coord2: float,
+                           when_local: datetime) -> Optional[tuple]:
+    """Alt/Az (degrees) at which a source will sit at the given local time.
+
+    This is the fixed pointing for a drift scan: park the dish there with
+    tracking off and the source crosses beam centre at when_local.
+    Returns None if PyEphem is unavailable.
+    """
+    if not EPHEM_AVAILABLE:
+        return None
+    observer = _get_observer()
+    observer.date = _local_to_ephem_utc(when_local)
+    body = _drift_body(frame, coord1, coord2)
+    body.compute(observer)
+    return math.degrees(body.alt), math.degrees(body.az)
+
+
+def drift_beam_time(obs: dict, now: Optional[datetime] = None) -> datetime:
+    """Beam-crossing time T of a drift entry: the mid-point of its scheduled slot.
+
+    The slot is stored as start = T - window and duration = 2 * window, so the
+    mid-point recovers T exactly. Deriving T from the *scheduled* slot (not the
+    actual start) keeps the geometry correct on a late start, and makes daily
+    repeats self-correcting: each day's pointing is recomputed for that day's T.
+    """
+    now = now or datetime.now()
+    date_str = obs.get('start_date') or now.strftime('%Y-%m-%d')
+    try:
+        start = datetime.strptime(f"{date_str} {obs.get('start_time', '')}",
+                                  '%Y-%m-%d %H:%M')
+    except ValueError:
+        start = now
+    return start + timedelta(minutes=obs.get('duration_minutes', 30) / 2.0)
 
 
 def parse_tle(tle_text: str) -> tuple:
@@ -1058,6 +1147,11 @@ def start_observation(obs: dict, duration_override: int = None) -> bool:
             'start_date': obs.get('start_date', ''),
             'start_time': obs.get('start_time', ''),
             'tle_text': obs.get('tle_text', ''),
+            'drift_frame': obs.get('drift_frame', ''),
+            'drift_window_min': obs.get('drift_window_min', 0),
+            'drift_beam_time': obs.get('drift_beam_time', ''),
+            'drift_alt': obs.get('drift_alt', ''),
+            'drift_az': obs.get('drift_az', ''),
         })
 
         python_exe = receiver_python_path()
@@ -1724,7 +1818,7 @@ HTML_TEMPLATE = '''
                 <div class="form-grid">
                     <div class="form-group">
                         <label>Start Date</label>
-                        <input type="date" id="obsStartDate">
+                        <input type="date" id="obsStartDate" onchange="onCoordChange()">
                     </div>
                     <div class="form-group">
                         <label>Start Time</label>
@@ -1750,6 +1844,7 @@ HTML_TEMPLATE = '''
                                 <option value="altaz">Alt/Az (Horizontal)</option>
                                 <option value="radec">RA/Dec (Equatorial J2000)</option>
                                 <option value="galactic">Galactic (l, b)</option>
+                                <option value="drift">Drift Scan (fixed pointing)</option>
                                 <option value="object">Solar System Object</option>
                                 <option value="satellite">Satellite (TLE)</option>
                                 <option value="calibration">Calibration Day (Sun Scan)</option>
@@ -1815,26 +1910,55 @@ HTML_TEMPLATE = '''
                             </div>
                         </div>
                     </div>
+                    <div id="driftInput" style="margin-top:15px; display:none">
+                        <p style="color:#888; font-size:12px; margin-bottom:10px;">
+                            The dish parks where the source will be at the beam-crossing
+                            time and stays fixed while the sky drifts through the beam.
+                            Recording runs from T&minus;window to T+window; start time and
+                            duration are derived automatically.
+                        </p>
+                        <div class="form-grid">
+                            <div class="form-group">
+                                <label>Source Frame</label>
+                                <select id="obsDriftFrame" onchange="updateCoordLabels()">
+                                    <option value="radec">RA/Dec (J2000)</option>
+                                    <option value="galactic">Galactic (l, b)</option>
+                                </select>
+                            </div>
+                            <div class="form-group">
+                                <label>Beam-Crossing Time T (local)</label>
+                                <input type="time" id="obsDriftTime" onchange="updateDriftDerived()">
+                            </div>
+                            <div class="form-group">
+                                <label>Window &plusmn; (minutes)</label>
+                                <input type="number" id="obsDriftWindow" min="1" max="720" value="30" onchange="updateDriftDerived()">
+                            </div>
+                        </div>
+                        <div style="display:flex; gap:10px; margin-top:8px; align-items:center; flex-wrap:wrap;">
+                            <button class="btn btn-primary" type="button" onclick="useNextTransit()">Use Next Transit</button>
+                            <span id="driftPreview" style="color:#888; font-size:12px;"></span>
+                        </div>
+                    </div>
                     <div class="form-grid" id="coordInputs" style="margin-top:15px">
                         <div class="form-group">
                             <label id="coord1Label">Altitude</label>
                             <div class="coord-row">
-                                <input type="number" id="coord1Deg" min="-90" max="360" value="45">
+                                <input type="number" id="coord1Deg" min="-90" max="360" value="45" onchange="onCoordChange()">
                                 <span id="coord1Unit1">deg</span>
-                                <input type="number" id="coord1Min" min="0" max="59" value="0">
+                                <input type="number" id="coord1Min" min="0" max="59" value="0" onchange="onCoordChange()">
                                 <span>min</span>
-                                <input type="number" id="coord1Sec" min="0" max="59.99" step="0.01" value="0">
+                                <input type="number" id="coord1Sec" min="0" max="59.99" step="0.01" value="0" onchange="onCoordChange()">
                                 <span>sec</span>
                             </div>
                         </div>
                         <div class="form-group">
                             <label id="coord2Label">Azimuth</label>
                             <div class="coord-row">
-                                <input type="number" id="coord2Deg" min="-90" max="360" value="180">
+                                <input type="number" id="coord2Deg" min="-90" max="360" value="180" onchange="onCoordChange()">
                                 <span>deg</span>
-                                <input type="number" id="coord2Min" min="0" max="59" value="0">
+                                <input type="number" id="coord2Min" min="0" max="59" value="0" onchange="onCoordChange()">
                                 <span>min</span>
-                                <input type="number" id="coord2Sec" min="0" max="59.99" step="0.01" value="0">
+                                <input type="number" id="coord2Sec" min="0" max="59.99" step="0.01" value="0" onchange="onCoordChange()">
                                 <span>sec</span>
                             </div>
                         </div>
@@ -1948,7 +2072,10 @@ HTML_TEMPLATE = '''
             sdr_type: "b210",
             calibrator: false,
             end_action: "none",
-            enabled: true
+            enabled: true,
+            drift_frame: "radec",
+            drift_time: "12:00",
+            drift_window_min: 30
         };
 
         function updateClock() {
@@ -2032,12 +2159,18 @@ HTML_TEMPLATE = '''
             const isObject = sys === 'object';
             const isSat = sys === 'satellite';
             const isCal = sys === 'calibration';
+            const isDrift = sys === 'drift';
             document.getElementById('objectSelector').style.display = isObject ? '' : 'none';
             document.getElementById('satelliteInput').style.display = isSat ? '' : 'none';
             document.getElementById('calibrationInput').style.display = isCal ? '' : 'none';
+            document.getElementById('driftInput').style.display = isDrift ? '' : 'none';
             document.getElementById('coordInputs').style.display = (isObject || isSat || isCal) ? 'none' : '';
+            // Drift scans derive start time and duration from T and the window
+            document.getElementById('obsStartTime').disabled = isDrift;
+            document.getElementById('obsDuration').disabled = isDrift;
             if (isObject || isSat || isCal) return;
-            const cfg = COORD_CONFIG[sys];
+            if (isDrift) updateDriftDerived();
+            const cfg = COORD_CONFIG[isDrift ? document.getElementById('obsDriftFrame').value : sys];
             document.getElementById('coord1Label').textContent = cfg.c1;
             document.getElementById('coord2Label').textContent = cfg.c2;
             document.getElementById('coord1Unit1').textContent = cfg.u1;
@@ -2049,6 +2182,84 @@ HTML_TEMPLATE = '''
             // Clamp current values to valid range
             c1.value = Math.max(cfg.c1_min, Math.min(cfg.c1_max, c1.value));
             c2.value = Math.max(cfg.c2_min, Math.min(cfg.c2_max, c2.value));
+        }
+
+        function onCoordChange() {
+            if (document.getElementById('obsCoordSystem').value === 'drift') {
+                updateDriftDerived();
+            }
+        }
+
+        function dmsToDecimalJs(deg, min, sec) {
+            const d = parseInt(deg) || 0, m = parseInt(min) || 0, s = parseFloat(sec) || 0;
+            const sign = d < 0 ? -1 : 1;
+            return sign * (Math.abs(d) + m / 60 + s / 3600);
+        }
+
+        function localDateStr(d) {
+            return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+        }
+
+        function driftBeamDate() {
+            // Date of the beam-crossing time T: the entry's date field (or today)
+            const date = document.getElementById('obsStartDate').value || localDateStr(new Date());
+            const t = document.getElementById('obsDriftTime').value;
+            return t ? new Date(`${date}T${t}`) : null;
+        }
+
+        function updateDriftDerived() {
+            const Tdt = driftBeamDate();
+            if (!Tdt) return;
+            const w = parseInt(document.getElementById('obsDriftWindow').value) || 30;
+            const startDt = new Date(Tdt.getTime() - w * 60000);
+            document.getElementById('obsStartTime').value =
+                String(startDt.getHours()).padStart(2,'0') + ':' + String(startDt.getMinutes()).padStart(2,'0');
+            document.getElementById('obsDuration').value = 2 * w;
+            updateEndTime();
+            fetchDriftPreview();
+        }
+
+        let driftNextTransit = null;
+        function fetchDriftPreview() {
+            const Tdt = driftBeamDate();
+            if (!Tdt) return;
+            const frame = document.getElementById('obsDriftFrame').value;
+            const c1 = dmsToDecimalJs(document.getElementById('coord1Deg').value,
+                                      document.getElementById('coord1Min').value,
+                                      document.getElementById('coord1Sec').value);
+            const c2 = dmsToDecimalJs(document.getElementById('coord2Deg').value,
+                                      document.getElementById('coord2Min').value,
+                                      document.getElementById('coord2Sec').value);
+            const params = new URLSearchParams({
+                frame: frame, coord1: c1, coord2: c2,
+                date: localDateStr(Tdt),
+                time: document.getElementById('obsDriftTime').value
+            });
+            fetch('/api/drift_preview?' + params).then(r => r.json()).then(data => {
+                const el = document.getElementById('driftPreview');
+                if (!data.success) {
+                    el.textContent = 'Preview unavailable: ' + (data.error || 'unknown error');
+                    el.style.color = '#ff4757';
+                    driftNextTransit = null;
+                    return;
+                }
+                driftNextTransit = {date: data.next_transit_date, time: data.next_transit_time};
+                let text = `At T: Alt ${data.alt.toFixed(1)}°, Az ${data.az.toFixed(1)}°`;
+                if (data.warnings.length) text += ' — ' + data.warnings.join('; ');
+                text += ` | next transit ${data.next_transit_date} ${data.next_transit_time}`;
+                el.textContent = text;
+                el.style.color = data.reachable ? (data.warnings.length ? '#ffa502' : '#2ed573') : '#ff4757';
+            }).catch(() => {
+                document.getElementById('driftPreview').textContent = 'Preview unavailable';
+                driftNextTransit = null;
+            });
+        }
+
+        function useNextTransit() {
+            if (!driftNextTransit) { fetchDriftPreview(); return; }
+            document.getElementById('obsStartDate').value = driftNextTransit.date;
+            document.getElementById('obsDriftTime').value = driftNextTransit.time;
+            updateDriftDerived();
         }
 
         function formatCoord(deg, min, sec, isRA) {
@@ -2077,6 +2288,12 @@ HTML_TEMPLATE = '''
                 const n = obs.cal_grid_n || 5;
                 const interval = obs.cal_interval_min || 30;
                 return `Cal: ${n}x${n} every ${interval}min`;
+            }
+            if (sys === 'drift') {
+                const isRA = (obs.drift_frame || 'radec') === 'radec';
+                const c1 = formatCoord(obs.coord1_deg, obs.coord1_min, obs.coord1_sec, isRA);
+                const c2 = formatCoord(obs.coord2_deg, obs.coord2_min, obs.coord2_sec, false);
+                return `Drift ${isRA ? 'RA/Dec' : 'Gal'}: ${c1}, ${c2} @ ${obs.drift_time} ±${obs.drift_window_min}min`;
             }
             const isRA = sys === 'radec';
             const c1 = formatCoord(obs.coord1_deg, obs.coord1_min, obs.coord1_sec, isRA);
@@ -2206,6 +2423,9 @@ HTML_TEMPLATE = '''
             document.getElementById('obsCalGridN').value = obs.cal_grid_n || 5;
             document.getElementById('obsCalSpacing').value = obs.cal_spacing_deg || 1.5;
             document.getElementById('obsCalInterval').value = obs.cal_interval_min || 30;
+            document.getElementById('obsDriftFrame').value = obs.drift_frame || DEFAULTS.drift_frame;
+            document.getElementById('obsDriftTime').value = obs.drift_time || DEFAULTS.drift_time;
+            document.getElementById('obsDriftWindow').value = obs.drift_window_min ?? DEFAULTS.drift_window_min;
             updateCoordLabels();
             updateEndTime();
         }
@@ -2229,9 +2449,20 @@ HTML_TEMPLATE = '''
                 return;
             }
             const i = parseInt(document.getElementById('obsIndex').value);
-            const startDate = document.getElementById('obsStartDate').value || new Date().toISOString().slice(0,10);
-            const startTime = document.getElementById('obsStartTime').value;
-            const duration = parseInt(document.getElementById('obsDuration').value);
+            const isDrift = document.getElementById('obsCoordSystem').value === 'drift';
+            let startDate = document.getElementById('obsStartDate').value || localDateStr(new Date());
+            let startTime = document.getElementById('obsStartTime').value;
+            let duration = parseInt(document.getElementById('obsDuration').value);
+            if (isDrift) {
+                // The date field holds the date of T; a scan whose window opens
+                // before midnight starts on the previous day.
+                const w = parseInt(document.getElementById('obsDriftWindow').value) || 30;
+                const Tdt = new Date(`${startDate}T${document.getElementById('obsDriftTime').value}`);
+                const driftStart = new Date(Tdt.getTime() - w * 60000);
+                startDate = localDateStr(driftStart);
+                startTime = String(driftStart.getHours()).padStart(2,'0') + ':' + String(driftStart.getMinutes()).padStart(2,'0');
+                duration = 2 * w;
+            }
             const startDt = new Date(`${startDate}T${startTime}`);
             const endDt = new Date(startDt.getTime() + duration * 60000);
             const endDate = endDt.toISOString().slice(0,10);
@@ -2264,6 +2495,9 @@ HTML_TEMPLATE = '''
                 cal_grid_n: parseInt(document.getElementById('obsCalGridN').value) || 5,
                 cal_spacing_deg: parseFloat(document.getElementById('obsCalSpacing').value) || 1.5,
                 cal_interval_min: parseInt(document.getElementById('obsCalInterval').value) || 30,
+                drift_frame: document.getElementById('obsDriftFrame').value,
+                drift_time: document.getElementById('obsDriftTime').value,
+                drift_window_min: parseInt(document.getElementById('obsDriftWindow').value) || 30,
                 enabled: i >= 0 ? schedule[i].enabled : true
             };
             if (i >= 0) { schedule[i] = obs; } else { schedule.push(obs); }
@@ -3466,6 +3700,65 @@ def api_predict_pass():
             return jsonify({'success': False, 'error': f'No pass above {min_el}° found in next 24h'})
     except ValueError as e:
         return jsonify({'success': False, 'error': str(e)}), 400
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/drift_preview', methods=['GET'])
+def api_drift_preview():
+    """Preview a drift-scan pointing.
+
+    Query params: frame (radec|galactic), coord1/coord2 (decimal hours for RA,
+    degrees otherwise), date (YYYY-MM-DD, optional, default today) and time
+    (HH:MM) - the beam-crossing time T in local time.
+
+    Returns the alt/az the dish would be parked at, reachability warnings, and
+    the source's next meridian transit (the classical drift-scan choice).
+    """
+    if not EPHEM_AVAILABLE:
+        return jsonify({'success': False, 'error': 'PyEphem not installed'}), 500
+    frame = request.args.get('frame', 'radec')
+    if frame not in ('radec', 'galactic'):
+        return jsonify({'success': False, 'error': f"Unknown frame '{frame}'"}), 400
+    try:
+        coord1 = float(request.args.get('coord1'))
+        coord2 = float(request.args.get('coord2'))
+        date_str = request.args.get('date') or datetime.now().strftime('%Y-%m-%d')
+        when = datetime.strptime(f"{date_str} {request.args.get('time', '')}",
+                                 '%Y-%m-%d %H:%M')
+    except (TypeError, ValueError):
+        return jsonify({'success': False,
+                        'error': 'Need coord1, coord2 and time=HH:MM (local)'}), 400
+
+    try:
+        alt, az = compute_drift_pointing(frame, coord1, coord2, when)
+
+        warnings = []
+        reachable = True
+        if alt < DRIFT_MIN_ALT:
+            warnings.append('below the horizon')
+            reachable = False
+        elif alt < get_config_value('min_elevation'):
+            warnings.append(f"below the {get_config_value('min_elevation'):g}° minimum elevation")
+        if az > DRIFT_MAX_AZ:
+            warnings.append('in the azimuth dead zone (355-360°)')
+            reachable = False
+
+        # Next meridian transit after T. The few minutes of slack keep the
+        # reported transit stable once the user adopts it as T.
+        observer = _get_observer()
+        observer.date = _local_to_ephem_utc(when - timedelta(minutes=5))
+        transit_local = ephem.localtime(observer.next_transit(_drift_body(frame, coord1, coord2)))
+
+        return jsonify({
+            'success': True,
+            'alt': round(alt, 2),
+            'az': round(az, 2),
+            'reachable': reachable,
+            'warnings': warnings,
+            'next_transit_date': transit_local.strftime('%Y-%m-%d'),
+            'next_transit_time': transit_local.strftime('%H:%M'),
+        })
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
 

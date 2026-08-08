@@ -260,10 +260,23 @@ Displays the last N lines of `scheduler.log` with auto-refresh (5 second interva
 | Alt/Az (Horizontal) | Direct altitude/azimuth pointing | Fixed position |
 | RA/Dec (Equatorial J2000) | Right Ascension / Declination | Tracks as Earth rotates |
 | Galactic (l, b) | Galactic longitude / latitude | Tracks as Earth rotates |
+| Drift Scan | RA/Dec or Galactic source + beam-crossing time | Fixed position |
 | Solar System Object | Select Sun or Moon by name | Automatic ephemeris tracking |
 | Satellite (TLE) | Two-Line Element set | SGP4 propagation at 1 Hz |
 
 The ESP32 controller treats sky targets below 10° altitude as below the local observing horizon. The Galactic Bulge shortcut uses that same 10° clearance: if the bulge is lower, the controller chooses the nearest galactic-plane point at or above 10° instead.
+
+### Drift Scans
+
+A drift scan parks the dish at a fixed alt/az and lets Earth's rotation carry the source through the beam. Select "Drift Scan" in the coordinate system dropdown and enter:
+
+1. The source coordinates, in RA/Dec (J2000) or Galactic (l, b)
+2. The **beam-crossing time T** (local) — when the source should be at beam centre
+3. A **symmetric window ±W minutes** — recording runs from T−W to T+W
+
+The start time and duration are derived automatically (start = T−W, duration = 2W). At start time the scheduler computes the source's alt/az *at T* with PyEphem, commands `/direct` to that fixed pointing, and starts the receiver with tracking off. The form previews the computed pointing live and warns if the source is below the horizon or in the azimuth dead zone (355–360°) at T; "Use Next Transit" fills T with the source's next meridian transit, the classical drift-scan geometry.
+
+Because the pointing is recomputed for each day's beam-crossing time, an entry that repeats daily stays centred on the source with no sidereal bookkeeping. On a late start the geometry is preserved (T comes from the scheduled slot, not the actual start); only the front of the window is lost, along with the initial slew time as usual. The computed pointing, beam time, frame, and window are recorded in the HDF5 observation metadata (`drift_alt`, `drift_az`, `drift_beam_time`, `drift_frame`, `drift_window_min`).
 
 ### Satellite Tracking
 
@@ -386,7 +399,7 @@ When launched from the scheduler, additional observation metadata is included:
 | Attribute | Description |
 |-----------|-------------|
 | `obs_name` | Observation name from the schedule |
-| `coord_system` | Coordinate system used (altaz, radec, galactic, object) |
+| `coord_system` | Coordinate system used (altaz, radec, galactic, drift, object) |
 | `object_name` | Solar system object name (sun, moon) if applicable |
 | `coord1_deg/min/sec` | Target coordinate 1 (Alt, RA, or Galactic longitude) |
 | `coord2_deg/min/sec` | Target coordinate 2 (Az, Dec, or Galactic latitude) |
@@ -394,6 +407,10 @@ When launched from the scheduler, additional observation metadata is included:
 | `duration_minutes` | Scheduled observation duration |
 | `start_date` | Scheduled start date (YYYY-MM-DD) |
 | `start_time` | Scheduled start time (HH:MM) |
+| `drift_frame` | Drift scans: source frame (radec or galactic) |
+| `drift_window_min` | Drift scans: half-window W in minutes |
+| `drift_beam_time` | Drift scans: beam-crossing time T (local) |
+| `drift_alt` / `drift_az` | Drift scans: the fixed pointing commanded (degrees) |
 
 ### Reading Data in Python
 

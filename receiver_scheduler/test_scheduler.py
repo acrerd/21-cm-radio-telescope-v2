@@ -6,6 +6,7 @@ Run with: python -m pytest test_scheduler.py -v
 """
 
 import json
+import math
 import os
 import sys
 from datetime import datetime, timedelta
@@ -801,6 +802,188 @@ class TestPredictNextPass:
     def test_invalid_tle_raises(self):
         with pytest.raises(ValueError):
             sched.predict_next_pass("not a tle")
+
+
+# =============================================================================
+# Drift scans
+# =============================================================================
+
+class TestDriftBeamTime:
+    """The beam-crossing time T is the mid-point of the scheduled slot."""
+
+    def test_midpoint_of_slot(self):
+        obs = {"start_date": "2026-08-10", "start_time": "22:00",
+               "duration_minutes": 60}
+        assert sched.drift_beam_time(obs) == datetime(2026, 8, 10, 22, 30)
+
+    def test_no_date_uses_reference_day(self):
+        obs = {"start_time": "22:00", "duration_minutes": 40}
+        now = datetime(2026, 8, 11, 12, 0)
+        assert sched.drift_beam_time(obs, now=now) == datetime(2026, 8, 11, 22, 20)
+
+    def test_bad_time_falls_back_to_now(self):
+        now = datetime(2026, 8, 11, 12, 0)
+        obs = {"start_time": "nonsense", "duration_minutes": 30}
+        assert sched.drift_beam_time(obs, now=now) == now + timedelta(minutes=15)
+
+
+class TestDriftPointTelescope:
+    """srt_point_telescope for drift entries, with the ephem math mocked out."""
+
+    def _obs(self, **extra):
+        obs = {
+            "name": "Drift Test", "coord_system": "drift", "drift_frame": "radec",
+            "coord1_deg": 23, "coord1_min": 23, "coord1_sec": 24.0,
+            "coord2_deg": 58, "coord2_min": 48, "coord2_sec": 0.0,
+            "start_date": "2026-08-10", "start_time": "22:00",
+            "duration_minutes": 60, "drift_window_min": 30,
+        }
+        obs.update(extra)
+        return obs
+
+    @patch.object(sched, 'SRT_CONTROLLER_URL', "http://test")
+    @patch.object(sched, 'srt_api_call', return_value={"ok": True})
+    @patch.object(sched, 'compute_drift_pointing', return_value=(45.0, 180.0))
+    def test_sends_direct_with_computed_pointing(self, mock_compute, mock_api):
+        obs = self._obs()
+        assert sched.srt_point_telescope(obs) is True
+        mock_api.assert_called_once_with("/direct", {"alt": 45.0, "az": 180.0})
+        # RA converted as hours (23h 23m 24s = 23.39h), beam time = slot midpoint
+        frame, coord1, coord2, beam_time = mock_compute.call_args[0]
+        assert frame == "radec"
+        assert coord1 == pytest.approx(23.39)
+        assert coord2 == pytest.approx(58.8)
+        assert beam_time == datetime(2026, 8, 10, 22, 30)
+        # Computed pointing is stashed for the observation metadata
+        assert obs["drift_alt"] == 45.0
+        assert obs["drift_az"] == 180.0
+        assert obs["drift_beam_time"] == "2026-08-10 22:30"
+
+    @patch.object(sched, 'SRT_CONTROLLER_URL', "http://test")
+    @patch.object(sched, 'srt_api_call')
+    @patch.object(sched, 'compute_drift_pointing', return_value=(-5.0, 180.0))
+    def test_below_horizon_rejected(self, _compute, mock_api):
+        assert sched.srt_point_telescope(self._obs()) is False
+        mock_api.assert_not_called()
+
+    @patch.object(sched, 'SRT_CONTROLLER_URL', "http://test")
+    @patch.object(sched, 'srt_api_call')
+    @patch.object(sched, 'compute_drift_pointing', return_value=(45.0, 357.0))
+    def test_azimuth_dead_zone_rejected(self, _compute, mock_api):
+        assert sched.srt_point_telescope(self._obs()) is False
+        mock_api.assert_not_called()
+
+    @patch.object(sched, 'SRT_CONTROLLER_URL', "http://test")
+    @patch.object(sched, 'srt_api_call')
+    @patch.object(sched, 'compute_drift_pointing', return_value=None)
+    def test_no_ephem_rejected(self, _compute, mock_api):
+        assert sched.srt_point_telescope(self._obs()) is False
+        mock_api.assert_not_called()
+
+    @patch.object(sched, 'SRT_CONTROLLER_URL', "http://test")
+    @patch.object(sched, 'srt_api_call', return_value={"ok": True})
+    @patch.object(sched, 'compute_drift_pointing', return_value=(45.0, 180.0))
+    def test_galactic_frame_passes_degrees(self, mock_compute, _api):
+        obs = self._obs(drift_frame="galactic",
+                        coord1_deg=111, coord1_min=42, coord1_sec=0.0,
+                        coord2_deg=-2, coord2_min=6, coord2_sec=0.0)
+        assert sched.srt_point_telescope(obs) is True
+        frame, coord1, coord2, _ = mock_compute.call_args[0]
+        assert frame == "galactic"
+        assert coord1 == pytest.approx(111.7)
+        assert coord2 == pytest.approx(-2.1)
+
+
+@pytest.mark.skipif(not sched.EPHEM_AVAILABLE, reason="PyEphem not installed")
+class TestDriftPointingMath:
+    """compute_drift_pointing against independent PyEphem computations."""
+
+    OBSERVER = {"observer_lat": 55.9, "observer_lon": -4.3,
+                "observer_elevation": 50, "min_elevation": 10.0}
+
+    def _patch_config(self):
+        return patch.object(sched, 'get_config_value',
+                            side_effect=lambda key: self.OBSERVER.get(key))
+
+    def test_radec_matches_independent_ephem(self):
+        import ephem
+        when = datetime(2026, 8, 10, 22, 30)
+        with self._patch_config():
+            alt, az = sched.compute_drift_pointing('radec', 23.39, 58.8, when)
+
+            observer = sched._get_observer()
+            observer.date = sched._local_to_ephem_utc(when)
+        body = ephem.FixedBody()
+        body._ra = math.radians(23.39 * 15.0)
+        body._dec = math.radians(58.8)
+        body._epoch = ephem.J2000
+        body.compute(observer)
+
+        assert alt == pytest.approx(math.degrees(body.alt), abs=1e-6)
+        assert az == pytest.approx(math.degrees(body.az), abs=1e-6)
+
+    def test_galactic_centre_matches_its_radec(self):
+        # Galactic (0, 0) is RA 17.7603h, Dec -28.9362 deg (J2000)
+        when = datetime(2026, 8, 10, 22, 30)
+        with self._patch_config():
+            alt_gal, az_gal = sched.compute_drift_pointing('galactic', 0.0, 0.0, when)
+            alt_eq, az_eq = sched.compute_drift_pointing('radec', 17.7603, -28.9362, when)
+        assert alt_gal == pytest.approx(alt_eq, abs=0.05)
+        assert az_gal == pytest.approx(az_eq, abs=0.05)
+
+    def test_source_crosses_pointing_at_beam_time(self):
+        # The pointing computed for T must coincide with the source's actual
+        # position at T, and differ from its position half an hour earlier.
+        when = datetime(2026, 8, 10, 22, 30)
+        with self._patch_config():
+            alt_t, az_t = sched.compute_drift_pointing('radec', 12.0, 40.0, when)
+            alt_early, az_early = sched.compute_drift_pointing(
+                'radec', 12.0, 40.0, when - timedelta(minutes=30))
+        assert (abs(alt_t - alt_early) > 0.5) or (abs(az_t - az_early) > 0.5)
+
+
+class TestDriftPreviewAPI:
+    """The /api/drift_preview endpoint."""
+
+    @pytest.fixture
+    def client(self, tmp_path):
+        sched.app.config['TESTING'] = True
+        patches = [
+            patch.object(sched, 'SCHEDULE_FILE', str(tmp_path / "schedule.json")),
+            patch.object(sched, 'CONFIG_FILE', str(tmp_path / "config.json")),
+        ]
+        for p in patches:
+            p.start()
+        with sched.app.test_client() as client:
+            yield client
+        for p in patches:
+            p.stop()
+
+    def test_missing_params_rejected(self, client):
+        if not sched.EPHEM_AVAILABLE:
+            pytest.skip("PyEphem not installed")
+        resp = client.get('/api/drift_preview?frame=radec')
+        assert resp.status_code == 400
+
+    def test_unknown_frame_rejected(self, client):
+        if not sched.EPHEM_AVAILABLE:
+            pytest.skip("PyEphem not installed")
+        resp = client.get('/api/drift_preview?frame=ecliptic&coord1=1&coord2=2&time=12:00')
+        assert resp.status_code == 400
+
+    def test_preview_returns_pointing_and_transit(self, client):
+        if not sched.EPHEM_AVAILABLE:
+            pytest.skip("PyEphem not installed")
+        resp = client.get('/api/drift_preview?frame=radec&coord1=23.39&coord2=58.8'
+                          '&date=2026-08-10&time=22:30')
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data['success'] is True
+        for key in ('alt', 'az', 'reachable', 'warnings',
+                    'next_transit_date', 'next_transit_time'):
+            assert key in data
+        # Dec 58.8 from Glasgow is circumpolar, so always above the horizon
+        assert data['alt'] > 0
 
 
 # =============================================================================

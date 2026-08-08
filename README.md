@@ -383,7 +383,7 @@ Tabbed web interface that coordinates telescope pointing and data recording:
 - **Configuration Tab:** Persistent settings (controller URL, observer location, data folder, receiver Python path, sound)
 - **Log Tab:** Live view of rotating scheduler log
 - **Start Receiver:** Starts the B210 receiver manually for warm-up/testing and reports whether the receiver is idle, manually started, or owned by a scheduled observation
-- **Coordinate Systems:** Alt/Az, RA/Dec (J2000), Galactic, Solar System objects (Sun/Moon), and Satellite (TLE)
+- **Coordinate Systems:** Alt/Az, RA/Dec (J2000), Galactic, Drift Scan (fixed pointing computed from a source and beam-crossing time), Solar System objects (Sun/Moon), and Satellite (TLE)
 - **Satellite Tracking:** Fetch TLEs from CelesTrak, compute next pass, track via 1 Hz position updates
 - **Calibrator Control:** Per-observation noise source on/off, with `_cal` filename suffix
 - **End Actions:** Stay, Go Home, or Stow telescope after observation
