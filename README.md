@@ -129,7 +129,7 @@ pio run -e wt32-eth01 --target upload
 pio run -e wt32-eth01-ota --target upload
 ```
 
-The ESP32 controller uses Arduino/PlatformIO (not MicroPython) for better performance and reliability.
+The ESP32 controller uses Arduino/PlatformIO.
 The OTA target in `esp32_controller_arduino/platformio.ini` is set to the current controller address, `192.168.106.120`.
 
 ---
@@ -540,8 +540,6 @@ See `receiver_scheduler/read_h1_data.ipynb` for a complete analysis example.
 │       ├── stellarium.cpp/h    # Stellarium telescope protocol
 │       ├── state.h             # Global state structure
 │       └── index_html.h        # Embedded web interface
-│
-├── esp32_controller_micropython/  # Legacy MicroPython version (deprecated)
 │
 ├── receiver_scheduler/     # Observation scheduling & data acquisition
 │   ├── h1_web_scheduler.py # Flask web scheduler with ESP32 integration
