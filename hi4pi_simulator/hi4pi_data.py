@@ -10,21 +10,16 @@ survey (HI4PI Collaboration 2016, A&A 594, A116; CDS J/A+A/594/A116):
     hi4pi.fits                 N_HI HEALPix table (NHI_HPX.fits.gz,
                                318 MiB compressed, ~600 MiB unpacked)
 
-plus, for hi4pi_3m_dish.py, the individual ~250 MiB 20 x 20 deg cubes
-(CUBES/GAL/CAR/CAR_A01.fits ... CAR_I18.fits, chosen automatically from
-the pointing).
-
 ensure_file(path) fetches a missing file automatically.  Interrupted
 downloads resume from where they stopped (HTTP Range + a .download
 partial file), which matters for the 33 GiB cube.  Run this module
-directly to pre-fetch both all-sky files:
+directly to pre-fetch every known file:
 
     python hi4pi_data.py
 """
 
 import gzip
 import os
-import re
 import shutil
 import sys
 import time
@@ -46,7 +41,6 @@ FILES = {
         ("https://lambda.gsfc.nasa.gov/data/foregrounds/reich_reich/"
          "STOCKERT+VILLA-ELISA_1420MHz_1_256.fits", False, "3.2 MiB"),
 }
-TILE_RE = re.compile(r"CAR_[A-I](0[1-9]|1[0-8])\.fits")
 
 CHUNK = 1 << 20                       # 1 MiB read/write blocks
 TRIES = 20                            # a 33 GiB pull drops a few times
@@ -95,16 +89,14 @@ def _fetch(url, part):
 
 def ensure_file(path):
     """Return `path`, first downloading it from CDS if it is missing and
-    is a known HI4PI product (the all-sky files or a CAR_XNN tile)."""
+    is one of the known survey products above."""
     if os.path.exists(path):
         return path
     name = os.path.basename(path)
     if name in FILES:
         url, gzipped, size = FILES[name]
-    elif TILE_RE.fullmatch(name):
-        url, gzipped, size = CDS + "CUBES/GAL/CAR/" + name, False, "~250 MiB"
     else:
-        return path                   # not an HI4PI file; caller reports
+        return path                   # not a known file; caller reports
     print(f"{path} not found - downloading from CDS ({size}):\n"
           f"  {url}\n"
           f"  (Ctrl-C to stop; a rerun resumes where it left off.)")
