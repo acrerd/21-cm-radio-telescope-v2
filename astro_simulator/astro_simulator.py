@@ -710,6 +710,12 @@ def main():
     axm.set_xticks(np.radians([-120, -60, 0, 60, 120]))
     axm.set_xticklabels(["120°", "60°", "0°", "300°", "240°"],
                         color="white", fontsize=8)
+    # subtle dark halo behind every white map label: readable on the
+    # bright galactic plane and where labels overhang onto the page
+    text_halo = [pe.withStroke(linewidth=2, foreground="#2d2f32",
+                               alpha=0.85)]
+    for lbl in axm.get_xticklabels():
+        lbl.set_path_effects(text_halo)
     axm.set_yticks(np.radians([-60, -30, 0, 30, 60]))
     axm.tick_params(axis="y", labelsize=8, colors="#555859")
     axm.grid(color="white", alpha=0.6, lw=0.8)
@@ -782,7 +788,8 @@ def main():
                                     path_effects=outline)[0])
         horizon_art.append(axm.annotate(
             "zenith", (zx, zy), xytext=(5, 4),
-            textcoords="offset points", fontsize=7.5, color="white"))
+            textcoords="offset points", fontsize=7.5, color="white",
+            path_effects=text_halo))
         axm.legend(loc="lower right", bbox_to_anchor=(1.12, -0.02),
                    fontsize=7.5, frameon=True, framealpha=0.9,
                    edgecolor="#c7cacd", labelcolor=ink,
@@ -804,13 +811,14 @@ def main():
         axm.plot(mx, my, "o", ms=6, mfc=colr, mec="#333639", mew=0.8)
         axm.annotate(name, (mx, my), xytext=(6, 5),
                      textcoords="offset points", fontsize=8,
-                     color="white")
+                     color="white", path_effects=text_halo)
     for name, sl, sb in LANDMARKS:
         mx = -np.radians((sl + 180.0) % 360.0 - 180.0)
         my = np.radians(sb)
         axm.plot(mx, my, "D", ms=5, mfc="#a8e6ff", mec="#333639", mew=0.8)
         axm.annotate(name, (mx, my), xytext=(6, 5),
-                     textcoords="offset points", fontsize=8, color="white")
+                     textcoords="offset points", fontsize=8, color="white",
+                     path_effects=text_halo)
 
     axs.set_xlabel("LSR radial velocity  (km s$^{-1}$)")
     axs.set_ylabel("$T_A$  (K)")
