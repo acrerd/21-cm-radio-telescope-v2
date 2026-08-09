@@ -117,6 +117,20 @@ export class SkyMap {
     return { l: ((-lam * R2D) % 360 + 360) % 360, b: b * R2D };
   }
 
+  // white label with a dark halo: readable inside the ellipse and
+  // on the white page where labels overhang the map edge
+  _label(text, x, y) {
+    const ctx = this.ctx;
+    ctx.save();
+    ctx.lineJoin = "round";
+    ctx.lineWidth = 3;
+    ctx.strokeStyle = "rgba(45,47,50,0.85)";
+    ctx.strokeText(text, x, y);
+    ctx.fillStyle = "#ffffff";
+    ctx.fillText(text, x, y);
+    ctx.restore();
+  }
+
   toCanvas(lDeg, bDeg) {
     const p = project(lDeg, bDeg);
     return { x: this.canvas.width / 2 + p.x * this.canvas.width / 2,
@@ -260,10 +274,9 @@ export class SkyMap {
     // meridian labels along the equator
     ctx.save();
     ctx.font = "14px sans-serif";
-    ctx.fillStyle = "rgba(255,255,255,0.75)";
     for (let l = 60; l < 360; l += 60) {
       const p = this.toCanvas(l, 2);
-      ctx.fillText(`${l}°`, p.x + 2, p.y - 2);
+      this._label(`${l}°`, p.x + 2, p.y - 2);
     }
     ctx.restore();
 
@@ -299,8 +312,7 @@ export class SkyMap {
     ctx.moveTo(zp.x, zp.y - 5); ctx.lineTo(zp.x, zp.y + 5);
     ctx.stroke();
     ctx.font = "13px sans-serif";
-    ctx.fillStyle = "#ffffff";
-    ctx.fillText("zenith", zp.x + 6, zp.y - 4);
+    this._label("zenith", zp.x + 6, zp.y - 4);
     ctx.restore();
     const hhmm = new Date((jd - 2440587.5) * 86400e3)
         .toISOString().slice(11, 16);
@@ -318,8 +330,10 @@ export class SkyMap {
       ctx.strokeStyle = "#333639";
       ctx.arc(p.x, p.y, 4, 0, 2 * Math.PI);
       ctx.fill(); ctx.stroke();
-      ctx.fillStyle = "#ffffff";
-      ctx.fillText(s.name, p.x + 6, p.y - 4);
+      // flip the label leftward when it would run off the canvas
+      const tw = ctx.measureText(s.name).width;
+      const tx = p.x + 6 + tw > W - 2 ? p.x - 6 - tw : p.x + 6;
+      this._label(s.name, tx, p.y - 4);
     }
     const m31 = this.toCanvas(121.17, -21.57);
     ctx.fillStyle = "#a8e6ff";
@@ -328,8 +342,7 @@ export class SkyMap {
     ctx.moveTo(m31.x, m31.y - 4); ctx.lineTo(m31.x + 4, m31.y);
     ctx.lineTo(m31.x, m31.y + 4); ctx.lineTo(m31.x - 4, m31.y);
     ctx.closePath(); ctx.fill(); ctx.stroke();
-    ctx.fillStyle = "#ffffff";
-    ctx.fillText("M31", m31.x + 6, m31.y - 4);
+    this._label("M31", m31.x + 6, m31.y - 4);
     ctx.restore();
 
     // drift-scan track
