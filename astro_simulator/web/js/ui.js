@@ -120,6 +120,7 @@ export function setupUI(cfg) {
     if (ncText) writeBack(boxes.nc, `${nchan}`, "channels");
     if (Math.abs(fwhm - sky.fwhm) > 1e-6) sky.setBeam(fwhm);
     map.setDisplayBeam(sky.fwhm);
+    updateMapTitle();
     sky.tsys = tsys;
     sky.tint = tint;
     sky.nchan = nchan;
@@ -131,6 +132,15 @@ export function setupUI(cfg) {
     fcShown = (sky.fc / 1e6).toFixed(2);
     if (boxes.fc.value.trim() !== fcShown) boxes.fc.value = fcShown;
     return { glon, glat };
+  }
+
+  // map title, opposite the pointing readout — desktop parity
+  function updateMapTitle() {
+    els.mapTitle.textContent = state.mode === "cont"
+      ? "1420 MHz continuum (Stockert/Villa-Elisa) — click to point " +
+        `the dish (beam ${sky.fwhm.toFixed(1)}°)`
+      : "HI4PI N_HI — click to point the dish " +
+        `(beam ${sky.fwhm.toFixed(1)}°)`;
   }
 
   // ---- lower panel --------------------------------------------------
@@ -275,6 +285,7 @@ export function setupUI(cfg) {
     els.frameBtn.disabled = cont;
     boxes.sd.disabled = !cont;
     map.setMode(cont ? "cont" : "hi");
+    updateMapTitle();
     if (state.last) {
       if (cont) renderDrift();
       else { map.setTrack(null); render(); }
@@ -475,6 +486,7 @@ export function setupUI(cfg) {
   };
 
   initBoxes();
+  updateMapTitle();
   updateInfo();
   return { message, point, applyParams };
 }

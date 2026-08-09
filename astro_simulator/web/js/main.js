@@ -83,6 +83,7 @@ async function boot() {
       targetsMenu: document.getElementById("targets-menu"),
       readout: document.getElementById("readout"),
       console: document.getElementById("console"),
+      mapTitle: document.getElementById("map-title"),
       siteName: document.getElementById("p-site"),
       siteLat: document.getElementById("p-slat"),
       siteLon: document.getElementById("p-slon"),

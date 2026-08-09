@@ -39,8 +39,12 @@
   #main-col { flex: 1; min-width: 0; position: relative; }
   canvas { display: block; width: 100%; height: auto; }
   #map { cursor: crosshair; }
-  #readout { text-align: right; font-size: 14px; color: var(--ink);
-             padding: 2px 4px 0 0; min-height: 18px; }
+  #topbar { display: flex; justify-content: space-between; gap: 10px;
+            padding: 2px 4px 0 4px; min-height: 18px; font-size: 14px;
+            color: var(--ink); }
+  #map-title { white-space: nowrap; overflow: hidden;
+               text-overflow: ellipsis; }
+  #readout { text-align: right; white-space: nowrap; }
   #targets-menu {
     display: none; position: absolute; top: 30px; left: 10px;
     background: #fbfcfd; border: 1px solid var(--line); z-index: 5;
@@ -98,7 +102,10 @@
       <input id="p-slon" value="-4.29">
     </div>
     <div id="main-col">
-      <div id="readout"></div>
+      <div id="topbar">
+        <div id="map-title"></div>
+        <div id="readout"></div>
+      </div>
       <canvas id="map" width="900" height="450"></canvas>
       <div id="targets-menu"></div>
       <canvas id="spec" width="900" height="330"></canvas>
