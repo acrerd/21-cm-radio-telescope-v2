@@ -81,7 +81,7 @@ export class Plot {
     ctx.fillStyle = "#ffffff";
     ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
     ctx.save();
-    ctx.font = "13px sans-serif";
+    ctx.font = "14px sans-serif";
     // grid + x ticks
     for (const x of niceTicks(v.x0, v.x1, 7)) {
       const { px } = this.toPx(x, 0);
@@ -105,15 +105,15 @@ export class Plot {
     ctx.strokeRect(r.x, r.y, r.w, r.h);
     ctx.fillStyle = INK;
     ctx.textAlign = "center";
-    ctx.font = "14px sans-serif";
+    ctx.font = "15px sans-serif";
     ctx.fillText(xlabel, r.x + r.w / 2, this.canvas.height - 8);
     ctx.save();
     ctx.translate(14, r.y + r.h / 2);
     ctx.rotate(-Math.PI / 2);
     ctx.fillText(ylabel, 0, 0);
     ctx.restore();
-    ctx.font = "14px sans-serif";
-    ctx.fillText(title, r.x + r.w / 2, 16);
+    ctx.font = "15px sans-serif";
+    ctx.fillText(title, r.x + r.w / 2, 17);
     ctx.restore();
   }
 
@@ -212,7 +212,7 @@ export class Plot {
     const dv = this.data.velLabel.shift / 1e3;      // frame shift km/s
     const v0 = vel(v.x1) + dv, v1 = vel(v.x0) + dv; // f desc <-> v asc
     ctx.save();
-    ctx.font = "12px sans-serif";
+    ctx.font = "13px sans-serif";
     ctx.fillStyle = INK;
     ctx.textAlign = "center";
     for (const kv of niceTicks(Math.min(v0, v1), Math.max(v0, v1), 7)) {

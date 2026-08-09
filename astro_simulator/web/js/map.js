@@ -259,7 +259,7 @@ export class SkyMap {
     ctx.restore();
     // meridian labels along the equator
     ctx.save();
-    ctx.font = "12px sans-serif";
+    ctx.font = "14px sans-serif";
     ctx.fillStyle = "rgba(255,255,255,0.75)";
     for (let l = 60; l < 360; l += 60) {
       const p = this.toCanvas(l, 2);
@@ -298,7 +298,7 @@ export class SkyMap {
     ctx.moveTo(zp.x - 5, zp.y); ctx.lineTo(zp.x + 5, zp.y);
     ctx.moveTo(zp.x, zp.y - 5); ctx.lineTo(zp.x, zp.y + 5);
     ctx.stroke();
-    ctx.font = "11px sans-serif";
+    ctx.font = "13px sans-serif";
     ctx.fillStyle = "#ffffff";
     ctx.fillText("zenith", zp.x + 6, zp.y - 4);
     ctx.restore();
@@ -309,7 +309,7 @@ export class SkyMap {
 
     // continuum sources + M31 landmark
     ctx.save();
-    ctx.font = "12px sans-serif";
+    ctx.font = "14px sans-serif";
     for (const s of this.sources) {
       const p = this.toCanvas(s.l, s.b);
       ctx.beginPath();
@@ -353,14 +353,14 @@ export class SkyMap {
 
     // legend, bottom-right, inside the page margin
     ctx.save();
-    ctx.font = "12px sans-serif";
-    const lx = W - 205, ly = H - 17 * (legend.length + 1) - 6;
+    ctx.font = "14px sans-serif";
+    const lx = W - 240, ly = H - 20 * (legend.length + 1) - 6;
     ctx.fillStyle = "rgba(251,252,253,0.92)";
-    ctx.fillRect(lx - 8, ly - 14, 212, 17 * (legend.length + 1) + 12);
+    ctx.fillRect(lx - 8, ly - 16, 248, 20 * (legend.length + 1) + 14);
     ctx.fillStyle = "#333639";
     ctx.fillText(`from ${this.site.name} (inside loop)`, lx, ly);
     legend.forEach((e, i) => {
-      const y = ly + 17 * (i + 1);
+      const y = ly + 20 * (i + 1);
       ctx.strokeStyle = e.color === "#ffffff" ? "#55585b" : e.color;
       ctx.lineWidth = 2;
       ctx.setLineDash(e.dash ? [5, 3] : []);
@@ -374,7 +374,7 @@ export class SkyMap {
     // cursor readout
     if (this.hoverText) {
       ctx.save();
-      ctx.font = "13px sans-serif";
+      ctx.font = "15px sans-serif";
       ctx.fillStyle = "#333639";
       ctx.fillText(this.hoverText, 8, H - 8);
       ctx.restore();
