@@ -1,0 +1,19 @@
+{
+  "f_hi": 1420405751.768,
+  "c_light": 299792458.0,
+  "site": {
+    "name": "Glasgow",
+    "lat": 55.87,
+    "lon": -4.29,
+    "height": 50.0
+  },
+  "defaults": {
+    "bw_mhz": 2.0,
+    "dish_m": 3.0,
+    "eta": 0.7,
+    "tsys": 200.0,
+    "tint": 60.0,
+    "npol": 1
+  },
+  "controller": "http://192.168.106.120"
+}

@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SRT dish simulator (HI4PI, compact sky)</title>
+<style>
+  :root { --ink: #333639; --accent: #3b7bbf; --line: #c7cacd; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: #fbfcfd; color: var(--ink);
+    font: 15px/1.4 system-ui, sans-serif;
+  }
+  #loading {
+    position: fixed; inset: 0; display: flex; flex-direction: column;
+    align-items: center; justify-content: center; gap: 10px;
+    background: #fbfcfd; z-index: 10;
+  }
+  #app { visibility: hidden; max-width: 1100px; margin: 0 auto;
+         padding: 8px 12px; }
+  .row { display: flex; gap: 10px; }
+  #left-col { display: flex; flex-direction: column; gap: 6px;
+              width: 130px; flex-shrink: 0; padding-top: 26px; }
+  #left-col button, .bar button {
+    padding: 8px 4px; font-size: 14px; border: 1px solid var(--line);
+    border-radius: 4px; cursor: pointer; color: var(--ink);
+  }
+  #btn-targets { background: #e8f4e8; }
+  #btn-map { background: #f4ede8; }
+  #btn-frame { background: #f0ede4; }
+  #btn-realise { background: #e2ecf8; }
+  #btn-home, #btn-save { background: #f0f0f2; }
+  #left-col label { font-size: 13px; color: #666; margin-top: 6px; }
+  #left-col input {
+    width: 100%; padding: 5px; font-size: 14px; text-align: center;
+    border: 1px solid var(--line); border-radius: 4px;
+  }
+  button:disabled { color: #b0b3b6; cursor: default; }
+  #main-col { flex: 1; min-width: 0; position: relative; }
+  canvas { display: block; width: 100%; height: auto; }
+  #map { cursor: crosshair; }
+  #readout { text-align: right; font-size: 14px; color: var(--ink);
+             padding: 2px 4px 0 0; min-height: 18px; }
+  #targets-menu {
+    display: none; position: absolute; top: 30px; left: 10px;
+    background: #fbfcfd; border: 1px solid var(--line); z-index: 5;
+    max-height: 70%; overflow-y: auto; min-width: 340px;
+    box-shadow: 0 3px 12px rgba(0,0,0,0.15);
+  }
+  .target-row {
+    display: flex; justify-content: space-between; gap: 16px;
+    padding: 5px 10px; font-size: 14px; cursor: pointer;
+    border-bottom: 1px solid #eceeef;
+  }
+  .target-row:hover { background: #eef3f8; }
+  .target-row .never { color: #b0b3b6; }
+  .target-row .coords { color: #8b8e91; font-size: 13px; }
+  .bar {
+    display: flex; gap: 8px; align-items: end; margin-top: 8px;
+    flex-wrap: wrap;
+  }
+  .pgroup { display: flex; flex-direction: column; align-items: center;
+            flex: 1; min-width: 72px; }
+  .pgroup label { font-size: 13px; color: #666; margin-bottom: 2px; }
+  .pgroup input {
+    width: 100%; padding: 6px 4px; font-size: 14px; text-align: center;
+    border: 1px solid var(--line); border-radius: 4px;
+  }
+  .spacer { width: 18px; }
+  #console {
+    margin-top: 6px; font: 13px/1.5 ui-monospace, monospace;
+    color: #555; white-space: pre-line; min-height: 3em;
+  }
+</style>
+</head>
+<body>
+<div id="loading">
+  <div style="font-size:17px">SRT dish simulator</div>
+  <div id="load-status">starting...</div>
+</div>
+
+<div id="app">
+  <div class="row">
+    <div id="left-col">
+      <button id="btn-targets">Targets ▾</button>
+      <button id="btn-map">Map: H I</button>
+      <button id="btn-frame">Frame: LSR</button>
+      <button id="btn-realise">Realise</button>
+      <label>scan (min)</label>
+      <input id="p-sd" value="240">
+      <button id="btn-home" title="reset parameters">Home</button>
+      <button id="btn-save" title="save spectrum (s)">Save</button>
+      <label>site name</label>
+      <input id="p-site" value="Glasgow">
+      <label>site lat (°N)</label>
+      <input id="p-slat" value="55.87">
+      <label>site lon (°E)</label>
+      <input id="p-slon" value="-4.29">
+    </div>
+    <div id="main-col">
+      <div id="readout"></div>
+      <canvas id="map" width="900" height="450"></canvas>
+      <div id="targets-menu"></div>
+      <canvas id="spec" width="900" height="330"></canvas>
+    </div>
+  </div>
+  <div class="bar">
+    <div class="pgroup"><label>l (°)</label><input id="p-l"></div>
+    <div class="pgroup"><label>b (°)</label><input id="p-b"></div>
+    <div class="spacer"></div>
+    <div class="pgroup"><label>beam (°)</label><input id="p-fw"></div>
+    <div class="pgroup"><label>BW (MHz)</label><input id="p-bw"></div>
+    <div class="pgroup"><label>f_c (MHz)</label><input id="p-fc"></div>
+    <div class="pgroup"><label>channels</label><input id="p-nc"></div>
+    <div class="spacer"></div>
+    <div class="pgroup"><label>T_sys (K)</label><input id="p-ts"></div>
+    <div class="pgroup"><label>τ (s)</label><input id="p-ti"></div>
+  </div>
+  <div id="console"></div>
+</div>
+
+<script type="module" src="js/main.js"></script>
+</body>
+</html>

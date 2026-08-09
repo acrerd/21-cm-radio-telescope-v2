@@ -1,0 +1,9 @@
+{
+  "name": "astro-simulator-web",
+  "private": true,
+  "type": "module",
+  "description": "Browser version of the dish simulator (compact data only); package.json exists so node runs the ES-module test harness, there is no build step.",
+  "scripts": {
+    "test": "node test/run_golden.mjs"
+  }
+}

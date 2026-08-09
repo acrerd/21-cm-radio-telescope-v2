@@ -42,6 +42,13 @@ Example:
 python astro_simulator.py --bw 2 --tsys 100 --tint 60 --nchan 1024
 ```
 
+## Browser version
+
+[web/](web/) holds an install-free HTML/JavaScript port restricted to
+the compact datasets — one static folder, ~36 MB of data bundles,
+validated against this simulator to <1 mK by a golden-vector test
+suite. See [web/README.md](web/README.md).
+
 ## The two sky datasets
 
 The GUI can draw its spectra from either of two forms of the survey:
