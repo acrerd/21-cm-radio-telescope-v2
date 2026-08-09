@@ -370,7 +370,7 @@ class DishSimulator:
         return self.eta * float((sub * w).sum() / w.sum())
 
     def spectrum(self, glon, glat):
-        """Return (v_out [m/s], T_A [K], sigma_noise or None)."""
+        """Return (v_out [m/s], T_A [K], per-channel sigma or None)."""
         if self.k1 <= self.k0:
             # band entirely outside the H I coverage: the line signal is
             # zero everywhere, but continuum + noise are still right -
@@ -449,14 +449,17 @@ class DishSimulator:
 
     def _finish(self, v_out, t_out, df, glon, glat):
         """Add the continuum offset and radiometer noise to a line
-        spectrum and return the (v, T_A, sigma, T_cont) tuple."""
+        spectrum and return the (v, T_A, sigma, T_cont) tuple; sigma is
+        per channel (or None with no radiometer noise)."""
         t_cont = self.continuum(glon, glat)
         t_out = t_out + t_cont                # flat continuum offset
         sigma_n = None
-        if self.tsys is not None:             # sources also heat the system
-            sigma_n = (self.tsys + t_cont) \
+        if self.tsys is not None:
+            # the signal is itself noise-like: line and continuum heat
+            # the system, so channels on a bright line fluctuate more
+            sigma_n = (self.tsys + np.maximum(t_out, 0.0)) \
                 / np.sqrt(self.npol * df * self.tint)
-            t_out = t_out + self.rng.normal(0.0, sigma_n, t_out.shape)
+            t_out = t_out + self.rng.normal(0.0, sigma_n)
         return v_out, t_out, sigma_n, t_cont
 
 
@@ -607,8 +610,9 @@ def main():
     p.add_argument("--eta", type=float, default=0.7, help="Main-beam eff.")
     p.add_argument("--nchan", type=int, help="Spectrometer channels")
     p.add_argument("--tsys", type=float, default=200.0,
-                   help="Tsys (K) for the noise (default 200; clear "
-                        "the box in the GUI to disable noise)")
+                   help="Tsys (K) for the noise (default 200; 0 = ideal "
+                        "receiver, source self-noise only; clear the "
+                        "box in the GUI to disable noise)")
     p.add_argument("--tint", type=float, default=60.0, help="Integration (s)")
     p.add_argument("--npol", type=int, default=1, help="Polarisations")
     p.add_argument("--controller", default="http://192.168.106.120",
@@ -643,10 +647,12 @@ def main():
     fig = plt.figure(figsize=(11, 10))
     fig.canvas.manager.set_window_title("HI4PI - click for a spectrum")
     # explicit placement: the map keeps clear of the control column on
-    # the left, the spectrum floor clears the parameter-box labels
-    axm = fig.add_axes([0.165, 0.525, 0.735, 0.43],
+    # the left, the spectrum floor clears the parameter-box labels, and
+    # the band between spectrum top and map bottom must hold the top
+    # velocity axis, its label and the title even in a shrunken window
+    axm = fig.add_axes([0.165, 0.545, 0.735, 0.41],
                        projection="mollweide")
-    axs = fig.add_axes([0.125, 0.16, 0.775, 0.30])
+    axs = fig.add_axes([0.125, 0.16, 0.775, 0.285])
 
     lon_plot = -np.radians((lon_c + 180.0) % 360.0 - 180.0)
     o = np.argsort(lon_plot)
@@ -1141,7 +1147,9 @@ def main():
             glat = min(90.0, max(-90.0, float(tb_b.text)))
             fwhm = abs(float(tb_fw.text))
             tint = abs(float(tb_ti.text))
-            tsys = float(tb_ts.text) if tb_ts.text.strip() else 0.0
+            # empty box = no noise model; 0 is a valid (ideal) receiver
+            # whose spectra and drift scans still carry source self-noise
+            tsys = float(tb_ts.text) if tb_ts.text.strip() else None
             bw_hz = abs(float(tb_bw.text)) * 1e6
             fc_text = tb_fc.text.strip()
             fc_hz = float(fc_text) * 1e6
@@ -1172,7 +1180,8 @@ def main():
                   f"download and use it.")
         fwhm = min(90.0, max(sim.min_fwhm, fwhm)) if fwhm > 0 else 0.0
         tint = min(1e7, max(1e-3, tint))
-        tsys = min(1e6, max(0.0, tsys))
+        if tsys is not None:
+            tsys = min(1e6, max(0.0, tsys))
         bw_hz = min(8e6, max(2e4, bw_hz))
         if nchan is not None:
             nchan = min(65536, max(2, nchan))
@@ -1189,7 +1198,7 @@ def main():
         if fwhm > 0 and (went_compact or abs(fwhm - sim.fwhm) > 1e-6):
             sim.set_beam(fwhm)
             update_map(sim.fwhm)
-        sim.tsys = tsys if tsys > 0 else None
+        sim.tsys = tsys
         sim.tint = tint if tint > 0 else 1.0
         sim.nchan = nchan
         if bw_hz > 0 and (abs(bw_hz - sim.bw_hz) > 1
@@ -1260,7 +1269,8 @@ def main():
         axs.set_ylabel("$T_A$  (K)")
         axs.xaxis.set_major_formatter(
             plt.FuncFormatter(lambda xx, _: f"{xx:.2f}"))
-        noise = "" if sig is None else f",  $\\sigma$={sig*1e3:.0f} mK"
+        noise = ("" if sig is None
+                 else f",  $\\sigma_0$={np.nanmin(sig)*1e3:.0f} mK")
         cont = f",  continuum offset {t_cont:.2f} K" if t_cont > 0.005 else ""
         shift = ("" if frame == "lsr"
                  else f",  frame shift {dv/1e3:+.1f} km/s")
