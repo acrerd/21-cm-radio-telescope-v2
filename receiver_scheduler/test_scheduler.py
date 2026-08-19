@@ -260,6 +260,36 @@ class TestFindClashes:
         ]
         assert sched.find_clashes(schedule) == []
 
+    def test_dateless_entries_do_not_clash_with_today(self):
+        """A dateless leftover is not "today", and must not block a save.
+
+        find_clashes used to substitute today's date for a missing start_date,
+        so any old entry without a date collided with whatever was genuinely
+        scheduled for today. POST /api/schedule then rejected the save with a
+        400 for a clash that did not exist (S8).
+        """
+        today = datetime.now().strftime('%Y-%m-%d')
+        schedule = [
+            _make_obs("real", "10:00", 60, start_date=today),
+            _make_obs("leftover", "10:30", 30, start_date=""),
+        ]
+        assert sched.find_clashes(schedule) == []
+
+    def test_dateless_entries_do_not_clash_with_each_other(self):
+        schedule = [
+            _make_obs("A", "10:00", 60, start_date=""),
+            _make_obs("B", "10:30", 30, start_date=""),
+        ]
+        assert sched.find_clashes(schedule) == []
+
+    def test_same_day_overlap_still_detected(self):
+        """The dateless exclusion must not weaken real clash detection."""
+        schedule = [
+            _make_obs("A", "10:00", 60, start_date="2026-03-28"),
+            _make_obs("B", "10:30", 30, start_date="2026-03-28"),
+        ]
+        assert len(sched.find_clashes(schedule)) == 1
+
     def test_disabled_obs_ignored(self):
         schedule = [
             _make_obs("A", "10:00", 60),

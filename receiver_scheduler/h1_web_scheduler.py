@@ -113,6 +113,12 @@ def get_config_value(key: str):
     return load_config().get(key, _DEFAULT_CONFIG.get(key))
 
 
+# Guards the mutable controller settings below. They are written from Flask
+# request threads (the config POST) and from whichever thread happens to make
+# the API call that promotes a working fallback URL, while the scheduler thread
+# reads them continuously.
+controller_settings_lock = threading.RLock()
+
 # Load initial config
 _config = load_config()
 SRT_CONTROLLER_URL = _config["srt_controller_url"] or None
@@ -156,9 +162,11 @@ def _normalize_controller_url(url: Optional[str]) -> Optional[str]:
 
 def _controller_url_candidates() -> list[str]:
     cfg = load_config()
+    with controller_settings_lock:
+        current = SRT_CONTROLLER_URL
     candidates = [
         os.environ.get("SRT_CONTROLLER_URL"),
-        SRT_CONTROLLER_URL,
+        current,
         cfg.get("srt_controller_url"),
     ]
     candidates.extend(cfg.get("srt_controller_fallback_urls", []))
@@ -227,9 +235,10 @@ def srt_api_call(endpoint: str, params: Optional[dict] = None) -> Optional[dict]
             with urllib.request.urlopen(url, timeout=3) as response:
                 payload = response.read().decode(errors="replace")
                 result = json.loads(payload, strict=False)
-                if base_url != SRT_CONTROLLER_URL:
-                    log.info("SRT controller reachable at %s", base_url)
-                    SRT_CONTROLLER_URL = base_url
+                with controller_settings_lock:
+                    if base_url != SRT_CONTROLLER_URL:
+                        log.info("SRT controller reachable at %s", base_url)
+                        SRT_CONTROLLER_URL = base_url
                 return result
         except Exception as e:
             last_error = e
@@ -990,9 +999,16 @@ DEFAULT_OBSERVATION = {
 def find_clashes(schedule: list) -> list:
     """Check for overlapping enabled observations. Returns list of clash descriptions."""
     clashes = []
-    enabled = [obs for obs in schedule if obs.get('enabled', True) and obs.get('start_time')]
+    # A dateless entry is not "today". Treating it as today made every leftover
+    # entry without a date collide with whatever is genuinely scheduled for
+    # today, so POST /api/schedule rejected saves for clashes that do not
+    # exist - the save then failed while the UI reported success (S8).
+    enabled = [obs for obs in schedule
+               if obs.get('enabled', True)
+               and obs.get('start_time')
+               and obs.get('start_date')]
     for a_idx, a in enumerate(enabled):
-        a_date = a.get('start_date') or datetime.now().strftime('%Y-%m-%d')
+        a_date = a['start_date']
         try:
             a_start = datetime.strptime(f"{a_date} {a['start_time']}", '%Y-%m-%d %H:%M')
         except ValueError:
@@ -1000,7 +1016,7 @@ def find_clashes(schedule: list) -> list:
         a_end = a_start + timedelta(minutes=a.get('duration_minutes', 30))
         for b_idx in range(a_idx + 1, len(enabled)):
             b = enabled[b_idx]
-            b_date = b.get('start_date') or datetime.now().strftime('%Y-%m-%d')
+            b_date = b['start_date']
             try:
                 b_start = datetime.strptime(f"{b_date} {b['start_time']}", '%Y-%m-%d %H:%M')
             except ValueError:
@@ -1596,6 +1612,10 @@ HTML_TEMPLATE = '''
                 <button class="btn btn-secondary" onclick="exportSchedule()">Export JSON</button>
                 <button class="btn btn-secondary" onclick="clearPast()">Clear Past</button>
             </div>
+            <!-- Shown only when an auto-save was rejected. Auto-save is the path
+                 that silently loses edits, so a failure has to be visible. -->
+            <div id="autoSaveWarning" style="display:none;background:#752;color:#fff;
+                 padding:8px 12px;border-radius:4px;margin-bottom:10px;"></div>
             <div class="schedule-list" id="scheduleList">
                 <div class="empty-state">No observations scheduled.</div>
             </div>
@@ -2109,7 +2129,7 @@ HTML_TEMPLATE = '''
         });
 
         function updateEndTime() {
-            const date = document.getElementById('obsStartDate').value || new Date().toISOString().slice(0,10);
+            const date = document.getElementById('obsStartDate').value || localDateStr(new Date());
             const time = document.getElementById('obsStartTime').value;
             const dur = parseInt(document.getElementById('obsDuration').value) || 0;
             if (!time) return;
@@ -2122,7 +2142,7 @@ HTML_TEMPLATE = '''
         }
 
         function getObsInterval(obs) {
-            const date = obs.start_date || new Date().toISOString().slice(0,10);
+            const date = obs.start_date || localDateStr(new Date());
             const start = new Date(`${date}T${obs.start_time}`);
             const end = new Date(start.getTime() + (obs.duration_minutes || 0) * 60000);
             return {start, end};
@@ -2130,7 +2150,7 @@ HTML_TEMPLATE = '''
 
         function checkClash() {
             const editIdx = parseInt(document.getElementById('obsIndex').value);
-            const date = document.getElementById('obsStartDate').value || new Date().toISOString().slice(0,10);
+            const date = document.getElementById('obsStartDate').value || localDateStr(new Date());
             const time = document.getElementById('obsStartTime').value;
             const dur = parseInt(document.getElementById('obsDuration').value) || 0;
             if (!time) return;
@@ -2310,11 +2330,25 @@ HTML_TEMPLATE = '''
         }
 
         function saveSchedule() {
-            fetch('/api/schedule', {
+            // The server rejects clashing schedules with a 400 and a reason.
+            // Announcing success regardless meant edits silently vanished on
+            // the next reload, with nothing on screen to explain it.
+            postSchedule().then(r => {
+                if (r.ok) { alert('Schedule saved!'); }
+                else { alert('Schedule NOT saved: ' + r.error); }
+            });
+        }
+
+        // Single place that POSTs the schedule and reports what the server said.
+        function postSchedule() {
+            return fetch('/api/schedule', {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
                 body: JSON.stringify(schedule)
-            }).then(() => alert('Schedule saved!'));
+            }).then(resp => resp.json().catch(() => ({}))
+                .then(d => ({ok: resp.ok && d.success !== false,
+                             error: d.error || ('HTTP ' + resp.status)})))
+              .catch(e => ({ok: false, error: String(e)}));
         }
 
         function formatEndTime(obs) {
@@ -2436,11 +2470,18 @@ HTML_TEMPLATE = '''
 
         function autoSave() {
             // Auto-save schedule to server whenever changes are made
-            fetch('/api/schedule', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify(schedule)
-            }).then(() => console.log('Schedule auto-saved'));
+            postSchedule().then(r => {
+                const el = document.getElementById('autoSaveWarning');
+                if (r.ok) {
+                    console.log('Schedule auto-saved');
+                    if (el) { el.style.display = 'none'; }
+                    return;
+                }
+                // Auto-save is silent when it works, but must not be silent
+                // when it fails - this is the path that loses edits.
+                console.warn('Auto-save failed:', r.error);
+                if (el) { el.textContent = 'Not saved: ' + r.error; el.style.display = 'block'; }
+            });
         }
 
         function saveObservation() {
@@ -2465,7 +2506,7 @@ HTML_TEMPLATE = '''
             }
             const startDt = new Date(`${startDate}T${startTime}`);
             const endDt = new Date(startDt.getTime() + duration * 60000);
-            const endDate = endDt.toISOString().slice(0,10);
+            const endDate = localDateStr(endDt);
             const endTime = String(endDt.getHours()).padStart(2,'0') + ':' + String(endDt.getMinutes()).padStart(2,'0');
             const obs = {
                 name: document.getElementById('obsName').value,
@@ -2581,7 +2622,7 @@ HTML_TEMPLATE = '''
             let nearestName = '';
             schedule.forEach(obs => {
                 if (!obs.enabled || !obs.start_time) return;
-                const date = obs.start_date || now.toISOString().slice(0,10);
+                const date = obs.start_date || localDateStr(now);
                 const start = new Date(`${date}T${obs.start_time}`);
                 if (start > now && (!nearest || start < nearest)) {
                     nearest = start;
@@ -2709,7 +2750,7 @@ HTML_TEMPLATE = '''
             const now = new Date();
             const before = schedule.length;
             schedule = schedule.filter(obs => {
-                const date = obs.start_date || now.toISOString().slice(0,10);
+                const date = obs.start_date || localDateStr(now);
                 const dur = obs.duration_minutes || 0;
                 const start = new Date(`${date}T${obs.start_time || '00:00'}`);
                 const end = new Date(start.getTime() + dur * 60000);
@@ -3626,11 +3667,13 @@ def api_post_config():
     cfg = load_config()
     cfg.update(updates)
     save_config(cfg)
-    # Apply to running process
-    SRT_CONTROLLER_URL = cfg.get("srt_controller_url") or None
-    SRT_SLEW_TIMEOUT = cfg.get("slew_timeout", 300)
-    SRT_POSITION_TOLERANCE = cfg.get("position_tolerance", 0.5)
-    PYTHON_PATH = cfg.get("python_path") or None
+    # Apply to running process, as one unit: the scheduler thread must not see
+    # a new controller URL paired with the previous slew timeout.
+    with controller_settings_lock:
+        SRT_CONTROLLER_URL = cfg.get("srt_controller_url") or None
+        SRT_SLEW_TIMEOUT = cfg.get("slew_timeout", 300)
+        SRT_POSITION_TOLERANCE = cfg.get("position_tolerance", 0.5)
+        PYTHON_PATH = cfg.get("python_path") or None
     # Re-sync observer location if controller URL changed
     sync_observer_from_controller()
     return jsonify({'success': True})
