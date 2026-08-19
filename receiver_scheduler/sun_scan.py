@@ -65,8 +65,12 @@ def _load_scheduler_config() -> dict:
     """Load observer location and SRT URL from the scheduler config file."""
     defaults = {
         "srt_controller_url": "http://192.168.106.120",
-        "observer_lat": 55.902444,
-        "observer_lon": -4.307861,
+        # The true site. Kept identical to OBSERVER_LAT/OBSERVER_LON in
+        # esp32_controller_arduino/src/config.h: two candidate "true"
+        # positions two metres apart is exactly the ambiguity that let a
+        # deliberately fictitious one sit here unnoticed.
+        "observer_lat": 55.902426,
+        "observer_lon": -4.307865,
         "observer_elevation": 50,
         "slew_timeout": 300,
     }
@@ -100,6 +104,18 @@ def _srt_api(base_url: str, endpoint: str, params: dict | None = None,
         with urllib.request.urlopen(url, timeout=timeout) as resp:
             payload = resp.read().decode(errors="replace")
             return json.loads(payload, strict=False)
+    except urllib.error.HTTPError as exc:
+        # The controller refuses an unreachable target with a 4xx and a JSON
+        # body naming the drive coordinates and the limits it broke. urlopen
+        # raises before the caller sees any of that, so it is read here and
+        # returned like any other answer - _slew_to already reports a body that
+        # says ok:false, and "Drive position 91.2/180.0 is outside the mount
+        # limits" is the whole diagnosis.
+        try:
+            return json.loads(exc.read().decode(errors="replace"), strict=False)
+        except Exception:
+            raise RuntimeError(
+                f"SRT controller request failed at {base_url}{endpoint}: {exc}") from exc
     except Exception as exc:
         raise RuntimeError(
             f"SRT controller request failed at {base_url}{endpoint}: {exc}") from exc
@@ -132,8 +148,22 @@ def _check_cancelled(cancel_event, what: str) -> None:
 
 def _slew_to(base_url: str, alt: float, az: float,
              slew_timeout: int = 120, position_tolerance: float = 0.5,
-             start_grace_s: float = 5.0, cancel_event=None) -> bool:
-    """Command telescope to alt/az and verify that it reaches the target.
+             start_grace_s: float = 5.0, cancel_event=None) -> tuple[float, float]:
+    """Command telescope to a TRUE sky alt/az and wait until it arrives.
+
+    Returns the DRIVE position the controller reports having reached, which is
+    what a calibration scan must record: it is the encoder reading the mount
+    actually settled on, already rounded to the pulse grid, so it needs no
+    second copy of the firmware's rounding rule and it stays correct when the
+    final position legitimately is not the target - a stall, or a clamp at a
+    limit switch.
+
+    Arrival is judged drive against drive. /direct takes a sky position and
+    reports back the drive coordinates it commanded, and /status reports drive
+    coordinates; comparing the sky target against the drive reading would be
+    out by the whole pointing calibration and the slew would never be seen to
+    finish. Older firmware omits drive_alt/drive_az, in which case the two
+    frames are the same thing and the sky target is the right comparison.
 
     Honours cancel_event while polling. Without it a cancel could not take
     effect until the slew finished or timed out - up to slew_timeout, which is
@@ -145,6 +175,11 @@ def _slew_to(base_url: str, alt: float, az: float,
         detail = result.get("error") or result.get("message") or repr(result)
         raise RuntimeError(
             f"SRT controller rejected slew to Alt={alt:.2f} deg Az={az:.2f} deg: {detail}")
+    try:
+        target_alt = float(result.get("drive_alt", alt))
+        target_az = float(result.get("drive_az", az))
+    except (TypeError, ValueError):
+        target_alt, target_az = alt, az
 
     t0 = time.time()
     while time.time() - t0 < slew_timeout:
@@ -158,11 +193,11 @@ def _slew_to(base_url: str, alt: float, az: float,
                 f"Telescope fault while slewing to Alt={alt:.2f} deg Az={az:.2f} deg: {detail}")
 
         if current_alt is not None and current_az is not None:
-            alt_error = abs(float(current_alt) - alt)
-            az_error = abs(float(current_az) - az)
+            alt_error = abs(float(current_alt) - target_alt)
+            az_error = abs(float(current_az) - target_az)
             at_target = max(alt_error, az_error) <= position_tolerance
             if at_target and not status.get("is_slewing", False):
-                return True
+                return float(current_alt), float(current_az)
 
         elapsed = time.time() - t0
         if (not status.get("is_slewing", False) and elapsed >= start_grace_s
@@ -227,6 +262,40 @@ def _sun_offset_to_command(sun_alt: float, sun_az: float,
     raw_az = sun_az + daz_sky / cos_alt
     cmd_az = _clamp_azimuth_deg(raw_az)
     return cmd_alt, cmd_az, cos_alt, (cmd_az != raw_az)
+
+
+def _drive_offset_from_sun(drive_alt: float, drive_az: float,
+                           sun_alt: float, sun_az: float) -> tuple[float, float]:
+    """The (D - T) datum for one scan point.
+
+    ``D`` is the drive position the mount actually settled on and ``T`` is the
+    Sun's true position at that moment, so this pair is model-free: whatever
+    pointing model was loaded during the scan only decided where the raster was
+    aimed, and cancels out of the difference. That is what lets every fit be
+    absolute rather than a delta composed onto the previous one.
+
+    Returned as an altitude offset and a cross-elevation (sky) azimuth offset,
+    the same units the Gaussian is fitted in.
+    """
+    cos_alt = math.cos(math.radians(sun_alt))
+    d_az = (drive_az - sun_az + 180.0) % 360.0 - 180.0
+    return drive_alt - sun_alt, d_az * cos_alt
+
+
+# Radio refraction, in degrees, for a geometric altitude.
+#
+# This must stay identical to refractionDeg() in
+# esp32_controller_arduino/src/pointing.cpp. The controller adds refraction to
+# every sky position it converts, so a scan's measured error contains it; if it
+# were not removed here before fitting, the fitted terms would absorb it and
+# the controller would then apply it a second time.
+def refraction_deg(true_alt_deg: float) -> float:
+    """Bennett's formula scaled by 1.15 for radio wavelengths."""
+    h = max(-1.0, min(90.0, float(true_alt_deg)))
+    t = math.tan(math.radians(h + 7.31 / (h + 4.4)))
+    if not t > 0.0:
+        return 0.0
+    return 1.15 / (60.0 * t)
 
 
 # ---------------------------------------------------------------------------
@@ -740,7 +809,12 @@ def sun_scan(
         return current_sun_alt, current_sun_az, cmd_alt_now, cmd_az_now, cos_alt_now
 
     def slew_and_refine(dalt_now: float, daz_sky_now: float):
-        """Slew to a moving-Sun offset, correcting ephemeris drift after slews."""
+        """Slew to a moving-Sun offset, correcting ephemeris drift after slews.
+
+        Returns the usual command tuple with the DRIVE position the mount
+        reached appended, so the caller can record where the beam actually was
+        rather than where it was asked to be.
+        """
         last = None
         for attempt in range(3):
             # Checked between chained slews as well as inside each one: three
@@ -748,15 +822,15 @@ def sun_scan(
             _check_cancelled(cancel_event, "slew refinement")
             last = command_for_current_sun(dalt_now, daz_sky_now)
             point_alt, point_az, cmd_alt_now, cmd_az_now, _ = last
-            _slew_to(srt_url, cmd_alt_now, cmd_az_now, slew_timeout,
-                     position_tolerance, cancel_event=cancel_event)
+            reached = _slew_to(srt_url, cmd_alt_now, cmd_az_now, slew_timeout,
+                               position_tolerance, cancel_event=cancel_event)
 
             updated = command_for_current_sun(dalt_now, daz_sky_now)
             drift_alt = abs(updated[2] - cmd_alt_now)
             drift_az = abs(updated[3] - cmd_az_now)
             last = updated
             if max(drift_alt, drift_az) <= 0.03:
-                return last
+                return (*last, reached)
             log.info("Sun moved during slew; refining target (dAlt=%.3f deg, dAz=%.3f deg)",
                      drift_alt, drift_az)
         raise RuntimeError(
@@ -804,11 +878,27 @@ def sun_scan(
                      idx + 1, total_points, dalt, daz_sky, cmd_alt, cmd_az)
 
             # Slew to measurement point
+            # What the Gaussian is fitted against. In demo mode there is no
+            # mount to report a position, so the intended offsets stand in.
+            actual_dalt, actual_daz_sky = dalt, daz_sky
+
             if sdr_type != "demo":
                 refined = slew_and_refine(dalt, daz_sky)
-                point_sun_alt, point_sun_az, cmd_alt, cmd_az, _ = refined
+                point_sun_alt, point_sun_az, cmd_alt, cmd_az, _, reached = refined
+                drive_alt, drive_az = reached
+                # The Due adopts round(deg x PULSES_PER_DEGREE) as its target,
+                # so the position it drove to differs from the float that was
+                # requested by up to a quarter of a degree. Using the request as
+                # the abscissa puts that error straight into the fit; using the
+                # reported position removes it, and removes it without
+                # duplicating the Due's rounding rule in a second codebase.
+                actual_dalt, actual_daz_sky = _drive_offset_from_sun(
+                    drive_alt, drive_az, point_sun_alt, point_sun_az)
                 point_info.update(cmd_alt=cmd_alt, cmd_az=cmd_az,
-                                  sun_alt=point_sun_alt, sun_az=point_sun_az)
+                                  sun_alt=point_sun_alt, sun_az=point_sun_az,
+                                  drive_alt=drive_alt, drive_az=drive_az,
+                                  actual_dalt=actual_dalt,
+                                  actual_daz_sky=actual_daz_sky)
                 # Short settle time after slew
                 if _cancellable_sleep(0.5, cancel_event):
                     raise ScanCancelled("Sun scan cancelled while settling")
@@ -835,8 +925,8 @@ def sun_scan(
                 pwr = measure_power(sdr_type, center_freq, sample_rate, gain,
                                     integration_time_s, _sim_state=sim_state)
             power_grid[row, col] = pwr
-            alt_off_flat.append(dalt)
-            az_off_flat.append(daz_sky)
+            alt_off_flat.append(actual_dalt)
+            az_off_flat.append(actual_daz_sky)
             power_flat.append(pwr)
 
             log.info("  Power = %.4f", pwr)
@@ -909,6 +999,7 @@ def sun_scan(
         "grid_spacing_deg": grid_spacing_deg,
         "n": n,
         "integration_time_s": integration_time_s,
+        "record_version": _SCAN_RECORD_VERSION,
     }
 
 
@@ -917,17 +1008,30 @@ def sun_scan(
 # ---------------------------------------------------------------------------
 #
 # Model:
-#   ΔAlt = ΔAlt₀ + AN·cos(az) + AE·sin(az)
-#   ΔAz  = ΔAz₀  + (AN·sin(az) − AE·cos(az))·tan(alt)
+#   ΔAlt = IE + AN·cos(az) + AE·sin(az)
+#   ΔAz  = IA + (AN·sin(az) − AE·cos(az))·tan(alt)
 #
-# where AN = north-south tilt ≈ latitude error
-#       AE = east-west tilt  ≈ longitude error × cos(lat)
-#       ΔAlt₀, ΔAz₀ = constant zero-point offsets
+# where AN = north-south tilt, AE = east-west tilt, and IE/IA are the constant
+# altitude and azimuth zero-point offsets. ΔAlt/ΔAz are what must be ADDED to a
+# true sky position to obtain the drive position - the same convention, term
+# for term, as PointingModel in esp32_controller_arduino/src/pointing.h.
 #
-# The effective observer position is:
-#   effective_lat = true_lat + AN
-#   effective_lon = true_lon + AE / cos(true_lat)
+# The model used to be delivered to the controller as an "effective" observer
+# latitude and longitude (a latitude shift reproduces a north tilt exactly) plus
+# a push to the operator's pointing-offset boxes. It is now sent as itself, so
+# there is no effective position to compute and no delta_lon·sin(lat) azimuth
+# twist to cancel: the controller holds the terms and applies them.
 # ---------------------------------------------------------------------------
+
+# Scan records at version 2 hold an absolute (T, D) datum: the error is the
+# drive position the mount reached minus the Sun's true position, so it is
+# independent of whatever model was loaded when the scan ran. Version 1 records
+# - anything written before the resident pointing model - were differences from
+# the commanded float under a controller whose calibration was smuggled in as a
+# fictitious observer position, so they are residuals against a model that is no
+# longer knowable and cannot be pooled with these. They are kept in the file but
+# skipped by the fit.
+_SCAN_RECORD_VERSION = 2
 
 _POINTING_DATA_FILE = os.path.join(_SCRIPT_DIR, "pointing_data.json")
 _POINTING_MODEL_FILE = os.path.join(_SCRIPT_DIR, "pointing_model.json")
@@ -943,6 +1047,7 @@ def save_scan_to_pointing_data(scan_result: dict):
         "az_error_deg": scan_result["az_error_deg"],
         "beam_fwhm_deg": scan_result["beam_fwhm_deg"],
         "fit_success": scan_result["fit"]["success"],
+        "record_version": scan_result.get("record_version", 1),
     }
     fit_errors = scan_result.get("fit", {}).get("fit_errors") or {}
     if fit_errors.get("alt_err") is not None:
@@ -978,12 +1083,13 @@ def clear_pointing_data():
     log.info("Pointing data cleared")
 
 
-# The drive firmware counts position in encoder pulses at PULSES_PER_DEGREE = 2,
-# so no commanded position is meaningful below half a degree.  The Gaussian
-# centroid uncertainties from a single scan are an order of magnitude finer than
-# that, so they are combined in quadrature with the quantisation error below.
-_MOUNT_QUANTISATION_DEG = 0.5
-_MOUNT_QUANTISATION_SIGMA_DEG = _MOUNT_QUANTISATION_DEG / math.sqrt(12.0)
+# The drive firmware counts position in encoder pulses at PULSES_PER_DEGREE = 2.
+# That used to inflate every scan's sigma by 0.144 deg, because the fit's
+# abscissa was the float the scheduler requested rather than the position the
+# Due rounded it to and drove to. Scan records at version 2 use the reported
+# drive position, so the rounding is measured rather than guessed at and there
+# is nothing left to defend against - per-scan sigma is the Gaussian centroid
+# uncertainty alone, around 0.04 deg.
 
 
 def _pointing_model_matrix(alt_deg: np.ndarray, az_deg: np.ndarray) -> np.ndarray:
@@ -1038,13 +1144,11 @@ def fit_pointing_model(data: list | None = None,
         alt_offset_deg, az_offset_deg : constant zero-point offsets
         tilt_north_deg (AN)           : north-south tilt
         tilt_east_deg (AE)            : east-west tilt
-        effective_lat, effective_lon  : corrected observer position (if true given)
-        az_offset_command_deg         : azimuth offset to push to the controller
-                                        alongside the effective position; differs
-                                        from az_offset_deg by az_site_rotation_deg
-        az_site_rotation_deg          : constant azimuth rotation introduced by
-                                        the longitude shift, which is cancelled
-                                        in az_offset_command_deg
+        terms                         : the same four numbers under the names the
+                                        controller uses (IE, IA, AN, AE), ready
+                                        for pointing_model_document()
+        site_lat, site_lon            : the TRUE observer position, recorded with
+                                        the model rather than adjusted by it
         parameter_significance        : |value|/sigma for each parameter
         min_tilt_significance         : the weaker of the two tilt significances
         reduced_chi_squared           : residuals against the per-scan sigmas
@@ -1064,7 +1168,19 @@ def fit_pointing_model(data: list | None = None,
     required = ("sun_alt_deg", "sun_az_deg", "alt_error_deg", "az_error_deg")
     good = []
     rejected = 0
+    superseded = 0
     for entry in data:
+        # Only absolute (T, D) records can be pooled - see _SCAN_RECORD_VERSION.
+        # Read defensively: this file is on disk and has been hand-edited before,
+        # and a junk version field must reject one scan rather than the fit.
+        try:
+            version = int(entry.get("record_version", 1))
+        except (AttributeError, TypeError, ValueError):
+            rejected += 1
+            continue
+        if version < _SCAN_RECORD_VERSION:
+            superseded += 1
+            continue
         try:
             values = [float(entry[key]) for key in required]
         except (KeyError, TypeError, ValueError):
@@ -1078,19 +1194,38 @@ def fit_pointing_model(data: list | None = None,
             continue
         good.append(entry)
 
+    if superseded:
+        log.info("Skipping %d scan(s) recorded before the resident pointing model; "
+                 "they are residuals against a model that is no longer knowable",
+                 superseded)
+
     if len(good) < 4:
+        error = f"Need at least 4 valid successful scans, have {len(good)}"
+        if superseded:
+            error += (f" ({superseded} older scan(s) predate the resident pointing "
+                      "model and cannot be pooled with these; collect fresh scans)")
         return {
             "success": False,
-            "error": f"Need at least 4 valid successful scans, have {len(good)}",
+            "error": error,
             "n_scans": len(good),
             "n_rejected": rejected,
+            "n_superseded": superseded,
         }
 
     alt_sun = np.array([d["sun_alt_deg"] for d in good], dtype=float)
     az_sun = np.array([d["sun_az_deg"] for d in good], dtype=float)
-    d_alt = np.array([d["alt_error_deg"] for d in good], dtype=float)
     d_az = np.array([d["az_error_deg"] for d in good], dtype=float)
     n = len(good)
+
+    # The measured altitude error is where the beam had to point to see the
+    # Sun, so it contains atmospheric refraction. The controller applies
+    # refraction itself, whether or not a model is loaded, so it is removed here
+    # and the fitted terms describe the mount alone. Leaving it in would have it
+    # counted twice - about 0.09 deg at 11 degrees elevation, which is the size
+    # of the effect the whole calibration is chasing. Refraction is vertical to
+    # first order, so the azimuth errors are untouched.
+    refraction = np.array([refraction_deg(a) for a in alt_sun], dtype=float)
+    d_alt = np.array([d["alt_error_deg"] for d in good], dtype=float) - refraction
 
     az_sorted = np.sort(np.mod(az_sun, 360.0))
     gaps = np.diff(np.concatenate([az_sorted, [az_sorted[0] + 360.0]]))
@@ -1110,12 +1245,12 @@ def fit_pointing_model(data: list | None = None,
     b = np.concatenate([d_alt, d_az])
 
     def scan_uncertainty(entry: dict, key: str) -> float:
-        """Per-scan sigma, floored by what the mount can actually command.
+        """Per-scan sigma: the Gaussian centroid uncertainty for this scan.
 
-        A tight Gaussian centroid does not mean the telescope was pointed that
-        precisely, so the fit uncertainty is combined in quadrature with the
-        encoder quantisation.  Without this the weights claim a precision the
-        hardware cannot deliver and a single scan can dominate the solution.
+        No quantisation floor. It was there because the fit did not know where
+        the mount actually pointed; now that each point records the drive
+        position it reached, the encoder grid is part of the measurement rather
+        than an unmodelled error on top of it.
         """
         try:
             value = float(entry.get(key, 1.0))
@@ -1123,7 +1258,7 @@ def fit_pointing_model(data: list | None = None,
             value = 1.0
         if not math.isfinite(value) or value <= 0.0:
             value = 1.0
-        return math.hypot(value, _MOUNT_QUANTISATION_SIGMA_DEG)
+        return value
 
     alt_unc = np.array([
         scan_uncertainty(d, "alt_error_uncertainty_deg") for d in good
@@ -1202,6 +1337,7 @@ def fit_pointing_model(data: list | None = None,
         "rms_az_deg": rms_az,
         "n_scans": n,
         "n_rejected": rejected,
+        "n_superseded": superseded,
         "az_coverage_deg": az_coverage,
         "condition_number": condition_number,
         "reduced_chi_squared": reduced_chi_squared,
@@ -1223,29 +1359,56 @@ def fit_pointing_model(data: list | None = None,
         "success": True,
     }
 
-    # Effective lat/lon.  Moving the observer north is a rotation about a purely
-    # horizontal axis, so a latitude shift reproduces a north tilt exactly.
+    # The terms as the controller names them. Same four numbers as above, under
+    # the names used by PointingModel in pointing.h, so the wire format and the
+    # fit cannot drift apart. CA, NPAE and TF are not fitted from Sun-only data
+    # and are simply absent; the controller defaults every unlisted term to zero.
+    model["terms"] = {
+        "IE": alt_offset,
+        "IA": az_offset,
+        "AN": tilt_north,
+        "AE": tilt_east,
+    }
     if true_lat is not None:
-        model["effective_lat"] = true_lat + tilt_north
-    if true_lon is not None and true_lat is not None:
-        cos_lat = math.cos(math.radians(true_lat))
-        if abs(cos_lat) <= 0.01:
-            return {"success": False,
-                    "error": "Effective longitude is undefined near the geographic pole",
-                    "n_scans": n}
-        delta_lon = tilt_east / cos_lat
-        model["effective_lon"] = true_lon + delta_lon
-
-        # A longitude shift is a rotation about the Earth's polar axis, which
-        # is only partly horizontal.  Its vertical component rotates azimuth by
-        # delta_lon*sin(lat) at every altitude - a constant no axis tilt can
-        # produce.  Cancel it in the constant azimuth offset that is pushed to
-        # the controller, so the applied correction matches the fitted model.
-        site_az_rotation = delta_lon * math.sin(math.radians(true_lat))
-        model["az_site_rotation_deg"] = float(site_az_rotation)
-        model["az_offset_command_deg"] = float(az_offset - site_az_rotation)
+        model["site_lat"] = float(true_lat)
+    if true_lon is not None:
+        model["site_lon"] = float(true_lon)
 
     return model
+
+
+def pointing_model_document(model: dict, fitted_utc: str | None = None) -> dict:
+    """The controller's wire format for a fitted model.
+
+    Deliberately carries the fitted parameters and nothing derived from them.
+    The controller ignores term names it does not know, so adding CA, NPAE or TF
+    later needs no change here, on the controller, or to the stored format.
+    """
+    terms = model.get("terms")
+    if not terms:
+        raise ValueError("Model has no fitted terms; fit it again before applying")
+    numeric = {}
+    for name, value in terms.items():
+        value = float(value)
+        if not math.isfinite(value):
+            raise ValueError(f"Fitted term {name} is not finite")
+        numeric[name] = value
+
+    document = {
+        "version": 1,
+        "fitted_utc": fitted_utc or datetime.now(timezone.utc).strftime(
+            "%Y-%m-%dT%H:%M:%SZ"),
+        "n_scans": int(model.get("n_scans", 0)),
+        "frame": "cross_elevation",
+        "terms": numeric,
+    }
+    if "site_lat" in model and "site_lon" in model:
+        document["site"] = {"lat": float(model["site_lat"]),
+                            "lon": float(model["site_lon"])}
+    if "rms_alt_deg" in model and "rms_az_deg" in model:
+        document["residual_rms_deg"] = {"alt": float(model["rms_alt_deg"]),
+                                        "xel": float(model["rms_az_deg"])}
+    return document
 
 
 def save_pointing_model(model: dict):
@@ -1347,10 +1510,10 @@ def generate_calibration_plot(model: dict, output_path: str = "calibration_day.p
         f"RMS residual alt: {model['rms_alt_deg']:.3f}°",
         f"RMS residual az:  {model['rms_az_deg']:.3f}°",
     ]
-    if "effective_lat" in model:
+    if "site_lat" in model and "site_lon" in model:
         lines.append("")
-        lines.append(f"Effective lat: {model['effective_lat']:.6f}°")
-        lines.append(f"Effective lon: {model['effective_lon']:.6f}°")
+        lines.append(f"Site lat: {model['site_lat']:.6f}°")
+        lines.append(f"Site lon: {model['site_lon']:.6f}°")
     ax.text(0.1, 0.95, "\n".join(lines), transform=ax.transAxes,
             fontsize=12, verticalalignment="top", fontfamily="monospace",
             color="#ccc", bbox=dict(facecolor="#0f0f23", edgecolor="#333",

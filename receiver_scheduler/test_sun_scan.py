@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Tests for sun_scan.py scan geometry."""
 
+import json
 import math
 import os
 import sys
@@ -114,7 +115,44 @@ def test_slew_verifies_final_position():
         assert sun_scan._slew_to(
             "http://controller", 32.1, 101.2,
             slew_timeout=1, position_tolerance=0.5,
-        ) is True
+        ) == (32.0, 101.0)
+
+
+def test_slew_arrival_is_judged_in_the_drive_frame():
+    """The sky target and the drive reading differ by the pointing model.
+
+    /direct takes a sky position and reports the drive coordinates it
+    commanded; /status reports drive coordinates. Comparing the reading against
+    the sky target instead would be out by the whole calibration - here 2 deg
+    of azimuth, four times the tolerance - and the slew would never be seen to
+    finish.
+    """
+    responses = [
+        {"ok": True, "drive_alt": 32.3, "drive_az": 99.2},
+        {"alt": 32.3, "az": 99.2, "is_slewing": False,
+         "fault_active": False, "status": "Ready"},
+    ]
+
+    with patch.object(sun_scan, "_srt_api", side_effect=responses):
+        assert sun_scan._slew_to(
+            "http://controller", 32.1, 101.2,
+            slew_timeout=1, position_tolerance=0.5,
+        ) == (32.3, 99.2)
+
+
+def test_slew_falls_back_to_the_sky_target_on_older_firmware():
+    """Firmware without a resident model has one frame, so the target is it."""
+    responses = [
+        {"ok": True},
+        {"alt": 32.0, "az": 101.0, "is_slewing": False,
+         "fault_active": False, "status": "Ready"},
+    ]
+
+    with patch.object(sun_scan, "_srt_api", side_effect=responses):
+        assert sun_scan._slew_to(
+            "http://controller", 32.1, 101.2,
+            slew_timeout=1, position_tolerance=0.5,
+        ) == (32.0, 101.0)
 
 
 def test_slew_fails_when_telescope_does_not_move():
@@ -180,6 +218,16 @@ def test_cancellable_sleep_returns_immediately_when_set():
     assert time.monotonic() - started < 1
 
 
+def _echo_slew(base_url, alt, az, *args, **kwargs):
+    """Stand-in for _slew_to: a perfect mount that lands exactly on target.
+
+    _slew_to returns the DRIVE position reached, which the scan records as the
+    abscissa for its Gaussian, so a mock must return a position rather than a
+    bare success flag.
+    """
+    return (alt, az)
+
+
 def test_hardware_scan_stops_on_first_failed_slew():
     progress = []
     meter = MagicMock()
@@ -223,7 +271,7 @@ def test_hardware_scan_reuses_one_b210_session_for_all_points():
     }
 
     with patch.object(sun_scan, "get_sun_altaz", return_value=(30.0, 100.0)), \
-         patch.object(sun_scan, "_slew_to", return_value=True), \
+         patch.object(sun_scan, "_slew_to", side_effect=_echo_slew), \
          patch.object(sun_scan, "_B210PowerMeter", return_value=meter) as factory, \
          patch.object(sun_scan, "fit_pointing_error", return_value=fit_result), \
          patch.object(sun_scan.time, "sleep"):
@@ -282,6 +330,13 @@ def test_sun_scan_rejects_grid_clipped_by_mount_limits():
 
 
 def _synthetic_pointing_data(azimuths):
+    """Scan records that a perfect mount with a known model would produce.
+
+    The recorded altitude error is what a scan actually measures: the mount
+    term plus atmospheric refraction, because the beam has to point where the
+    Sun appears. The fit must take the refraction back out, so recovering
+    ``expected`` exactly is also a check that it does.
+    """
     altitudes = np.array([25.0, 35.0, 45.0, 55.0, 50.0, 30.0])[:len(azimuths)]
     azimuths = np.asarray(azimuths, dtype=float)
     expected = np.array([0.35, -0.20, 0.12, -0.08])
@@ -293,11 +348,12 @@ def _synthetic_pointing_data(azimuths):
         data.append({
             "sun_alt_deg": altitudes[i],
             "sun_az_deg": azimuths[i],
-            "alt_error_deg": errors[i],
+            "alt_error_deg": errors[i] + sun_scan.refraction_deg(altitudes[i]),
             "az_error_deg": errors[n + i],
             "alt_error_uncertainty_deg": 0.05,
             "az_error_uncertainty_deg": 0.05,
             "fit_success": True,
+            "record_version": sun_scan._SCAN_RECORD_VERSION,
         })
     return data, expected
 
@@ -312,9 +368,15 @@ def test_pointing_model_recovers_weighted_four_parameter_solution():
     actual = [model["alt_offset_deg"], model["az_offset_deg"],
               model["tilt_north_deg"], model["tilt_east_deg"]]
     assert actual == pytest.approx(expected, abs=1e-9)
-    assert model["effective_lat"] == pytest.approx(55.9 + expected[2])
-    assert model["effective_lon"] == pytest.approx(
-        -4.3 + expected[3] / math.cos(math.radians(55.9)))
+    # The same four numbers under the names the controller uses, and the TRUE
+    # site position recorded alongside rather than adjusted by the tilt.
+    assert model["terms"] == pytest.approx(
+        {"IE": expected[0], "IA": expected[1],
+         "AN": expected[2], "AE": expected[3]}, abs=1e-9)
+    assert model["site_lat"] == pytest.approx(55.9)
+    assert model["site_lon"] == pytest.approx(-4.3)
+    assert "effective_lat" not in model
+    assert "effective_lon" not in model
 
 
 def test_pointing_model_rejects_narrow_sun_coverage():
@@ -324,6 +386,89 @@ def test_pointing_model_rejects_narrow_sun_coverage():
 
     assert model["success"] is False
     assert "coverage" in model["error"]
+
+
+def test_pointing_model_document_carries_the_fitted_terms():
+    """The wire format holds the parameters, not anything derived from them."""
+    data, expected = _synthetic_pointing_data([80, 105, 135, 165, 195, 225])
+    model = sun_scan.fit_pointing_model(data, true_lat=55.9, true_lon=-4.3)
+
+    document = sun_scan.pointing_model_document(model, fitted_utc="2026-08-19T10:00:00Z")
+
+    assert document["version"] == 1
+    assert document["fitted_utc"] == "2026-08-19T10:00:00Z"
+    assert document["n_scans"] == 6
+    assert document["frame"] == "cross_elevation"
+    assert document["terms"]["IE"] == pytest.approx(expected[0])
+    assert document["terms"]["AE"] == pytest.approx(expected[3])
+    assert document["site"] == {"lat": 55.9, "lon": -4.3}
+    assert set(document["residual_rms_deg"]) == {"alt", "xel"}
+    # No effective position, and no azimuth rotation to cancel one.
+    assert "effective_lat" not in document
+    assert "az_site_rotation_deg" not in document
+    # Must survive the round trip through JSON that the POST performs.
+    assert json.loads(json.dumps(document)) == document
+
+
+def test_pointing_model_document_refuses_a_model_without_terms():
+    with pytest.raises(ValueError, match="no fitted terms"):
+        sun_scan.pointing_model_document({"n_scans": 6})
+
+
+def test_pointing_model_document_refuses_a_non_finite_term():
+    with pytest.raises(ValueError, match="not finite"):
+        sun_scan.pointing_model_document({"terms": {"IE": float("nan")}})
+
+
+def test_scan_records_the_drive_position_not_the_request():
+    """The Due rounds a commanded float to the half-degree pulse grid.
+
+    Fitting against the requested float puts up to a quarter of a degree of
+    that rounding straight into every scan point. The scan must use the drive
+    position the mount reports having reached instead.
+    """
+    captured = {}
+
+    def rounding_slew(base_url, alt, az, *args, **kwargs):
+        # What the Due does: round(deg x PULSES_PER_DEGREE) / PULSES_PER_DEGREE.
+        return (round(alt * 2.0) / 2.0, round(az * 2.0) / 2.0)
+
+    def capture_fit(alt_offsets, az_offsets, power, beam_fwhm_hint=3.0):
+        captured["alt"] = np.asarray(alt_offsets)
+        captured["az"] = np.asarray(az_offsets)
+        return {
+            "alt_error_deg": 0.0, "az_error_deg": 0.0, "az_error_sky_deg": 0.0,
+            "amplitude": 8.0, "sigma_deg": 1.0, "offset": 1.0,
+            "beam_fwhm_deg": 2.355,
+            "fit_errors": {"alt_err": 0.1, "az_err": 0.1, "sigma_err": 0.1},
+            "success": True,
+        }
+
+    meter = MagicMock()
+    meter.measure.side_effect = [float(i) for i in range(1, 10)]
+
+    # A Sun altitude deliberately off the half-degree grid, so the rounded
+    # positions cannot coincide with the requested offsets by luck.
+    sun_alt = 30.3
+    with patch.object(sun_scan, "get_sun_altaz", return_value=(sun_alt, 100.3)), \
+         patch.object(sun_scan, "_slew_to", side_effect=rounding_slew), \
+         patch.object(sun_scan, "_B210PowerMeter", return_value=meter), \
+         patch.object(sun_scan, "fit_pointing_error", side_effect=capture_fit), \
+         patch.object(sun_scan.time, "sleep"):
+        result = sun_scan.sun_scan(
+            n=3, grid_spacing_deg=1.5, integration_time_s=0.1,
+            sdr_type="b210", srt_url="http://controller", output_image=None,
+        )
+
+    # Every abscissa is a real drive position minus the Sun, so it sits on the
+    # pulse grid relative to the Sun's altitude rather than on the requested
+    # 1.5 degree spacing.
+    on_grid = np.allclose((captured["alt"] + sun_alt) * 2.0,
+                          np.round((captured["alt"] + sun_alt) * 2.0))
+    assert on_grid
+    # And it is not simply the intended offsets: the Sun sits off the grid.
+    assert not np.allclose(np.sort(np.unique(captured["alt"])), [-1.5, 0.0, 1.5])
+    assert result["record_version"] == sun_scan._SCAN_RECORD_VERSION
 
 
 def _rotate_horizon_frame(alt_deg, az_deg, tilt_north_deg, tilt_east_deg):
@@ -372,22 +517,55 @@ def test_pointing_model_matrix_matches_frame_rotation(alt_deg, az_deg):
         assert matrix[1, column] == pytest.approx(d_az, abs=1e-3)
 
 
-def test_effective_longitude_azimuth_rotation_is_cancelled():
-    """A longitude shift rotates azimuth by a constant no axis tilt produces."""
+def test_refraction_is_removed_before_the_terms_are_fitted():
+    """The controller applies refraction itself, so the model must not.
+
+    Fitting the raw measured error would push refraction into IE and TF, and
+    the controller would then add it a second time - about 0.09 deg at low
+    elevation, which is the size of the error being chased.
+    """
     data, expected = _synthetic_pointing_data([80, 105, 135, 165, 195, 225])
-    lat = 55.9
+    unrefracted = [dict(entry) for entry in data]
+    for entry, alt in zip(unrefracted, [25.0, 35.0, 45.0, 55.0, 50.0, 30.0]):
+        entry["alt_error_deg"] -= sun_scan.refraction_deg(alt)
 
-    model = sun_scan.fit_pointing_model(data, true_lat=lat, true_lon=-4.3)
+    with_refraction = sun_scan.fit_pointing_model(data, true_lat=55.9, true_lon=-4.3)
+    without = sun_scan.fit_pointing_model(unrefracted, true_lat=55.9, true_lon=-4.3)
 
-    delta_lon = model["effective_lon"] - (-4.3)
-    assert model["az_site_rotation_deg"] == pytest.approx(
-        delta_lon * math.sin(math.radians(lat)))
-    assert model["az_offset_command_deg"] == pytest.approx(
-        expected[1] - model["az_site_rotation_deg"])
+    assert with_refraction["alt_offset_deg"] == pytest.approx(expected[0], abs=1e-9)
+    # Removing refraction from data that never had it biases the altitude zero
+    # point by roughly the refraction over the sampled elevations.
+    assert without["alt_offset_deg"] < expected[0] - 0.02
 
 
-def test_scan_uncertainty_floors_at_mount_quantisation():
-    """A tight Gaussian fit cannot beat what the encoders can command."""
+def test_refraction_matches_the_controller_formula():
+    """Bennett scaled by 1.15, the same numbers as refractionDeg() in pointing.cpp."""
+    assert sun_scan.refraction_deg(90.0) == pytest.approx(0.0, abs=1e-9)
+    assert sun_scan.refraction_deg(11.0) == pytest.approx(0.094, abs=0.01)
+    assert sun_scan.refraction_deg(5.0) > sun_scan.refraction_deg(20.0)
+    assert sun_scan.refraction_deg(-5.0) < 1.0
+
+
+def test_scans_recorded_before_the_resident_model_are_not_pooled():
+    """Version 1 records are residuals against a model no longer knowable."""
+    data, _ = _synthetic_pointing_data([80, 105, 135, 165, 195, 225])
+    for entry in data:
+        del entry["record_version"]
+
+    model = sun_scan.fit_pointing_model(data, true_lat=55.9, true_lon=-4.3)
+
+    assert model["success"] is False
+    assert model["n_superseded"] == 6
+    assert "predate" in model["error"]
+
+
+def test_scan_uncertainty_is_the_centroid_uncertainty_alone():
+    """No quantisation floor: the drive position is measured, not guessed at.
+
+    It used to be combined in quadrature with 0.144 deg because the fit did not
+    know where the mount actually pointed. Scan records now carry the reported
+    drive position, so that allowance would only inflate every sigma.
+    """
     data, _ = _synthetic_pointing_data([80, 105, 135, 165, 195, 225])
     for entry in data:
         entry["alt_error_uncertainty_deg"] = 1e-6
@@ -395,20 +573,20 @@ def test_scan_uncertainty_floors_at_mount_quantisation():
 
     model = sun_scan.fit_pointing_model(data, true_lat=55.9, true_lon=-4.3)
 
-    # Exact data, so the parameters are still recovered; the point is that the
-    # uncertainties stay bounded by the mount rather than the fit.
     assert model["success"] is True
-    assert model["parameter_errors_deg"]["tilt_north"] < 1.0
+    # Exact data with tiny stated uncertainties: the errors follow the stated
+    # sigmas now rather than being held up by a mount-quantisation floor.
+    assert model["parameter_errors_deg"]["tilt_north"] < 1e-3
 
 
 def test_pointing_model_errors_floored_for_consistent_scans():
     """Mutually consistent scans must not overclaim precision.
 
     The synthetic data are exact by construction, so reduced chi-squared
-    is ~0.  Scaling the covariance by it would shrink the parameter
-    errors far below the per-scan mount-quantisation floor and inflate
-    the tilt significance the weak-calibration gate relies on; the
-    chi-squared scale must therefore be floored at 1.
+    is ~0.  Scaling the covariance by it would shrink the parameter errors
+    towards zero and inflate the tilt significance the weak-calibration gate
+    relies on; the chi-squared scale must therefore be floored at 1, leaving
+    the errors set by the stated per-scan sigmas.
     """
     data, _ = _synthetic_pointing_data([80, 105, 135, 165, 195, 225])
 
@@ -416,8 +594,10 @@ def test_pointing_model_errors_floored_for_consistent_scans():
 
     assert model["success"] is True
     assert model["reduced_chi_squared"] < 0.1
+    # Stated sigma is 0.05 deg over six scans, so a few hundredths of a degree.
+    # Without the chi-squared floor these would collapse to ~0.
     for err in model["parameter_errors_deg"].values():
-        assert err > 0.03
+        assert err > 0.01
 
 
 def test_pointing_model_reports_tilt_significance():

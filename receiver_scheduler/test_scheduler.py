@@ -402,7 +402,9 @@ class TestConfig:
         with patch.object(sched, 'CONFIG_FILE', str(tmp_path / "nonexistent.json")):
             cfg = sched.load_config()
             assert cfg["srt_controller_url"] == "http://192.168.106.120"
-            assert cfg["observer_lat"] == pytest.approx(55.902444)
+            # The true site, same value as the firmware's OBSERVER_LAT.
+            assert cfg["observer_lat"] == pytest.approx(55.902426)
+            assert cfg["observer_lon"] == pytest.approx(-4.307865)
             assert cfg["sound_enabled"] is True
             assert cfg["receiver_python_path"] == "/home/astro/radioconda/bin/python"
 
@@ -562,32 +564,83 @@ class TestFlaskAPI:
             "condition_number": 8.0,
             "min_tilt_significance": 6.0,
             "reduced_chi_squared": 1.2,
-            "effective_lat": 55.91,
-            "effective_lon": -4.29,
+            "fitted_utc": "2026-08-19T10:00:00Z",
             "alt_offset_deg": 0.35,
             "az_offset_deg": -0.20,
-            "az_site_rotation_deg": 0.05,
-            "az_offset_command_deg": -0.25,
+            "tilt_north_deg": 0.12,
+            "tilt_east_deg": -0.08,
+            "terms": {"IE": 0.35, "IA": -0.20, "AN": 0.12, "AE": -0.08},
+            "site_lat": 55.9,
+            "site_lon": -4.3,
         }
         model.update(overrides)
         return model
 
     @patch.object(sched, 'SRT_CONTROLLER_URL', "http://fake")
-    def test_apply_calibration_updates_location_and_offsets(self, client):
+    def test_apply_posts_the_model_to_the_controller(self, client):
+        """The model goes over as itself, in one POST, and nothing else moves.
+
+        It used to arrive as a fictitious observer position plus a write to the
+        operator's pointing-offset boxes, which left the web UI reporting a
+        location the telescope is not at and put half the calibration in RAM
+        that a reboot cleared.
+        """
         model = self._applicable_model()
         with patch('sun_scan.load_pointing_model', return_value=model), \
-             patch.object(sched, 'srt_api_call', return_value={"ok": True}) as api, \
+             patch.object(sched, 'srt_api_call',
+                          return_value={"ok": True, "model": {"loaded": True}}) as api, \
              patch.object(sched, 'save_config') as save:
             resp = client.post('/api/calday/apply')
 
         assert resp.status_code == 200
         assert resp.get_json()["success"] is True
-        assert [call.args[0] for call in api.call_args_list] == ["/settings/save", "/offset"]
-        # The azimuth offset pushed is the one with the effective-longitude
-        # rotation removed, not the raw fitted offset.
-        assert api.call_args_list[1].args[1] == {
-            "alt": "0.350000", "az": "-0.250000"}
-        save.assert_called_once()
+        assert [call.args[0] for call in api.call_args_list] == ["/pointing/apply"]
+        document = api.call_args_list[0].kwargs["json_body"]
+        assert document["version"] == 1
+        assert document["terms"] == {"IE": 0.35, "IA": -0.20, "AN": 0.12, "AE": -0.08}
+        assert document["fitted_utc"] == "2026-08-19T10:00:00Z"
+        assert document["site"] == {"lat": 55.9, "lon": -4.3}
+        # The observer position is the true site position and is not rewritten.
+        save.assert_not_called()
+
+    @patch.object(sched, 'SRT_CONTROLLER_URL', "http://fake")
+    def test_apply_reports_a_controller_rejection(self, client):
+        model = self._applicable_model()
+        with patch('sun_scan.load_pointing_model', return_value=model), \
+             patch.object(sched, 'srt_api_call',
+                          return_value={"ok": False, "error": "Malformed value for term IE"}):
+            resp = client.post('/api/calday/apply')
+
+        assert resp.status_code == 502
+        assert "Malformed value for term IE" in resp.get_json()["error"]
+
+    @patch.object(sched, 'SRT_CONTROLLER_URL', "http://fake")
+    def test_clear_erases_the_model_on_the_controller_too(self, client):
+        """Deleting the scan history alone leaves the telescope still corrected.
+
+        The controller holds the fitted model in its own flash, so a clear that
+        stops at the scheduler leaves the two halves disagreeing about whether a
+        calibration is in force.
+        """
+        with patch('sun_scan.clear_pointing_data') as clear, \
+             patch.object(sched, 'srt_api_call', return_value={"ok": True}) as api:
+            resp = client.post('/api/calday/clear')
+
+        assert resp.status_code == 200
+        assert resp.get_json()["success"] is True
+        assert resp.get_json()["controller_cleared"] is True
+        clear.assert_called_once()
+        assert [call.args[0] for call in api.call_args_list] == ["/pointing/clear"]
+
+    @patch.object(sched, 'SRT_CONTROLLER_URL', "http://fake")
+    def test_clear_reports_a_controller_that_kept_its_model(self, client):
+        with patch('sun_scan.clear_pointing_data'), \
+             patch.object(sched, 'srt_api_call', return_value=None):
+            resp = client.post('/api/calday/clear')
+
+        assert resp.status_code == 502
+        assert resp.get_json()["partial"] is True
+        assert "still" in resp.get_json()["error"]
 
     @patch.object(sched, 'SRT_CONTROLLER_URL', "http://fake")
     def test_apply_rejects_insignificant_tilt(self, client):
@@ -613,14 +666,16 @@ class TestFlaskAPI:
         api.assert_not_called()
 
     @patch.object(sched, 'SRT_CONTROLLER_URL', "http://fake")
-    def test_apply_rejects_model_without_azimuth_compensation(self, client):
+    def test_apply_rejects_a_model_saved_before_the_resident_terms(self, client):
+        """A model fitted under the old scheme has no terms to send."""
         model = self._applicable_model()
-        del model["az_offset_command_deg"]
+        del model["terms"]
         with patch('sun_scan.load_pointing_model', return_value=model), \
              patch.object(sched, 'srt_api_call') as api:
             resp = client.post('/api/calday/apply')
 
         assert resp.get_json()["success"] is False
+        assert "fit the model again" in resp.get_json()["error"]
         api.assert_not_called()
 
     @patch.object(sched, 'SRT_CONTROLLER_URL', "http://fake")
@@ -628,10 +683,9 @@ class TestFlaskAPI:
         model = {
             "success": True,
             "n_scans": 3,
-            "effective_lat": 55.91,
-            "effective_lon": -4.29,
             "alt_offset_deg": 0.35,
             "az_offset_deg": -0.20,
+            "terms": {"IE": 0.35, "IA": -0.20, "AN": 0.12, "AE": -0.08},
         }
         with patch('sun_scan.load_pointing_model', return_value=model), \
              patch.object(sched, 'srt_api_call') as api:

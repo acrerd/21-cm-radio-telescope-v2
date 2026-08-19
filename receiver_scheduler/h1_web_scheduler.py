@@ -82,8 +82,10 @@ _DEFAULT_CONFIG = {
     "platformio_path": "",
     "firmware_update_env": "wt32-eth01-ota",
     "receiver_python_path": "/home/astro/radioconda/bin/python",
-    "observer_lat": 55.902444,
-    "observer_lon": -4.307861,
+    # The true site, identical to OBSERVER_LAT/OBSERVER_LON in
+    # esp32_controller_arduino/src/config.h and to sun_scan.py.
+    "observer_lat": 55.902426,
+    "observer_lon": -4.307865,
     "observer_elevation": 50,
     "min_elevation": 10.0,
 }
@@ -214,8 +216,15 @@ def dms_to_decimal(deg: int, min: int, sec: float, is_ra: bool = False) -> float
     return sign * decimal
 
 
-def srt_api_call(endpoint: str, params: Optional[dict] = None) -> Optional[dict]:
+def srt_api_call(endpoint: str, params: Optional[dict] = None,
+                 json_body: Optional[dict] = None,
+                 timeout: int = 3) -> Optional[dict]:
     """Make an API call to the SRT controller.
+
+    With json_body the call is a POST carrying that document. The controller
+    takes the pointing model that way rather than as query arguments: it is a
+    document with a schema, applied whole or not at all, and a URL that a proxy
+    or a browser can truncate is the wrong carrier for that.
 
     Returns JSON response as dict, or None on error.
     """
@@ -225,6 +234,12 @@ def srt_api_call(endpoint: str, params: Optional[dict] = None) -> Optional[dict]
     if not candidates:
         return None
 
+    data = None
+    headers = {}
+    if json_body is not None:
+        data = json.dumps(json_body).encode()
+        headers["Content-Type"] = "application/json"
+
     last_error = None
     for base_url in candidates:
         url = f"{base_url}{endpoint}"
@@ -232,7 +247,8 @@ def srt_api_call(endpoint: str, params: Optional[dict] = None) -> Optional[dict]
             url += "?" + urllib.parse.urlencode(params)
 
         try:
-            with urllib.request.urlopen(url, timeout=3) as response:
+            request = urllib.request.Request(url, data=data, headers=headers)
+            with urllib.request.urlopen(request, timeout=timeout) as response:
                 payload = response.read().decode(errors="replace")
                 result = json.loads(payload, strict=False)
                 with controller_settings_lock:
@@ -240,6 +256,20 @@ def srt_api_call(endpoint: str, params: Optional[dict] = None) -> Optional[dict]
                         log.info("SRT controller reachable at %s", base_url)
                         SRT_CONTROLLER_URL = base_url
                 return result
+        except urllib.error.HTTPError as e:
+            # The controller answers a rejected request with a 4xx and a JSON
+            # body saying why. urlopen raises before the caller ever sees it, so
+            # it is read here - "Term IE is 45.000 deg" is worth relaying, and a
+            # host that answered at all is not one to fail over from.
+            try:
+                result = json.loads(e.read().decode(errors="replace"), strict=False)
+            except Exception:
+                last_error = e
+                log.warning("SRT API error via %s: %s", base_url, e)
+                continue
+            log.warning("SRT API rejected %s: %s", endpoint,
+                        result.get("error", result))
+            return result
         except Exception as e:
             last_error = e
             log.warning("SRT API error via %s: %s", base_url, e)
@@ -419,7 +449,8 @@ def srt_wait_for_slew(timeout: Optional[int] = None,
 
             if not is_slewing:
                 elapsed = time.time() - start_time
-                log.info("SRT slew complete in %.1fs - at Alt=%.2f° Az=%.2f°", elapsed, current_alt, current_az)
+                log.info("SRT slew complete in %.1fs - at drive Alt=%.2f° Az=%.2f°",
+                         elapsed, current_alt, current_az)
                 return True
 
         time.sleep(2)  # Poll every 2 seconds
@@ -484,7 +515,7 @@ def srt_home_and_wait(timeout: int = 300,
             if state == "homing":
                 started = True
             elif started and state == "ready" and not status.get("is_slewing", False):
-                log.info("Calibration: physical homing complete at Alt=%.2f° Az=%.2f°",
+                log.info("Calibration: physical homing complete at drive Alt=%.2f° Az=%.2f°",
                          float(status.get("alt", 0.0)), float(status.get("az", 0.0)))
                 return status
         if not started and time.time() - started_at >= 10:
@@ -3092,9 +3123,8 @@ HTML_TEMPLATE = '''
                     if (m.parameter_errors_deg) {
                         html += '<tr><td style="color:#888; padding:4px 8px;">Offset uncertainty</td><td>&plusmn;' + m.parameter_errors_deg.alt_offset.toFixed(3) + '&deg; alt, &plusmn;' + m.parameter_errors_deg.az_offset.toFixed(3) + '&deg; az</td></tr>';
                     }
-                    if (m.effective_lat !== undefined) {
-                        html += '<tr><td style="color:#888; padding:4px 8px;">Effective lat</td><td style="color:#00d4ff; font-weight:bold;">' + m.effective_lat.toFixed(6) + '&deg;</td></tr>';
-                        html += '<tr><td style="color:#888; padding:4px 8px;">Effective lon</td><td style="color:#00d4ff; font-weight:bold;">' + m.effective_lon.toFixed(6) + '&deg;</td></tr>';
+                    if (m.n_superseded) {
+                        html += '<tr><td style="color:#888; padding:4px 8px;">Older scans skipped</td><td style="color:#ffa502;">' + m.n_superseded + ' (recorded before the resident pointing model)</td></tr>';
                     }
                     html += '</table>';
                     document.getElementById('cdModel').innerHTML = html;
@@ -3111,7 +3141,7 @@ HTML_TEMPLATE = '''
         }
 
         function clearCalData() {
-            if (!confirm('Clear all accumulated pointing data?')) return;
+            if (!confirm('Clear all accumulated pointing data, and erase the pointing model stored on the telescope controller?')) return;
             fetch('/api/calday/clear', {method: 'POST'}).then(r => r.json()).then(data => {
                 if (!data.success) {
                     document.getElementById('cdStatus').innerHTML = '<span style="color:#ff4757;">Clear failed: ' + (data.error || 'Unknown error') + '</span>';
@@ -3127,10 +3157,15 @@ HTML_TEMPLATE = '''
         }
 
         function applyModel() {
-            if (!confirm('Apply the effective lat/lon and constant alt/az offsets to the ESP32 controller, and update the scheduler location?')) return;
+            if (!confirm('Store this pointing model on the telescope controller? It replaces the model currently in the controller flash and takes effect on the next slew.')) return;
             fetch('/api/calday/apply', {method: 'POST'}).then(r => r.json()).then(data => {
                 if (data.success) {
-                    alert('Applied!\\nEffective lat: ' + data.effective_lat.toFixed(6) + '\\nEffective lon: ' + data.effective_lon.toFixed(6) + '\\nAlt offset: ' + data.alt_offset_deg.toFixed(4) + '\u00b0\\nAz offset: ' + data.az_offset_deg.toFixed(4) + '\u00b0');
+                    var t = data.terms || {};
+                    var lines = Object.keys(t).map(function (k) {
+                        return k + ': ' + (t[k] >= 0 ? '+' : '') + t[k].toFixed(4) + '\u00b0';
+                    });
+                    alert('Stored on the controller.\\n\\n' + lines.join('\\n') +
+                          '\\n\\nFitted from ' + data.n_scans + ' scans at ' + data.fitted_utc + '.');
                 } else {
                     alert('Failed: ' + (data.error || 'Unknown error'));
                 }
@@ -3956,10 +3991,27 @@ def api_calday_clear():
     try:
         from sun_scan import clear_pointing_data
         clear_pointing_data()
-        return jsonify({'success': True})
     except Exception as exc:
         log.error("Could not clear calibration data: %s", exc, exc_info=True)
         return jsonify({'success': False, 'error': str(exc)}), 500
+
+    # Deleting the scan history here is not enough on its own: the controller
+    # holds the fitted model in its own flash and would go on applying it. The
+    # clear has to reach the telescope or the two halves disagree, which is the
+    # state this whole arrangement exists to prevent.
+    controller_cleared = None
+    if SRT_CONTROLLER_URL:
+        result = srt_api_call("/pointing/clear")
+        controller_cleared = bool(result and result.get("ok"))
+        if not controller_cleared:
+            return jsonify({
+                'success': False,
+                'error': ('Calibration data was cleared, but the controller still '
+                          f'holds its pointing model; response: {result}'),
+                'partial': True,
+            }), 502
+
+    return jsonify({'success': True, 'controller_cleared': controller_cleared})
 
 
 @app.route('/api/calday/fit', methods=['POST'])
@@ -3975,6 +4027,11 @@ def api_calday_fit():
             true_lon=cfg.get("observer_lon"),
         )
         if model.get("success"):
+            # Stamped at fit time, not at apply time, so the date the controller
+            # reports is when the model was measured rather than when someone
+            # last pressed a button.
+            model["fitted_utc"] = datetime.now(timezone.utc).strftime(
+                "%Y-%m-%dT%H:%M:%SZ")
             save_pointing_model(model)
             data_folder = get_config_value("data_output_folder")
             os.makedirs(data_folder, exist_ok=True)
@@ -4054,77 +4111,42 @@ def api_calday_apply():
                       'something other than mount tilt is moving the pointing.'),
         })
 
-    eff_lat = model.get("effective_lat")
-    eff_lon = model.get("effective_lon")
-    if eff_lat is None or eff_lon is None:
-        return jsonify({'success': False, 'error': 'Model has no effective lat/lon'})
-
     # Update ESP32 controller
     if not SRT_CONTROLLER_URL:
         return jsonify({'success': False,
                         'error': 'SRT controller URL is disabled; cannot apply the model'})
 
-    alt_offset = model.get("alt_offset_deg")
-    # The effective longitude rotates azimuth by a constant that is not part of
-    # the fitted tilt, so push the offset that has that rotation removed.
-    az_offset = model.get("az_offset_command_deg")
-    if az_offset is None:
-        return jsonify({
-            'success': False,
-            'error': ('Saved model predates the effective-longitude azimuth '
-                      'correction; fit the model again before applying'),
-        })
-    if not all(isinstance(v, (int, float)) and math.isfinite(v)
-               for v in (eff_lat, eff_lon, alt_offset, az_offset)):
-        return jsonify({'success': False, 'error': 'Model contains invalid correction values'})
-    if not -90.0 <= eff_lat <= 90.0 or not -180.0 <= eff_lon <= 180.0:
-        return jsonify({'success': False,
-                        'error': 'Model effective latitude/longitude is outside valid bounds'})
-
-    result = srt_api_call("/settings/save", {
-        "observer_lat": f"{eff_lat:.6f}",
-        "observer_lon": f"{eff_lon:.6f}",
-    })
-    if not (result and result.get("ok")):
-        return jsonify({'success': False,
-                        'error': f'Failed to update ESP32 observer position: {result}'})
-
-    offset_result = srt_api_call("/offset", {
-        "alt": f"{alt_offset:.6f}",
-        "az": f"{az_offset:.6f}",
-    })
-    if not (offset_result and offset_result.get("ok")):
-        return jsonify({
-            'success': False,
-            'error': ('Observer position was updated, but pointing offsets failed; '
-                      f'controller response: {offset_result}'),
-            'partial': True,
-        }), 502
-    log.info("Applied effective lat=%.6f lon=%.6f and offsets alt=%+.4f az=%+.4f to ESP32",
-             eff_lat, eff_lon, alt_offset, az_offset)
-
-    # Update scheduler config too
-    cfg = load_config()
-    cfg["observer_lat"] = eff_lat
-    cfg["observer_lon"] = eff_lon
+    # The model is sent as itself. It used to be smuggled across as a fictitious
+    # observer latitude and longitude plus a write to the operator's pointing
+    # offset boxes, which left the controller reporting a location the telescope
+    # is not at and put half the calibration somewhere a reboot erased. The
+    # observer position is the true site position and is no longer touched here.
+    from sun_scan import pointing_model_document
     try:
-        save_config(cfg)
-    except Exception as exc:
-        log.error("Controller updated but scheduler config save failed: %s", exc,
-                  exc_info=True)
+        document = pointing_model_document(model, fitted_utc=model.get("fitted_utc"))
+    except (ValueError, TypeError) as exc:
         return jsonify({
             'success': False,
-            'error': f'Controller updated, but scheduler configuration could not be saved: {exc}',
-            'partial': True,
-        }), 500
-    log.info("Updated scheduler config with effective lat/lon")
+            'error': (f'Model cannot be sent to the controller: {exc}. '
+                      'Saved models fitted before the resident pointing model do '
+                      'not carry the fitted terms; fit the model again.'),
+        })
+
+    result = srt_api_call("/pointing/apply", json_body=document, timeout=10)
+    if not (result and result.get("ok")):
+        detail = (result or {}).get("error") or result
+        return jsonify({'success': False,
+                        'error': f'Controller rejected the pointing model: {detail}'}), 502
+
+    log.info("Applied pointing model to ESP32: %s",
+             ", ".join(f"{k}={v:+.4f}" for k, v in document["terms"].items()))
 
     return jsonify({
         'success': True,
-        'effective_lat': eff_lat,
-        'effective_lon': eff_lon,
-        'alt_offset_deg': alt_offset,
-        'az_offset_deg': az_offset,
+        'terms': document["terms"],
+        'n_scans': document["n_scans"],
+        'fitted_utc': document["fitted_utc"],
+        'controller_model': result.get("model"),
     })
 
 
