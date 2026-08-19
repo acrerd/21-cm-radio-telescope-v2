@@ -132,6 +132,11 @@ void setupWebServer() {
         json += "\"fault_active\":" + String(faultActive ? "true" : "false") + ",";
         json += "\"is_slewing\":" + String(srtSerial.getIsSlewing() ? "true" : "false") + ",";
         json += "\"calibrator\":" + String(srtSerial.getCalibratorOn() ? "true" : "false") + ",";
+        // Clock health is machine-readable here so the scheduler can record sync
+        // age with an observation: a scan taken on a stale clock has a corrupted
+        // sky position and must be identifiable after the fact.
+        json += "\"clock_state\":\"" + String(clockSyncState()) + "\",";
+        json += "\"clock_age_s\":" + String(state.lastSyncEpoch != 0 ? (long)clockSyncAgeS() : -1L) + ",";
         json += "\"raw\":\"" + jsonEscape(srtSerial.getLastStatus()) + "\"";
         json += "}";
         request->send(200, "application/json", json);
@@ -512,8 +517,17 @@ void setupWebServer() {
                  t->tm_year + 1900, t->tm_mon + 1, t->tm_mday,
                  t->tm_hour, t->tm_min, t->tm_sec);
         String json = "{";
+        bool everSynced = (state.lastSyncEpoch != 0);
+        bool stale = !everSynced || (clockSyncAgeS() > CLOCK_STALE_WARN_S);
         json += "\"synced\":" + String(state.timeSynced ? "true" : "false") + ",";
         json += "\"source\":\"" + state.timeSource + "\",";
+        json += "\"sync_state\":\"" + String(clockSyncState()) + "\",";
+        json += "\"stale\":" + String(stale ? "true" : "false") + ",";
+        // -1 rather than 0 when never synced, so a consumer cannot mistake
+        // "no sync has ever happened" for "synced a moment ago".
+        json += "\"last_sync_age_s\":" + String(everSynced ? (long)clockSyncAgeS() : -1L) + ",";
+        json += "\"last_offset_ms\":" + String((long)state.lastSyncOffsetMs) + ",";
+        json += "\"sync_count\":" + String((unsigned long)state.syncCount) + ",";
         json += "\"utc\":\"" + String(timeStr) + "\",";
         json += "\"timestamp\":" + String((unsigned long)now);
         json += "}";
@@ -530,6 +544,10 @@ void setupWebServer() {
             settimeofday(&tv, nullptr);
             state.timeSynced = true;
             state.timeSource = "browser";
+            // Deliberately does not touch lastSyncEpoch: that records genuine NTP
+            // syncs only, so a browser-set clock reports as "unverified" rather
+            // than masquerading as a checked one. SNTP will correct it at the
+            // next poll if the browser's own clock was wrong.
             Serial.printf("Time set from browser: %lu\n", timestamp);
             srtSerial.logESP("Browser time sync");
             request->send(200, "application/json", "{\"ok\":true}");

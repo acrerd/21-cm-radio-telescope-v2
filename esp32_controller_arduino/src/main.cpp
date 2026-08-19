@@ -9,6 +9,7 @@
 #include <ArduinoOTA.h>
 #endif
 #include <time.h>
+#include <esp_sntp.h>
 
 #if ETHERNET_ENABLED
 #include <ETH.h>
@@ -116,10 +117,9 @@ void onEthEvent(arduino_event_id_t event) {
                 ethIP.c_str(),
                 ETH.linkSpeed(),
                 ETH.fullDuplex() ? "Full Duplex" : "Half Duplex");
-            // Request NTP sync if time not already synced
-            if (!state.timeSynced) {
-                ethNeedNtpSync = true;
-            }
+            // Always re-arm: the old gate on timeSynced meant a flag that latched
+            // true once was never re-examined, so a reconnect never re-synced.
+            ethNeedNtpSync = true;
             startDiscoveryServices();
             startOTAService();
             break;
@@ -139,31 +139,104 @@ void onEthEvent(arduino_event_id_t event) {
 }
 #endif
 
-// NTP sync
-void syncTimeNTP() {
-    Serial.println("Syncing time with NTP...");
-    configTime(0, 0, NTP_SERVER);
+// Has the SNTP client been initialised? configTime() must only run once; after
+// that a link change is handled with esp_sntp_restart().
+static bool sntpStarted = false;
 
-    // Wait for time sync (max 10 seconds)
-    time_t now = 0;
-    int attempts = 0;
-    while (now < 1000000000 && attempts < 20) {
-        delay(500);
-        now = time(nullptr);
-        attempts++;
+// Called by the lwIP SNTP task on every successful sync. It runs off loopTask,
+// so it touches nothing but the 32-bit scalars in state - no String, no logging,
+// no blocking - and hands the reporting to updateClockStatus() via a flag.
+static void onTimeSync(struct timeval *tv) {
+    uint32_t nowMs = millis();
+    uint32_t newEpoch = (uint32_t)tv->tv_sec;
+
+    if (state.lastSyncEpoch != 0) {
+        // What we believed the time was, versus what it actually is. This
+        // applied correction is the drift diagnostic: a steady per-hour value is
+        // genuine crystal drift, one large jump is a clock that never synced.
+        //
+        // Both timestamps carry their sub-second part. Rounding the baseline to
+        // whole seconds would inject up to +/-1000 ms of noise, which would bury
+        // the signal being measured - an hour at 30 ppm is only ~108 ms.
+        int64_t expected = (int64_t)state.lastSyncEpoch * 1000 +
+                           (int64_t)(state.lastSyncUsec / 1000) +
+                           (int64_t)(nowMs - state.lastSyncMillis);
+        int64_t actual = (int64_t)newEpoch * 1000 + (int64_t)(tv->tv_usec / 1000);
+        int64_t delta = actual - expected;
+        if (delta > INT32_MAX) delta = INT32_MAX;
+        if (delta < INT32_MIN) delta = INT32_MIN;
+        state.lastSyncOffsetMs = (int32_t)delta;
+    } else {
+        state.lastSyncOffsetMs = 0;  // first sync this boot: no baseline to compare against
     }
 
-    if (now > 1000000000) {
+    state.lastSyncEpoch = newEpoch;
+    state.lastSyncUsec = (uint32_t)tv->tv_usec;
+    state.lastSyncMillis = nowMs;
+    state.syncCount++;
+    state.syncEventPending = true;
+}
+
+// Start the SNTP client, or nudge it after a link change.
+//
+// Non-blocking by design. The previous version waited up to 10 s for the clock
+// to merely look *plausible* (later than 2001), which a soft reset satisfies on
+// the first iteration because the RTC keeps running across it - so it reported
+// "NTP time synced" on a clock that had never been near a time server, and after
+// an OTA update that was every boot. Success is now only ever declared by
+// onTimeSync(), which fires when SNTP has actually set the clock.
+void syncTimeNTP() {
+    if (!sntpStarted) {
+        esp_sntp_set_time_sync_notification_cb(onTimeSync);
+        esp_sntp_set_sync_interval(NTP_SYNC_INTERVAL_MS);
+        configTime(0, 0, NTP_SERVER);  // calls sntp_init() internally
+        sntpStarted = true;
+        Serial.printf("SNTP started (%s), resync every %lu s\n",
+                      NTP_SERVER, NTP_SYNC_INTERVAL_MS / 1000UL);
+    } else {
+        // Link came back: poll now rather than waiting out the hour.
+        esp_sntp_restart();
+        Serial.println("SNTP restarted after link change");
+    }
+}
+
+// Clock health reporting, called from loop() so that all String and logging work
+// stays on loopTask. Warn-only: a stale clock never blocks tracking.
+void updateClockStatus() {
+    if (state.syncEventPending) {
+        state.syncEventPending = false;
+        bool first = (state.syncCount <= 1);
         state.timeSynced = true;
         state.timeSource = "NTP";
+
+        time_t now = (time_t)state.lastSyncEpoch;
         struct tm *t = gmtime(&now);
-        Serial.printf("NTP time synced: %04d-%02d-%02d %02d:%02d:%02d UTC\n",
+        Serial.printf("NTP sync: %04d-%02d-%02d %02d:%02d:%02d UTC (offset %+ld ms)\n",
                       t->tm_year + 1900, t->tm_mon + 1, t->tm_mday,
-                      t->tm_hour, t->tm_min, t->tm_sec);
-        srtSerial.logESP("NTP time synced");
-    } else {
-        Serial.println("NTP sync failed");
-        srtSerial.logESP("NTP sync failed");
+                      t->tm_hour, t->tm_min, t->tm_sec,
+                      (long)state.lastSyncOffsetMs);
+
+        char msg[64];
+        if (first) {
+            snprintf(msg, sizeof(msg), "NTP synced (first since boot)");
+        } else {
+            snprintf(msg, sizeof(msg), "NTP resync, offset %+ld ms",
+                     (long)state.lastSyncOffsetMs);
+        }
+        srtSerial.logESP(msg);
+
+        if (state.clockStaleWarned) {
+            srtSerial.logESP("Clock sync recovered");
+            state.clockStaleWarned = false;
+        }
+        return;
+    }
+
+    if (!state.clockStaleWarned && state.lastSyncEpoch != 0 &&
+        clockSyncAgeS() > CLOCK_STALE_WARN_S) {
+        state.clockStaleWarned = true;
+        srtSerial.logESP("WARNING: no NTP sync for over 5 hours - pointing may drift");
+        Serial.println("WARNING: clock stale, no NTP sync for over 5 hours");
     }
 }
 
@@ -386,14 +459,12 @@ void setup() {
 
     // Always initialize WiFi on boot - can only be disabled from web interface
     if (wifiManager.startup()) {
-        // Connected to WiFi - sync time with NTP
-        if (!state.timeSynced) {
-            syncTimeNTP();
-        }
+        // Connected to WiFi - start SNTP (no-op if Ethernet already started it)
+        syncTimeNTP();
     }
 
     if (!state.timeSynced) {
-        Serial.println("NTP not synced - waiting for browser time sync");
+        Serial.println("Clock not yet NTP synced - SNTP polling in background");
     }
 
     // Start web server
@@ -423,12 +494,14 @@ void loop() {
     handleWebServer();
     handleStellariumServer();
     updateTracking();
+    updateClockStatus();
 
-    // Check if Ethernet connected and needs NTP sync
+    // Check if Ethernet connected and needs NTP sync. syncTimeNTP() no longer
+    // blocks, so this cannot stall tracking or Due status parsing on a link flap.
     #if ETHERNET_ENABLED
     if (ethNeedNtpSync && ethConnected) {
         ethNeedNtpSync = false;
-        Serial.println("Ethernet connected - syncing time via NTP");
+        Serial.println("Ethernet up - (re)starting SNTP");
         syncTimeNTP();
     }
     #endif

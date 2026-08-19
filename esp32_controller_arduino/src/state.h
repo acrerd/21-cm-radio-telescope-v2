@@ -4,6 +4,7 @@
 #define STATE_H
 
 #include <Arduino.h>
+#include "config.h"
 
 struct SRTState {
     // Tracking state
@@ -30,6 +31,18 @@ struct SRTState {
     bool timeSynced = false;
     String timeSource = "";      // "NTP", "browser", or empty
 
+    // Clock sync tracking. The SNTP notification callback runs on the lwIP task,
+    // so every field it touches is a plain 32-bit scalar - never a String, which
+    // would reintroduce the cross-task use-after-free of finding C1. 32-bit
+    // aligned members are read and written atomically here, so no torn reads.
+    volatile uint32_t lastSyncEpoch = 0;        // UTC seconds at last real sync, 0 = never
+    volatile uint32_t lastSyncUsec = 0;         // ...and its sub-second part
+    volatile uint32_t lastSyncMillis = 0;       // millis() at that sync
+    volatile int32_t  lastSyncOffsetMs = 0;     // correction applied at that sync
+    volatile uint32_t syncCount = 0;            // successful syncs since boot
+    volatile bool     syncEventPending = false; // set by the callback, consumed by loop()
+    bool clockStaleWarned = false;              // loopTask only: warn once per stale episode
+
     // Due status
     float currentAlt = 0.0;
     float currentAz = 0.0;
@@ -42,5 +55,21 @@ struct SRTState {
 
 // Global state instance
 extern SRTState state;
+
+// Seconds since the last genuine NTP sync. Returns 0 when the clock has never
+// synced this boot, so callers must check the state string rather than treating
+// a zero age as "just synced".
+inline uint32_t clockSyncAgeS() {
+    if (state.lastSyncEpoch == 0) return 0;
+    return (uint32_t)((millis() - state.lastSyncMillis) / 1000UL);
+}
+
+// "never", "unverified" and "stale" have different causes and different fixes,
+// so they must be distinguishable rather than collapsed into one synced flag.
+// "unverified" is a clock set from the browser: usable, but not NTP-checked.
+inline const char *clockSyncState() {
+    if (state.lastSyncEpoch == 0) return state.timeSynced ? "unverified" : "never";
+    return (clockSyncAgeS() > CLOCK_STALE_WARN_S) ? "stale" : "ok";
+}
 
 #endif // STATE_H

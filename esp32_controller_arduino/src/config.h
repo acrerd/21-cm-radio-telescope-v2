@@ -60,8 +60,17 @@
 #define OBSERVER_LAT 55.902426
 #define OBSERVER_LON -4.307865
 
-// NTP server
+// NTP server. Deliberately a public pool address rather than a local host, to
+// keep hard-coded site addresses out of the firmware; under a private point-to-
+// point link the observatory computer routes this out to the internet.
 #define NTP_SERVER "pool.ntp.org"
+
+// Clock discipline. The lwIP SNTP client polls in the background at this
+// interval; nothing blocks waiting for it. Five hours of drift is itself
+// harmless - the warning exists to catch a failed sync *mechanism* within an
+// observing session rather than days later.
+#define NTP_SYNC_INTERVAL_MS 3600000UL  // re-sync every hour
+#define CLOCK_STALE_WARN_S   18000UL    // warn after 5 h with no successful sync
 
 // Mount software limits (degrees)
 #define MOUNT_AZ_MIN 2.0
