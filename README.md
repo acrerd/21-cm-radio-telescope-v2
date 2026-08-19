@@ -400,11 +400,13 @@ python h1_web_scheduler.py --host 0.0.0.0 --port 5000
 # Open browser to http://localhost:5000
 ```
 
-On the observatory Linux host, use the desktop launcher **Start SRT Sofware**. It reuses the current VS Code window, runs the scheduler in a hidden task terminal, reveals a lock-safe PlatformIO Serial Monitor, opens `http://192.168.50.120/` in Firefox, and starts Stellarium. The monitor prevents duplicate launcher instances, waits for `/dev/ttyACM0`, and retries temporary serial-port locks. When `wmctrl` is available, the launcher waits for visible application windows before tiling VS Code across the bottom half with Stellarium and Firefox at the top left/right where GNOME exposes their geometry. The scheduler task runs:
+On the observatory Linux host, use the desktop launcher **Start SRT Sofware**. It reuses the current VS Code window, runs the scheduler in a hidden task terminal, reveals a lock-safe PlatformIO Serial Monitor, opens `http://192.168.50.120/` in Firefox, and starts Stellarium. The monitor prevents duplicate launcher instances, waits for `/dev/ttyACM0`, and retries temporary serial-port locks. The scheduler is guarded the same way: `start_scheduler.sh` reuses an already-serving scheduler rather than starting a second one that would die on the bound port. When `wmctrl` is available, the launcher waits for visible application windows before tiling VS Code across the bottom half with Stellarium and Firefox at the top left/right where GNOME exposes their geometry. The scheduler task runs:
 
 ```bash
-/home/astro/radioconda/bin/python /home/astro/21-cm-radio-telescope-v2/receiver_scheduler/h1_web_scheduler.py --host 0.0.0.0 --port 5000
+/home/astro/21-cm-radio-telescope-v2/receiver_scheduler/start_scheduler.sh
 ```
+
+which starts `h1_web_scheduler.py --host 0.0.0.0 --port 5000` only when nothing is already serving on port 5000. There is deliberately no systemd unit: the scheduler starts from the launcher and should not come up unattended.
 
 The scheduler re-execs itself under the configured receiver Python when needed so GNU Radio, PyEphem, and SDR dependencies come from radioconda. On the observatory machine the receiver Python default is `/home/astro/radioconda/bin/python`.
 
