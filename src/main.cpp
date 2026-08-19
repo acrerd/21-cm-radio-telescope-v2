@@ -1302,22 +1302,31 @@ void updateAxisMotion(
         case MOTION_IDLE:
             // Only start driving if a new target was just commanded.
             // Don't auto-correct stray drift (would stall into limit switches).
-            if (remaining > 0 && *newTarget) {
+            if (*newTarget) {
+                // Consume the flag on sight, not only when it produces a move.
+                // executeDrive() rounds the target to the nearest pulse, so a
+                // command for a position we are already at leaves remaining == 0;
+                // clearing the flag only in that branch left it latched true
+                // indefinitely, and the next stray encoder pulse then started an
+                // uncommanded drive - exactly what this guard exists to prevent.
                 *newTarget = false;
-                // Start moving toward target
-                *currentDir = needsPositiveDir;
-                int level = needsPositiveDir ? HIGH : LOW;
-                digitalWrite(pinDir,
-                    (pinDir == PIN_DIR_AZ) ? AZ_DIR(level) :
-                    (pinDir == PIN_DIR_ALT) ? ALT_DIR(level) : level);
-                // Apply backlash compensation on az direction change
-                if (pinDir == PIN_DIR_AZ && needsPositiveDir != lastDrivenDirAz) {
-                    azBacklashRemaining = (int32_t)(cfg.backlashAzDeg * PULSES_PER_DEGREE);
-                    lastDrivenDirAz = needsPositiveDir;
+
+                if (remaining > 0) {
+                    // Start moving toward target
+                    *currentDir = needsPositiveDir;
+                    int level = needsPositiveDir ? HIGH : LOW;
+                    digitalWrite(pinDir,
+                        (pinDir == PIN_DIR_AZ) ? AZ_DIR(level) :
+                        (pinDir == PIN_DIR_ALT) ? ALT_DIR(level) : level);
+                    // Apply backlash compensation on az direction change
+                    if (pinDir == PIN_DIR_AZ && needsPositiveDir != lastDrivenDirAz) {
+                        azBacklashRemaining = (int32_t)(cfg.backlashAzDeg * PULSES_PER_DEGREE);
+                        lastDrivenDirAz = needsPositiveDir;
+                    }
+                    *driveStartTime = millis();
+                    *lastPulse = millis();
+                    *motionState = MOTION_DRIVING;
                 }
-                *driveStartTime = millis();
-                *lastPulse = millis();
-                *motionState = MOTION_DRIVING;
             }
             break;
 
