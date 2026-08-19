@@ -26,7 +26,7 @@ URL parameters replace the desktop CLI flags:
 | parameter | meaning | default |
 |---|---|---|
 | `?site=&lat=&lon=&height=` | observer site | Glasgow 55.87, −4.29 |
-| `?controller=` | SRT controller base URL for Realise | `http://192.168.106.120` |
+| `?controller=` | SRT controller base URL for Realise | `http://192.168.50.120` |
 | `?l=&b=` | point the dish at startup (deep link) | — |
 | `?mode=cont` | start in continuum/drift mode | H I |
 

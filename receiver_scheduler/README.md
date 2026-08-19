@@ -164,7 +164,7 @@ On the observatory Linux host, double-click **Start SRT Sofware**. The launcher:
 1. Opens the repository in Visual Studio Code.
 2. Starts `h1_web_scheduler.py` under radioconda in a hidden VS Code task terminal on port 5000.
 3. Starts and reveals the PlatformIO Serial Monitor for the `due` environment. The monitor waits for `/dev/ttyACM0`, prevents duplicate launcher-owned monitors, and retries temporary exclusive-lock failures.
-4. Opens the live controller at `http://192.168.106.120/` in Firefox.
+4. Opens the live controller at `http://192.168.50.120/` in Firefox.
 5. Starts Stellarium.
 
 If `wmctrl` is installed, it waits for the application windows and then places VS Code across the bottom half, Stellarium at top left, and Firefox at top right when the window manager exposes them. Stellarium is started through XWayland for reliable placement. The confined Ubuntu Firefox snap uses its native session backend so it opens reliably; GNOME Wayland may prevent `wmctrl` from positioning that one window. Without `wmctrl`, all programs still start and the desktop chooses their positions. Launcher diagnostics are written to `/tmp/srt-software-launcher.log`.
@@ -184,7 +184,7 @@ python h1_web_scheduler.py
 
 Then open http://localhost:5000 in your browser.
 
-The scheduler points at the current controller web UI by default: `http://192.168.106.120`. The AP fallback remains `http://192.168.4.1`.
+The scheduler points at the current controller web UI by default: `http://192.168.50.120`. The AP fallback remains `http://192.168.4.1`.
 
 ### Web Interface Tabs
 
@@ -215,7 +215,7 @@ Persistent settings saved to `scheduler_config.json`:
 | Setting | Description |
 |---------|-------------|
 | Banner Name / Subtitle | Customise the page title and heading |
-| Controller URL | SRT telescope controller address, normally `http://192.168.106.120` (empty to disable) |
+| Controller URL | SRT telescope controller address, normally `http://192.168.50.120` (empty to disable) |
 | Controller Fallback URLs | Additional controller addresses tried after the primary URL |
 | Slew Timeout | Max seconds to wait for telescope to reach target (default: 300) |
 | Position Tolerance | Degrees within which the telescope is considered on-target (default: 0.5) |

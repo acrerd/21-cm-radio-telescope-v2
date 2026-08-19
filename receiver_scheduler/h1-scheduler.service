@@ -1,0 +1,31 @@
+[Unit]
+# H1 receiver scheduler. Install with:
+#   sudo cp receiver_scheduler/h1-scheduler.service /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now h1-scheduler
+# Before enabling, remove the "Start H1 Scheduler" folderOpen task from
+# "SRT Software.code-workspace" — two instances cannot both bind port 5000.
+Description=H1 Receiver Scheduler (21cm SRT)
+Documentation=https://github.com/acrerd/21-cm-radio-telescope-v2
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=astro
+Group=astro
+WorkingDirectory=/home/astro/21-cm-radio-telescope-v2/receiver_scheduler
+ExecStart=/home/astro/radioconda/bin/python h1_web_scheduler.py
+
+# main() cleans up on SIGTERM via _handle_sigterm, which stops any receiver
+# process it owns. Give it room to do so before SIGKILL.
+KillSignal=SIGTERM
+TimeoutStopSec=30
+
+Restart=on-failure
+RestartSec=5
+
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

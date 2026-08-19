@@ -4,7 +4,7 @@ set -u
 
 REPO_ROOT="/home/astro/21-cm-radio-telescope-v2"
 WORKSPACE="$REPO_ROOT/receiver_scheduler/SRT Software.code-workspace"
-CONTROLLER_URL="http://192.168.106.120/"
+CONTROLLER_URL="http://192.168.50.120/"
 LOG_FILE="/tmp/srt-software-launcher.log"
 
 log() {

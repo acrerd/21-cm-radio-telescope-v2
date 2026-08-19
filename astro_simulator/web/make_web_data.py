@@ -150,7 +150,7 @@ def main():
                  "height": 50.0},
         "defaults": {"bw_mhz": 2.0, "dish_m": 3.0, "eta": 0.7,
                      "tsys": 200.0, "tint": 60.0, "npol": 1},
-        "controller": "http://192.168.106.120",
+        "controller": "http://192.168.50.120",
     }
     with open(os.path.join(DATA, "meta.json"), "w") as f:
         json.dump(meta, f, indent=2)

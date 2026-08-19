@@ -15,5 +15,5 @@
     "tint": 60.0,
     "npol": 1
   },
-  "controller": "http://192.168.106.120"
+  "controller": "http://192.168.50.120"
 }

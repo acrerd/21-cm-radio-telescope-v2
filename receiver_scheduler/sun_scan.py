@@ -64,7 +64,7 @@ _CONFIG_FILE = os.path.join(_SCRIPT_DIR, "scheduler_config.json")
 def _load_scheduler_config() -> dict:
     """Load observer location and SRT URL from the scheduler config file."""
     defaults = {
-        "srt_controller_url": "http://192.168.106.120",
+        "srt_controller_url": "http://192.168.50.120",
         # The true site. Kept identical to OBSERVER_LAT/OBSERVER_LON in
         # esp32_controller_arduino/src/config.h: two candidate "true"
         # positions two metres apart is exactly the ambiguity that let a

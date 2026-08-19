@@ -401,7 +401,7 @@ class TestConfig:
         """When no config file exists, defaults are returned."""
         with patch.object(sched, 'CONFIG_FILE', str(tmp_path / "nonexistent.json")):
             cfg = sched.load_config()
-            assert cfg["srt_controller_url"] == "http://192.168.106.120"
+            assert cfg["srt_controller_url"] == "http://192.168.50.120"
             # The true site, same value as the firmware's OBSERVER_LAT.
             assert cfg["observer_lat"] == pytest.approx(55.902426)
             assert cfg["observer_lon"] == pytest.approx(-4.307865)
@@ -424,7 +424,7 @@ class TestConfig:
         with patch.object(sched, 'CONFIG_FILE', str(config_file)):
             cfg = sched.load_config()
             # Should return defaults
-            assert cfg["srt_controller_url"] == "http://192.168.106.120"
+            assert cfg["srt_controller_url"] == "http://192.168.50.120"
 
 
 # =============================================================================

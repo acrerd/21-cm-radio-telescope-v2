@@ -83,7 +83,8 @@ The system consists of four integrated components:
 - WiFi 802.11 b/g/n (simultaneous with Ethernet)
 - Connects to Due via UART serial (IO4/IO14)
 - mDNS hostname `srt-controller.local`
-- Current wired controller web UI at `http://192.168.106.120/`
+- Wired controller web UI at `http://192.168.50.120/`, on a private point-to-point
+  Ethernet link to the observatory computer (not the observatory LAN)
 - Ethernet OTA firmware updates after the first serial flash
 
 ### Wiring: WT32-ETH01 to Arduino Due
@@ -130,7 +131,7 @@ pio run -e wt32-eth01-ota --target upload
 ```
 
 The ESP32 controller uses Arduino/PlatformIO.
-The OTA target in `esp32_controller_arduino/platformio.ini` is set to the current controller address, `192.168.106.120`.
+The OTA target in `esp32_controller_arduino/platformio.ini` is set to the current controller address, `192.168.50.120`.
 
 ---
 
@@ -191,7 +192,9 @@ Compile-time defaults are in `esp32_controller_arduino/src/config.h`:
 2. Browse to: `http://192.168.4.1`
 
 #### Option 2: Wired Controller, Hostname, or Your Network
-1. On the observatory network, browse directly to: `http://192.168.106.120/`
+1. From the observatory computer, browse directly to: `http://192.168.50.120/`
+   (reachable over the private link; other machines on the observatory LAN need
+   a forwarding rule on that host)
 2. If mDNS is supported, `http://srt-controller.local/` should also resolve
 3. If the controller joins a different network, connect to the AP first
 4. Go to **WiFi** tab, click **Scan**
@@ -251,7 +254,7 @@ All equatorial (RA/Dec) coordinates use the **J2000 reference frame**, which is 
 2. Enable and restart Stellarium
 3. **Add** telescope:
    - Type: External software or remote computer
-   - Host: `192.168.106.120` (or AP/network IP)
+   - Host: `192.168.50.120` (or AP/network IP)
    - Port: `10001`
 4. Click **Connect**
 5. Select any object and press `Ctrl+1` to slew
@@ -397,7 +400,7 @@ python h1_web_scheduler.py --host 0.0.0.0 --port 5000
 # Open browser to http://localhost:5000
 ```
 
-On the observatory Linux host, use the desktop launcher **Start SRT Sofware**. It reuses the current VS Code window, runs the scheduler in a hidden task terminal, reveals a lock-safe PlatformIO Serial Monitor, opens `http://192.168.106.120/` in Firefox, and starts Stellarium. The monitor prevents duplicate launcher instances, waits for `/dev/ttyACM0`, and retries temporary serial-port locks. When `wmctrl` is available, the launcher waits for visible application windows before tiling VS Code across the bottom half with Stellarium and Firefox at the top left/right where GNOME exposes their geometry. The scheduler task runs:
+On the observatory Linux host, use the desktop launcher **Start SRT Sofware**. It reuses the current VS Code window, runs the scheduler in a hidden task terminal, reveals a lock-safe PlatformIO Serial Monitor, opens `http://192.168.50.120/` in Firefox, and starts Stellarium. The monitor prevents duplicate launcher instances, waits for `/dev/ttyACM0`, and retries temporary serial-port locks. When `wmctrl` is available, the launcher waits for visible application windows before tiling VS Code across the bottom half with Stellarium and Firefox at the top left/right where GNOME exposes their geometry. The scheduler task runs:
 
 ```bash
 /home/astro/radioconda/bin/python /home/astro/21-cm-radio-telescope-v2/receiver_scheduler/h1_web_scheduler.py --host 0.0.0.0 --port 5000
@@ -409,7 +412,7 @@ The scheduler re-execs itself under the configured receiver Python when needed s
 
 Settings are managed via the Configuration tab in the web interface and persisted in `scheduler_config.json`. Key settings include:
 
-- **Controller URL** — ESP32 address, currently `http://192.168.106.120` (empty to disable telescope control)
+- **Controller URL** — ESP32 address, currently `http://192.168.50.120` (empty to disable telescope control)
 - **Controller Fallback URLs** — Additional controller addresses such as `http://srt-controller.local` and `http://192.168.4.1`
 - **Observer Location** — Latitude, longitude, elevation (used for satellite pass prediction)
 - **Min Elevation** — Minimum elevation for satellite passes (default 10°)
@@ -505,7 +508,7 @@ See `receiver_scheduler/read_h1_data.ipynb` for a complete analysis example.
 
 | Problem | Solution |
 |---------|----------|
-| Can't connect to controller web UI | Try `http://192.168.106.120/`, then `http://srt-controller.local/`, then AP mode at `192.168.4.1` |
+| Can't connect to controller web UI | Try `http://192.168.50.120/`, then `http://srt-controller.local/`, then AP mode at `192.168.4.1` |
 | Can't connect to scheduler web UI | Start `h1_web_scheduler.py` and open `http://localhost:5000` on that host |
 | Motors don't move | Check Due serial for FAULT status, verify homing completed |
 | Position incorrect | Run `HOME` command, check limit switches |

@@ -180,7 +180,7 @@ Frame / Realise / scan-length. Behaviour parity checklist:
 - live RA/Dec + Alt/Az pointing readout, 1 s tick.
 - **Realise**: `fetch()` to the controller
   (`/track/galactic`, `/tracking/enable`, `/direct`), default
-  `http://192.168.106.120`, overridable by `?controller=` URL param.
+  `http://192.168.50.120`, overridable by `?controller=` URL param.
   Requires a CORS header on the ESP32 (`Access-Control-Allow-Origin`)
   — a one-line addition to `web_server.cpp` shipped separately;
   until then the button reports the CORS failure clearly. (Serving

@@ -615,7 +615,7 @@ def main():
                         "box in the GUI to disable noise)")
     p.add_argument("--tint", type=float, default=60.0, help="Integration (s)")
     p.add_argument("--npol", type=int, default=1, help="Polarisations")
-    p.add_argument("--controller", default="http://192.168.106.120",
+    p.add_argument("--controller", default="http://192.168.50.120",
                    help="SRT controller base URL for the Realise button")
     p.add_argument("--site", default=SITE_NAME, help="Observer site name")
     p.add_argument("--lat", type=float, default=SITE_LAT,

@@ -5,7 +5,8 @@ Provides an interactive HTML/JavaScript UI for managing observation schedules.
 
 Run with: python h1_web_scheduler.py
 Then open: http://localhost:5000 on the scheduler host.
-The SRT controller web UI is normally at http://192.168.106.120/.
+The SRT controller web UI is normally at http://192.168.50.120/, on the private
+point-to-point Ethernet link between the observatory computer and the controller.
 """
 
 import json
@@ -66,7 +67,11 @@ RECEIVER_SCRIPT = os.path.join(_SCRIPT_DIR, "b210_h1_receiver.py")
 _DEFAULT_CONFIG = {
     "banner_name": "H1 Receiver Scheduler",
     "banner_subtitle": "Hydrogen Line (21cm) Observation Manager",
-    "srt_controller_url": "http://192.168.106.120",
+    # The controller sits on a private link owned by this host (issue #10), so
+    # this address is ours permanently rather than the observatory LAN's to
+    # renumber. The fallbacks are mDNS over the same link and the controller's
+    # own WiFi AP, which stays up regardless of the Ethernet settings.
+    "srt_controller_url": "http://192.168.50.120",
     "srt_controller_fallback_urls": [
         "http://srt-controller.local",
         "http://192.168.4.1",
@@ -1771,7 +1776,7 @@ HTML_TEMPLATE = '''
                 <div class="section-title">SRT Telescope Controller</div>
                 <div class="form-group">
                     <label>Controller URL (leave empty to disable)</label>
-                    <input type="text" id="cfgControllerUrl" placeholder="http://192.168.106.120">
+                    <input type="text" id="cfgControllerUrl" placeholder="http://192.168.50.120">
                 </div>
                 <div class="form-grid">
                     <div class="form-group">
