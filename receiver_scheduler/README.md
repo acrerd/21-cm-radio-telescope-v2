@@ -264,7 +264,7 @@ Displays the last N lines of `scheduler.log` with auto-refresh (5 second interva
 | Solar System Object | Select Sun or Moon by name | Automatic ephemeris tracking |
 | Satellite (TLE) | Two-Line Element set | SGP4 propagation at 1 Hz |
 
-The ESP32 controller treats sky targets below 10° altitude as below the local observing horizon. The Galactic Bulge shortcut uses that same 10° clearance: if the bulge is lower, the controller chooses the nearest galactic-plane point at or above 10° instead.
+The ESP32 controller treats sky targets below 10° altitude as below the local observing horizon. The Galactic Plane shortcut uses a separate, higher acquisition floor (45° by default): it picks the point on the plane nearest the galactic centre that is currently that high, then follows it down to the 10° horizon.
 
 ### Drift Scans
 

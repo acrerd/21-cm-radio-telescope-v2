@@ -232,7 +232,7 @@ All equatorial (RA/Dec) coordinates use the **J2000 reference frame**, which is 
 - **Track**: Continuously update position as Earth rotates
 - **Axis-only Track**: Follow target azimuth or altitude while holding the other axis fixed
 - **Sun/Moon**: Automatically updates coordinates as they move across the sky
-- **Galactic Bulge**: Tracks the bulge only above the 10° local observing horizon; below that, it tracks the nearest galactic-plane point at or above 10° to clear the trees
+- **Galactic Plane**: Tracks the point on the plane (b = 0) nearest the galactic centre that is currently at or above the acquisition altitude (45° by default), then follows it down until the 10° observing horizon parks the dish. The centre itself is never an option from Glasgow — at Dec −28.9° it culminates at 5.2°, below the trees.
 
 #### Network Tab
 

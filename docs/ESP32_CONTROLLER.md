@@ -169,7 +169,8 @@ Settings can be changed via the web interface Settings tab:
 |---------|-------------|---------|
 | Observer Lat/Lon | Observatory coordinates | Glasgow |
 | Software Limits | Az/Alt min/max for tracking | 2-353, 0-90 |
-| Observing Horizon | Minimum altitude for sky targets, including Galactic Bulge fallback | 10 deg |
+| Observing Horizon | Minimum true altitude for sky targets; below it, tracking parks the dish | 10 deg |
+| Galactic plane acquire above | Lowest altitude at which the galactic-plane target may be *started* | 45 deg |
 | Home Position | Park position when target below horizon | Alt=0, Az=180 |
 | Update Tolerance | Minimum position change to trigger update | 0.25 deg |
 | Page Name | Web interface title | "SRT Controller" |
@@ -177,7 +178,9 @@ Settings can be changed via the web interface Settings tab:
 
 Settings are saved to ESP32 flash (NVS) and persist across reboots.
 
-The 10 degree observing horizon is enforced separately from the mechanical altitude lower limit. This keeps automatic tracking above local obstructions even if the saved mount minimum remains 0 degrees. For Galactic Bulge tracking, the controller falls back to the nearest galactic-plane point at or above 10 degrees when the bulge itself is lower.
+The 10 degree observing horizon is enforced separately from the mechanical altitude lower limit. This keeps automatic tracking above local obstructions even if the saved mount minimum remains 0 degrees.
+
+Galactic plane tracking uses a second, higher threshold. The controller walks outwards along b = 0 from the galactic centre and takes the first longitude at or above the acquisition altitude, preferring the higher of the two equidistant candidates because it stays observable longer. That is an acquisition floor, not a horizon: once tracking, the target is followed down until the 10 degree horizon parks the dish. At 45 degrees a suitable point exists about 73 percent of the time and never comes closer than roughly 45 degrees of longitude to the centre; lowering it to 30 degrees raises availability to about 94 percent.
 
 ---
 
