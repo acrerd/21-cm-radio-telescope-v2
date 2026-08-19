@@ -3,11 +3,16 @@
 .venv312/
 .vscode/
 .claude/settings.local.json
-/h1_schedule.json
 
 # ESP32 runtime files (credentials, etc.)
 wifi_creds.json
 receiver_scheduler/scheduler_config.json
+# Runtime state: the scheduler rewrites this on every edit and recreates it
+# empty if absent. Both locations - the real one, and the repo root, where a
+# stray appears if the scheduler is ever launched from there. The root-anchored
+# rule alone never matched the real file, so it stayed tracked until now.
+receiver_scheduler/h1_schedule.json
+/h1_schedule.json
 receiver_scheduler/scheduler.log*
 # Refitted from the tracked pointing_data.json whenever the model is needed
 receiver_scheduler/pointing_model.json
