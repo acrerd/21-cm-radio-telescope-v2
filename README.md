@@ -567,7 +567,8 @@ See `receiver_scheduler/read_h1_data.ipynb` for a complete analysis example.
 └── docs/
     ├── SRT_DRIVE_MANUAL.md         # Arduino Due firmware manual
     ├── ESP32_CONTROLLER.md         # ESP32 controller manual
-    └── WT32_ETH01_MIGRATION.md     # WT32-ETH01 setup guide
+    ├── WT32_ETH01_MIGRATION.md     # WT32-ETH01 setup guide
+    └── OBSERVATORY_HOST_SETUP.md   # building the host and its private controller link
 ```
 
 ---
@@ -577,6 +578,7 @@ See `receiver_scheduler/read_h1_data.ipynb` for a complete analysis example.
 - [SRT Drive Manual](docs/SRT_DRIVE_MANUAL.md) - Arduino Due firmware reference
 - [ESP32 Controller Manual](docs/ESP32_CONTROLLER.md) - WT32-ETH01 controller and API reference
 - [WT32-ETH01 Setup Guide](docs/WT32_ETH01_MIGRATION.md) - Hardware setup and wiring
+- [Observatory Host Setup](docs/OBSERVATORY_HOST_SETUP.md) - Building a new observatory computer: second Ethernet card, private link to the controller, firewall and scheduler
 - [Receiver & Scheduler](receiver_scheduler/README.md) - H1 receiver and observation scheduler
 
 ## License
