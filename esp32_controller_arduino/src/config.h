@@ -113,14 +113,6 @@
 #define GALACTIC_PLANE_MIN_ALT 45.0
 
 // Stow position (degrees) - where the dish parks when idle or when its target
-// sets. Expressed in TRUE alt/az, like any other sky position, so it goes
-// through the pointing model on its way to the Due.
-//
-// Not to be confused with the Due's cfg.homeAlt/homeAz, which are a DRIVE
-// quantity: the coordinate the limit-switch stall corresponds to, i.e. the
-// definition of the encoder origin. Both were once called "home", both default
-// to zero, and they are unrelated.
-// Stow position (degrees) - where the dish parks when idle or when its target
 // sets. Zenith, facing south: straight up sheds rain and snow and presents the
 // smallest profile to the wind.
 //
