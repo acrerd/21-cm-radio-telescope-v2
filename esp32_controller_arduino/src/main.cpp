@@ -189,19 +189,24 @@ static void onTimeSync(struct timeval *tv) {
 // an OTA update that was every boot. Success is now only ever declared by
 // onTimeSync(), which fires when SNTP has actually set the clock.
 void syncTimeNTP() {
-    esp_sntp_set_time_sync_notification_cb(onTimeSync);
-    esp_sntp_set_sync_interval(NTP_SYNC_INTERVAL_MS);
+    if (!sntpStarted) {
+        esp_sntp_set_time_sync_notification_cb(onTimeSync);
+        esp_sntp_set_sync_interval(NTP_SYNC_INTERVAL_MS);
+        // Two servers: the name first, the numeric fallback behind it, so a
+        // DNS failure degrades to a working clock instead of no clock.
+        configTime(0, 0, NTP_SERVER, NTP_SERVER_FALLBACK);
+        sntpStarted = true;
+        Serial.printf("SNTP started (%s), resync every %lu s\n",
+                      NTP_SERVER, NTP_SYNC_INTERVAL_MS / 1000UL);
+        return;
+    }
 
-    // configTime() stops and re-initialises the client, which re-resolves the
-    // server name and rebinds the socket. esp_sntp_restart() does neither, so
-    // it cannot recover from anything that invalidated the old socket or the
-    // cached address - a WiFi power cycle, for one, which leaves SNTP dead
-    // while the link looks perfectly healthy. Re-initialising is idempotent and
-    // costs one DNS lookup, so it is what every caller gets.
-    configTime(0, 0, NTP_SERVER);
-    sntpStarted = true;
-    Serial.printf("SNTP (re)started (%s), resync every %lu s\n",
-                  NTP_SERVER, NTP_SYNC_INTERVAL_MS / 1000UL);
+    // configTime() is sntp_stop() followed by sntp_init(), and setup() reaches
+    // this function three times on the way up - Ethernet, WiFi startup, then
+    // the loop's link-up flag - so it is guarded to run once and later calls
+    // just restart the client.
+    esp_sntp_restart();
+    Serial.println("SNTP restarted");
 }
 
 // Clock health reporting, called from loop() so that all String and logging work

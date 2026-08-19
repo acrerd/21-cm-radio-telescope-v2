@@ -64,6 +64,12 @@
 // keep hard-coded site addresses out of the firmware; under a private point-to-
 // point link the observatory computer routes this out to the internet.
 #define NTP_SERVER "pool.ntp.org"
+// Numeric fallback, tried when the name cannot be resolved. DNS resolution has
+// been observed to fail on this controller while routing is perfectly healthy:
+// pointed at this address the clock syncs in under six seconds, pointed at the
+// name it never syncs at all. time.cloudflare.com anycast; not a site-local
+// address, so it does not tie the firmware to this observatory.
+#define NTP_SERVER_FALLBACK "162.159.200.123"
 
 // Clock discipline. The lwIP SNTP client polls in the background at this
 // interval; nothing blocks waiting for it. Five hours of drift is itself
