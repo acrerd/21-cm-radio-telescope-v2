@@ -20,6 +20,14 @@ extern String ethIP;
 #include <time.h>
 #include <WiFi.h>
 #include <ESPAsyncWebServer.h>
+// dns_getserver() reports the resolver lwIP will actually use. The per-netif
+// addresses that ETH/WiFi report are not the same thing: dns_gethostbyname()
+// consults these globals, so a netif holding a good address while these are
+// unset resolves nothing and never puts a packet on the wire (issue #11).
+#include <lwip/dns.h>
+extern String dnsTraceEth;   // boot trace, defined in main.cpp
+extern String dnsTraceWifi;
+extern uint32_t resolverRestoreCount;
 
 AsyncWebServer webServer(WEB_PORT);
 SRTState state;  // Global state instance
@@ -128,7 +136,19 @@ void setupWebServer() {
         #if ETHERNET_ENABLED
         json += ",\"eth_connected\":" + String(ethConnected ? "true" : "false");
         json += ",\"eth_ip\":\"" + ethIP + "\"";
+        json += ",\"eth_dns\":\"" + ETH.dnsIP(0).toString() + "\"";
         #endif
+        // Issue #11 diagnostics. ipaddr_ntoa() returns a shared static buffer,
+        // so each result must be copied before the next call.
+        json += ",\"sta_dns\":\"" + WiFi.dnsIP(0).toString() + "\"";
+        String dns0 = String(ipaddr_ntoa(dns_getserver(0)));
+        String dns1 = String(ipaddr_ntoa(dns_getserver(1)));
+        json += ",\"lwip_dns0\":\"" + dns0 + "\"";
+        json += ",\"lwip_dns1\":\"" + dns1 + "\"";
+        json += ",\"wifi_mode\":" + String((int)WiFi.getMode());
+        json += ",\"dns_after_eth\":\"" + dnsTraceEth + "\"";
+        json += ",\"dns_after_wifi\":\"" + dnsTraceWifi + "\"";
+        json += ",\"dns_restores\":" + String(resolverRestoreCount);
         json += "}";
         request->send(200, "application/json", json);
     });

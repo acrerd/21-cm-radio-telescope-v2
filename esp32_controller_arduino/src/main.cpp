@@ -10,6 +10,7 @@
 #endif
 #include <time.h>
 #include <esp_sntp.h>
+#include <lwip/dns.h>  // dns_getserver() for the issue #11 boot trace
 
 #if ETHERNET_ENABLED
 #include <ETH.h>
@@ -98,6 +99,52 @@ float lastSentAlt = -999;
 float lastSentAz = -999;
 bool wasTracking = false;
 uint32_t lastTrackingRevision = 0;
+
+// Issue #11 boot trace. The web server only starts at the end of setup(), so by
+// the time /network can be asked anything, WiFi has already run — these record
+// lwIP's global resolver on either side of that, which is the one thing a live
+// query cannot show. Outside the Ethernet guard: the WiFi half is set on both
+// boards.
+String dnsTraceEth = "unset";
+String dnsTraceWifi = "unset";
+
+// Issue #11. lwIP's resolver list is process-wide, not per-netif, and bringing
+// the softAP's DHCP server up inside WiFi startup clears it — measured, not
+// assumed: dns_after_eth is the address DHCP supplied, dns_after_wifi is 0.0.0.0.
+// The consequence is worse than a slow lookup: with no server configured
+// dns_gethostbyname() fails immediately without putting a packet on the wire, so
+// NTP_SERVER never resolves and the clock rides NTP_SERVER_FALLBACK forever.
+// Nothing notices, because esp_sntp_restart() re-resolves nothing, and time
+// errors become pointing errors through GMST.
+//
+// So the address is cached the moment DHCP supplies it and put back whenever the
+// resolver is found empty. Restoring only when it is *empty* means a genuine
+// resolver from any later source — a WiFi station lease, a static config — is
+// left alone.
+static ip_addr_t cachedResolver;
+static bool cachedResolverValid = false;
+
+static void cacheResolver() {
+    const ip_addr_t *d = dns_getserver(0);
+    if (d && !ip_addr_isany_val(*d)) {
+        cachedResolver = *d;
+        cachedResolverValid = true;
+    }
+}
+
+// How many times the resolver has been found cleared and put back. Exposed by
+// /network: the rate is the measurement that says whether this is a one-off at
+// startup or something re-clearing it continuously, which decides whether the
+// real fix belongs here or in how the AP is brought up.
+uint32_t resolverRestoreCount = 0;
+
+static void ensureResolver() {
+    if (!cachedResolverValid) return;
+    const ip_addr_t *d = dns_getserver(0);
+    if (d && !ip_addr_isany_val(*d)) return;
+    dns_setserver(0, &cachedResolver);
+    resolverRestoreCount++;
+}
 
 // Ethernet state (WT32-ETH01 only)
 #if ETHERNET_ENABLED
@@ -516,7 +563,10 @@ void setup() {
         delay(100);
     }
     if (ethConnected) {
-        Serial.println("Ethernet connected - syncing time");
+        cacheResolver();
+        dnsTraceEth = String(ipaddr_ntoa(dns_getserver(0)));
+        Serial.printf("Ethernet connected (DNS %s) - syncing time\n",
+                      dnsTraceEth.c_str());
         syncTimeNTP();
     }
     #endif
@@ -526,6 +576,12 @@ void setup() {
         // Connected to WiFi - start SNTP (no-op if Ethernet already started it)
         syncTimeNTP();
     }
+    // Records what WiFi startup did to the resolver, before ensureResolver()
+    // puts it back — so /network still shows the underlying behaviour rather
+    // than only the repaired result.
+    dnsTraceWifi = String(ipaddr_ntoa(dns_getserver(0)));
+    Serial.printf("DNS after WiFi startup: %s\n", dnsTraceWifi.c_str());
+    ensureResolver();
 
     if (!state.timeSynced) {
         Serial.println("Clock not yet NTP synced - SNTP polling in background");
@@ -569,10 +625,20 @@ void loop() {
     #if ETHERNET_ENABLED
     if (ethNeedNtpSync && ethConnected) {
         ethNeedNtpSync = false;
+        // A new lease can carry a different resolver, so re-cache before the
+        // sync rather than trusting the one from boot.
+        cacheResolver();
         Serial.println("Ethernet up - (re)starting SNTP");
         syncTimeNTP();
     }
     #endif
+
+    // Issue #11. Repairing the resolver once in setup() is not enough: measured
+    // on the bench, something clears it again within ~2 s, repeatedly, so a
+    // 10 s repair left DNS working only in narrow windows. Checked every
+    // iteration instead — a pointer test and a compare against zero, and it only
+    // writes when it finds the list empty.
+    ensureResolver();
 
     delay(10);
 }
