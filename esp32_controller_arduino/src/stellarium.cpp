@@ -6,6 +6,7 @@
 #include "state.h"
 #include "coordinates.h"
 #include "srt_serial.h"
+#include "sync.h"
 #include <AsyncTCP.h>
 
 static AsyncServer* stellariumServer = nullptr;
@@ -29,6 +30,12 @@ static void prepareStellariumTrackingTarget() {
 }
 
 void sendPositionToStellarium() {
+    // Held across the connected() check, the coordinate conversion and the
+    // write. Without it async_tcp can run onDisconnect - which nulls and
+    // deletes the client - between this task's check and its write, leaving
+    // the write operating on freed memory.
+    SRTLock lock;
+
     if (!stellariumClient || !stellariumClient->connected()) return;
 
     // Convert current Alt/Az back to RA/Dec for Stellarium
@@ -92,6 +99,10 @@ void onStellariumData(void* arg, AsyncClient* client, void* data, size_t len) {
             snprintf(logBuf, sizeof(logBuf), "Stellarium: RA=%.3fh Dec=%.1f", raHours, decDeg);
             srtSerial.logESP(logBuf);
 
+            // Runs on async_tcp; updateTracking() reads all of this on loopTask,
+            // and targetName is a String, so the whole target update is applied
+            // as one unit rather than being seen half-written.
+            SRTLock lock;
             state.currentRA = raHours;
             state.currentDec = decDeg;
             state.targetName = "";
@@ -104,18 +115,25 @@ void onStellariumClient(void* arg, AsyncClient* client) {
     Serial.println("Stellarium client connected");
     srtSerial.logESP("Stellarium connected");
 
-    if (stellariumClient && stellariumClient != client) {
-        // Disconnect old client
-        stellariumClient->close();
+    {
+        // The lock is recursive, so close() re-entering onDisconnect on this
+        // same task is safe rather than a self-deadlock.
+        SRTLock lock;
+        if (stellariumClient && stellariumClient != client) {
+            // Disconnect old client
+            stellariumClient->close();
+        }
+        stellariumClient = client;
     }
-
-    stellariumClient = client;
 
     client->onData(onStellariumData, nullptr);
 
     client->onDisconnect([](void* arg, AsyncClient* c) {
         Serial.println("Stellarium client disconnected");
         srtSerial.logESP("Stellarium disconnected");
+        // Null the pointer and free the object as one unit, so loopTask cannot
+        // be between its connected() check and its write when the delete lands.
+        SRTLock lock;
         if (stellariumClient == c) {
             stellariumClient = nullptr;
         }
@@ -135,11 +153,11 @@ void setupStellariumServer() {
 }
 
 void handleStellariumServer() {
-    // Send position updates every 100ms if client connected
-    if (stellariumClient && stellariumClient->connected()) {
-        if (millis() - lastPositionSend >= 100) {
-            sendPositionToStellarium();
-            lastPositionSend = millis();
-        }
+    // Send position updates every 100ms if client connected. The check is
+    // repeated inside sendPositionToStellarium() under the lock; this one is
+    // only a cheap early-out, and must not be trusted on its own.
+    if (millis() - lastPositionSend >= 100) {
+        sendPositionToStellarium();
+        lastPositionSend = millis();
     }
 }

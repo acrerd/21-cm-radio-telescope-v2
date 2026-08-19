@@ -32,18 +32,21 @@ public:
     // Read status from Due
     bool readStatus();
 
-    // Status getters
-    float getCurrentAlt() { return currentAlt; }
-    float getCurrentAz() { return currentAz; }
-    float getTargetAlt() { return targetAlt; }
-    float getTargetAz() { return targetAz; }
-    float getAltCurrentA() { return altCurrentA; }
-    float getAzCurrentA() { return azCurrentA; }
-    String getStatusStr() { return statusStr; }
-    String getFaultStr() { return faultStr; }
-    bool getIsSlewing() { return isSlewing; }
-    bool getCalibratorOn() { return calibratorOn; }
-    String getLastStatus() { return lastStatus; }
+    // Status getters. Defined out of line in the .cpp because every one of them
+    // is called from async_tcp while loopTask is reassigning the members: the
+    // String getters must take their copy under the lock, or the copy races a
+    // reassignment and reads freed heap.
+    float getCurrentAlt();
+    float getCurrentAz();
+    float getTargetAlt();
+    float getTargetAz();
+    float getAltCurrentA();
+    float getAzCurrentA();
+    String getStatusStr();
+    String getFaultStr();
+    bool getIsSlewing();
+    bool getCalibratorOn();
+    String getLastStatus();
 
     // Serial log access
     String getLogJSON();

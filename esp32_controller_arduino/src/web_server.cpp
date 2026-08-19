@@ -11,6 +11,7 @@ extern String ethIP;
 #endif
 #include "settings.h"
 #include "state.h"
+#include "sync.h"
 #include "wifi_manager.h"
 #include "srt_serial.h"
 #include "coordinates.h"
@@ -49,7 +50,14 @@ static String jsonEscape(const String &value) {
     return escaped;
 }
 
+// Everything in this file runs on the async_tcp task, while updateTracking()
+// reads the same state on loopTask. Each helper below therefore applies its
+// whole group of fields under the lock, so a tracking update in progress sees
+// either all of a change or none of it - never a target name from one request
+// paired with the RA/Dec of another.
+
 static void clearCurrentTracking() {
+    SRTLock lock;
     state.trackingEnabled = false;
     state.targetName = "";
     state.waitingForWrap = false;
@@ -57,6 +65,7 @@ static void clearCurrentTracking() {
 }
 
 static void prepareTrackingTarget() {
+    SRTLock lock;
     state.waitingForWrap = false;
     state.waitingForRise = false;
     state.movementHoldUntil = 0;
@@ -68,6 +77,18 @@ static void prepareTrackingTarget() {
     }
     state.trackingRevision++;
     state.trackingEnabled = true;
+}
+
+// Apply a complete new tracking target atomically. Every goto/track endpoint
+// sets the same three fields and then calls prepareTrackingTarget(); doing that
+// through one locked helper is what keeps the sequence indivisible, and means a
+// new endpoint cannot forget the lock by copying the pattern.
+static void setTrackingTarget(double ra, double dec, const String &name) {
+    SRTLock lock;
+    state.currentRA = ra;
+    state.currentDec = dec;
+    state.targetName = name;
+    prepareTrackingTarget();
 }
 
 // Route ordering matters. ESPAsyncWebServer matches a handler when the request
@@ -137,6 +158,9 @@ void setupWebServer() {
         // sky position and must be identifiable after the fact.
         json += "\"clock_state\":\"" + String(clockSyncState()) + "\",";
         json += "\"clock_age_s\":" + String(state.lastSyncEpoch != 0 ? (long)clockSyncAgeS() : -1L) + ",";
+        // Always zero in normal operation; non-zero means a cross-task lock
+        // could not be acquired within its timeout and something ran unlocked.
+        json += "\"lock_timeouts\":" + String((unsigned long)srtLockTimeouts) + ",";
         json += "\"raw\":\"" + jsonEscape(srtSerial.getLastStatus()) + "\"";
         json += "}";
         request->send(200, "application/json", json);
@@ -161,6 +185,7 @@ void setupWebServer() {
     // Clear pointing offset. Must be registered before "/offset" - see the
     // route ordering note at the top of setupWebServer().
     webServer.on("/offset/clear", HTTP_GET, [](AsyncWebServerRequest *request) {
+        SRTLock lock;
         state.offsetAlt = 0.0;
         state.offsetAz = 0.0;
         request->send(200, "application/json", "{\"ok\":true,\"offset_alt\":0,\"offset_az\":0}");
@@ -168,6 +193,7 @@ void setupWebServer() {
 
     // Set pointing offset (for scanning/mapping)
     webServer.on("/offset", HTTP_GET, [](AsyncWebServerRequest *request) {
+        SRTLock lock;
         if (request->hasArg("alt")) {
             state.offsetAlt = request->arg("alt").toFloat();
         }
@@ -225,10 +251,7 @@ void setupWebServer() {
             request->send(400, "application/json", err);
             return;
         }
-        state.currentRA = ra;
-        state.currentDec = dec;
-        state.targetName = "Gal l=" + String(l, 1) + " b=" + String(b, 1);
-        prepareTrackingTarget();
+        setTrackingTarget(ra, dec, "Gal l=" + String(l, 1) + " b=" + String(b, 1));
         char json[64];
         snprintf(json, sizeof(json), "{\"ok\":true,\"ra\":%.4f,\"dec\":%.2f}", ra, dec);
         request->send(200, "application/json", json);
@@ -249,15 +272,13 @@ void setupWebServer() {
             request->send(400, "application/json", err);
             return;
         }
-        state.currentRA = ra;
-        state.currentDec = dec;
-        state.targetName = "";
-        prepareTrackingTarget();
+        setTrackingTarget(ra, dec, "");
         request->send(200, "application/json", "{\"ok\":true}");
     });
 
     // Track enable/disable - use /tracking/enable to avoid route conflict with /track/*
     webServer.on("/tracking/enable", HTTP_GET, [](AsyncWebServerRequest *request) {
+        SRTLock lock;
         bool enable = request->arg("enable") == "1";
         state.trackingEnabled = enable;
         if (!enable) {
@@ -269,6 +290,7 @@ void setupWebServer() {
 
     // Stop current motion but allow automatic tracking to resume after 10 seconds
     webServer.on("/stop/movement", HTTP_GET, [](AsyncWebServerRequest *request) {
+        SRTLock lock;
         state.movementHoldUntil = millis() + 10000UL;
         srtSerial.sendStop();
         srtSerial.logESP("Movement stopped for 10s");
@@ -276,6 +298,7 @@ void setupWebServer() {
     });
 
     webServer.on("/stop/slewing", HTTP_GET, [](AsyncWebServerRequest *request) {
+        SRTLock lock;
         state.movementHoldUntil = millis() + 10000UL;
         srtSerial.sendStop();
         srtSerial.logESP("Slewing stopped for 10s");
@@ -284,6 +307,7 @@ void setupWebServer() {
 
     // Stop automatic tracking without sending a motion stop.
     webServer.on("/stop/tracking", HTTP_GET, [](AsyncWebServerRequest *request) {
+        SRTLock lock;
         state.movementHoldUntil = 0;
         clearCurrentTracking();
         srtSerial.logESP("Tracking stopped");
@@ -292,6 +316,7 @@ void setupWebServer() {
 
     // Stop motion and cancel the current tracking target
     webServer.on("/stop/all", HTTP_GET, [](AsyncWebServerRequest *request) {
+        SRTLock lock;
         state.movementHoldUntil = 0;
         clearCurrentTracking();
         srtSerial.sendStop();
@@ -306,6 +331,7 @@ void setupWebServer() {
             request->send(409, "application/json", "{\"ok\":false,\"error\":\"No fault active\"}");
             return;
         }
+        SRTLock lock;
         state.movementHoldUntil = 0;
         srtSerial.sendReset();
         srtSerial.logESP("Reset fault");
@@ -314,6 +340,7 @@ void setupWebServer() {
 
     // Run the Due homing sequence
     webServer.on("/home", HTTP_GET, [](AsyncWebServerRequest *request) {
+        SRTLock lock;
         state.movementHoldUntil = 0;
         clearCurrentTracking();
         srtSerial.sendHome();
@@ -323,6 +350,7 @@ void setupWebServer() {
 
     // Slew to the saved home position from Settings.
     webServer.on("/go-home", HTTP_GET, [](AsyncWebServerRequest *request) {
+        SRTLock lock;
         state.targetAlt = settings.homeAlt;
         state.targetAz = settings.homeAz;
         state.movementHoldUntil = 0;
@@ -339,10 +367,7 @@ void setupWebServer() {
     webServer.on("/track/sun", HTTP_GET, [](AsyncWebServerRequest *request) {
         double ra, dec;
         getSunPosition(ra, dec);
-        state.currentRA = ra;
-        state.currentDec = dec;
-        state.targetName = "Sun";
-        prepareTrackingTarget();
+        setTrackingTarget(ra, dec, "Sun");
         srtSerial.logESP("Track Sun");
         request->send(200, "application/json", "{\"ok\":true}");
     });
@@ -351,10 +376,7 @@ void setupWebServer() {
     webServer.on("/track/moon", HTTP_GET, [](AsyncWebServerRequest *request) {
         double ra, dec;
         getMoonPosition(ra, dec);
-        state.currentRA = ra;
-        state.currentDec = dec;
-        state.targetName = "Moon";
-        prepareTrackingTarget();
+        setTrackingTarget(ra, dec, "Moon");
         srtSerial.logESP("Track Moon");
         request->send(200, "application/json", "{\"ok\":true}");
     });
@@ -370,10 +392,7 @@ void setupWebServer() {
                           "{\"ok\":false,\"error\":\"No galactic plane point is above the horizon\"}");
             return;
         }
-        state.currentRA = target.ra;
-        state.currentDec = target.dec;
-        state.targetName = "Galactic Bulge";
-        prepareTrackingTarget();
+        setTrackingTarget(target.ra, target.dec, "Galactic Bulge");
         srtSerial.logESP(target.bulgeVisible ? "Track Galactic Bulge"
                                              : "Track galactic plane near bulge");
         char json[128];
@@ -400,10 +419,7 @@ void setupWebServer() {
             request->send(400, "application/json", err);
             return;
         }
-        state.currentRA = ra;
-        state.currentDec = dec;
-        state.targetName = "";
-        prepareTrackingTarget();
+        setTrackingTarget(ra, dec, "");
         request->send(200, "application/json", "{\"ok\":true}");
     });
 
@@ -424,10 +440,7 @@ void setupWebServer() {
             request->send(400, "application/json", err);
             return;
         }
-        state.currentRA = ra;
-        state.currentDec = dec;
-        state.targetName = "Gal l=" + String(l, 1) + " b=" + String(b, 1);
-        prepareTrackingTarget();
+        setTrackingTarget(ra, dec, "Gal l=" + String(l, 1) + " b=" + String(b, 1));
         char json[64];
         snprintf(json, sizeof(json), "{\"ok\":true,\"ra\":%.4f,\"dec\":%.2f}", ra, dec);
         request->send(200, "application/json", json);
@@ -435,6 +448,7 @@ void setupWebServer() {
 
     // Change tracking axis mode for the current target
     webServer.on("/tracking/axis", HTTP_GET, [](AsyncWebServerRequest *request) {
+        SRTLock lock;
         String mode = request->arg("mode");
         if (mode == "az") {
             state.azOnlyTracking = true;
@@ -467,6 +481,7 @@ void setupWebServer() {
     // because ESPAsyncWebServer route matching can otherwise treat those URLs
     // as this shorter status route.
     webServer.on("/tracking", HTTP_GET, [](AsyncWebServerRequest *request) {
+        SRTLock lock;
         String json = "{";
         json += "\"enabled\":" + String(state.trackingEnabled ? "true" : "false") + ",";
         json += "\"ra\":" + String(state.currentRA, 4) + ",";
@@ -486,6 +501,7 @@ void setupWebServer() {
 
     // Direct Alt/Az
     webServer.on("/direct", HTTP_GET, [](AsyncWebServerRequest *request) {
+        SRTLock lock;
         float alt = request->arg("alt").toFloat();
         float az = request->arg("az").toFloat();
         if (state.trackingEnabled && state.azOnlyTracking) {
@@ -510,6 +526,7 @@ void setupWebServer() {
 
     // Time status
     webServer.on("/time/status", HTTP_GET, [](AsyncWebServerRequest *request) {
+        SRTLock lock;  // timeSource is a String reassigned by updateClockStatus()
         time_t now = time(nullptr);
         struct tm *t = gmtime(&now);
         char timeStr[32];
@@ -542,6 +559,7 @@ void setupWebServer() {
             tv.tv_sec = timestamp;
             tv.tv_usec = 0;
             settimeofday(&tv, nullptr);
+            SRTLock lock;
             state.timeSynced = true;
             state.timeSource = "browser";
             // Deliberately does not touch lastSyncEpoch: that records genuine NTP
@@ -696,50 +714,64 @@ void setupWebServer() {
 
     // Save settings (must be before /settings to avoid route conflict)
     webServer.on("/settings/save", HTTP_GET, [](AsyncWebServerRequest *request) {
-        if (request->hasArg("observer_lat")) {
-            settings.observerLat = request->arg("observer_lat").toDouble();
-        }
-        if (request->hasArg("observer_lon")) {
-            settings.observerLon = request->arg("observer_lon").toDouble();
-        }
-        if (request->hasArg("mount_az_min")) {
-            settings.mountAzMin = request->arg("mount_az_min").toFloat();
-        }
-        if (request->hasArg("mount_az_max")) {
-            settings.mountAzMax = request->arg("mount_az_max").toFloat();
-        }
-        if (request->hasArg("mount_alt_min")) {
-            settings.mountAltMin = request->arg("mount_alt_min").toFloat();
-        }
-        if (request->hasArg("mount_alt_max")) {
-            settings.mountAltMax = request->arg("mount_alt_max").toFloat();
-        }
-        if (request->hasArg("home_alt")) {
-            settings.homeAlt = request->arg("home_alt").toFloat();
-        }
-        if (request->hasArg("home_az")) {
-            settings.homeAz = request->arg("home_az").toFloat();
-        }
-        if (request->hasArg("position_deadband")) {
-            settings.positionDeadband = request->arg("position_deadband").toFloat();
-        }
-        if (request->hasArg("ap_ssid")) {
-            settings.apSSID = request->arg("ap_ssid");
-        }
-        if (request->hasArg("ap_password")) {
-            settings.apPassword = request->arg("ap_password");
-        }
-        if (request->hasArg("page_name")) {
-            settings.pageName = request->arg("page_name");
-        }
+        // observerLat/Lon are 8-byte doubles read by updateTracking() on
+        // loopTask; an unlocked write there can be seen half-updated and emit
+        // one wildly wrong slew command. Scoped so the NVS write at the end of
+        // the handler happens outside the lock.
+        {
+            SRTLock lock;
+            if (request->hasArg("observer_lat")) {
+                settings.observerLat = request->arg("observer_lat").toDouble();
+            }
+            if (request->hasArg("observer_lon")) {
+                settings.observerLon = request->arg("observer_lon").toDouble();
+            }
+            if (request->hasArg("mount_az_min")) {
+                settings.mountAzMin = request->arg("mount_az_min").toFloat();
+            }
+            if (request->hasArg("mount_az_max")) {
+                settings.mountAzMax = request->arg("mount_az_max").toFloat();
+            }
+            if (request->hasArg("mount_alt_min")) {
+                settings.mountAltMin = request->arg("mount_alt_min").toFloat();
+            }
+            if (request->hasArg("mount_alt_max")) {
+                settings.mountAltMax = request->arg("mount_alt_max").toFloat();
+            }
+            if (request->hasArg("home_alt")) {
+                settings.homeAlt = request->arg("home_alt").toFloat();
+            }
+            if (request->hasArg("home_az")) {
+                settings.homeAz = request->arg("home_az").toFloat();
+            }
+            if (request->hasArg("position_deadband")) {
+                settings.positionDeadband = request->arg("position_deadband").toFloat();
+            }
+            if (request->hasArg("ap_ssid")) {
+                settings.apSSID = request->arg("ap_ssid");
+            }
+            if (request->hasArg("ap_password")) {
+                settings.apPassword = request->arg("ap_password");
+            }
+            if (request->hasArg("page_name")) {
+                settings.pageName = request->arg("page_name");
+            }
+        }  // lock released here - see below
+        // Persist outside the lock. save() is an NVS flash write of tens of
+        // milliseconds, and holding the lock across it would stall loopTask's
+        // tracking update for that whole time. It needs no lock: nothing on
+        // loopTask ever writes settings, so there is no writer to race.
         settings.save();
         request->send(200, "application/json", "{\"ok\":true}");
     });
 
     // Reset settings to defaults
     webServer.on("/settings/reset", HTTP_GET, [](AsyncWebServerRequest *request) {
-        settings.resetToDefaults();
-        settings.save();
+        {
+            SRTLock lock;
+            settings.resetToDefaults();
+        }
+        settings.save();  // outside the lock, as above
         request->send(200, "application/json", "{\"ok\":true}");
     });
 

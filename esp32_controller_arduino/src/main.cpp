@@ -19,6 +19,7 @@
 #define DBG(x) if (Serial) { x; }
 #include "settings.h"
 #include "state.h"
+#include "sync.h"
 #include "wifi_manager.h"
 #include "srt_serial.h"
 #include "web_server.h"
@@ -206,6 +207,8 @@ void updateClockStatus() {
     if (state.syncEventPending) {
         state.syncEventPending = false;
         bool first = (state.syncCount <= 1);
+        // timeSource is a String read by /time/status on async_tcp.
+        SRTLock lock;
         state.timeSynced = true;
         state.timeSource = "NTP";
 
@@ -255,11 +258,20 @@ void updateTracking() {
     }
     lastTrackingUpdate = now;
 
-    // Read any available status from Due
+    // Read any available status from Due. Deliberately before the lock is
+    // taken: these block on the UART, and holding the lock across a blocking
+    // read would stall async_tcp. Both take the lock internally where needed.
     srtSerial.readStatus();
 
     // Request fresh status
     srtSerial.requestStatus();
+
+    // Everything below reads and writes SRTState and Settings that async_tcp
+    // handlers mutate: the target name and RA/Dec, the observer position, the
+    // waiting flags. Holding the lock for the rest of the function makes one
+    // tracking update atomic against any request that lands mid-computation,
+    // so a target cannot change between being converted and being sent.
+    SRTLock lock;
 
     if (state.movementHoldUntil != 0) {
         if ((long)(now - state.movementHoldUntil) < 0) {
@@ -407,6 +419,10 @@ void updateTracking() {
 }
 
 void setup() {
+    // Must come first: everything below may lock, and no other task exists yet
+    // to contend with, so this is the one safe moment to create the mutex.
+    srtSyncInit();
+
     // Initialize USB Serial for debug
     Serial.begin(115200);
     #ifdef BOARD_ESP32S3
