@@ -17,14 +17,8 @@
             {
                 "label": "Start H1 Scheduler",
                 "type": "process",
-                "command": "/home/astro/radioconda/bin/python",
-                "args": [
-                    "/home/astro/21-cm-radio-telescope-v2/receiver_scheduler/h1_web_scheduler.py",
-                    "--host",
-                    "0.0.0.0",
-                    "--port",
-                    "5000"
-                ],
+                "command": "/home/astro/21-cm-radio-telescope-v2/receiver_scheduler/start_scheduler.sh",
+                "args": [],
                 "options": {
                     "cwd": "/home/astro/21-cm-radio-telescope-v2/receiver_scheduler"
                 },
