@@ -5,6 +5,7 @@ import math
 import os
 import sys
 import threading
+import time
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -129,6 +130,54 @@ def test_slew_fails_when_telescope_does_not_move():
                 "http://controller", 32.0, 101.0,
                 slew_timeout=1, position_tolerance=0.5, start_grace_s=0,
             )
+
+
+def test_slew_returns_promptly_when_cancelled_mid_slew():
+    """Cancel must bite during a slew, not after slew_timeout expires.
+
+    The telescope never arrives, so before cancellation was threaded into
+    _slew_to this call polled for the whole slew_timeout - 300 s under the
+    scheduler, and a scan chains several such slews.
+    """
+    cancel = threading.Event()
+    poll_count = {"n": 0}
+
+    def fake_api(base_url, endpoint, params=None):
+        if endpoint == "/direct":
+            return {"ok": True}
+        poll_count["n"] += 1
+        if poll_count["n"] == 3:
+            cancel.set()          # cancel arrives mid-slew
+        # Still slewing, never reaches the target
+        return {"alt": 0.0, "az": 0.0, "is_slewing": True,
+                "fault_active": False, "status": "Slewing"}
+
+    with patch.object(sun_scan, "_srt_api", side_effect=fake_api):
+        started = time.monotonic()
+        with pytest.raises(sun_scan.ScanCancelled):
+            sun_scan._slew_to(
+                "http://controller", 32.0, 101.0,
+                slew_timeout=300, position_tolerance=0.5,
+                cancel_event=cancel,
+            )
+        elapsed = time.monotonic() - started
+
+    # Bites on the poll after the event is set, not at slew_timeout.
+    assert poll_count["n"] <= 4
+    assert elapsed < 10
+
+
+def test_scan_cancelled_is_a_runtime_error():
+    """Callers catching RuntimeError - the scheduler among them - keep working."""
+    assert issubclass(sun_scan.ScanCancelled, RuntimeError)
+
+
+def test_cancellable_sleep_returns_immediately_when_set():
+    cancel = threading.Event()
+    cancel.set()
+    started = time.monotonic()
+    assert sun_scan._cancellable_sleep(30, cancel) is True
+    assert time.monotonic() - started < 1
 
 
 def test_hardware_scan_stops_on_first_failed_slew():

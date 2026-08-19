@@ -78,6 +78,12 @@ def _load_scheduler_config() -> dict:
         return cfg
     except FileNotFoundError:
         return defaults
+    except (json.JSONDecodeError, OSError) as exc:
+        # Matches load_pointing_data/load_pointing_model, which both tolerate a
+        # corrupt file. A truncated config should not take the scan down.
+        log.warning("Ignoring unreadable %s (%s); using defaults",
+                    _CONFIG_FILE, exc)
+        return defaults
 
 
 # ---------------------------------------------------------------------------
@@ -99,10 +105,41 @@ def _srt_api(base_url: str, endpoint: str, params: dict | None = None,
             f"SRT controller request failed at {base_url}{endpoint}: {exc}") from exc
 
 
+class ScanCancelled(RuntimeError):
+    """Raised when cancel_event is set during a blocking phase of a scan.
+
+    Subclasses RuntimeError so existing callers that catch RuntimeError - the
+    scheduler among them - keep working unchanged.
+    """
+
+
+def _cancellable_sleep(seconds: float, cancel_event=None) -> bool:
+    """Sleep, returning True immediately if cancel_event is set.
+
+    Event.wait() returns as soon as the event is set, so a cancel lands within
+    milliseconds instead of waiting out the remaining sleep.
+    """
+    if cancel_event is None:
+        time.sleep(seconds)
+        return False
+    return cancel_event.wait(seconds)
+
+
+def _check_cancelled(cancel_event, what: str) -> None:
+    if cancel_event is not None and cancel_event.is_set():
+        raise ScanCancelled(f"Sun scan cancelled during {what}")
+
+
 def _slew_to(base_url: str, alt: float, az: float,
              slew_timeout: int = 120, position_tolerance: float = 0.5,
-             start_grace_s: float = 5.0) -> bool:
-    """Command telescope to alt/az and verify that it reaches the target."""
+             start_grace_s: float = 5.0, cancel_event=None) -> bool:
+    """Command telescope to alt/az and verify that it reaches the target.
+
+    Honours cancel_event while polling. Without it a cancel could not take
+    effect until the slew finished or timed out - up to slew_timeout, which is
+    300 s under the scheduler, and a scan can chain several such slews.
+    """
+    _check_cancelled(cancel_event, "slew start")
     result = _srt_api(base_url, "/direct", {"alt": f"{alt:.3f}", "az": f"{az:.3f}"})
     if not result.get("ok"):
         detail = result.get("error") or result.get("message") or repr(result)
@@ -111,6 +148,7 @@ def _slew_to(base_url: str, alt: float, az: float,
 
     t0 = time.time()
     while time.time() - t0 < slew_timeout:
+        _check_cancelled(cancel_event, "slew")
         status = _srt_api(base_url, "/status")
         current_alt = status.get("alt")
         current_az = status.get("az")
@@ -134,7 +172,8 @@ def _slew_to(base_url: str, alt: float, az: float,
                 f"current Alt={float(current_alt):.2f} deg Az={float(current_az):.2f} deg, "
                 f"target Alt={alt:.2f} deg Az={az:.2f} deg, "
                 f"status={status.get('status', 'unknown')}")
-        time.sleep(1)
+        if _cancellable_sleep(1, cancel_event):
+            raise ScanCancelled("Sun scan cancelled during slew")
 
     raise RuntimeError(
         f"Telescope slew timed out after {slew_timeout}s while targeting "
@@ -201,8 +240,13 @@ def _measure_power_uhd(center_freq: float, sample_rate: float,
     num_samps = int(sample_rate * integration_time)
     # recv_num_samps is a convenience method on MultiUSRP
     usrp = uhd.usrp.MultiUSRP()
-    samples = usrp.recv_num_samps(num_samps, center_freq, sample_rate, [0], gain)
-    return float(np.mean(np.abs(samples[0]) ** 2))
+    try:
+        samples = usrp.recv_num_samps(num_samps, center_freq, sample_rate, [0], gain)
+        return float(np.mean(np.abs(samples[0]) ** 2))
+    finally:
+        # Release the device rather than leaving it to the garbage collector: a
+        # still-claimed USRP blocks every later scan and observation.
+        del usrp
 
 
 class _B210PowerMeter:
@@ -310,8 +354,11 @@ def measure_power(sdr_type: str = "b210",
         try:
             return _measure_power_uhd(center_freq, sample_rate, gain, integration_time)
         except Exception as exc:
-            log.warning("UHD measurement failed (%s), trying GNU Radio...", exc)
-            # fall through to GNU Radio attempt below
+            # There is no GNU Radio fallback path here - the old message said
+            # there was - so report the real UHD failure instead of discarding
+            # it behind a generic error.
+            raise RuntimeError(
+                f"B210 power measurement failed: {exc}") from exc
 
     if sdr_type == "rtlsdr":
         return _measure_power_rtlsdr(center_freq, sample_rate, gain, integration_time)
@@ -511,7 +558,10 @@ def generate_image(alt_offsets_grid: np.ndarray, az_offsets_grid: np.ndarray,
                          fit_result["offset"]).reshape(n_fine, n_fine)
 
     im2 = ax2.pcolormesh(AZ_F, ALT_F, model, shading="auto", cmap="inferno",
-                         norm=Normalize(vmin=power_grid.min(), vmax=power_grid.max()))
+                         # nan-aware: a single NaN sample would otherwise make
+                         # both limits NaN and silently ruin the whole image.
+                         norm=Normalize(vmin=np.nanmin(power_grid),
+                                        vmax=np.nanmax(power_grid)))
     ax2.set_xlabel("Azimuth offset (°, cross-elevation)")
     ax2.set_ylabel("Altitude offset (°)")
     ax2.set_title("Gaussian fit")
@@ -559,7 +609,7 @@ def sun_scan(
     sample_rate: float = 2.4e6,
     gain: float = 40.0,
     output_image: str | None = "sun_scan.png",
-    slew_timeout: int = 120,
+    slew_timeout: int | None = None,
     position_tolerance: float = 0.5,
     beam_fwhm_deg: float = 3.0,
     backlash_deg: float = 2.0,
@@ -622,6 +672,10 @@ def sun_scan(
         lon = cfg["observer_lon"]
     if elevation is None:
         elevation = cfg["observer_elevation"]
+    if slew_timeout is None:
+        # Was hard-coded to 120 s here while the scheduler passed 300, so a slow
+        # slew that succeeded under the scheduler failed from the CLI.
+        slew_timeout = int(cfg["slew_timeout"])
     if sdr_type != "demo" and not srt_url:
         raise ValueError("SRT controller URL is required for a hardware Sun scan")
 
@@ -689,10 +743,13 @@ def sun_scan(
         """Slew to a moving-Sun offset, correcting ephemeris drift after slews."""
         last = None
         for attempt in range(3):
+            # Checked between chained slews as well as inside each one: three
+            # refinement passes could otherwise run back to back after a cancel.
+            _check_cancelled(cancel_event, "slew refinement")
             last = command_for_current_sun(dalt_now, daz_sky_now)
             point_alt, point_az, cmd_alt_now, cmd_az_now, _ = last
             _slew_to(srt_url, cmd_alt_now, cmd_az_now, slew_timeout,
-                     position_tolerance)
+                     position_tolerance, cancel_event=cancel_event)
 
             updated = command_for_current_sun(dalt_now, daz_sky_now)
             drift_alt = abs(updated[2] - cmd_alt_now)
@@ -729,7 +786,7 @@ def sun_scan(
                 log.info("Row %d: backlash overshoot to Az=%.2f° then approaching west",
                          row, overshoot_az)
                 _slew_to(srt_url, overshoot_alt, overshoot_az, slew_timeout,
-                         position_tolerance)
+                         position_tolerance, cancel_event=cancel_event)
 
             # Recompute the Sun immediately before the measurement slew.  A row-start
             # overshoot can take long enough for the Sun to move appreciably.
@@ -753,7 +810,8 @@ def sun_scan(
                 point_info.update(cmd_alt=cmd_alt, cmd_az=cmd_az,
                                   sun_alt=point_sun_alt, sun_az=point_sun_az)
                 # Short settle time after slew
-                time.sleep(0.5)
+                if _cancellable_sleep(0.5, cancel_event):
+                    raise ScanCancelled("Sun scan cancelled while settling")
 
             # Measure power
             sim_state = None
@@ -764,6 +822,12 @@ def sun_scan(
                     "beam_fwhm": beam_fwhm_deg,
                     "peak_power": 10.0, "background": 1.0, "noise_rms": 0.15,
                 }
+
+            # The integration itself cannot be interrupted, so this is the last
+            # chance to stop before committing to one more of them. That makes
+            # the realistic cancellation latency one integration (~3 s), not the
+            # minutes it took when the only check was once per grid point.
+            _check_cancelled(cancel_event, "measurement")
 
             if b210_meter is not None:
                 pwr = b210_meter.measure(integration_time_s)
@@ -778,6 +842,12 @@ def sun_scan(
             log.info("  Power = %.4f", pwr)
             if progress_callback:
                 progress_callback(idx, total_points, point_info)
+    except ScanCancelled as exc:
+        # Cancellation from inside a slew, settle or pre-measurement check.
+        # Folded back into the same flag the per-point check sets, so the scan
+        # still fails with the one "Sun scan cancelled" message callers expect.
+        log.warning("%s", exc)
+        cancelled = True
     finally:
         if b210_meter is not None:
             b210_meter.close()
