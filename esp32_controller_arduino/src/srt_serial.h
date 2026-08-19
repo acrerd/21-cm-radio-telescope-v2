@@ -51,6 +51,12 @@ public:
     bool getCalibratorOn();
     String getLastStatus();
 
+    // Status lines from the Due that failed the whole-line check. Should stay
+    // at zero; a rising count means the UART is being flooded and lines are
+    // arriving spliced. Surfaced through /status so it shows up as a number
+    // rather than as an unexplained glitch in the readout.
+    uint32_t getMalformedCount();
+
     // Serial log access
     String getLogJSON();
     void logESP(const String &msg);  // Log ESP32 diagnostic message
@@ -71,6 +77,7 @@ private:
     String faultStr;
     bool isSlewing;
     bool calibratorOn;
+    uint32_t spliceCount;
 
     // Ring buffer for serial log
     SerialLogEntry logBuffer[SERIAL_LOG_SIZE];

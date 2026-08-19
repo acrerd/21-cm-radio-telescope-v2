@@ -1552,9 +1552,28 @@ void outputStatus() {
         strncpy(prevStatusLine, statusCompare, sizeof(prevStatusLine));
     }
 
-    // Always output to Serial1 (ESP32) so it can read status
+    // Rate-limit the line to the ESP32. This used to be unconditional, and
+    // outputStatusIfChanged() calls it on every main-loop pass and on every
+    // iteration of the homing loops - roughly 100 lines a second, ~6.5 kB/s.
+    // The controller drains at most five lines a second into a 256-byte RX
+    // buffer, so the buffer was in permanent overflow: bytes were dropped
+    // mid-line and the tail of one status line arrived welded to the head of
+    // the next. Those splices still satisfied the controller's format check and
+    // parsed, which is how a status of "RIaz:-0.0A" reached the web UI on
+    // 2026-08-19. STATUS_INTERVAL_MS has been sitting in config.h unused since
+    // it was written; this is what it was for.
+    //
+    // Nothing is delayed by this. A STATUS command arriving on Serial1 is
+    // answered on its own path further down, immediately and ungated, and that
+    // is how the controller actually polls; faults during homing are reported
+    // by their own printAll() lines. This is only the unsolicited push.
     #if ENABLE_SERIAL1
-    Serial1.println(statusLine);
+    static unsigned long lastSerial1Status = 0;
+    unsigned long nowMs = millis();
+    if (lastSerial1Status == 0 || (nowMs - lastSerial1Status) >= STATUS_INTERVAL_MS) {
+        lastSerial1Status = nowMs;
+        Serial1.println(statusLine);
+    }
     #endif
 }
 

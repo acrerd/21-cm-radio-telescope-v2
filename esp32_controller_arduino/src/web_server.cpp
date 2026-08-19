@@ -190,6 +190,12 @@ void setupWebServer() {
         // Always zero in normal operation; non-zero means a cross-task lock
         // could not be acquired within its timeout and something ran unlocked.
         json += "\"lock_timeouts\":" + String((unsigned long)srtLockTimeouts) + ",";
+        // Also always zero in normal operation. Non-zero means status lines are
+        // arriving from the Due spliced together, which happens when its UART
+        // output outruns this end - see the rate limit in the Due's
+        // outputStatus(). A stale readout with a plausible-looking number in it
+        // is the failure mode being guarded against here.
+        json += "\"malformed_status\":" + String((unsigned long)srtSerial.getMalformedCount()) + ",";
         json += "\"raw\":\"" + jsonEscape(srtSerial.getLastStatus()) + "\"";
         json += "}";
         request->send(200, "application/json", json);

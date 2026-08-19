@@ -16,6 +16,7 @@ SRTSerial::SRTSerial() :
     statusStr("UNKNOWN"),
     isSlewing(false),
     calibratorOn(false),
+    spliceCount(0),
     logHead(0),
     logCount(0) {
 }
@@ -86,6 +87,11 @@ bool  SRTSerial::getCalibratorOn(){ SRTLock lock; return calibratorOn; }
 // is held, so it cannot race a reassignment in parseStatus().
 String SRTSerial::getStatusStr()  { SRTLock lock; return statusStr; }
 String SRTSerial::getFaultStr()   { SRTLock lock; return faultStr; }
+uint32_t SRTSerial::getMalformedCount() {
+    SRTLock lock;
+    return spliceCount;
+}
+
 String SRTSerial::getLastStatus() { SRTLock lock; return lastStatus; }
 
 void SRTSerial::begin(int txPin, int rxPin, int baudRate) {
@@ -103,6 +109,11 @@ void SRTSerial::begin(int txPin, int rxPin, int baudRate) {
     }
     Serial.println("SRTSerial: TX pin toggle test complete");
 
+    // The default 256-byte RX buffer holds only about four status lines. Headroom
+    // rather than a fix - the Due is now rate-limited at source - but it means a
+    // burst (homing, or a firmware that floods again) is buffered instead of
+    // being dropped mid-line and spliced. Must precede begin().
+    uart->setRxBufferSize(1024);
     uart->begin(baudRate, SERIAL_8N1, rxPin, txPin);
     uart->setTimeout(10);  // 10ms timeout instead of default 1000ms
     Serial.println("SRTSerial: Serial2 initialized");
@@ -174,6 +185,45 @@ void SRTSerial::requestStatus() {
 // failure this locking is meant to prevent. It is safe unlocked: RX is only
 // ever serviced from loopTask, and the writes it races are on the TX side.
 // logMessage() and parseStatus() take the lock themselves for the shared state.
+// Count non-overlapping occurrences of needle. Used to spot spliced lines: the
+// markers below appear exactly once in a well-formed status line, so a second
+// one means two lines have been welded together by dropped bytes.
+static int countOccurrences(const String &haystack, const String &needle) {
+    int count = 0, at = 0;
+    const int step = needle.length();
+    while ((at = haystack.indexOf(needle, at)) >= 0) {
+        count++;
+        at += step;
+    }
+    return count;
+}
+
+// Is this a whole, single status line?
+//
+//   Alt:%.1f Az:%.1f Ialt:%.1fA Iaz:%.1fA Status:<state> [<fault>] -> Alt:%.1f Az:%.1f Cal:ON|OFF
+//
+// The old check - starts with "Alt:", contains " Az:", contains "Status:" - was
+// satisfied by a splice like "...Status:R" + "Iaz:-0.0A Cal:OFF", which then
+// parsed and put "RIaz:-0.0A" on the web UI. "Alt:" and " Az:" legitimately
+// appear twice when slewing, because of the " -> " target, so they cannot be
+// counted; Ialt/Iaz/Status/Cal appear exactly once in every form of the line.
+static bool statusLineLooksIntact(const String &line) {
+    if (!line.startsWith("Alt:")) return false;
+    if (line.indexOf(" Az:") < 0) return false;
+    static const char *markers[] = {"Ialt:", "Iaz:", "Status:", "Cal:"};
+    for (const char *marker : markers) {
+        // Once on its own catches a second copy welded in by a splice - the
+        // real case was "Status:R" joined to "Iaz:-0.0A", giving two "Iaz:".
+        if (countOccurrences(line, marker) != 1) return false;
+        // Once with its leading space catches the other direction, where the
+        // preceding field was eaten: "Az:12Ialt:0.0A" has one "Ialt:" but no
+        // " Ialt:".
+        if (countOccurrences(line, String(" ") + marker) != 1) return false;
+    }
+    // Cal is always last, so a line truncated anywhere fails here.
+    return line.endsWith(" Cal:ON") || line.endsWith(" Cal:OFF");
+}
+
 bool SRTSerial::readStatus() {
     if (!uart) return false;
 
@@ -185,13 +235,13 @@ bool SRTSerial::readStatus() {
         line.trim();
         linesRead++;
 
-        // Validate format. Slewing lines include a second target "Alt:"/" Az:"
-        // after " -> ", so only require the current-position prefix.
-        if (line.startsWith("Alt:") &&
-            line.indexOf(" Az:") != -1 &&
-            line.indexOf("Status:") != -1) {
+        if (statusLineLooksIntact(line)) {
             lastValidLine = line;
             logMessage('R', line);  // Log valid status lines
+        } else if (line.length() > 0) {
+            // Kept visible rather than dropped silently: a run of these is the
+            // signature of the UART being flooded again.
+            spliceCount++;
         }
     }
 
