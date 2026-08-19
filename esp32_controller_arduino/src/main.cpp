@@ -25,6 +25,7 @@
 #include "web_server.h"
 #include "stellarium.h"
 #include "coordinates.h"
+#include "pointing.h"
 
 // External state
 extern SRTState state;
@@ -88,7 +89,9 @@ void startOTAService() {
 #endif
 }
 
-// Tracking loop variables
+// Tracking loop variables. lastSentAlt/Az are DRIVE coordinates: they are
+// compared against the next drive command for the deadband test, so both sides
+// of that comparison stay in the frame the mount actually moves in.
 unsigned long lastTrackingUpdate = 0;
 unsigned long lastEphemerisUpdate = 0;
 float lastSentAlt = -999;
@@ -264,11 +267,6 @@ void updateClockStatus() {
     }
 }
 
-// Check if azimuth is within limits
-bool isAzWithinLimits(float az) {
-    return az >= settings.mountAzMin && az <= settings.mountAzMax;
-}
-
 // Tracking update - called from loop
 void updateTracking() {
     unsigned long now = millis();
@@ -333,11 +331,10 @@ void updateTracking() {
                 getMoonPosition(ra, dec);
                 state.currentRA = ra;
                 state.currentDec = dec;
-            } else if (state.targetName == "Galactic Bulge") {
+            } else if (state.targetName == "Galactic Plane") {
                 GalacticPlaneTarget target;
-                getGalacticBulgeTrackingTarget(settings.observerLat, settings.observerLon,
-                                               effectiveTrackingHorizonAlt(settings.mountAltMin),
-                                               target);
+                getGalacticPlaneTrackingTarget(settings.observerLat, settings.observerLon,
+                                               settings.galacticMinAlt, target);
                 if (target.found) {
                     state.currentRA = target.ra;
                     state.currentDec = target.dec;
@@ -353,34 +350,31 @@ void updateTracking() {
         state.targetAlt = alt;
         state.targetAz = az;
 
-        // Check if below the local observing horizon/tree clearance.
-        double minTrackingAlt = effectiveTrackingHorizonAlt(settings.mountAltMin);
-        if (alt < minTrackingAlt) {
+        // Horizon test, in the TRUE frame. This is a sky question - has the
+        // source cleared the trees - so it is asked of the source's true
+        // altitude, before any conversion to drive coordinates. The mechanical
+        // limits are a different question, asked below in the drive frame.
+        if (alt < settings.horizonAlt) {
             if (!state.waitingForRise) {
                 state.waitingForRise = true;
-                DBG(Serial.printf("Target below horizon: Alt=%.1f Min=%.1f\n", alt, minTrackingAlt));
-                DBG(Serial.println("Parking at home, waiting for target to rise..."));
+                DBG(Serial.printf("Target below horizon: Alt=%.1f Min=%.1f\n", alt, settings.horizonAlt));
+                DBG(Serial.println("Parking at stow, waiting for target to rise..."));
                 srtSerial.logESP("Target below horizon - parking");
-                srtSerial.sendTarget(settings.homeAlt, settings.homeAz);
-                lastSentAlt = settings.homeAlt;
-                lastSentAz = settings.homeAz;
-            }
-        }
-        // Check if above zenith limit
-        else if (alt > settings.mountAltMax) {
-            DBG(Serial.printf("Target above altitude limit: Alt=%.1f\n", alt));
-        }
-        // Check azimuth limits
-        else if (!isAzWithinLimits(az)) {
-            if (!state.waitingForWrap) {
-                state.waitingForWrap = true;
-                DBG(Serial.printf("Target outside az limits: Az=%.1f\n", az));
-                DBG(Serial.println("Waiting for circumpolar wrap-around..."));
-                srtSerial.logESP("Az limits - waiting for wrap");
+                // Stow is already a drive position - see config.h - so it goes
+                // to the Due as it stands. Still clamped, because a hand-typed
+                // stow can sit outside the mechanical range.
+                double stowDriveAlt = settings.stowAlt, stowDriveAz = settings.stowAz;
+                clampToMountLimits(stowDriveAlt, stowDriveAz);
+                srtSerial.sendDriveTarget(stowDriveAlt, stowDriveAz);
+                lastSentAlt = stowDriveAlt;
+                lastSentAz = stowDriveAz;
             }
         }
         else {
-            // Target is within all limits
+            // Risen is a true-frame verdict, so it is settled here, before the
+            // conversion. Wrap is a drive-frame one and is settled below, after
+            // it - clearing it here would announce "wrap complete" every second
+            // for a target that is still outside the mechanical azimuth range.
             if (state.waitingForRise) {
                 state.waitingForRise = false;
                 DBG(Serial.printf("Target risen: Alt=%.1f Az=%.1f\n", alt, az));
@@ -389,48 +383,77 @@ void updateTracking() {
                 lastSentAlt = -999;
                 lastSentAz = -999;
             }
+
+            // Apply the operator's pointing offset for scanning/mapping. It is
+            // applied here, in the TRUE frame and before the model, so that
+            // "0.5 deg off-source" means half a degree on the sky at any
+            // elevation - the same convention sun_scan.py already uses for its
+            // cross-elevation raster. Axis-only modes track one coordinate
+            // while holding the other at a manual value.
+            double baseAlt = state.azOnlyTracking ? state.azOnlyAlt : alt;
+            double baseAz = state.altOnlyTracking ? state.altOnlyAz : az;
+            double trueAlt = baseAlt + state.offsetAlt;
+            double trueAz = baseAz + state.offsetAz;
+
+            // Cross into the drive frame. Everything from here down - the
+            // limit test, the clamp, the deadband and the command itself - is
+            // drive coordinates.
+            double driveAlt, driveAz;
+            trueToDrive(trueAlt, trueAz, driveAlt, driveAz);
+
+            if (!driveAzWithinLimits(driveAz)) {
+                if (!state.waitingForWrap) {
+                    state.waitingForWrap = true;
+                    DBG(Serial.printf("Target outside az limits: drive Az=%.1f\n", driveAz));
+                    DBG(Serial.println("Waiting for circumpolar wrap-around..."));
+                    srtSerial.logESP("Az limits - waiting for wrap");
+                }
+                return;
+            }
             if (state.waitingForWrap) {
                 state.waitingForWrap = false;
-                DBG(Serial.printf("Target back in az limits: Alt=%.1f Az=%.1f\n", alt, az));
+                DBG(Serial.printf("Target back in az limits: drive Alt=%.1f Az=%.1f\n", driveAlt, driveAz));
                 DBG(Serial.println("Repositioning to resume tracking..."));
                 srtSerial.logESP("Az wrap complete - resuming");
                 lastSentAlt = -999;
                 lastSentAz = -999;
             }
+            // Above the mechanical altitude limit the mount is left where it
+            // is rather than being driven to the limit and tracked in azimuth
+            // alone, which is what it did before the frames were split and is
+            // the safer of the two: a target past the zenith stop is one the
+            // dish cannot follow, and parking it against the stop to chase the
+            // azimuth would run the mount along its limit switch for hours.
+            if (driveAlt > settings.mountAltMax) {
+                DBG(Serial.printf("Target above altitude limit: drive Alt=%.1f\n", driveAlt));
+                return;
+            }
+            // Below the lower stop it is clamped, as it always was. This is
+            // only reachable now that the observing horizon and the mechanical
+            // limit are separate numbers - a target can clear the trees and
+            // still convert to a drive altitude under the stop.
+            clampToMountLimits(driveAlt, driveAz);
 
-            // Apply pointing offset for scanning/mapping. Axis-only modes
-            // track one coordinate while holding the other at a manual value.
-            float baseAlt = state.azOnlyTracking ? state.azOnlyAlt : alt;
-            float baseAz = state.altOnlyTracking ? state.altOnlyAz : az;
-            float finalAlt = baseAlt + state.offsetAlt;
-            float finalAz = baseAz + state.offsetAz;
-
-            // Clamp to valid range
-            if (finalAlt < settings.mountAltMin) finalAlt = settings.mountAltMin;
-            if (finalAlt > settings.mountAltMax) finalAlt = settings.mountAltMax;
-            if (finalAz < settings.mountAzMin) finalAz = settings.mountAzMin;
-            if (finalAz > settings.mountAzMax) finalAz = settings.mountAzMax;
-
-            // Apply deadband (check against final position including offset)
+            // Deadband, drive against drive.
             if (lastSentAlt < -900 || lastSentAz < -900 ||
-                fabs(finalAlt - lastSentAlt) >= settings.positionDeadband ||
-                fabs(finalAz - lastSentAz) >= settings.positionDeadband) {
+                fabs(driveAlt - lastSentAlt) >= settings.positionDeadband ||
+                fabs(driveAz - lastSentAz) >= settings.positionDeadband) {
                 if (state.offsetAlt != 0 || state.offsetAz != 0) {
-                    DBG(Serial.printf("Tracking %s: base Alt=%.1f Az=%.1f, offset %.1f/%.1f, sending %.1f/%.1f\n",
-                                  state.targetName.c_str(), alt, az, state.offsetAlt, state.offsetAz, finalAlt, finalAz));
+                    DBG(Serial.printf("Tracking %s: true Alt=%.1f Az=%.1f, offset %.1f/%.1f, drive %.1f/%.1f\n",
+                                  state.targetName.c_str(), alt, az, state.offsetAlt, state.offsetAz, driveAlt, driveAz));
                 } else if (state.azOnlyTracking) {
-                    DBG(Serial.printf("Az-only tracking %s: target Az=%.1f, fixed Alt=%.1f\n",
-                                  state.targetName.c_str(), finalAz, finalAlt));
+                    DBG(Serial.printf("Az-only tracking %s: drive Az=%.1f, fixed Alt=%.1f\n",
+                                  state.targetName.c_str(), driveAz, driveAlt));
                 } else if (state.altOnlyTracking) {
-                    DBG(Serial.printf("Alt-only tracking %s: target Alt=%.1f, fixed Az=%.1f\n",
-                                  state.targetName.c_str(), finalAlt, finalAz));
+                    DBG(Serial.printf("Alt-only tracking %s: drive Alt=%.1f, fixed Az=%.1f\n",
+                                  state.targetName.c_str(), driveAlt, driveAz));
                 } else {
-                    DBG(Serial.printf("Tracking %s: sending Alt=%.1f Az=%.1f\n",
-                                  state.targetName.c_str(), finalAlt, finalAz));
+                    DBG(Serial.printf("Tracking %s: true Alt=%.1f Az=%.1f, sending drive %.1f/%.1f\n",
+                                  state.targetName.c_str(), alt, az, driveAlt, driveAz));
                 }
-                srtSerial.sendTarget(finalAlt, finalAz);
-                lastSentAlt = finalAlt;
-                lastSentAz = finalAz;
+                srtSerial.sendDriveTarget(driveAlt, driveAz);
+                lastSentAlt = driveAlt;
+                lastSentAz = driveAz;
             }
         }
     } else {
@@ -457,6 +480,10 @@ void setup() {
 
     // Load settings from NVS
     settings.load();
+
+    // ...and the pointing calibration, which lives in its own NVS namespace so
+    // that a settings reset cannot silently discard a measured model.
+    pointingLoad();
 
     // Initialize serial to Due
     srtSerial.begin(DUE_UART_TX, DUE_UART_RX, DUE_BAUD_RATE);

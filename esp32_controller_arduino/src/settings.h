@@ -11,15 +11,29 @@ public:
     double observerLat;
     double observerLon;
 
-    // Mount limits
+    // Mechanical mount limits, in DRIVE coordinates. Applied after the pointing
+    // model, because that is the frame the mount actually moves in.
     float mountAzMin;
     float mountAzMax;
     float mountAltMin;
     float mountAltMax;
 
-    // Home position
-    float homeAlt;
-    float homeAz;
+    // Local observing horizon, in TRUE altitude. Applied before the pointing
+    // model. Separate from mountAltMin on purpose - see config.h.
+    float horizonAlt;
+
+    // Lowest TRUE altitude at which the galactic-plane target may be acquired.
+    // Distinct from horizonAlt: that one parks the dish, this one only decides
+    // where on the plane tracking begins.
+    float galacticMinAlt;
+
+    // Stow position, in DRIVE coordinates - where the dish parks when idle or
+    // when its target sets. The pointing model is bypassed on this path; see
+    // config.h for why parking is treated as mechanical rather than sky.
+    // Unrelated to the Due's homeAlt/homeAz, which are also drive coordinates
+    // but define the encoder origin.
+    float stowAlt;
+    float stowAz;
 
     // Tracking
     float positionDeadband;

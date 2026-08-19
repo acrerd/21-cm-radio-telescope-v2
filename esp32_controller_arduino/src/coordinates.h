@@ -55,17 +55,27 @@ void equatorialToGalactic(double raHours, double decDeg, double &lOut, double &b
 
 struct GalacticPlaneTarget {
     bool found = false;
-    bool bulgeVisible = false;
-    double l = 0.0;
-    double b = 0.0;
+    double l = 0.0;      // galactic longitude chosen, degrees
+    double b = 0.0;      // always 0 - the plane itself
     double ra = 0.0;
     double dec = 0.0;
     double alt = 0.0;
     double az = 0.0;
 };
 
-// Galactic Bulge if visible, otherwise the nearest visible point on b=0.
-void getGalacticBulgeTrackingTarget(double latDeg, double lonDeg, double minAltDeg,
+// The point on the galactic plane (b=0) nearest the galactic centre that is at
+// or above minAltDeg, searched outwards in galactic longitude from l=0.
+//
+// minAltDeg is an ACQUISITION floor, not an observing horizon: it decides where
+// tracking starts, and the target is then followed down as it sets, until the
+// ordinary horizon check parks the dish. It is deliberately high (45 degrees by
+// default) because the galactic centre is far south of this site - it culminates
+// at about 5 degrees from Glasgow and never clears the trees - so the useful
+// question is not "is the plane up" but "where is the plane high enough to be
+// worth observing".
+//
+// Sets target.found = false when no part of the plane reaches minAltDeg.
+void getGalacticPlaneTrackingTarget(double latDeg, double lonDeg, double minAltDeg,
                                     GalacticPlaneTarget &target);
 
 #endif // COORDINATES_H

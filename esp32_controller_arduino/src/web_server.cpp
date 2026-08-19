@@ -15,6 +15,7 @@ extern String ethIP;
 #include "wifi_manager.h"
 #include "srt_serial.h"
 #include "coordinates.h"
+#include "pointing.h"
 #include "index_html.h"
 #include <time.h>
 #include <WiFi.h>
@@ -24,6 +25,21 @@ AsyncWebServer webServer(WEB_PORT);
 SRTState state;  // Global state instance
 extern bool mdnsRunning;
 void syncTimeNTP();  // defined in main.cpp; non-blocking, safe from a handler
+
+// Upload buffer for a pointing model POSTed to /pointing/apply. The body
+// arrives in chunks, so it is reassembled here before being parsed. Held in
+// the request's _tempObject rather than a file-scope buffer so two overlapping
+// uploads cannot interleave into one document.
+//
+// 1536 bytes is several times the seven-term schema with every optional field
+// present. A body past that is rejected rather than silently truncated - a
+// truncated model would parse as a valid smaller one.
+#define POINTING_JSON_MAX 1536
+struct PointingBody {
+    size_t len;
+    bool truncated;
+    char data[POINTING_JSON_MAX + 1];
+};
 
 static String jsonEscape(const String &value) {
     String escaped;
@@ -130,16 +146,28 @@ void setupWebServer() {
 
     // Status endpoint
     webServer.on("/status", HTTP_GET, [](AsyncWebServerRequest *request) {
-        // Compute RA/Dec and Galactic l/b for current alt/az
-        double curAlt = srtSerial.getCurrentAlt();
-        double curAz  = srtSerial.getCurrentAz();
+        // What the Due reports is a DRIVE position. "alt" and "az" keep that
+        // meaning - the scheduler's slew-completion check and sun_scan.py's
+        // record of where a source was found both need the drive frame, and
+        // both compare against a drive target. The sky position it corresponds
+        // to is published alongside as true_alt/true_az, and it is that one,
+        // not the drive position, that RA/Dec and galactic l/b are computed
+        // from: converting the drive position straight to RA/Dec would be
+        // wrong by the whole pointing calibration.
+        double driveAlt = srtSerial.getCurrentAlt();
+        double driveAz  = srtSerial.getCurrentAz();
+        double curAlt = driveAlt, curAz = driveAz;
+        driveToTrue(driveAlt, driveAz, curAlt, curAz);
         double ra = 0.0, dec = 0.0, gl = 0.0, gb = 0.0;
         altAzToRaDec(curAlt, curAz, settings.observerLat, settings.observerLon, ra, dec);
         equatorialToGalactic(ra, dec, gl, gb);
 
         String json = "{";
-        json += "\"alt\":" + String(curAlt, 2) + ",";
-        json += "\"az\":" + String(curAz, 2) + ",";
+        json += "\"alt\":" + String(driveAlt, 2) + ",";
+        json += "\"az\":" + String(driveAz, 2) + ",";
+        json += "\"true_alt\":" + String(curAlt, 2) + ",";
+        json += "\"true_az\":" + String(curAz, 2) + ",";
+        json += "\"pointing_loaded\":" + String(pointingModel.loaded ? "true" : "false") + ",";
         json += "\"ra\":" + String(ra, 4) + ",";
         json += "\"dec\":" + String(dec, 2) + ",";
         json += "\"gal_l\":" + String(gl, 2) + ",";
@@ -211,10 +239,9 @@ void setupWebServer() {
         double sunRA, sunDec, moonRA, moonDec;
         getSunPosition(sunRA, sunDec);
         getMoonPosition(moonRA, moonDec);
-        GalacticPlaneTarget bulge;
-        getGalacticBulgeTrackingTarget(settings.observerLat, settings.observerLon,
-                                       effectiveTrackingHorizonAlt(settings.mountAltMin),
-                                       bulge);
+        GalacticPlaneTarget plane;
+        getGalacticPlaneTrackingTarget(settings.observerLat, settings.observerLon,
+                                       settings.galacticMinAlt, plane);
 
         double sunAlt, sunAz, moonAlt, moonAz;
         raDecToAltAz(sunRA, sunDec, settings.observerLat, settings.observerLon, sunAlt, sunAz);
@@ -224,13 +251,13 @@ void setupWebServer() {
         snprintf(json, sizeof(json),
             "{\"sun\":{\"ra\":%.4f,\"dec\":%.2f,\"alt\":%.2f,\"az\":%.2f},"
             "\"moon\":{\"ra\":%.4f,\"dec\":%.2f,\"alt\":%.2f,\"az\":%.2f},"
-            "\"bulge\":{\"found\":%s,\"bulge_visible\":%s,\"l\":%.2f,\"b\":%.2f,"
-            "\"ra\":%.4f,\"dec\":%.2f,\"alt\":%.2f,\"az\":%.2f}}",
+            "\"plane\":{\"found\":%s,\"l\":%.2f,\"b\":%.2f,"
+            "\"ra\":%.4f,\"dec\":%.2f,\"alt\":%.2f,\"az\":%.2f,\"min_alt\":%.1f}}",
             sunRA, sunDec, sunAlt, sunAz,
             moonRA, moonDec, moonAlt, moonAz,
-            bulge.found ? "true" : "false",
-            bulge.bulgeVisible ? "true" : "false",
-            bulge.l, bulge.b, bulge.ra, bulge.dec, bulge.alt, bulge.az);
+            plane.found ? "true" : "false",
+            plane.l, plane.b, plane.ra, plane.dec, plane.alt, plane.az,
+            settings.galacticMinAlt);
         request->send(200, "application/json", json);
     });
 
@@ -243,7 +270,7 @@ void setupWebServer() {
         galacticToEquatorial(l, b, ra, dec);
         double tAlt, tAz;
         raDecToAltAz(ra, dec, settings.observerLat, settings.observerLon, tAlt, tAz);
-        double minTrackingAlt = effectiveTrackingHorizonAlt(settings.mountAltMin);
+        double minTrackingAlt = settings.horizonAlt;
         if (tAlt < minTrackingAlt) {
             char err[128];
             snprintf(err, sizeof(err),
@@ -264,7 +291,7 @@ void setupWebServer() {
         float dec = request->arg("dec").toFloat();
         double tAlt, tAz;
         raDecToAltAz(ra, dec, settings.observerLat, settings.observerLon, tAlt, tAz);
-        double minTrackingAlt = effectiveTrackingHorizonAlt(settings.mountAltMin);
+        double minTrackingAlt = settings.horizonAlt;
         if (tAlt < minTrackingAlt) {
             char err[128];
             snprintf(err, sizeof(err),
@@ -349,18 +376,27 @@ void setupWebServer() {
         request->send(200, "application/json", "{\"ok\":true}");
     });
 
-    // Slew to the saved home position from Settings.
+    // Slew to the saved stow position from Settings. Stow is a DRIVE position -
+    // parking is mechanical, not an observation - so the pointing model is
+    // bypassed here; see config.h. Kept at /go-home because the scheduler and
+    // any bookmarked UI call it by that path.
+    //
+    // state.targetAlt/targetAz are deliberately not written: they hold a TRUE
+    // sky target, and putting drive coordinates in them would be the frame mix
+    // this whole arrangement exists to prevent. They are inert once
+    // clearCurrentTracking() has run, which is the next thing that happens.
     webServer.on("/go-home", HTTP_GET, [](AsyncWebServerRequest *request) {
         SRTLock lock;
-        state.targetAlt = settings.homeAlt;
-        state.targetAz = settings.homeAz;
         state.movementHoldUntil = 0;
         clearCurrentTracking();
-        srtSerial.sendTarget(settings.homeAlt, settings.homeAz);
-        char json[64];
-        snprintf(json, sizeof(json), "{\"ok\":true,\"alt\":%.2f,\"az\":%.2f}",
-                 settings.homeAlt, settings.homeAz);
-        srtSerial.logESP("Go home");
+        double driveAlt = settings.stowAlt, driveAz = settings.stowAz;
+        clampToMountLimits(driveAlt, driveAz);
+        srtSerial.sendDriveTarget(driveAlt, driveAz);
+        char json[96];
+        snprintf(json, sizeof(json),
+                 "{\"ok\":true,\"drive_alt\":%.2f,\"drive_az\":%.2f}",
+                 driveAlt, driveAz);
+        srtSerial.logESP("Go to stow");
         request->send(200, "application/json", json);
     });
 
@@ -382,26 +418,31 @@ void setupWebServer() {
         request->send(200, "application/json", "{\"ok\":true}");
     });
 
-    // Track Galactic Bulge, falling back to the nearest visible galactic plane point.
-    webServer.on("/track/galactic-bulge", HTTP_GET, [](AsyncWebServerRequest *request) {
+    // Track the galactic plane, as near the centre as the acquisition floor
+    // allows. Registered before "/track/galactic" - see the route ordering note
+    // at the top of setupWebServer().
+    webServer.on("/track/galactic-plane", HTTP_GET, [](AsyncWebServerRequest *request) {
         GalacticPlaneTarget target;
-        getGalacticBulgeTrackingTarget(settings.observerLat, settings.observerLon,
-                                       effectiveTrackingHorizonAlt(settings.mountAltMin),
-                                       target);
+        getGalacticPlaneTrackingTarget(settings.observerLat, settings.observerLon,
+                                       settings.galacticMinAlt, target);
         if (!target.found) {
-            request->send(409, "application/json",
-                          "{\"ok\":false,\"error\":\"No galactic plane point is above the horizon\"}");
+            char err[160];
+            snprintf(err, sizeof(err),
+                     "{\"ok\":false,\"error\":\"No point on the galactic plane reaches "
+                     "%.1f deg altitude just now; wait, or lower the acquisition floor\"}",
+                     settings.galacticMinAlt);
+            request->send(409, "application/json", err);
             return;
         }
-        setTrackingTarget(target.ra, target.dec, "Galactic Bulge");
-        srtSerial.logESP(target.bulgeVisible ? "Track Galactic Bulge"
-                                             : "Track galactic plane near bulge");
+        setTrackingTarget(target.ra, target.dec, "Galactic Plane");
+        char msg[64];
+        snprintf(msg, sizeof(msg), "Track galactic plane l=%.1f", target.l);
+        srtSerial.logESP(msg);
         char json[128];
         snprintf(json, sizeof(json),
-                 "{\"ok\":true,\"bulge_visible\":%s,\"l\":%.2f,\"b\":%.2f,"
-                 "\"ra\":%.4f,\"dec\":%.2f}",
-                 target.bulgeVisible ? "true" : "false",
-                 target.l, target.b, target.ra, target.dec);
+                 "{\"ok\":true,\"l\":%.2f,\"b\":%.2f,"
+                 "\"ra\":%.4f,\"dec\":%.2f,\"alt\":%.2f,\"az\":%.2f}",
+                 target.l, target.b, target.ra, target.dec, target.alt, target.az);
         request->send(200, "application/json", json);
     });
 
@@ -411,7 +452,7 @@ void setupWebServer() {
         float dec = request->arg("dec").toFloat();
         double tAlt, tAz;
         raDecToAltAz(ra, dec, settings.observerLat, settings.observerLon, tAlt, tAz);
-        double minTrackingAlt = effectiveTrackingHorizonAlt(settings.mountAltMin);
+        double minTrackingAlt = settings.horizonAlt;
         if (tAlt < minTrackingAlt) {
             char err[128];
             snprintf(err, sizeof(err),
@@ -432,7 +473,7 @@ void setupWebServer() {
         galacticToEquatorial(l, b, ra, dec);
         double tAlt, tAz;
         raDecToAltAz(ra, dec, settings.observerLat, settings.observerLon, tAlt, tAz);
-        double minTrackingAlt = effectiveTrackingHorizonAlt(settings.mountAltMin);
+        double minTrackingAlt = settings.horizonAlt;
         if (tAlt < minTrackingAlt) {
             char err[128];
             snprintf(err, sizeof(err),
@@ -500,20 +541,26 @@ void setupWebServer() {
         request->send(200, "application/json", json);
     });
 
-    // Direct Alt/Az
+    // Direct Alt/Az. The operator types a TRUE sky altitude and azimuth here,
+    // the same frame every other target uses, so the model applies to it too.
     webServer.on("/direct", HTTP_GET, [](AsyncWebServerRequest *request) {
         SRTLock lock;
         float alt = request->arg("alt").toFloat();
         float az = request->arg("az").toFloat();
+        double driveAlt, driveAz;
         if (state.trackingEnabled && state.azOnlyTracking) {
             state.azOnlyAlt = alt;
-            srtSerial.sendTarget(alt, state.targetAz);
+            trueToDrive(alt, state.targetAz, driveAlt, driveAz);
+            clampToMountLimits(driveAlt, driveAz);
+            srtSerial.sendDriveTarget(driveAlt, driveAz);
             request->send(200, "application/json", "{\"ok\":true,\"tracking\":true,\"updated\":\"alt\"}");
             return;
         }
         if (state.trackingEnabled && state.altOnlyTracking) {
             state.altOnlyAz = az;
-            srtSerial.sendTarget(state.targetAlt, az);
+            trueToDrive(state.targetAlt, az, driveAlt, driveAz);
+            clampToMountLimits(driveAlt, driveAz);
+            srtSerial.sendDriveTarget(driveAlt, driveAz);
             request->send(200, "application/json", "{\"ok\":true,\"tracking\":true,\"updated\":\"az\"}");
             return;
         }
@@ -521,8 +568,22 @@ void setupWebServer() {
         state.targetAz = az;
         state.movementHoldUntil = 0;
         clearCurrentTracking();
-        srtSerial.sendTarget(alt, az);
-        request->send(200, "application/json", "{\"ok\":true}");
+        trueToDrive(alt, az, driveAlt, driveAz);
+        if (!driveAltWithinLimits(driveAlt) || !driveAzWithinLimits(driveAz)) {
+            char err[192];
+            snprintf(err, sizeof(err),
+                "{\"ok\":false,\"error\":\"Drive position %.1f/%.1f is outside the mount "
+                "limits (alt %.1f..%.1f, az %.1f..%.1f)\"}",
+                driveAlt, driveAz, settings.mountAltMin, settings.mountAltMax,
+                settings.mountAzMin, settings.mountAzMax);
+            request->send(400, "application/json", err);
+            return;
+        }
+        srtSerial.sendDriveTarget(driveAlt, driveAz);
+        char json[96];
+        snprintf(json, sizeof(json), "{\"ok\":true,\"drive_alt\":%.2f,\"drive_az\":%.2f}",
+                 driveAlt, driveAz);
+        request->send(200, "application/json", json);
     });
 
     // Time status
@@ -794,6 +855,95 @@ void setupWebServer() {
         }
     });
 
+    // Pointing calibration. /pointing/apply and /pointing/clear are registered
+    // before /pointing - see the route ordering note at the top of this
+    // function.
+    //
+    // The model is a POST body rather than query arguments because it is a
+    // document with a schema, uploaded whole: partial application is exactly
+    // what pointingApplyJson() refuses to do, and a URL that can be truncated
+    // by a proxy or a browser is the wrong carrier for that.
+    webServer.on("/pointing/apply", HTTP_POST,
+        [](AsyncWebServerRequest *request) {
+            PointingBody *body = (PointingBody *)request->_tempObject;
+            if (!body || body->len == 0) {
+                request->send(400, "application/json",
+                              "{\"ok\":false,\"error\":\"Empty request body\"}");
+                return;
+            }
+            if (body->truncated) {
+                request->send(413, "application/json",
+                              "{\"ok\":false,\"error\":\"Model document is too large\"}");
+                return;
+            }
+            body->data[body->len] = '\0';
+            String error;
+            bool ok;
+            {
+                // pointingModel is read by updateTracking() on loopTask, so the
+                // replacement is applied as one unit. The NVS write is outside
+                // the lock, as with settings: it is tens of milliseconds and
+                // nothing on loopTask writes the model.
+                SRTLock lock;
+                ok = pointingApplyJson(String(body->data), error);
+            }
+            if (!ok) {
+                String json = "{\"ok\":false,\"error\":\"" + jsonEscape(error) + "\"}";
+                request->send(400, "application/json", json);
+                return;
+            }
+            pointingSave();
+            srtSerial.logESP("Pointing model applied");
+            request->send(200, "application/json",
+                          "{\"ok\":true,\"model\":" + pointingToJson() + "}");
+        },
+        nullptr,
+        [](AsyncWebServerRequest *request, uint8_t *data, size_t len,
+           size_t index, size_t total) {
+            if (index == 0) {
+                // Freed by ~AsyncWebServerRequest with free(), so this must be
+                // malloc'd and must not be a type with a destructor.
+                request->_tempObject = malloc(sizeof(PointingBody));
+                if (request->_tempObject) {
+                    PointingBody *b = (PointingBody *)request->_tempObject;
+                    b->len = 0;
+                    b->truncated = false;
+                }
+            }
+            PointingBody *body = (PointingBody *)request->_tempObject;
+            if (!body) return;
+            for (size_t i = 0; i < len; i++) {
+                if (body->len >= POINTING_JSON_MAX) {
+                    body->truncated = true;
+                    return;
+                }
+                body->data[body->len++] = (char)data[i];
+            }
+        });
+
+    // Zero the model and erase its NVS keys. A cleared model and an all-zero
+    // model behave identically - both are the identity transform - so this is
+    // safe to use after mechanical work without leaving pointing in a special
+    // state.
+    webServer.on("/pointing/clear", HTTP_GET, [](AsyncWebServerRequest *request) {
+        {
+            // Zeroed under the lock because loopTask reads the model on every
+            // tracking update; the flash erase then happens outside it, as with
+            // the settings save.
+            SRTLock lock;
+            pointingModel = PointingModel();
+        }
+        pointingEraseStored();
+        srtSerial.logESP("Pointing model cleared");
+        request->send(200, "application/json",
+                      "{\"ok\":true,\"model\":" + pointingToJson() + "}");
+    });
+
+    webServer.on("/pointing", HTTP_GET, [](AsyncWebServerRequest *request) {
+        SRTLock lock;
+        request->send(200, "application/json", pointingToJson());
+    });
+
     // Save settings (must be before /settings to avoid route conflict)
     webServer.on("/settings/save", HTTP_GET, [](AsyncWebServerRequest *request) {
         // observerLat/Lon are 8-byte doubles read by updateTracking() on
@@ -820,11 +970,17 @@ void setupWebServer() {
             if (request->hasArg("mount_alt_max")) {
                 settings.mountAltMax = request->arg("mount_alt_max").toFloat();
             }
-            if (request->hasArg("home_alt")) {
-                settings.homeAlt = request->arg("home_alt").toFloat();
+            if (request->hasArg("horizon_alt")) {
+                settings.horizonAlt = request->arg("horizon_alt").toFloat();
             }
-            if (request->hasArg("home_az")) {
-                settings.homeAz = request->arg("home_az").toFloat();
+            if (request->hasArg("galactic_min_alt")) {
+                settings.galacticMinAlt = request->arg("galactic_min_alt").toFloat();
+            }
+            if (request->hasArg("stow_alt")) {
+                settings.stowAlt = request->arg("stow_alt").toFloat();
+            }
+            if (request->hasArg("stow_az")) {
+                settings.stowAz = request->arg("stow_az").toFloat();
             }
             if (request->hasArg("position_deadband")) {
                 settings.positionDeadband = request->arg("position_deadband").toFloat();
@@ -859,19 +1015,21 @@ void setupWebServer() {
 
     // Get settings
     webServer.on("/settings", HTTP_GET, [](AsyncWebServerRequest *request) {
-        char json[600];
+        char json[700];
         snprintf(json, sizeof(json),
             "{\"observer_lat\":%.6f,\"observer_lon\":%.6f,"
             "\"mount_az_min\":%.1f,\"mount_az_max\":%.1f,"
             "\"mount_alt_min\":%.1f,\"mount_alt_max\":%.1f,"
-            "\"home_alt\":%.1f,\"home_az\":%.1f,"
+            "\"horizon_alt\":%.1f,\"galactic_min_alt\":%.1f,"
+            "\"stow_alt\":%.1f,\"stow_az\":%.1f,"
             "\"position_deadband\":%.2f,"
             "\"ap_ssid\":\"%s\",\"ap_password\":\"%s\","
             "\"page_name\":\"%s\"}",
             settings.observerLat, settings.observerLon,
             settings.mountAzMin, settings.mountAzMax,
             settings.mountAltMin, settings.mountAltMax,
-            settings.homeAlt, settings.homeAz,
+            settings.horizonAlt, settings.galacticMinAlt,
+            settings.stowAlt, settings.stowAz,
             settings.positionDeadband,
             settings.apSSID.c_str(), settings.apPassword.c_str(),
             settings.pageName.c_str());

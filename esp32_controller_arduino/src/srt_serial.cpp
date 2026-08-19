@@ -118,10 +118,10 @@ void SRTSerial::begin(int txPin, int rxPin, int baudRate) {
 // "STATUS45.0 180.0", drops it, and the slew is silently lost. A mangled but
 // still parseable pair of numbers would be worse, commanding a wrong position.
 
-void SRTSerial::sendTarget(float alt, float az) {
+void SRTSerial::sendDriveTarget(float driveAlt, float driveAz) {
     if (uart) {
         char cmd[32];
-        snprintf(cmd, sizeof(cmd), "%.1f %.1f", alt, az);
+        snprintf(cmd, sizeof(cmd), "%.1f %.1f", driveAlt, driveAz);
         SRTLock lock;
         logMessage('T', cmd);
         uart->println(cmd);

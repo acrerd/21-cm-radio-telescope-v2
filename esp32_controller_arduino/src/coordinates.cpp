@@ -423,54 +423,43 @@ void equatorialToGalactic(double raHours, double decDeg, double &lOut, double &b
     bOut = bRad * RAD_TO_DEG;
 }
 
-void getGalacticBulgeTrackingTarget(double latDeg, double lonDeg, double minAltDeg,
+void getGalacticPlaneTrackingTarget(double latDeg, double lonDeg, double minAltDeg,
                                     GalacticPlaneTarget &target) {
-    const double bulgeL = 0.0;
-    const double bulgeB = 0.0;
-    double ra, dec, alt, az;
-
-    galacticToEquatorial(bulgeL, bulgeB, ra, dec);
-    raDecToAltAz(ra, dec, latDeg, lonDeg, alt, az);
-
-    target.found = true;
-    target.bulgeVisible = alt >= minAltDeg;
-    target.l = bulgeL;
-    target.b = bulgeB;
-    target.ra = ra;
-    target.dec = dec;
-    target.alt = alt;
-    target.az = az;
-
-    if (target.bulgeVisible) {
-        return;
-    }
-
     target.found = false;
-    for (double distance = 0.5; distance <= 180.0; distance += 0.5) {
-        double candidates[2] = {distance, 360.0 - distance};
-        GalacticPlaneTarget bestAtDistance;
-        bool hasCandidate = false;
 
-        for (int i = 0; i < 2; i++) {
+    // Walk outwards along the plane from the galactic centre, taking the first
+    // longitude that reaches minAltDeg. Because the two candidates at each step
+    // are the same angular distance from the centre - b is zero for both, so
+    // their separation from l=0 is just the longitude difference - "closest to
+    // the centre" is settled by the step, and the pair is a free choice.
+    for (double distance = 0.0; distance <= 180.0; distance += 0.5) {
+        double candidates[2] = {distance, 360.0 - distance};
+        int candidateCount = (distance == 0.0) ? 1 : 2;   // l=0 is its own mirror
+        GalacticPlaneTarget best;
+        bool haveCandidate = false;
+
+        for (int i = 0; i < candidateCount; i++) {
             double l = candidates[i];
             if (l >= 360.0) l -= 360.0;
+            double ra, dec, alt, az;
             galacticToEquatorial(l, 0.0, ra, dec);
             raDecToAltAz(ra, dec, latDeg, lonDeg, alt, az);
-            if (alt >= minAltDeg && (!hasCandidate || alt < bestAtDistance.alt)) {
-                hasCandidate = true;
-                bestAtDistance.found = true;
-                bestAtDistance.bulgeVisible = false;
-                bestAtDistance.l = l;
-                bestAtDistance.b = 0.0;
-                bestAtDistance.ra = ra;
-                bestAtDistance.dec = dec;
-                bestAtDistance.alt = alt;
-                bestAtDistance.az = az;
-            }
+            if (alt < minAltDeg) continue;
+            // Between the two, take the higher: equally close to the centre, but
+            // it stays observable longer and looks through less atmosphere.
+            if (haveCandidate && alt <= best.alt) continue;
+            haveCandidate = true;
+            best.found = true;
+            best.l = l;
+            best.b = 0.0;
+            best.ra = ra;
+            best.dec = dec;
+            best.alt = alt;
+            best.az = az;
         }
 
-        if (hasCandidate) {
-            target = bestAtDistance;
+        if (haveCandidate) {
+            target = best;
             return;
         }
     }

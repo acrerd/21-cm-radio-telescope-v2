@@ -21,8 +21,11 @@ public:
     // Initialize UART
     void begin(int txPin, int rxPin, int baudRate);
 
-    // Send commands to Due
-    void sendTarget(float alt, float az);
+    // Send commands to Due. The Due works only in DRIVE coordinates, so this
+    // takes drive coordinates and nothing else - named for the frame precisely
+    // because every caller holds a true sky position a moment earlier and the
+    // conversion must be visible at the call site. See pointing.h.
+    void sendDriveTarget(float driveAlt, float driveAz);
     void sendHome();
     void sendStop();
     void sendReset();

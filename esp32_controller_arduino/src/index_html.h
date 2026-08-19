@@ -48,8 +48,8 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
         button.solar:hover { background: #cc8800; }
         button.lunar { background: #aaaacc; color: #000; }
         button.lunar:hover { background: #8888aa; }
-        button.galactic-bulge { background: #f2e9ff; color: #2d124d; }
-        button.galactic-bulge:hover { background: #d8b8ff; }
+        button.galactic-plane { background: #f2e9ff; color: #2d124d; }
+        button.galactic-plane:hover { background: #d8b8ff; }
         button.cal-on { background: #00ff00; color: #000; }
         button.cal-on:hover { background: #00cc00; }
         .tracking { color: #00ff00; }
@@ -121,6 +121,7 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
         <div class="tab-bar">
             <div class="tab active" onclick="showTab('control')">Control</div>
             <div class="tab" onclick="showTab('network')">Network</div>
+            <div class="tab" onclick="showTab('pointing')">Pointing</div>
             <div class="tab" onclick="showTab('settings')">Settings</div>
             <div class="tab" onclick="showTab('help')">Help</div>
         </div>
@@ -129,8 +130,9 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
                 <div class="left-col">
                     <div class="box">
                         <h3>Current Status</h3>
-                        <div class="status-row"><span class="label">Altitude:</span><span class="value" id="alt">--</span></div>
-                        <div class="status-row"><span class="label">Azimuth:</span><span class="value" id="az">--</span></div>
+                        <div class="status-row"><span class="label">Altitude (sky):</span><span class="value" id="alt">--</span></div>
+                        <div class="status-row"><span class="label">Azimuth (sky):</span><span class="value" id="az">--</span></div>
+                        <div class="status-row"><span class="label">Drive Alt/Az:</span><span class="value" id="drive_pos">--</span></div>
                         <div class="status-row"><span class="label">RA:</span><span class="value" id="cur_ra">--</span></div>
                         <div class="status-row"><span class="label">Dec:</span><span class="value" id="cur_dec">--</span></div>
                         <div class="status-row"><span class="label">Gal l:</span><span class="value" id="cur_gl">--</span></div>
@@ -146,8 +148,8 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
                         <h3>Quick Targets</h3>
                         <button class="solar fault-dependent" onclick="trackSun()" data-help="Track the Sun using the controller ephemeris and keep updating the telescope position as it moves.">Track Sun</button>
                         <button class="lunar fault-dependent" onclick="trackMoon()" data-help="Track the Moon using the controller ephemeris and keep updating the telescope position as it moves.">Track Moon</button>
-                        <button class="galactic-bulge fault-dependent" onclick="trackGalacticBulge()" data-help="Track the Galactic Bulge when it is above the horizon. If it is below the horizon, track the nearest visible point on the galactic plane until the bulge rises.">Track Galactic Bulge</button>
-                        <div class="target-info">Sun: <span id="sun_pos">--</span><br>Moon: <span id="moon_pos">--</span><br><span id="bulge_label">Bulge</span>: <span id="bulge_pos">--</span></div>
+                        <button class="galactic-plane fault-dependent" onclick="trackGalacticPlane()" data-help="Track the galactic plane at the point nearest the galactic centre that is currently at or above the acquisition altitude set in Settings. The target is then followed down as it sets.">Track Galactic Plane</button>
+                        <div class="target-info">Sun: <span id="sun_pos">--</span><br>Moon: <span id="moon_pos">--</span><br><span id="plane_label">Gal plane</span>: <span id="plane_pos">--</span></div>
                     </div>
                     <div class="box">
                         <h3>Actions</h3>
@@ -170,7 +172,7 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
                             <button class="fault-dependent" onclick="applyFixedAxis()" data-help="Apply this fixed coordinate while continuing one-axis tracking.">Apply</button>
                         </div>
                         <div class="action-row">
-                            <button class="fault-dependent" onclick="goHome()" data-help="Slew directly to the Home Alt/Az saved in Settings.">Go home</button>
+                            <button class="fault-dependent" onclick="goHome()" data-help="Slew directly to the stow position saved in Settings.">Go to stow</button>
                             <button class="secondary" id="reset_btn" onclick="resetFault()" disabled data-help="Clear a mount fault after checking that the telescope is safe to move again.">Reset</button>
                             <button class="fault-dependent" onclick="runHoming()" data-help="Run the mount homing sequence on the Arduino Due controller.">Homing Sequence</button>
                         </div>
@@ -298,6 +300,50 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
                 </div>
             </div>
         </div>
+        <div id="tab-pointing" class="tab-content">
+            <div class="two-col">
+                <div>
+                    <div class="box">
+                        <h3>Stored Pointing Model</h3>
+                        <div class="status-row"><span class="label">State:</span><span class="value" id="pm_state">--</span></div>
+                        <div class="status-row"><span class="label">Fitted:</span><span class="value" id="pm_fitted">--</span></div>
+                        <div class="status-row"><span class="label">Scans:</span><span class="value" id="pm_scans">--</span></div>
+                        <div class="status-row"><span class="label">Schema:</span><span class="value" id="pm_version">--</span></div>
+                        <h4>Terms (degrees)</h4>
+                        <div class="status-row"><span class="label">IE (alt zero):</span><span class="value" id="pm_IE">--</span></div>
+                        <div class="status-row"><span class="label">IA (az zero):</span><span class="value" id="pm_IA">--</span></div>
+                        <div class="status-row"><span class="label">AN (tilt north):</span><span class="value" id="pm_AN">--</span></div>
+                        <div class="status-row"><span class="label">AE (tilt east):</span><span class="value" id="pm_AE">--</span></div>
+                        <div class="status-row"><span class="label">CA (collimation):</span><span class="value" id="pm_CA">--</span></div>
+                        <div class="status-row"><span class="label">NPAE (axis skew):</span><span class="value" id="pm_NPAE">--</span></div>
+                        <div class="status-row"><span class="label">TF (flexure):</span><span class="value" id="pm_TF">--</span></div>
+                        <div class="btn-row">
+                            <button class="secondary" onclick="loadPointing()" data-help="Reload the stored pointing model from the controller.">Reload</button>
+                            <button class="stop" onclick="clearPointing()" data-help="Erase the stored pointing model. The telescope then points with no calibration applied, which is what you want after mechanical work.">Clear calibration</button>
+                        </div>
+                        <p id="pointing-status" class="target-info"></p>
+                    </div>
+                </div>
+                <div>
+                    <div class="box">
+                        <h3>Load a Model</h3>
+                        <p class="target-info">Upload a <code>pointing_model.json</code> fitted by the scheduler&#39;s Calibration Day. The scheduler can also push it here itself after a successful fit; both routes write the same stored model.</p>
+                        <div class="coord-row">
+                            <input type="file" id="pm_file" accept=".json,application/json">
+                        </div>
+                        <div class="btn-row">
+                            <button onclick="uploadPointing()" data-help="Send the selected pointing model file to the controller and store it in flash.">Upload model</button>
+                        </div>
+                    </div>
+                    <div class="box">
+                        <h3>What This Is</h3>
+                        <p style="font-size:0.85em;">The model converts a <strong>true sky</strong> position into the <strong>drive</strong> position that puts the beam on it, and back again for display. It is stored in the controller&#39;s flash and survives a power cycle.</p>
+                        <p style="font-size:0.85em;">It is applied to every goto, track and stow command. The dAlt/dAz boxes on the Control tab are a separate, deliberate offset on the sky, layered on top of this - they should read 0/0 in normal observing.</p>
+                        <p style="font-size:0.85em;">Refraction is applied whether or not a model is stored; it is physics, not calibration.</p>
+                    </div>
+                </div>
+            </div>
+        </div>
         <div id="tab-settings" class="tab-content">
             <div class="two-col">
                 <div>
@@ -309,6 +355,17 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
                         <div class="coord-row">
                             <label>Longitude: <input type="number" id="set_lon" step="0.000001" min="-180" max="180"></label>
                         </div>
+                        <p class="target-info">The telescope&#39;s <strong>true</strong> position. Mount tilt does not belong here &mdash; it is a pointing term, shown below.</p>
+                    </div>
+                    <div class="box">
+                        <h3>Pointing Calibration</h3>
+                        <div class="status-row"><span class="label">State:</span><span class="value" id="pmset_state">--</span></div>
+                        <div class="status-row"><span class="label">Fitted:</span><span class="value" id="pmset_fitted">--</span></div>
+                        <div class="status-row"><span class="label">Scans:</span><span class="value" id="pmset_scans">--</span></div>
+                        <div class="status-row"><span class="label">IE / IA (zero points):</span><span class="value" id="pmset_ieia">--</span></div>
+                        <div class="status-row"><span class="label">AN / AE (axis tilt):</span><span class="value" id="pmset_anae">--</span></div>
+                        <div class="status-row"><span class="label">CA / NPAE / TF:</span><span class="value" id="pmset_extra">--</span></div>
+                        <p class="target-info">Read-only here. These terms convert a true sky position into the drive position that puts the beam on it. Load or clear a model on the Pointing tab.</p>
                     </div>
                     <div class="box">
                         <h3>Software Limits</h3>
@@ -322,11 +379,23 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
                         </div>
                     </div>
                     <div class="box">
-                        <h3>Home Position</h3>
+                        <h3>Observing Horizon</h3>
                         <div class="coord-row">
-                            <label>Home Alt: <input type="number" id="set_home_alt" step="0.5" min="0" max="90"></label>
-                            <label>Home Az: <input type="number" id="set_home_az" step="0.5" min="0" max="360"></label>
+                            <label>Min sky Alt: <input type="number" id="set_horizon_alt" step="0.5" min="0" max="90"></label>
                         </div>
+                        <p class="target-info">Lowest true sky altitude worth observing - trees and buildings. Checked before the pointing model. The Alt Min above is the mechanical stop and is checked after it.</p>
+                        <div class="coord-row">
+                            <label>Galactic plane acquire above: <input type="number" id="set_galactic_min_alt" step="0.5" min="0" max="90"></label>
+                        </div>
+                        <p class="target-info">Where Track Galactic Plane is allowed to start. It picks the point on the plane nearest the galactic centre that is this high, then follows it down until the horizon above parks the dish.</p>
+                    </div>
+                    <div class="box">
+                        <h3>Stow Position (mount)</h3>
+                        <div class="coord-row">
+                            <label>Stow Alt: <input type="number" id="set_stow_alt" step="0.5" min="0" max="90"></label>
+                            <label>Stow Az: <input type="number" id="set_stow_az" step="0.5" min="0" max="360"></label>
+                        </div>
+                        <p class="target-info">Where the dish parks when idle or when its target sets. <strong>Mount coordinates</strong> &mdash; the pointing calibration is not applied, so the mount rests exactly here. Parking is mechanical, not an observation, and at the zenith azimuth points at no particular sky. Not the Due&#39;s HOMEALT/HOMEAZ, which define the encoder origin.</p>
                     </div>
                 </div>
                 <div>
@@ -357,7 +426,7 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
                     </div>
                     <div class="box">
                         <div class="btn-row">
-                            <button onclick="saveSettings()" data-help="Save observer location, limits, home position, display, and access point settings.">Save Settings</button>
+                            <button onclick="saveSettings()" data-help="Save observer location, limits, observing horizon, stow position, display, and access point settings.">Save Settings</button>
                             <button class="secondary" onclick="loadSettings()" data-help="Reload settings from the controller and discard unsaved edits.">Reload</button>
                             <button class="stop" onclick="resetSettings()" data-help="Restore controller settings to their firmware defaults.">Reset to Defaults</button>
                         </div>
@@ -374,6 +443,7 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
                         <p><strong>RA/Dec</strong>: Right Ascension 0-24h, Dec -90 to +90</p>
                         <p><strong>Galactic</strong>: l 0-360, b -90 to +90</p>
                         <p><strong>Alt/Az</strong>: Altitude 0-90, Azimuth 0-355</p>
+                        <p style="font-size:0.85em;"><strong>Sky</strong> alt/az is where the dish looks. <strong>Drive</strong> alt/az is what the mount reads on its encoders. The Pointing tab holds the model that converts between them.</p>
                     </div>
                     <div class="box">
                         <h3>RA/Dec Input Formats</h3>
@@ -418,6 +488,8 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
                         <p style="font-size:0.85em;"><code>/tracking/axis?mode=az&amp;alt=X</code> - Track azimuth only</p>
                         <p style="font-size:0.85em;"><code>/tracking/axis?mode=alt&amp;az=X</code> - Track altitude only</p>
                         <p style="font-size:0.85em;"><code>/offset?alt=X&amp;az=Y</code> - Set pointing offset</p>
+                        <p style="font-size:0.85em;"><code>/pointing</code> - Stored pointing model</p>
+                        <p style="font-size:0.85em;"><code>/pointing/clear</code> - Erase the pointing model</p>
                         <p style="font-size:0.85em;"><code>/calibrator?on=1</code> - Control noise source</p>
                     </div>
                     <div class="box">
@@ -461,14 +533,19 @@ function setHoverHelp(on){hoverHelpEnabled=on;localStorage.setItem('hoverHelp',o
 function hideHoverHelp(){if(hoverHelpTimer){clearTimeout(hoverHelpTimer);hoverHelpTimer=null;}const b=document.getElementById('hover-help');if(b)b.style.display='none';hoverHelpTarget=null;}
 function showHoverHelp(el){if(!hoverHelpEnabled||!el||el.disabled)return;const text=el.getAttribute('data-help');if(!text)return;const b=document.getElementById('hover-help');const r=el.getBoundingClientRect();b.textContent=text;b.style.left=Math.min(r.left,window.innerWidth-280)+'px';b.style.top=Math.min(r.bottom+10,window.innerHeight-80)+'px';b.style.display='block';}
 function initHoverHelp(){const cb=document.getElementById('set_hover_help');if(cb)cb.checked=hoverHelpEnabled;document.addEventListener('pointerover',e=>{const el=e.target.closest('[data-help]');if(!el||el===hoverHelpTarget)return;hideHoverHelp();hoverHelpTarget=el;hoverHelpTimer=setTimeout(()=>showHoverHelp(el),2000);});document.addEventListener('pointerout',e=>{if(hoverHelpTarget&&(!e.relatedTarget||!hoverHelpTarget.contains(e.relatedTarget)))hideHoverHelp();});document.addEventListener('scroll',hideHoverHelp,true);}
-function showTab(name){document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));document.querySelectorAll('.tab-content').forEach(t=>t.classList.remove('active'));event.target.classList.add('active');document.getElementById('tab-'+name).classList.add('active');if(name==='network')updateNetworkStatus();if(name==='settings')loadSettings();}
+function showTab(name){document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));document.querySelectorAll('.tab-content').forEach(t=>t.classList.remove('active'));event.target.classList.add('active');document.getElementById('tab-'+name).classList.add('active');if(name==='network')updateNetworkStatus();if(name==='settings'){loadSettings();loadPointing();}if(name==='pointing')loadPointing();}
+function fmtTerm(v){return (typeof v==='number')?(v>=0?'+':'')+v.toFixed(4)+'\u00b0':'--';}
+function showPointing(d){const t=d.terms||{};document.getElementById('pm_state').textContent=d.loaded?'Model applied':'No model - identity transform';document.getElementById('pm_state').className='value '+(d.loaded?'tracking':'idle');document.getElementById('pm_fitted').textContent=d.fitted_utc||'--';document.getElementById('pm_scans').textContent=d.n_scans||'--';document.getElementById('pm_version').textContent=d.version||'--';['IE','IA','AN','AE','CA','NPAE','TF'].forEach(k=>{document.getElementById('pm_'+k).textContent=fmtTerm(t[k]);});const st=document.getElementById('pmset_state');if(st){st.textContent=d.loaded?'Model applied':'No model - identity transform';st.className='value '+(d.loaded?'tracking':'idle');document.getElementById('pmset_fitted').textContent=d.fitted_utc||'--';document.getElementById('pmset_scans').textContent=d.n_scans||'--';document.getElementById('pmset_ieia').textContent=fmtTerm(t.IE)+' / '+fmtTerm(t.IA);document.getElementById('pmset_anae').textContent=fmtTerm(t.AN)+' / '+fmtTerm(t.AE);document.getElementById('pmset_extra').textContent=fmtTerm(t.CA)+' / '+fmtTerm(t.NPAE)+' / '+fmtTerm(t.TF);}}
+function loadPointing(){fetch('/pointing').then(r=>r.json()).then(d=>{showPointing(d);document.getElementById('pointing-status').textContent='';});}
+function uploadPointing(){const f=document.getElementById('pm_file').files[0];const st=document.getElementById('pointing-status');if(!f){st.style.color='#ff4444';st.textContent='Choose a pointing_model.json file first.';return;}f.text().then(text=>fetch('/pointing/apply',{method:'POST',headers:{'Content-Type':'application/json'},body:text})).then(r=>r.json()).then(d=>{if(d.ok){showPointing(d.model);st.style.color='#00ff00';st.textContent='Model stored in flash.';}else{st.style.color='#ff4444';st.textContent=d.error||'Model rejected.';}}).catch(e=>{st.style.color='#ff4444';st.textContent='Upload failed: '+e;});}
+function clearPointing(){if(!confirm('Erase the stored pointing model? The telescope will point with no calibration applied until a new model is loaded.'))return;fetch('/pointing/clear').then(r=>r.json()).then(d=>{showPointing(d.model);const st=document.getElementById('pointing-status');st.style.color='#00ff00';st.textContent='Calibration cleared.';});}
 function formatRA(h){const hh=Math.floor(h);const m=Math.floor((h-hh)*60);const s=Math.floor(((h-hh)*60-m)*60);return hh+'h'+String(m).padStart(2,'0')+'m'+String(s).padStart(2,'0')+'s';}
 function formatDec(d){const sign=d>=0?'+':'-';d=Math.abs(d);const dd=Math.floor(d);const m=Math.floor((d-dd)*60);return sign+dd+'\u00b0'+String(m).padStart(2,'0')+"'";}
 function parseRA(s){s=s.trim().toLowerCase();let m=s.match(/^(\d+(?:\.\d+)?)\s*h\s*(?:(\d+(?:\.\d+)?)\s*m?\s*)?(?:(\d+(?:\.\d+)?)\s*s?\s*)?$/);if(m)return(parseFloat(m[1])||0)+(parseFloat(m[2])||0)/60+(parseFloat(m[3])||0)/3600;m=s.match(/^(\d+(?:\.\d+)?)[\s:]+(\d+(?:\.\d+)?)(?:[\s:]+(\d+(?:\.\d+)?))?$/);if(m)return(parseFloat(m[1])||0)+(parseFloat(m[2])||0)/60+(parseFloat(m[3])||0)/3600;return parseFloat(s)||0;}
 function parseDec(s){s=s.trim().toLowerCase();let sign=1;if(s.startsWith('-')){sign=-1;s=s.substring(1);}else if(s.startsWith('+')){s=s.substring(1);}let m=s.match(/^(\d+(?:\.\d+)?)\s*[d\u00b0]\s*(?:(\d+(?:\.\d+)?)\s*[m'\u2032]?\s*)?(?:(\d+(?:\.\d+)?)\s*[s"\u2033]?\s*)?$/);if(m)return sign*((parseFloat(m[1])||0)+(parseFloat(m[2])||0)/60+(parseFloat(m[3])||0)/3600);m=s.match(/^(\d+(?:\.\d+)?)[\s:]+(\d+(?:\.\d+)?)(?:[\s:]+(\d+(?:\.\d+)?))?$/);if(m)return sign*((parseFloat(m[1])||0)+(parseFloat(m[2])||0)/60+(parseFloat(m[3])||0)/3600);return parseFloat(s)||0;}
 function syncBrowserTime(){fetch('/time/set?timestamp='+Math.floor(Date.now()/1000)).then(r=>r.json()).then(d=>{if(d.ok)console.log('Time synced');});}
 function checkAndSyncTime(){fetch('/time/status').then(r=>r.json()).then(d=>{if(!d.synced)syncBrowserTime();});}
-function updateEphemeris(){fetch('/ephemeris').then(r=>r.json()).then(d=>{document.getElementById('sun_pos').textContent='Alt '+d.sun.alt.toFixed(1)+'\u00b0 Az '+d.sun.az.toFixed(1)+'\u00b0';document.getElementById('moon_pos').textContent='Alt '+d.moon.alt.toFixed(1)+'\u00b0 Az '+d.moon.az.toFixed(1)+'\u00b0';const bl=document.getElementById('bulge_label');const bp=document.getElementById('bulge_pos');if(d.bulge&&d.bulge.found){bl.textContent=d.bulge.bulge_visible?'Bulge':'Gal plane';bp.textContent=(d.bulge.bulge_visible?'':'l '+d.bulge.l.toFixed(1)+'\u00b0, ')+'Alt '+d.bulge.alt.toFixed(1)+'\u00b0 Az '+d.bulge.az.toFixed(1)+'\u00b0';}else{bl.textContent='Gal plane';bp.textContent='Below horizon';}});}
+function updateEphemeris(){fetch('/ephemeris').then(r=>r.json()).then(d=>{document.getElementById('sun_pos').textContent='Alt '+d.sun.alt.toFixed(1)+'\u00b0 Az '+d.sun.az.toFixed(1)+'\u00b0';document.getElementById('moon_pos').textContent='Alt '+d.moon.alt.toFixed(1)+'\u00b0 Az '+d.moon.az.toFixed(1)+'\u00b0';const bp=document.getElementById('plane_pos');if(d.plane&&d.plane.found){bp.textContent='l '+d.plane.l.toFixed(1)+'\u00b0, Alt '+d.plane.alt.toFixed(1)+'\u00b0 Az '+d.plane.az.toFixed(1)+'\u00b0';}else{bp.textContent='nothing above '+(d.plane&&d.plane.min_alt!==undefined?d.plane.min_alt.toFixed(0):'the floor')+'\u00b0';}});}
 function toggleEthMode(){const isDhcp=document.getElementById('eth_dhcp').checked;const fields=document.getElementById('eth-static-fields');fields.style.opacity=isDhcp?'0.5':'1';const inputs=fields.querySelectorAll('input');inputs.forEach(i=>i.disabled=isDhcp);}
 function saveEthSettings(){const dhcp=document.getElementById('eth_dhcp').checked?'1':'0';const params=new URLSearchParams();params.append('dhcp',dhcp);params.append('ip',document.getElementById('eth_static_ip').value);params.append('gateway',document.getElementById('eth_gateway').value);params.append('subnet',document.getElementById('eth_subnet').value);params.append('dns',document.getElementById('eth_dns').value);fetch('/eth/save?'+params.toString()).then(r=>r.json()).then(d=>{const st=document.getElementById('eth-save-status');if(d.ok){st.textContent='Saved! Reboot to apply.';st.style.color='#ffaa00';}else{st.textContent='Error: '+(d.error||'Unknown');st.style.color='#ff4444';}});}
 function updateNetworkStatus(){fetch('/wifi/status').then(r=>r.json()).then(d=>{const ethSec=document.getElementById('eth-section');const wifiPowerSec=document.getElementById('wifi-power-section');if(d.eth_available){ethSec.style.display='block';document.getElementById('net_name').textContent=d.mdns||d.hostname||'--';if(d.eth_connected){document.getElementById('eth_status').textContent='Connected';document.getElementById('eth_status').className='value connected';document.getElementById('eth_ip').textContent=d.eth_ip;wifiPowerSec.style.display='block';const btn=document.getElementById('wifi_power_btn');if(d.wifi_enabled){btn.textContent='Disable WiFi';btn.className='btn';}else{btn.textContent='Enable WiFi';btn.className='btn btn-active';}}else{document.getElementById('eth_status').textContent='Disconnected';document.getElementById('eth_status').className='value disconnected';document.getElementById('eth_ip').textContent='--';wifiPowerSec.style.display='none';}document.getElementById('eth_mac').textContent=d.eth_mac||'--';document.getElementById('eth_dhcp').checked=d.eth_dhcp;document.getElementById('eth_static').checked=!d.eth_dhcp;document.getElementById('eth_static_ip').value=d.eth_static_ip||'';document.getElementById('eth_gateway').value=d.eth_gateway||'';document.getElementById('eth_subnet').value=d.eth_subnet||'';document.getElementById('eth_dns').value=d.eth_dns||'';toggleEthMode();}else{ethSec.style.display='none';wifiPowerSec.style.display='none';}const wifiStatusText=d.wifi_enabled?'':'(DISABLED) ';document.getElementById('ap_status').textContent=d.wifi_enabled?(d.ap_ssid||'--'):'Disabled';document.getElementById('ap_ip').textContent=d.wifi_enabled?(d.ap_ip||'--'):'--';document.getElementById('wifi_mac').textContent=d.wifi_mac||'--';if(d.wifi_enabled&&d.sta_connected){document.getElementById('sta_status').textContent=d.sta_ssid;document.getElementById('sta_status').className='value connected';document.getElementById('sta_ip').textContent=d.sta_ip;}else{document.getElementById('sta_status').textContent=d.wifi_enabled?'Not connected':'Disabled';document.getElementById('sta_status').className='value disconnected';document.getElementById('sta_ip').textContent='--';}document.getElementById('saved-network').textContent=d.saved_ssid||'None';});}
@@ -489,13 +566,13 @@ function toggleWifiPower(){fetch('/wifi/status').then(r=>r.json()).then(d=>{cons
 updateNetworkStatus();[600,1500,3000,6000].forEach(ms=>setTimeout(updateNetworkStatus,ms));});});}
 function trackSun(){if(currentTrackingTarget==='Sun')return;fetch('/track/sun').then(()=>updateStatus());}
 function trackMoon(){if(currentTrackingTarget==='Moon')return;fetch('/track/moon').then(()=>updateStatus());}
-function trackGalacticBulge(){if(currentTrackingTarget==='Galactic Bulge')return;handleTrackResponse(fetch('/track/galactic-bulge'));}
+function trackGalacticPlane(){if(currentTrackingTarget==='Galactic Plane')return;handleTrackResponse(fetch('/track/galactic-plane'));}
 function handleTrackResponse(promise){promise.then(r=>r.json()).then(d=>{if(!d.ok){alert(d.error||'Track failed');}updateStatus();});}
 function setAxisMode(mode){const params=new URLSearchParams();params.append('mode',mode);handleTrackResponse(fetch('/tracking/axis?'+params.toString()));}
 function updateAxisMode(d){const azOnly=!!d.az_only;const altOnly=!!d.alt_only;document.getElementById('axis_az').classList.toggle('active',azOnly);document.getElementById('axis_alt').classList.toggle('active',altOnly);document.getElementById('axis_both').classList.toggle('active',!azOnly&&!altOnly);currentAxisMode=azOnly?'az':altOnly?'alt':'both';updateFixedAxisRow(d);}
 function updateFixedAxisRow(d){const row=document.getElementById('axis_fixed_row');const label=document.getElementById('axis_fixed_label');const input=document.getElementById('axis_fixed_value');const apply=row?row.querySelector('button'):null;if(!row||!label||!input)return;const editing=document.activeElement===input;if(d.az_only){row.classList.add('active');label.textContent='Go to altitude';input.min='0';input.max='90';if(!editing)input.value=Number(d.az_only_alt||0).toFixed(1);input.setAttribute('data-help','Altitude to hold while only azimuth tracks.');if(apply)apply.setAttribute('data-help','Go to this altitude and keep tracking azimuth.');}else if(d.alt_only){row.classList.add('active');label.textContent='Go to azimuth';input.min='0';input.max='360';if(!editing)input.value=Number(d.alt_only_az||0).toFixed(1);input.setAttribute('data-help','Azimuth to hold while only altitude tracks.');if(apply)apply.setAttribute('data-help','Go to this azimuth and keep tracking altitude.');}else{row.classList.remove('active');}}
 function applyFixedAxis(){if(currentAxisMode!=='az'&&currentAxisMode!=='alt')return;const v=document.getElementById('axis_fixed_value').value;const params=new URLSearchParams();params.append('mode',currentAxisMode);if(currentAxisMode==='az')params.append('alt',v);else params.append('az',v);handleTrackResponse(fetch('/tracking/axis?'+params.toString()));}
-function updateTargetButtons(target){currentTrackingTarget=target||'';const sun=document.querySelector('button[onclick="trackSun()"]');const moon=document.querySelector('button[onclick="trackMoon()"]');const bulge=document.querySelector('button[onclick="trackGalacticBulge()"]');if(sun){const active=currentTrackingTarget==='Sun';sun.classList.toggle('target-active',active);sun.setAttribute('aria-disabled',active?'true':'false');sun.setAttribute('data-help',active?'The telescope is already tracking the Sun. Use Stop tracking or choose another target before starting it again.':'Track the Sun using the controller ephemeris and keep updating the telescope position as it moves.');}if(moon){const active=currentTrackingTarget==='Moon';moon.classList.toggle('target-active',active);moon.setAttribute('aria-disabled',active?'true':'false');moon.setAttribute('data-help',active?'The telescope is already tracking the Moon. Use Stop tracking or choose another target before starting it again.':'Track the Moon using the controller ephemeris and keep updating the telescope position as it moves.');}if(bulge){const active=currentTrackingTarget==='Galactic Bulge';bulge.classList.toggle('target-active',active);bulge.setAttribute('aria-disabled',active?'true':'false');bulge.setAttribute('data-help',active?'The telescope is already tracking the Galactic Bulge or nearest visible galactic plane point.':'Track the Galactic Bulge when visible, otherwise the nearest visible point on the galactic plane.');}}
+function updateTargetButtons(target){currentTrackingTarget=target||'';const sun=document.querySelector('button[onclick="trackSun()"]');const moon=document.querySelector('button[onclick="trackMoon()"]');const plane=document.querySelector('button[onclick="trackGalacticPlane()"]');if(sun){const active=currentTrackingTarget==='Sun';sun.classList.toggle('target-active',active);sun.setAttribute('aria-disabled',active?'true':'false');sun.setAttribute('data-help',active?'The telescope is already tracking the Sun. Use Stop tracking or choose another target before starting it again.':'Track the Sun using the controller ephemeris and keep updating the telescope position as it moves.');}if(moon){const active=currentTrackingTarget==='Moon';moon.classList.toggle('target-active',active);moon.setAttribute('aria-disabled',active?'true':'false');moon.setAttribute('data-help',active?'The telescope is already tracking the Moon. Use Stop tracking or choose another target before starting it again.':'Track the Moon using the controller ephemeris and keep updating the telescope position as it moves.');}if(plane){const active=currentTrackingTarget==='Galactic Plane';plane.classList.toggle('target-active',active);plane.setAttribute('aria-disabled',active?'true':'false');plane.setAttribute('data-help',active?'The telescope is already tracking the galactic plane. Use Stop tracking or choose another target before starting it again.':'Track the galactic plane at the point nearest the galactic centre that is currently at or above the acquisition altitude set in Settings.');}}
 function setCalibrator(on){fetch('/calibrator?on='+(on?'1':'0')).then(r=>r.json()).then(d=>{updateCalButton(d.calibrator);});}
 function toggleCalibrator(){const isOn=document.getElementById('cal_on').classList.contains('active');setCalibrator(!isOn);}
 function updateCalButton(on){document.getElementById('cal_on').classList.toggle('active',!!on);document.getElementById('cal_off').classList.toggle('active',!on);}
@@ -515,16 +592,17 @@ function updateFirmware(){const msg='This is not a normal website update. It wil
 function resetFault(){fetch('/reset').then(r=>r.json()).then(d=>{if(!d.ok){alert(d.error||'Reset failed');}updateStatus();});}
 function goDirect(){const alt=document.getElementById('direct_alt').value;const az=document.getElementById('direct_az').value;fetch('/direct?alt='+alt+'&az='+az).then(()=>updateStatus());}
 function goHome(){fetch('/go-home').then(()=>updateStatus());}
+
 function runHoming(){fetch('/home').then(r=>r.json()).then(d=>{if(!d.ok){alert(d.error||'Homing failed');}updateStatus();});}
 function setOffset(){const alt=document.getElementById('offset_alt').value;const az=document.getElementById('offset_az').value;fetch('/offset?alt='+alt+'&az='+az).then(r=>r.json()).then(d=>{document.getElementById('current_offset').textContent=d.offset_alt.toFixed(1)+'\u00b0 / '+d.offset_az.toFixed(1)+'\u00b0';});}
 function clearOffset(){fetch('/offset/clear').then(r=>r.json()).then(d=>{document.getElementById('offset_alt').value='0';document.getElementById('offset_az').value='0';document.getElementById('current_offset').textContent='0.0\u00b0 / 0.0\u00b0';});}
 let isSlewing=false;let refreshInterval=null;
 function setFaultLocked(locked){faultLocked=locked;document.querySelectorAll('#tab-control .fault-dependent').forEach(el=>{el.disabled=locked;el.classList.toggle('locked',locked);});}
 function scheduleRefresh(){if(refreshInterval)clearInterval(refreshInterval);refreshInterval=setInterval(updateStatus,isSlewing?500:1000);}
-function updateStatus(){fetch('/status').then(r=>r.json()).then(d=>{document.getElementById('alt').textContent=d.alt.toFixed(2)+'\u00b0';document.getElementById('az').textContent=d.az.toFixed(2)+'\u00b0';if(d.ra!==undefined){document.getElementById('cur_ra').textContent=formatRA(d.ra);document.getElementById('cur_dec').textContent=formatDec(d.dec);document.getElementById('cur_gl').textContent=d.gal_l.toFixed(2)+'\u00b0';document.getElementById('cur_gb').textContent=d.gal_b.toFixed(2)+'\u00b0';}document.getElementById('alt_a').textContent=d.alt_current_a.toFixed(2)+' A';document.getElementById('az_a').textContent=d.az_current_a.toFixed(2)+' A';document.getElementById('status').textContent=d.status;document.getElementById('status').className='value '+(d.is_slewing?'tracking':'idle');document.getElementById('error_status').textContent=d.fault_active?(d.fault||'FAULT'):'Clear';document.getElementById('error_status').className='value '+(d.fault_active?'disconnected':'connected');const resetBtn=document.getElementById('reset_btn');resetBtn.disabled=!d.fault_active;resetBtn.className=d.fault_active?'stop':'secondary';setFaultLocked(!!d.fault_active);if(d.is_slewing!==isSlewing){isSlewing=d.is_slewing;scheduleRefresh();}updateCalButton(d.calibrator);});fetch('/tracking').then(r=>r.json()).then(d=>{updateAxisMode(d);updateTargetButtons(d.enabled?d.target_name:'');if(d.enabled){let info=d.target_name||'RA/Dec';info+=': '+formatRA(d.ra)+' '+formatDec(d.dec);if(d.az_only){info+=' [Az only, Alt '+d.az_only_alt.toFixed(1)+'\u00b0]';}if(d.alt_only){info+=' [Alt only, Az '+d.alt_only_az.toFixed(1)+'\u00b0]';}if(d.waiting_for_rise){info+=' [Below horizon]';document.getElementById('tracking_target').className='value disconnected';}else if(d.waiting_for_wrap){info+=' [Az limits]';document.getElementById('tracking_target').className='value disconnected';}else{document.getElementById('tracking_target').className='value tracking';}if(d.offset_alt!==0||d.offset_az!==0){info+=' [+'+d.offset_alt.toFixed(1)+'/'+d.offset_az.toFixed(1)+']';}document.getElementById('tracking_target').textContent=info;}else{document.getElementById('tracking_target').textContent='Off';document.getElementById('tracking_target').className='value idle';}document.getElementById('current_offset').textContent=d.offset_alt.toFixed(1)+'\u00b0 / '+d.offset_az.toFixed(1)+'\u00b0';});fetch('/time/status').then(r=>r.json()).then(d=>{let ts=d.utc+' UTC';let cls='value connected';if(d.sync_state==='ok'){ts+=' (NTP '+formatAge(d.last_sync_age_s)+' ago)';}else if(d.sync_state==='stale'){ts+=' (STALE - no NTP for '+formatAge(d.last_sync_age_s)+')';cls='value disconnected';}else if(d.sync_state==='unverified'){ts+=' (browser set, NOT NTP verified)';cls='value disconnected';}else{ts='NOT SYNCED';cls='value disconnected';}document.getElementById('time_status').className=cls;document.getElementById('time_status').textContent=ts;});}
+function updateStatus(){fetch('/status').then(r=>r.json()).then(d=>{document.getElementById('alt').textContent=(d.true_alt!==undefined?d.true_alt:d.alt).toFixed(2)+'\u00b0';document.getElementById('az').textContent=(d.true_az!==undefined?d.true_az:d.az).toFixed(2)+'\u00b0';document.getElementById('drive_pos').textContent=d.alt.toFixed(2)+'\u00b0 / '+d.az.toFixed(2)+'\u00b0'+(d.pointing_loaded?'':' (no model)');if(d.ra!==undefined){document.getElementById('cur_ra').textContent=formatRA(d.ra);document.getElementById('cur_dec').textContent=formatDec(d.dec);document.getElementById('cur_gl').textContent=d.gal_l.toFixed(2)+'\u00b0';document.getElementById('cur_gb').textContent=d.gal_b.toFixed(2)+'\u00b0';}document.getElementById('alt_a').textContent=d.alt_current_a.toFixed(2)+' A';document.getElementById('az_a').textContent=d.az_current_a.toFixed(2)+' A';document.getElementById('status').textContent=d.status;document.getElementById('status').className='value '+(d.is_slewing?'tracking':'idle');document.getElementById('error_status').textContent=d.fault_active?(d.fault||'FAULT'):'Clear';document.getElementById('error_status').className='value '+(d.fault_active?'disconnected':'connected');const resetBtn=document.getElementById('reset_btn');resetBtn.disabled=!d.fault_active;resetBtn.className=d.fault_active?'stop':'secondary';setFaultLocked(!!d.fault_active);if(d.is_slewing!==isSlewing){isSlewing=d.is_slewing;scheduleRefresh();}updateCalButton(d.calibrator);});fetch('/tracking').then(r=>r.json()).then(d=>{updateAxisMode(d);updateTargetButtons(d.enabled?d.target_name:'');if(d.enabled){let info=d.target_name||'RA/Dec';info+=': '+formatRA(d.ra)+' '+formatDec(d.dec);if(d.az_only){info+=' [Az only, Alt '+d.az_only_alt.toFixed(1)+'\u00b0]';}if(d.alt_only){info+=' [Alt only, Az '+d.alt_only_az.toFixed(1)+'\u00b0]';}if(d.waiting_for_rise){info+=' [Below horizon]';document.getElementById('tracking_target').className='value disconnected';}else if(d.waiting_for_wrap){info+=' [Az limits]';document.getElementById('tracking_target').className='value disconnected';}else{document.getElementById('tracking_target').className='value tracking';}if(d.offset_alt!==0||d.offset_az!==0){info+=' [+'+d.offset_alt.toFixed(1)+'/'+d.offset_az.toFixed(1)+']';}document.getElementById('tracking_target').textContent=info;}else{document.getElementById('tracking_target').textContent='Off';document.getElementById('tracking_target').className='value idle';}document.getElementById('current_offset').textContent=d.offset_alt.toFixed(1)+'\u00b0 / '+d.offset_az.toFixed(1)+'\u00b0';});fetch('/time/status').then(r=>r.json()).then(d=>{let ts=d.utc+' UTC';let cls='value connected';if(d.sync_state==='ok'){ts+=' (NTP '+formatAge(d.last_sync_age_s)+' ago)';}else if(d.sync_state==='stale'){ts+=' (STALE - no NTP for '+formatAge(d.last_sync_age_s)+')';cls='value disconnected';}else if(d.sync_state==='unverified'){ts+=' (browser set, NOT NTP verified)';cls='value disconnected';}else{ts='NOT SYNCED';cls='value disconnected';}document.getElementById('time_status').className=cls;document.getElementById('time_status').textContent=ts;});}
 function formatAge(s){if(s===undefined||s<0)return'never';if(s<60)return s+'s';if(s<3600)return Math.floor(s/60)+'m';return Math.floor(s/3600)+'h '+Math.floor((s%3600)/60)+'m';}
-function loadSettings(){fetch('/settings').then(r=>r.json()).then(d=>{document.getElementById('set_lat').value=d.observer_lat;document.getElementById('set_lon').value=d.observer_lon;document.getElementById('set_az_min').value=d.mount_az_min;document.getElementById('set_az_max').value=d.mount_az_max;document.getElementById('set_alt_min').value=d.mount_alt_min;document.getElementById('set_alt_max').value=d.mount_alt_max;document.getElementById('set_home_alt').value=d.home_alt;document.getElementById('set_home_az').value=d.home_az;document.getElementById('set_deadband').value=d.position_deadband;document.getElementById('set_ap_ssid').value=d.ap_ssid;document.getElementById('set_ap_pass').value=d.ap_password;document.getElementById('set_page_name').value=d.page_name;const cb=document.getElementById('set_hover_help');if(cb)cb.checked=hoverHelpEnabled;document.getElementById('page-title').textContent=d.page_name;document.title=d.page_name;document.getElementById('settings-status').textContent='';});}
-function saveSettings(){const params=new URLSearchParams();params.append('observer_lat',document.getElementById('set_lat').value);params.append('observer_lon',document.getElementById('set_lon').value);params.append('mount_az_min',document.getElementById('set_az_min').value);params.append('mount_az_max',document.getElementById('set_az_max').value);params.append('mount_alt_min',document.getElementById('set_alt_min').value);params.append('mount_alt_max',document.getElementById('set_alt_max').value);params.append('home_alt',document.getElementById('set_home_alt').value);params.append('home_az',document.getElementById('set_home_az').value);params.append('position_deadband',document.getElementById('set_deadband').value);params.append('ap_ssid',document.getElementById('set_ap_ssid').value);params.append('ap_password',document.getElementById('set_ap_pass').value);params.append('page_name',document.getElementById('set_page_name').value);fetch('/settings/save?'+params.toString()).then(r=>r.json()).then(d=>{document.getElementById('settings-status').textContent=d.ok?'Settings saved!':'Save failed';document.getElementById('settings-status').style.color=d.ok?'#00ff00':'#ff4444';if(d.ok){document.getElementById('page-title').textContent=document.getElementById('set_page_name').value;document.title=document.getElementById('set_page_name').value;}});}
+function loadSettings(){fetch('/settings').then(r=>r.json()).then(d=>{document.getElementById('set_lat').value=d.observer_lat;document.getElementById('set_lon').value=d.observer_lon;document.getElementById('set_az_min').value=d.mount_az_min;document.getElementById('set_az_max').value=d.mount_az_max;document.getElementById('set_alt_min').value=d.mount_alt_min;document.getElementById('set_alt_max').value=d.mount_alt_max;document.getElementById('set_horizon_alt').value=d.horizon_alt;document.getElementById('set_galactic_min_alt').value=d.galactic_min_alt;document.getElementById('set_stow_alt').value=d.stow_alt;document.getElementById('set_stow_az').value=d.stow_az;document.getElementById('set_deadband').value=d.position_deadband;document.getElementById('set_ap_ssid').value=d.ap_ssid;document.getElementById('set_ap_pass').value=d.ap_password;document.getElementById('set_page_name').value=d.page_name;const cb=document.getElementById('set_hover_help');if(cb)cb.checked=hoverHelpEnabled;document.getElementById('page-title').textContent=d.page_name;document.title=d.page_name;document.getElementById('settings-status').textContent='';});}
+function saveSettings(){const params=new URLSearchParams();params.append('observer_lat',document.getElementById('set_lat').value);params.append('observer_lon',document.getElementById('set_lon').value);params.append('mount_az_min',document.getElementById('set_az_min').value);params.append('mount_az_max',document.getElementById('set_az_max').value);params.append('mount_alt_min',document.getElementById('set_alt_min').value);params.append('mount_alt_max',document.getElementById('set_alt_max').value);params.append('horizon_alt',document.getElementById('set_horizon_alt').value);params.append('galactic_min_alt',document.getElementById('set_galactic_min_alt').value);params.append('stow_alt',document.getElementById('set_stow_alt').value);params.append('stow_az',document.getElementById('set_stow_az').value);params.append('position_deadband',document.getElementById('set_deadband').value);params.append('ap_ssid',document.getElementById('set_ap_ssid').value);params.append('ap_password',document.getElementById('set_ap_pass').value);params.append('page_name',document.getElementById('set_page_name').value);fetch('/settings/save?'+params.toString()).then(r=>r.json()).then(d=>{document.getElementById('settings-status').textContent=d.ok?'Settings saved!':'Save failed';document.getElementById('settings-status').style.color=d.ok?'#00ff00':'#ff4444';if(d.ok){document.getElementById('page-title').textContent=document.getElementById('set_page_name').value;document.title=document.getElementById('set_page_name').value;}});}
 function resetSettings(){if(confirm('Reset all settings to defaults?')){fetch('/settings/reset').then(r=>r.json()).then(d=>{if(d.ok){loadSettings();document.getElementById('settings-status').textContent='Reset to defaults';document.getElementById('settings-status').style.color='#ffaa00';}});}}
 function loadPageName(){fetch('/settings').then(r=>r.json()).then(d=>{document.getElementById('page-title').textContent=d.page_name;document.title=d.page_name;});}
 let serialExpanded=true;

@@ -5,6 +5,7 @@
 #include "settings.h"
 #include "state.h"
 #include "coordinates.h"
+#include "pointing.h"
 #include "srt_serial.h"
 #include "sync.h"
 #include <AsyncTCP.h>
@@ -38,9 +39,16 @@ void sendPositionToStellarium() {
 
     if (!stellariumClient || !stellariumClient->connected()) return;
 
-    // Convert current Alt/Az back to RA/Dec for Stellarium
+    // Report where the dish actually is, not where it was told to go: the
+    // measured DRIVE position from the Due, brought back into the true frame
+    // through the pointing model before it becomes RA/Dec. Sending the
+    // commanded target instead would show Stellarium a telescope that has
+    // already arrived while it is still slewing, and converting the drive
+    // position directly would be wrong by the whole calibration.
     double raHours, decDeg;
-    altAzToRaDec(state.targetAlt, state.targetAz, settings.observerLat, settings.observerLon, raHours, decDeg);
+    double trueAlt, trueAz;
+    driveToTrue(srtSerial.getCurrentAlt(), srtSerial.getCurrentAz(), trueAlt, trueAz);
+    altAzToRaDec(trueAlt, trueAz, settings.observerLat, settings.observerLon, raHours, decDeg);
 
     // Convert to Stellarium format
     uint32_t raRaw = (uint32_t)((raHours / 24.0) * 0x100000000ULL) & 0xFFFFFFFF;

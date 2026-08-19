@@ -85,17 +85,47 @@
 #define MOUNT_ALT_MIN 0.0
 #define MOUNT_ALT_MAX 90.0
 
-// Minimum altitude for sky targets to clear the local horizon/trees.
-// This is intentionally separate from the mechanical mount lower limit.
+// Minimum TRUE altitude for a sky target to clear the local horizon and trees.
+// This is a sky quantity and it belongs to the true frame: it is tested against
+// the target's true altitude, before the pointing model converts it to drive
+// coordinates. MOUNT_ALT_MIN above is a mechanical limit in the drive frame and
+// is applied afterwards. The two used to be merged by taking whichever was
+// larger, which quietly reinterpreted a mechanical stop as a sky horizon (and
+// vice versa) and made neither testable on its own.
 #define TRACKING_HORIZON_ALT 10.0
 
-inline double effectiveTrackingHorizonAlt(double mountAltMin) {
-    return mountAltMin > TRACKING_HORIZON_ALT ? mountAltMin : TRACKING_HORIZON_ALT;
-}
+// Acquisition floor for the galactic-plane target (degrees). Where tracking is
+// allowed to START; the target is then followed down as it sets, until the
+// ordinary observing horizon above parks the dish. High on purpose - see
+// getGalacticPlaneTrackingTarget() in coordinates.h.
+#define GALACTIC_PLANE_MIN_ALT 45.0
 
-// Home position (degrees)
-#define HOME_ALT 0.0
-#define HOME_AZ 0.0
+// Stow position (degrees) - where the dish parks when idle or when its target
+// sets. Expressed in TRUE alt/az, like any other sky position, so it goes
+// through the pointing model on its way to the Due.
+//
+// Not to be confused with the Due's cfg.homeAlt/homeAz, which are a DRIVE
+// quantity: the coordinate the limit-switch stall corresponds to, i.e. the
+// definition of the encoder origin. Both were once called "home", both default
+// to zero, and they are unrelated.
+// Stow position (degrees) - where the dish parks when idle or when its target
+// sets. Zenith, facing south: straight up sheds rain and snow and presents the
+// smallest profile to the wind.
+//
+// These are DRIVE coordinates, and they are the one sky-facing-looking setting
+// that is not in the true frame. Parking is a mechanical act - "leave the mount
+// here" - not an observation, so the pointing model is deliberately bypassed
+// on the stow path. At the zenith that distinction is not academic: azimuth is
+// degenerate there, every azimuth points at the same piece of sky, and the
+// model's azimuth term carries tan(alt), so it asks for a 50-degree correction
+// that would move the beam by exactly nothing. Through the model this position
+// parks at drive azimuth 170; bypassing it, the mount rests where it is told.
+//
+// Still not to be confused with the Due's cfg.homeAlt/homeAz, which are also
+// drive coordinates but mean the encoder origin - what the limit-switch stall
+// corresponds to - rather than a place to park.
+#define STOW_ALT 90.0
+#define STOW_AZ 180.0
 
 // Position deadband (degrees)
 #define POSITION_DEADBAND 0.25
