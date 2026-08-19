@@ -4,12 +4,16 @@
 #include "config.h"
 #include "settings.h"
 #include <Preferences.h>
-#include <esp_task_wdt.h>
+// esp_task_wdt.h is deliberately not included any more: nothing here should
+// touch the task watchdog. See the note above startScan().
 
 WiFiManager wifiManager;
 Preferences wifiPrefs;
 
-WiFiManager::WiFiManager() : apActive(false), wifiDisabled(false) {
+WiFiManager::WiFiManager()
+    : wifiDisabled(false), apActive(false),
+      scanRequested(false), scanStartedMs(0), scanStartResult(WIFI_SCAN_FAILED),
+      scanStartAttempts(0) {
 }
 
 bool WiFiManager::loadCredentials(String &ssid, String &password) {
@@ -54,6 +58,25 @@ bool WiFiManager::connectSTA(const String &ssid, const String &password, int tim
     Serial.printf("Connected to %s, IP: %s\n", ssid.c_str(),
                   WiFi.localIP().toString().c_str());
     return true;
+}
+
+// Begin an association without waiting for the result.
+//
+// The blocking form above is still used at boot, where blocking is harmless
+// and there is no client waiting on a response. It must not be called from a
+// request handler: it blocks the network task for up to 15 s, and worse, in
+// AP_STA mode WiFi.begin() retunes the AP to the STA's channel, which drops
+// any browser connected over the softAP mid-request. The reply then never
+// arrives however long the handler waits, so the UI hangs on "Connecting".
+// Callers should return at once and poll /wifi/status instead.
+void WiFiManager::beginSTA(const String &ssid, const String &password) {
+    Serial.printf("Starting WiFi association: %s\n", ssid.c_str());
+    if (WiFi.getMode() != WIFI_AP_STA) {
+        WiFi.mode(WIFI_AP_STA);
+    }
+    WiFi.setHostname(CONTROLLER_HOSTNAME);
+    WiFi.begin(ssid.c_str(), password.c_str());
+    connectedSSID = ssid;
 }
 
 void WiFiManager::startAP() {
@@ -115,24 +138,75 @@ bool WiFiManager::startup() {
     return false;
 }
 
-int WiFiManager::scanNetworks() {
-    // Use AP+STA mode to keep AP running while scanning
-    WiFi.mode(WIFI_AP_STA);
-    delay(100);
+// Start an asynchronous scan. Returns immediately; poll scanStatus().
+//
+// This used to be a synchronous scan that blocked the caller for about four
+// seconds, and it bracketed that with esp_task_wdt_delete(NULL) /
+// esp_task_wdt_add(NULL). Those two lines were the real problem. The delete
+// failed because the calling task - async_tcp - was never subscribed to the
+// task watchdog in the first place, and the add then subscribed it
+// permanently. async_tcp blocks in queue waits and never resets the watchdog,
+// so from the first scan onwards the controller reported "Task watchdog got
+// triggered" every watchdog period, and would reboot outright with TWDT panic
+// enabled. Nothing here needs to touch the watchdog at all, so it no longer
+// does.
+void WiFiManager::startScan() {
+    // Keep the AP running while scanning. Only switch when needed - a mode
+    // change is not free, and this runs on the network task.
+    if (WiFi.getMode() != WIFI_AP_STA) {
+        WiFi.mode(WIFI_AP_STA);
+    }
 
-    Serial.println("Starting WiFi scan (watchdog disabled)...");
+    WiFi.scanDelete();
+    scanStartResult = WiFi.scanNetworks(true);  // async - returns immediately
+    scanRequested = true;
+    scanStartedMs = millis();
+    scanStartAttempts = 1;
+    Serial.printf("Async WiFi scan started (rc=%d)\n", scanStartResult);
+}
 
-    // Disable watchdog for this task during scan
-    esp_task_wdt_delete(NULL);
+// Try again to start a scan that refused to begin.
+//
+// esp_wifi_scan_start() fails outright if the STA interface is not up yet, and
+// it is not up the instant WiFi.mode(WIFI_AP_STA) returns. The old blocking
+// scan hid this behind a delay(100). A request handler cannot afford to sleep,
+// so instead the start is retried on subsequent polls, a second or so apart,
+// which costs the caller nothing.
+bool WiFiManager::retryScanStart() {
+    if (!scanRequested || scanStartAttempts >= SCAN_START_MAX_ATTEMPTS) {
+        return false;
+    }
+    scanStartAttempts++;
+    scanStartResult = WiFi.scanNetworks(true);
+    scanStartedMs = millis();
+    Serial.printf("Async WiFi scan retry %d (rc=%d)\n",
+                  scanStartAttempts, scanStartResult);
+    return scanStartResult != WIFI_SCAN_FAILED;
+}
 
-    // Blocking scan
-    int n = WiFi.scanNetworks(false, false, false, 300);  // sync scan, 300ms per channel
+// WIFI_SCAN_RUNNING (-1) while in progress, WIFI_SCAN_FAILED (-2) on failure or
+// when no scan has produced a result, otherwise the number of networks found.
+int WiFiManager::scanStatus() {
+    return WiFi.scanComplete();
+}
 
-    // Re-enable watchdog
-    esp_task_wdt_add(NULL);
+// Result of the WiFi.scanNetworks() call itself, as opposed to the scan: -1
+// means it started, -2 means it could not be started at all. Kept separate so a
+// scan that never began is not reported as one still in progress.
+int WiFiManager::scanStartResultCode() const {
+    return scanStartResult;
+}
 
-    Serial.printf("Scan found %d networks\n", n);
-    return n;
+bool WiFiManager::scanStartAttemptsLeft() const {
+    return scanStartAttempts < SCAN_START_MAX_ATTEMPTS;
+}
+
+bool WiFiManager::scanWasRequested() const {
+    return scanRequested;
+}
+
+unsigned long WiFiManager::scanAgeMs() const {
+    return scanRequested ? (millis() - scanStartedMs) : 0;
 }
 
 String WiFiManager::getScannedSSID(int index) {

@@ -143,6 +143,8 @@ void onEthEvent(arduino_event_id_t event) {
 // Has the SNTP client been initialised? configTime() must only run once; after
 // that a link change is handled with esp_sntp_restart().
 static bool sntpStarted = false;
+// millis() of the last SNTP restart attempt while the clock has never synced.
+static unsigned long lastSyncRetryMs = 0;
 
 // Called by the lwIP SNTP task on every successful sync. It runs off loopTask,
 // so it touches nothing but the 32-bit scalars in state - no String, no logging,
@@ -187,18 +189,19 @@ static void onTimeSync(struct timeval *tv) {
 // an OTA update that was every boot. Success is now only ever declared by
 // onTimeSync(), which fires when SNTP has actually set the clock.
 void syncTimeNTP() {
-    if (!sntpStarted) {
-        esp_sntp_set_time_sync_notification_cb(onTimeSync);
-        esp_sntp_set_sync_interval(NTP_SYNC_INTERVAL_MS);
-        configTime(0, 0, NTP_SERVER);  // calls sntp_init() internally
-        sntpStarted = true;
-        Serial.printf("SNTP started (%s), resync every %lu s\n",
-                      NTP_SERVER, NTP_SYNC_INTERVAL_MS / 1000UL);
-    } else {
-        // Link came back: poll now rather than waiting out the hour.
-        esp_sntp_restart();
-        Serial.println("SNTP restarted after link change");
-    }
+    esp_sntp_set_time_sync_notification_cb(onTimeSync);
+    esp_sntp_set_sync_interval(NTP_SYNC_INTERVAL_MS);
+
+    // configTime() stops and re-initialises the client, which re-resolves the
+    // server name and rebinds the socket. esp_sntp_restart() does neither, so
+    // it cannot recover from anything that invalidated the old socket or the
+    // cached address - a WiFi power cycle, for one, which leaves SNTP dead
+    // while the link looks perfectly healthy. Re-initialising is idempotent and
+    // costs one DNS lookup, so it is what every caller gets.
+    configTime(0, 0, NTP_SERVER);
+    sntpStarted = true;
+    Serial.printf("SNTP (re)started (%s), resync every %lu s\n",
+                  NTP_SERVER, NTP_SYNC_INTERVAL_MS / 1000UL);
 }
 
 // Clock health reporting, called from loop() so that all String and logging work
@@ -233,6 +236,19 @@ void updateClockStatus() {
             state.clockStaleWarned = false;
         }
         return;
+    }
+
+    // A clock that has never synced this boot gets periodic retries. SNTP is
+    // otherwise only (re)started by an Ethernet link event, so anything else
+    // that disturbs the network stack - a WiFi power cycle, for one - leaves it
+    // dead with nothing to revive it. Cheap: one UDP poll every few minutes.
+    if (sntpStarted && state.lastSyncEpoch == 0) {
+        unsigned long now = millis();
+        if (now - lastSyncRetryMs >= NTP_RETRY_INTERVAL_MS) {
+            lastSyncRetryMs = now;
+            Serial.println("Clock never synced - reinitialising SNTP");
+            syncTimeNTP();
+        }
     }
 
     if (!state.clockStaleWarned && state.lastSyncEpoch != 0 &&

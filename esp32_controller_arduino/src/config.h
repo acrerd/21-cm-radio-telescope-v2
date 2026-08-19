@@ -71,6 +71,7 @@
 // observing session rather than days later.
 #define NTP_SYNC_INTERVAL_MS 3600000UL  // re-sync every hour
 #define CLOCK_STALE_WARN_S   18000UL    // warn after 5 h with no successful sync
+#define NTP_RETRY_INTERVAL_MS 300000UL  // retry every 5 min while never synced
 
 // Mount software limits (degrees)
 #define MOUNT_AZ_MIN 2.0

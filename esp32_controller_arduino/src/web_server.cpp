@@ -23,6 +23,7 @@ extern String ethIP;
 AsyncWebServer webServer(WEB_PORT);
 SRTState state;  // Global state instance
 extern bool mdnsRunning;
+void syncTimeNTP();  // defined in main.cpp; non-blocking, safe from a handler
 
 static String jsonEscape(const String &value) {
     String escaped;
@@ -551,6 +552,15 @@ void setupWebServer() {
         request->send(200, "application/json", json);
     });
 
+    // Force an NTP poll now. Registered before /time/set only for tidiness -
+    // neither is a prefix of the other. Returns immediately; the result appears
+    // in /time/status when the sync completes.
+    webServer.on("/time/sync", HTTP_GET, [](AsyncWebServerRequest *request) {
+        syncTimeNTP();
+        request->send(200, "application/json",
+                      "{\"ok\":true,\"status\":\"sync requested\"}");
+    });
+
     // Time set
     webServer.on("/time/set", HTTP_GET, [](AsyncWebServerRequest *request) {
         unsigned long timestamp = request->arg("timestamp").toInt();
@@ -646,32 +656,100 @@ void setupWebServer() {
     });
 
     // WiFi scan
+    // Asynchronous: the first call starts a scan and reports "running", and the
+    // UI polls until the results are ready. Nothing here waits on the radio.
     webServer.on("/wifi/scan", HTTP_GET, [](AsyncWebServerRequest *request) {
-        int n = wifiManager.scanNetworks();
-        String json = "[";
+        // "restart=1" forces a fresh scan; without it a completed scan keeps
+        // returning its cached result. A query arg rather than a /wifi/scan/...
+        // sub-route, which this handler would swallow - see the ordering note
+        // at the top of this function.
+        if (request->arg("restart") == "1") {
+            wifiManager.startScan();
+            request->send(200, "application/json", "{\"status\":\"running\"}");
+            return;
+        }
+
+        int n = wifiManager.scanStatus();
+
+        if (!wifiManager.scanWasRequested()) {
+            // Nothing has been asked for yet: start one and let the caller poll.
+            wifiManager.startScan();
+            request->send(200, "application/json", "{\"status\":\"running\"}");
+            return;
+        }
+
+        if (n == WIFI_SCAN_RUNNING) {
+            // Report a stuck scan rather than "running" for ever. Do not
+            // silently restart: repeatedly kicking a scan that cannot start
+            // would hide the failure behind a permanent "running".
+            if (wifiManager.scanAgeMs() > 20000UL) {
+                request->send(200, "application/json",
+                              "{\"status\":\"failed\",\"error\":\"scan timed out\"}");
+                return;
+            }
+            request->send(200, "application/json", "{\"status\":\"running\"}");
+            return;
+        }
+
+        if (n < 0) {
+            // Either the scan never started, or it finished unsuccessfully. A
+            // start is refused while the STA interface is still coming up after
+            // the mode change, so retry it on this poll before giving up.
+            if (wifiManager.retryScanStart() || wifiManager.scanStartAttemptsLeft()) {
+                // Either it started, or there are attempts left for a later
+                // poll. Only give up once those are exhausted.
+                request->send(200, "application/json", "{\"status\":\"running\"}");
+                return;
+            }
+            // Out of retries: report both codes so the difference between "did
+            // not start" and "ran and failed" is visible rather than guessed at.
+            // wifi_mode distinguishes a mode change that never took effect
+            // (esp_wifi_scan_start refuses unless STA is up) from a scan that
+            // was genuinely attempted. 1=STA 2=AP 3=AP_STA.
+            String json = "{\"status\":\"failed\",\"complete_rc\":" + String(n) +
+                          ",\"start_rc\":" + String(wifiManager.scanStartResultCode()) +
+                          ",\"wifi_mode\":" + String((int)WiFi.getMode()) +
+                          ",\"age_ms\":" + String(wifiManager.scanAgeMs()) + "}";
+            request->send(200, "application/json", json);
+            return;
+        }
+
+        String json = "{\"status\":\"done\",\"networks\":[";
         for (int i = 0; i < n; i++) {
             if (i > 0) json += ",";
             json += "{";
-            json += "\"ssid\":\"" + wifiManager.getScannedSSID(i) + "\",";
+            // Escaped: an SSID is arbitrary text off the air, and a quote in
+            // one would otherwise produce malformed JSON.
+            json += "\"ssid\":\"" + jsonEscape(wifiManager.getScannedSSID(i)) + "\",";
             json += "\"rssi\":" + String(wifiManager.getScannedRSSI(i)) + ",";
             json += "\"secure\":" + String(wifiManager.isScannedSecure(i) ? "true" : "false");
             json += "}";
         }
-        json += "]";
+        json += "]}";
         request->send(200, "application/json", json);
     });
 
     // WiFi connect
+    // Starts the association and returns at once - it does not report whether
+    // the connection succeeded, because it cannot. WiFi.begin() in AP_STA mode
+    // retunes the AP to the STA's channel, so a browser connected over the
+    // softAP is dropped mid-request and would never receive the reply no matter
+    // how long this waited. The UI polls /wifi/status for the outcome.
+    //
+    // Credentials are saved before the attempt rather than after a success, so
+    // that a reboot caused by the channel change still retries this network.
     webServer.on("/wifi/connect", HTTP_GET, [](AsyncWebServerRequest *request) {
         String ssid = request->arg("ssid");
         String password = request->arg("password");
-        if (wifiManager.connectSTA(ssid, password)) {
-            wifiManager.saveCredentials(ssid, password);
-            String json = "{\"ok\":true,\"ip\":\"" + wifiManager.getSTAIP() + "\"}";
-            request->send(200, "application/json", json);
-        } else {
-            request->send(200, "application/json", "{\"ok\":false,\"error\":\"Connection failed\"}");
+        if (ssid.length() == 0) {
+            request->send(400, "application/json",
+                          "{\"ok\":false,\"error\":\"SSID required\"}");
+            return;
         }
+        wifiManager.saveCredentials(ssid, password);
+        wifiManager.beginSTA(ssid, password);
+        request->send(200, "application/json",
+                      "{\"ok\":true,\"status\":\"connecting\"}");
     });
 
     // WiFi forget
