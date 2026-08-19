@@ -140,31 +140,48 @@ void test_precession_polaris_drift() {
 // Alt/Az conversion tests (using fixed time for reproducibility)
 // =============================================================================
 
+// Undo the J2000 precession that altAzToRaDec() applies on the way out, so a
+// horizon-geometry identity can be checked against the sky of today rather than
+// against the sky of 2000. Comparing the J2000 output directly to a latitude
+// needs a tolerance that grows by about 0.006 deg a year, which is a test that
+// passes until it silently does not.
+static void precessBackToDate(double raJ2000, double decJ2000,
+                              double &raDate, double &decDate) {
+    time_t now = time(nullptr);
+    struct tm *t = gmtime(&now);
+    double jd = julianDate(t->tm_year + 1900, t->tm_mon + 1, t->tm_mday,
+                           t->tm_hour, t->tm_min, t->tm_sec);
+    precessJ2000ToDate(raJ2000, decJ2000, jd, raDate, decDate);
+}
+
 void test_altaz_zenith() {
     // Object at zenith should have alt=90 regardless of azimuth
     // For any location, an object at zenith has Dec = latitude
-    // Note: includes precession effects so allow slightly wider tolerance
     double ra, dec;
     double lat = 55.9, lon = -4.3;
 
     // An object straight up (alt=90) from Glasgow
     altAzToRaDec(90.0, 0.0, lat, lon, ra, dec);
 
-    // Dec should be close to latitude (precession causes small drift)
-    TEST_ASSERT_FLOAT_WITHIN(0.05, lat, dec);  // 0.05 deg = 3 arcmin
+    // Dec of date should equal the latitude exactly; the output is J2000, so
+    // precess it back before comparing.
+    double raDate, decDate;
+    precessBackToDate(ra, dec, raDate, decDate);
+    TEST_ASSERT_FLOAT_WITHIN(0.01, lat, decDate);
 }
 
 void test_altaz_horizon_north() {
     // Object on northern horizon (alt=0, az=0)
-    // Note: includes precession effects so allow slightly wider tolerance
     double ra, dec;
     double lat = 55.9, lon = -4.3;
 
     altAzToRaDec(0.0, 0.0, lat, lon, ra, dec);
 
     // For alt=0, az=0: sin(dec) = cos(lat)*cos(az) = cos(55.9)
-    // dec = asin(cos(55.9)) = 90 - 55.9 = 34.1 degrees
-    TEST_ASSERT_FLOAT_WITHIN(0.05, 90.0 - lat, dec);  // 0.05 deg = 3 arcmin
+    // dec = asin(cos(55.9)) = 90 - 55.9 = 34.1 degrees, of date.
+    double raDate, decDate;
+    precessBackToDate(ra, dec, raDate, decDate);
+    TEST_ASSERT_FLOAT_WITHIN(0.01, 90.0 - lat, decDate);
 }
 
 // =============================================================================
