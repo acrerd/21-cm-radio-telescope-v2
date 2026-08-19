@@ -5,6 +5,7 @@
 \usepackage[T1]{fontenc}
 \usepackage{geometry}
 \usepackage{graphicx}
+\graphicspath{{figures/}}
 \usepackage{amsmath}
 \usepackage{amssymb}
 \usepackage{listings}
@@ -89,26 +90,50 @@
 \fancyfoot[R]{\tiny\texttt{\gitcommit}\ \gitdirty}
 \fancyfoot[L]{\tiny\builddate}
 
-% Title
-\title{
-    \vspace{-1cm}
-    \textbf{Small Radio Telescope Drive Controller} \\
-    \Large Technical Documentation and Operations Manual \\
-    \vspace{0.5cm}
-    \large Version 2.0
-}
-\author{
-    Acre Road Observatory \\
-    University of Glasgow
-}
-\date{
-    Built \builddate \\[0.2cm]
-    \small Describes commit \texttt{\gitcommit} of \gitcommitdate\ \gitdirty
-}
+% Title metadata (the cover sheet below is set by hand, but keep these defined so
+% that anything expecting the standard commands still works).
+\title{Small Radio Telescope Drive Controller}
+\author{Acre Road Observatory, University of Glasgow}
+\date{\builddate}
 
 \begin{document}
 
-\maketitle
+%==============================================================================
+% COVER SHEET
+%==============================================================================
+% Set by hand rather than with \maketitle so the photograph of the instrument
+% can sit between the title block and the imprint. The image is the telescope
+% this document describes; figures/ holds a downscaled copy of photo.jpg.
+\begin{titlepage}
+\centering
+\vspace*{0.4cm}
+
+{\Huge\bfseries Small Radio Telescope\\[0.25cm] Drive Controller\par}
+
+\vspace{0.5cm}
+{\Large Technical Documentation and Operations Manual\par}
+
+\vspace{0.35cm}
+{\large Version 2.0\par}
+
+\vspace{0.9cm}
+\includegraphics[width=0.82\textwidth]{srt_dish.jpg}
+
+\vspace{0.35cm}
+{\small The 3\,m telescope on its alt-azimuth mount at Acre Road Observatory,\\
+with the 1420\,MHz feed at prime focus.\par}
+
+\vfill
+
+{\large Acre Road Observatory\\[0.15cm] University of Glasgow\par}
+
+\vspace{0.7cm}
+{Built \builddate\par}
+\vspace{0.15cm}
+{\small Describes commit \texttt{\gitcommit} of \gitcommitdate\ \gitdirty\par}
+
+\vspace{0.4cm}
+\end{titlepage}
 
 \begin{abstract}
 This document is the definitive technical description of the Small Radio Telescope (SRT) drive and control system used for 21\,cm hydrogen line observations at Acre Road Observatory, Glasgow. The system comprises an Arduino Due carrying out real-time motor control, a WT32-ETH01 (ESP32) controller performing astronomical coordinate transformation, pointing correction and network service, a GNU~Radio receiver, and a Flask observation scheduler that also runs the pointing calibration. The document covers the hardware, the firmware on both microcontrollers, the coordinate and pointing mathematics in full, the resident pointing model and the Sun-scan calibration that determines it, the private Ethernet link between the observatory computer and the controller, the receiver and scheduler, and the installation, operation and fault-finding procedures.
