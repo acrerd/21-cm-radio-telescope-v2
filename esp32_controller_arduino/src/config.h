@@ -71,6 +71,18 @@
 // address, so it does not tie the firmware to this observatory.
 #define NTP_SERVER_FALLBACK "162.159.200.123"
 
+// Ethernet static-IP fallback, used only if DHCP is turned off in the web UI.
+// The controller runs on DHCP and its address is pinned by MAC on the host, so
+// these are never applied in normal operation — but they are what the Static IP
+// form is pre-filled with, so they must name the link the controller is actually
+// on. They were left at a 192.168.1.x factory placeholder, which meant one tick
+// of that box would have moved the controller off the link entirely, reachable
+// only over the WiFi AP.
+#define DEFAULT_ETH_STATIC_IP "192.168.50.120"
+#define DEFAULT_ETH_GATEWAY   "192.168.50.1"
+#define DEFAULT_ETH_SUBNET    "255.255.255.0"
+#define DEFAULT_ETH_DNS       "192.168.50.1"
+
 // Clock discipline. The lwIP SNTP client polls in the background at this
 // interval; nothing blocks waiting for it. Five hours of drift is itself
 // harmless - the warning exists to catch a failed sync *mechanism* within an

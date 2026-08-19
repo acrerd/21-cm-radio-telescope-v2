@@ -1554,7 +1554,7 @@ HELP             # Show all commands
 
 \subsection{ESP32 controller API}
 
-All endpoints accept HTTP GET requests. Base URL is the ESP32's IP address (e.g.\ \texttt{http://192.168.0.149}).
+All endpoints accept HTTP GET requests. Base URL is the ESP32's IP address (e.g.\ \texttt{http://192.168.50.120}).
 
 \subsubsection{Status and information}
 
@@ -1661,33 +1661,33 @@ All endpoints are served by the Flask scheduler at \texttt{http://localhost:5000
 
 \begin{lstlisting}[language=bash,caption={ESP32 controller API examples}]
 # Track RA/Dec (J2000)
-curl "http://192.168.0.149/track/radec?ra=12.5&dec=-30"
+curl "http://192.168.50.120/track/radec?ra=12.5&dec=-30"
 
 # Track galactic coordinates
-curl "http://192.168.0.149/track/galactic?l=0&b=0"
+curl "http://192.168.50.120/track/galactic?l=0&b=0"
 
 # Track Sun / Moon
-curl "http://192.168.0.149/track/sun"
-curl "http://192.168.0.149/track/moon"
+curl "http://192.168.50.120/track/sun"
+curl "http://192.168.50.120/track/moon"
 
 # Direct alt/az slew
-curl "http://192.168.0.149/direct?alt=45&az=180"
+curl "http://192.168.50.120/direct?alt=45&az=180"
 
 # Stop tracking
-curl "http://192.168.0.149/tracking/enable?enable=0"
+curl "http://192.168.50.120/tracking/enable?enable=0"
 
 # Get status
-curl "http://192.168.0.149/status"
+curl "http://192.168.50.120/status"
 
 # Get ephemeris (Sun and Moon positions)
-curl "http://192.168.0.149/ephemeris"
+curl "http://192.168.50.120/ephemeris"
 
 # Calibrator on/off
-curl "http://192.168.0.149/calibrator?on=1"
-curl "http://192.168.0.149/calibrator?on=0"
+curl "http://192.168.50.120/calibrator?on=1"
+curl "http://192.168.50.120/calibrator?on=0"
 
 # Get settings (includes observer location)
-curl "http://192.168.0.149/settings"
+curl "http://192.168.50.120/settings"
 \end{lstlisting}
 
 \begin{lstlisting}[language=bash,caption={Scheduler API examples}]

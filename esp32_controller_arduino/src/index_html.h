@@ -253,10 +253,10 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
                                 <label><input type="radio" name="eth_mode" id="eth_static" onclick="toggleEthMode()"> Static IP</label>
                             </div>
                             <div id="eth-static-fields">
-                                <div class="coord-row"><label>IP: <input type="text" id="eth_static_ip" placeholder="192.168.1.100"></label></div>
-                                <div class="coord-row"><label>Gateway: <input type="text" id="eth_gateway" placeholder="192.168.1.1"></label></div>
+                                <div class="coord-row"><label>IP: <input type="text" id="eth_static_ip" placeholder="192.168.50.120"></label></div>
+                                <div class="coord-row"><label>Gateway: <input type="text" id="eth_gateway" placeholder="192.168.50.1"></label></div>
                                 <div class="coord-row"><label>Subnet: <input type="text" id="eth_subnet" placeholder="255.255.255.0"></label></div>
-                                <div class="coord-row"><label>DNS: <input type="text" id="eth_dns" placeholder="8.8.8.8"></label></div>
+                                <div class="coord-row"><label>DNS: <input type="text" id="eth_dns" placeholder="192.168.50.1"></label></div>
                             </div>
                             <div class="btn-row">
                                 <button onclick="saveEthSettings()" data-help="Save the Ethernet DHCP or static IP settings. Reboot the controller to apply them.">Save Ethernet</button>

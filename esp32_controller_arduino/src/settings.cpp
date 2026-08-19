@@ -23,10 +23,10 @@ void Settings::resetToDefaults() {
     pageName = "SRT Controller";
     // Ethernet defaults
     ethUseDHCP = true;
-    ethStaticIP = "192.168.1.100";
-    ethGateway = "192.168.1.1";
-    ethSubnet = "255.255.255.0";
-    ethDNS = "8.8.8.8";
+    ethStaticIP = DEFAULT_ETH_STATIC_IP;
+    ethGateway = DEFAULT_ETH_GATEWAY;
+    ethSubnet = DEFAULT_ETH_SUBNET;
+    ethDNS = DEFAULT_ETH_DNS;
     // WiFi enabled by default
     wifiEnabled = true;
 }
@@ -61,10 +61,10 @@ void Settings::load() {
         pageName = prefs.getString("pageName", "SRT Controller");
         // Ethernet settings
         ethUseDHCP = prefs.getBool("ethDHCP", true);
-        ethStaticIP = prefs.getString("ethIP", "192.168.1.100");
-        ethGateway = prefs.getString("ethGW", "192.168.1.1");
-        ethSubnet = prefs.getString("ethSub", "255.255.255.0");
-        ethDNS = prefs.getString("ethDNS", "8.8.8.8");
+        ethStaticIP = prefs.getString("ethIP", DEFAULT_ETH_STATIC_IP);
+        ethGateway = prefs.getString("ethGW", DEFAULT_ETH_GATEWAY);
+        ethSubnet = prefs.getString("ethSub", DEFAULT_ETH_SUBNET);
+        ethDNS = prefs.getString("ethDNS", DEFAULT_ETH_DNS);
         // wifiEnabled is not loaded from NVS - always true on boot
         // Can only be disabled from web interface during a session
         Serial.println("Settings loaded from NVS");

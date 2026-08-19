@@ -97,15 +97,15 @@ class TestSunScanParameterValidation:
 class TestControllerUrlResolution:
     def test_candidates_include_runtime_and_fresh_config_primary(self):
         cfg = {
-            "srt_controller_url": "http://192.168.106.120/",
+            "srt_controller_url": "http://192.0.2.120/",
             "srt_controller_fallback_urls": ["http://srt-controller.local"],
         }
         with patch.dict(os.environ, {}, clear=True), \
-             patch.object(sched, "SRT_CONTROLLER_URL", "http://192.168.106.136"), \
+             patch.object(sched, "SRT_CONTROLLER_URL", "http://192.0.2.136"), \
              patch.object(sched, "load_config", return_value=cfg):
             assert sched._controller_url_candidates() == [
-                "http://192.168.106.136",
-                "http://192.168.106.120",
+                "http://192.0.2.136",
+                "http://192.0.2.120",
                 "http://srt-controller.local",
             ]
 
@@ -1454,12 +1454,12 @@ class TestApiHardening:
 
     def test_cors_allowed_for_controller_origin(self):
         with patch.object(sched, '_controller_url_candidates',
-                          return_value=['http://192.168.106.120']):
+                          return_value=['http://192.0.2.120']):
             client = sched.app.test_client()
             resp = client.get('/api/config',
-                              headers={'Origin': 'http://192.168.106.120'})
+                              headers={'Origin': 'http://192.0.2.120'})
         assert (resp.headers.get('Access-Control-Allow-Origin')
-                == 'http://192.168.106.120')
+                == 'http://192.0.2.120')
 
     def test_filename_escape_is_contained(self, tmp_path):
         with patch.object(sched, 'get_config_value',
