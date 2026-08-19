@@ -12,6 +12,7 @@ Preferences wifiPrefs;
 
 WiFiManager::WiFiManager()
     : wifiDisabled(false), apActive(false),
+      powerChangePending(false), powerChangeTarget(false),
       scanRequested(false), scanStartedMs(0), scanStartResult(WIFI_SCAN_FAILED),
       scanStartAttempts(0) {
 }
@@ -263,7 +264,44 @@ void WiFiManager::enableWiFi() {
     Serial.println("Enabling WiFi...");
     wifiDisabled = false;
 
-    // Restart WiFi - try saved credentials or fall back to AP
-    startup();
+    // Bring the AP up, then start any saved station association without
+    // waiting for it. startup() would block here for the whole connect
+    // timeout, and this runs where that is not acceptable.
+    WiFi.mode(WIFI_AP);
+    WiFi.setHostname(CONTROLLER_HOSTNAME);
+    startAP();
+
+    String ssid, password;
+    if (loadCredentials(ssid, password)) {
+        beginSTA(ssid, password);
+    }
     Serial.println("WiFi enabled");
+}
+
+// Ask for the radio to be powered on or off. Safe to call from a request
+// handler: it only sets a flag.
+//
+// The work itself must not run on async_tcp. Enabling means a mode change, an
+// AP start with its settling delays and possibly a station association - the
+// original path blocked that task for the full connect timeout, so the reply to
+// /wifi/power never reached the browser and the UI reported a failure for an
+// operation that had actually succeeded. Disabling is quicker but is deferred
+// the same way for consistency.
+void WiFiManager::requestPower(bool enable) {
+    powerChangeTarget = enable;
+    powerChangePending = true;
+}
+
+// Called from loop(). Performs a pending power change on loopTask, where a few
+// hundred milliseconds of radio delays cost one tracking update rather than
+// freezing every network client.
+void WiFiManager::servicePowerRequest() {
+    if (!powerChangePending) return;
+    powerChangePending = false;
+
+    if (powerChangeTarget) {
+        enableWiFi();
+    } else {
+        disableWiFi();
+    }
 }

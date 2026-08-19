@@ -53,15 +53,21 @@ public:
     String getAPIP();
     String getConnectedSSID();
 
-    // Power control (for saving power when using Ethernet)
+    // Power control (for saving power when using Ethernet). Call requestPower()
+    // from a request handler - the radio work involves hundreds of milliseconds
+    // of delays and is deferred to servicePowerRequest() on loopTask.
     void disableWiFi();
     void enableWiFi();
+    void requestPower(bool enable);
+    void servicePowerRequest();
 
 private:
     bool wifiDisabled;
     String connectedSSID;
     bool apActive;
     static const int SCAN_START_MAX_ATTEMPTS = 6;
+    volatile bool powerChangePending;
+    volatile bool powerChangeTarget;
     bool scanRequested;
     unsigned long scanStartedMs;
     int scanStartResult;

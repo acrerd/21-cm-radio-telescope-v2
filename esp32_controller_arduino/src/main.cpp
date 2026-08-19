@@ -532,6 +532,10 @@ void loop() {
     handleStellariumServer();
     updateTracking();
     updateClockStatus();
+    // Radio power changes requested by /wifi/power happen here, not in the
+    // handler: they involve hundreds of milliseconds of delays that would
+    // otherwise freeze every network client.
+    wifiManager.servicePowerRequest();
 
     // Check if Ethernet connected and needs NTP sync. syncTimeNTP() no longer
     // blocks, so this cannot stall tracking or Due status parsing on a link flap.

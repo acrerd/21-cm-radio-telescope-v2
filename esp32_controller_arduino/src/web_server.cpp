@@ -769,21 +769,25 @@ void setupWebServer() {
 
         if (request->hasArg("enable")) {
             bool enable = (request->arg("enable") == "1");
-            if (enable) {
-                wifiManager.enableWiFi();
-                settings.wifiEnabled = true;
-            } else {
+            if (!enable) {
                 #if ETHERNET_ENABLED
                 if (!ethConnected) {
                     request->send(200, "application/json", "{\"ok\":false,\"error\":\"Cannot disable WiFi without Ethernet\"}");
                     return;
                 }
                 #endif
-                wifiManager.disableWiFi();
-                settings.wifiEnabled = false;
             }
+            // Queue the radio work for loopTask and answer straight away.
+            // Doing it inline blocked this task through an AP start and a full
+            // station connect timeout, so the reply never reached the browser:
+            // the UI reported that enabling had failed while it was in fact
+            // succeeding, which made WiFi look impossible to turn back on.
+            settings.wifiEnabled = enable;
+            wifiManager.requestPower(enable);
             settings.save();
-            request->send(200, "application/json", "{\"ok\":true,\"wifi_enabled\":" + String(enable ? "true" : "false") + "}");
+            request->send(200, "application/json",
+                          "{\"ok\":true,\"pending\":true,\"wifi_enabled\":" +
+                          String(enable ? "true" : "false") + "}");
         } else {
             // Just return current state
             request->send(200, "application/json", "{\"wifi_enabled\":" + String(wifiManager.isWiFiEnabled() ? "true" : "false") + "}");

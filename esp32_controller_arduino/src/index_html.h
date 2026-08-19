@@ -483,7 +483,10 @@ function connectWifi(){const pw=document.getElementById('wifi-password').value;c
 // the radio settles.
 function pollWifiConnect(tries){const st=document.getElementById('wifi-networks');if(tries>20){if(st)st.innerHTML='<p style="color:#888;">Still not connected - check the password and try again</p>';updateNetworkStatus();return;}fetch('/wifi/status').then(r=>r.json()).then(d=>{if(d.sta_connected){if(st)st.innerHTML='<p style="color:#5c5;">Connected'+(d.sta_ip?(' - IP '+d.sta_ip):'')+'</p>';updateNetworkStatus();return;}setTimeout(()=>pollWifiConnect(tries+1),1000);}).catch(()=>setTimeout(()=>pollWifiConnect(tries+1),1000));}
 function forgetWifi(){if(confirm('Forget saved WiFi?')){fetch('/wifi/forget').then(()=>updateNetworkStatus());}}
-function toggleWifiPower(){fetch('/wifi/status').then(r=>r.json()).then(d=>{const enable=!d.wifi_enabled;if(!enable&&!d.eth_connected){alert('Cannot disable WiFi without Ethernet connection');return;}fetch('/wifi/power?enable='+(enable?'1':'0')).then(r=>r.json()).then(r=>{if(r.ok){updateNetworkStatus();}else{alert('Error: '+(r.error||'Unknown'));}});});}
+function toggleWifiPower(){fetch('/wifi/status').then(r=>r.json()).then(d=>{const enable=!d.wifi_enabled;if(!enable&&!d.eth_connected){alert('Cannot disable WiFi without Ethernet connection');return;}fetch('/wifi/power?enable='+(enable?'1':'0')).then(r=>r.json()).then(r=>{if(!r.ok){alert('Error: '+(r.error||'Unknown'));return;}
+// The controller acknowledges at once and actions the radio a moment later on
+// its main loop, so re-check a few times rather than reading back the old state.
+updateNetworkStatus();[600,1500,3000,6000].forEach(ms=>setTimeout(updateNetworkStatus,ms));});});}
 function trackSun(){if(currentTrackingTarget==='Sun')return;fetch('/track/sun').then(()=>updateStatus());}
 function trackMoon(){if(currentTrackingTarget==='Moon')return;fetch('/track/moon').then(()=>updateStatus());}
 function trackGalacticBulge(){if(currentTrackingTarget==='Galactic Bulge')return;handleTrackResponse(fetch('/track/galactic-bulge'));}
