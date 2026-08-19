@@ -395,7 +395,7 @@ Tabbed web interface that coordinates telescope pointing and data recording:
 ```bash
 # Start the scheduler
 cd receiver_scheduler
-python h1_web_scheduler.py --host 0.0.0.0 --port 5000
+python h1_web_scheduler.py --port 5000    # binds 127.0.0.1 by default
 
 # Open browser to http://localhost:5000
 ```
@@ -406,7 +406,15 @@ On the observatory Linux host, use the desktop launcher **Start SRT Sofware**. I
 /home/astro/21-cm-radio-telescope-v2/receiver_scheduler/start_scheduler.sh
 ```
 
-which starts `h1_web_scheduler.py --host 0.0.0.0 --port 5000` only when nothing is already serving on port 5000. There is deliberately no systemd unit: the scheduler starts from the launcher and should not come up unattended.
+which starts `h1_web_scheduler.py --host 127.0.0.1 --port 5000` only when nothing is already serving on port 5000. There is deliberately no systemd unit: the scheduler starts from the launcher and should not come up unattended.
+
+The **loopback bind is deliberate**. The scheduler has no authentication, and its
+endpoints start observations, take the SDR, rewrite the schedule and flash
+controller firmware over OTA — bound to `0.0.0.0` that is an unauthenticated
+telescope-control API offered to every network the host is attached to. Nothing
+needs the wildcard: the controller's own page fetches the scheduler at
+`127.0.0.1:5000` from a browser running on this host, and remote use is over
+waypipe, which forwards the display rather than the connection.
 
 The scheduler re-execs itself under the configured receiver Python when needed so GNU Radio, PyEphem, and SDR dependencies come from radioconda. On the observatory machine the receiver Python default is `/home/astro/radioconda/bin/python`.
 

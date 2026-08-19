@@ -172,7 +172,8 @@ If `wmctrl` is installed, it waits for the application windows and then places V
 The VS Code scheduler task runs:
 
 ```bash
-/home/astro/radioconda/bin/python /home/astro/21-cm-radio-telescope-v2/receiver_scheduler/h1_web_scheduler.py --host 0.0.0.0 --port 5000
+/home/astro/21-cm-radio-telescope-v2/receiver_scheduler/start_scheduler.sh
+# -> h1_web_scheduler.py --host 127.0.0.1 --port 5000, only if nothing is already serving
 ```
 
 For a manual terminal start:

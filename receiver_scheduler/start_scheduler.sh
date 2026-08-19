@@ -15,7 +15,16 @@ set -u
 
 PYTHON="/home/astro/radioconda/bin/python"
 SCHEDULER="/home/astro/21-cm-radio-telescope-v2/receiver_scheduler/h1_web_scheduler.py"
-HOST="0.0.0.0"
+# Loopback only, and deliberately so. The scheduler has no authentication of any
+# kind, and its endpoints start observations, take the SDR, rewrite the schedule
+# and flash controller firmware over OTA (/api/firmware/update). Bound to
+# 0.0.0.0 that is an unauthenticated telescope-control API offered to every
+# network the host is plugged into. Nothing needs the wildcard: the controller's
+# own page fetches the scheduler at 127.0.0.1:5000 from a browser running on
+# this host, and remote use is waypipe, which forwards the display rather than
+# the connection. This matches h1_web_scheduler.py's own argparse default; it is
+# passed explicitly so the intent survives a change to that default.
+HOST="127.0.0.1"
 PORT="5000"
 LOCK_FILE="/tmp/srt-h1-scheduler.lock"
 
