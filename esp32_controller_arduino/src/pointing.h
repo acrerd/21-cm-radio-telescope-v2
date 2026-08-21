@@ -51,6 +51,13 @@ struct PointingModel {
     float CA = 0.0f;           // collimation error (deg)
     float NPAE = 0.0f;         // az/alt axis non-perpendicularity (deg)
     float TF = 0.0f;           // tube flexure (deg)
+    // Azimuth encoder scale error, in degrees of error per degree of azimuth.
+    // Unlike every term above it is a ratio, not an angle: the mount's reported
+    // azimuth is a count of encoder pulses, and if a pulse is not exactly half a
+    // degree the error grows with distance from the encoder zero. Measured at
+    // +0.0036 (0.36%, 4.2 sigma) on 2026-08-20, which is 1.28 deg across the
+    // full 355 deg range - far too large to leave in the residuals.
+    float AZSCALE = 0.0f;      // azimuth scale error (deg per deg)
     uint32_t version = 0;      // schema version of the loaded model
     uint32_t nScans = 0;       // scans the fit was derived from
     String fittedUtc = "";     // when it was fitted, for display

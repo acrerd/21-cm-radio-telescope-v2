@@ -1039,11 +1039,9 @@ _SCAN_RECORD_VERSION = 2
 _ENCODER_PULSE_DEG = 0.5
 _ENCODER_QUANTISATION_SIGMA_DEG = _ENCODER_PULSE_DEG / math.sqrt(12.0)
 
-# A per-session azimuth drift is only fitted for a session that can actually
-# constrain one. Below these it would trade against the tilt terms rather than
-# measure anything.
-_DRIFT_MIN_SCANS = 8
-_DRIFT_MIN_SPAN_HOURS = 3.0
+# The azimuth scale error trades against the constant azimuth offset IA unless
+# the scans span a decent arc, so it is only fitted when they do.
+_AZSCALE_MIN_AZ_COVERAGE_DEG = 90.0
 
 _POINTING_DATA_FILE = os.path.join(_SCRIPT_DIR, "pointing_data.json")
 _POINTING_MODEL_FILE = os.path.join(_SCRIPT_DIR, "pointing_model.json")
@@ -1256,54 +1254,33 @@ def fit_pointing_model(data: list | None = None,
     A = _pointing_model_matrix(alt_sun, az_sun)
     b = np.concatenate([d_alt, d_az])
 
-    # Per-session azimuth drift.
+    # Azimuth encoder scale error.
     #
-    # The 2026-08-20 scans show the azimuth residual marching steadily through
-    # the day - +0.03 deg/hour raw, 4.4 sigma once fitted - while the altitude
-    # residual does not (0.2 sigma). A geometric term cannot produce that: the
-    # Sun's alt/az are near enough symmetric about noon, and this is monotonic.
-    # Left unmodelled it does not average away, it leans on the tilt terms; on
-    # that day it moved AN by 4.5 of its own sigma and IE by 3.3. That is a
-    # plausible reason two scan days disagreed about the pole tilt.
+    # The mount's reported azimuth is a count of encoder pulses. If a pulse is
+    # not exactly half a degree the error grows with distance from the encoder
+    # zero, so it is a scaling between measured and true drive azimuth, not a
+    # geometric misalignment - no combination of IE/IA/AN/AE/CA/NPAE/TF can
+    # represent it, which is why the 2026-08-20 scans fitted at reduced
+    # chi-squared 28 with the four-term model and 22 with all seven.
     #
-    # It is fitted per session and deliberately NOT exported in `terms`. Two
-    # reasons. It is not a mount geometry the controller could apply - the
-    # controller holds a static model, and this is a rate. And in a single
-    # solar day azimuth and time are ~99.8% correlated, so a drift in time and
-    # an azimuth encoder scale error describe the data equally well and cannot
-    # be told apart here; naming it as either would assert more than is known.
-    # Separating them needs a mechanical test of the azimuth scale, or scans
-    # from a different season where the two are no longer aligned.
-    session_times: dict[str, list[tuple[int, float]]] = {}
-    for i, entry in enumerate(good):
-        try:
-            when = datetime.fromisoformat(str(entry["timestamp"]))
-        except (KeyError, TypeError, ValueError):
-            continue
-        session_times.setdefault(when.date().isoformat(), []).append(
-            (i, when.timestamp()))
+    # Measured at +0.0036 deg/deg (0.36%, 4.2 sigma) on that day: 1.28 deg
+    # across the mount's 355 deg range. Left out it does not average away, it
+    # leans on the tilt - it moved AN by 4.5 of its own sigma and IE by 3.3,
+    # which is a plausible reason two scan days disagreed about the pole tilt.
+    #
+    # It is a static property of the mount, so unlike a per-session nuisance
+    # term it pools across observing days and is exported for the controller to
+    # apply. Beware when reading a single solar day in isolation: azimuth and
+    # time run together at ~99.8% correlation, so these scans alone cannot tell
+    # a scale error from something drifting with the clock. What settles it is
+    # that the scaling is a property of the drive, testable mechanically
+    # against the encoder, and reproducible across days at different seasons.
+    fit_azscale = az_coverage >= _AZSCALE_MIN_AZ_COVERAGE_DEG
+    if fit_azscale:
+        azscale_column = np.zeros(2 * n)
+        azscale_column[n:] = np.mod(az_sun, 360.0)
+        A = np.column_stack([A, azscale_column])
 
-    drift_sessions = []
-    drift_columns = []
-    for session in sorted(session_times):
-        members = session_times[session]
-        if len(members) < _DRIFT_MIN_SCANS:
-            continue
-        idx = np.array([i for i, _ in members])
-        hours = np.array([t for _, t in members]) / 3600.0
-        span = float(hours.max() - hours.min())
-        if span < _DRIFT_MIN_SPAN_HOURS:
-            continue
-        column = np.zeros(2 * n)
-        # Azimuth equations only, and centred so the drift is orthogonal to the
-        # constant azimuth offset it would otherwise partly duplicate.
-        column[n + idx] = hours - hours.mean()
-        drift_columns.append(column)
-        drift_sessions.append({"session": session, "n_scans": len(members),
-                               "span_hours": span})
-
-    if drift_columns:
-        A = np.column_stack([A] + drift_columns)
 
     def scan_uncertainty(entry: dict, key: str) -> float:
         """Per-scan sigma: the Gaussian centroid uncertainty, plus the encoder grid.
@@ -1422,13 +1399,15 @@ def fit_pointing_model(data: list | None = None,
         "parameter_significance": {k: float(v) for k, v in significances.items()},
         "min_tilt_significance": float(min(significances["tilt_north"],
                                            significances["tilt_east"])),
-        "azimuth_drift": [
-            dict(entry, deg_per_hour=float(x[4 + j]),
-                 sigma_deg_per_hour=float(parameter_errors[4 + j]),
-                 significance=significance(float(x[4 + j]),
-                                           float(parameter_errors[4 + j])))
-            for j, entry in enumerate(drift_sessions)
-        ],
+        "az_scale": (
+            {
+                "deg_per_deg": float(x[4]),
+                "sigma": float(parameter_errors[4]),
+                "significance": significance(float(x[4]),
+                                             float(parameter_errors[4])),
+                "deg_over_full_range": float(x[4]) * 355.0,
+            } if fit_azscale else None
+        ),
         "residuals_alt": res_alt.tolist(),
         "residuals_az": res_az.tolist(),
         "scan_azimuths": az_sun.tolist(),
@@ -1448,6 +1427,13 @@ def fit_pointing_model(data: list | None = None,
         "AN": tilt_north,
         "AE": tilt_east,
     }
+    # AZSCALE goes with them: it is a property of the mount, not of this
+    # session, so the controller applies it like any other term. Omitted rather
+    # than sent as zero when the scans could not constrain it, because the
+    # controller defaults an unlisted term to zero and a fitted zero would be a
+    # claim this data cannot make.
+    if fit_azscale:
+        model["terms"]["AZSCALE"] = float(x[4])
     if true_lat is not None:
         model["site_lat"] = float(true_lat)
     if true_lon is not None:

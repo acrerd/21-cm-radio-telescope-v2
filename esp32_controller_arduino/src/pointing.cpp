@@ -23,6 +23,9 @@ static const char *POINTING_NVS_NS = "pointing";
 // /pointing, so a model that hits the clamp is visible without a slew being
 // commanded from it.
 static const double POINTING_MAX_CORRECTION_DEG = 10.0;
+// An azimuth scale error of 5% would be 17 deg across the mount's range. A real
+// one is tenths of a percent; anything past this is a fault, not a calibration.
+static const double POINTING_MAX_AZSCALE = 0.05;
 
 // tan(alt) and 1/cos(alt) diverge at the zenith, where azimuth is degenerate
 // anyway. Clamp the altitude those two terms see: at 89 deg tan(alt) is already
@@ -70,7 +73,13 @@ static void modelCorrection(double altDeg, double azDeg, double &dAlt, double &d
     dAz = pointingModel.IA
         + (pointingModel.AN * sinAz - pointingModel.AE * cosAz) * tanAlt
         + pointingModel.CA * secAlt
-        + pointingModel.NPAE * tanAlt;
+        + pointingModel.NPAE * tanAlt
+        // Scale error accumulating from the encoder zero. azDeg is the true
+        // azimuth here rather than the drive azimuth the encoder actually
+        // reads; they differ by the correction itself, so using it costs
+        // AZSCALE times about a degree - under 0.005 deg, and driveToTrue
+        // inverts whatever this does by fixed point regardless.
+        + pointingModel.AZSCALE * azDeg;
 
     dAlt = clampCorrection(dAlt);
     dAz = clampCorrection(dAz);
@@ -173,16 +182,18 @@ void pointingLoad() {
     pointingModel.CA = prefs.getFloat("CA", 0.0f);
     pointingModel.NPAE = prefs.getFloat("NPAE", 0.0f);
     pointingModel.TF = prefs.getFloat("TF", 0.0f);
+    pointingModel.AZSCALE = prefs.getFloat("AZSCALE", 0.0f);
     pointingModel.nScans = prefs.getUInt("nScans", 0);
     pointingModel.fittedUtc = prefs.getString("utc", "");
     pointingModel.loaded = true;
     prefs.end();
 
     Serial.printf("Pointing model loaded: IE=%+.4f IA=%+.4f AN=%+.4f AE=%+.4f "
-                  "CA=%+.4f NPAE=%+.4f TF=%+.4f (%u scans, %s)\n",
+                  "CA=%+.4f NPAE=%+.4f TF=%+.4f AZSCALE=%+.5f (%u scans, %s)\n",
                   pointingModel.IE, pointingModel.IA, pointingModel.AN,
                   pointingModel.AE, pointingModel.CA, pointingModel.NPAE,
-                  pointingModel.TF, (unsigned)pointingModel.nScans,
+                  pointingModel.TF, pointingModel.AZSCALE,
+                  (unsigned)pointingModel.nScans,
                   pointingModel.fittedUtc.length() ? pointingModel.fittedUtc.c_str()
                                                    : "no date");
 }
@@ -201,6 +212,7 @@ void pointingSave() {
     prefs.putFloat("CA", pointingModel.CA);
     prefs.putFloat("NPAE", pointingModel.NPAE);
     prefs.putFloat("TF", pointingModel.TF);
+    prefs.putFloat("AZSCALE", pointingModel.AZSCALE);
     prefs.putUInt("nScans", pointingModel.nScans);
     prefs.putString("utc", pointingModel.fittedUtc);
     prefs.end();
@@ -328,9 +340,18 @@ bool pointingApplyJson(const String &json, String &errorOut) {
     // Built into a scratch model so a malformed term late in the document
     // cannot leave the live one half-replaced.
     PointingModel next;
-    struct { const char *name; float *slot; } terms[] = {
-        {"IE", &next.IE}, {"IA", &next.IA}, {"AN", &next.AN}, {"AE", &next.AE},
-        {"CA", &next.CA}, {"NPAE", &next.NPAE}, {"TF", &next.TF},
+    // Each term carries its own plausible range. AZSCALE is why: it is a ratio,
+    // not an angle, so the degree limit that guards the others would wave
+    // through a scale error of 10, which is not a mount but a broken encoder.
+    struct { const char *name; float *slot; double limit; const char *unit; } terms[] = {
+        {"IE",   &next.IE,   POINTING_MAX_CORRECTION_DEG, "deg"},
+        {"IA",   &next.IA,   POINTING_MAX_CORRECTION_DEG, "deg"},
+        {"AN",   &next.AN,   POINTING_MAX_CORRECTION_DEG, "deg"},
+        {"AE",   &next.AE,   POINTING_MAX_CORRECTION_DEG, "deg"},
+        {"CA",   &next.CA,   POINTING_MAX_CORRECTION_DEG, "deg"},
+        {"NPAE", &next.NPAE, POINTING_MAX_CORRECTION_DEG, "deg"},
+        {"TF",   &next.TF,   POINTING_MAX_CORRECTION_DEG, "deg"},
+        {"AZSCALE", &next.AZSCALE, POINTING_MAX_AZSCALE, "deg/deg"},
     };
     int found = 0;
     for (auto &term : terms) {
@@ -341,9 +362,10 @@ bool pointingApplyJson(const String &json, String &errorOut) {
             return false;
         }
         if (r == PARSE_MISSING) continue;
-        if (fabs(value) > POINTING_MAX_CORRECTION_DEG) {
-            errorOut = String("Term ") + term.name + " is " + String(value, 3) +
-                       " deg, outside the plausible range for a pointing term";
+        if (fabs(value) > term.limit) {
+            errorOut = String("Term ") + term.name + " is " + String(value, 5) +
+                       " " + term.unit +
+                       ", outside the plausible range for a pointing term";
             return false;
         }
         *term.slot = (float)value;
@@ -376,11 +398,12 @@ String pointingToJson() {
     snprintf(buf, sizeof(buf),
         "{\"loaded\":%s,\"version\":%u,\"n_scans\":%u,\"fitted_utc\":\"%s\","
         "\"terms\":{\"IE\":%.5f,\"IA\":%.5f,\"AN\":%.5f,\"AE\":%.5f,"
-        "\"CA\":%.5f,\"NPAE\":%.5f,\"TF\":%.5f}}",
+        "\"CA\":%.5f,\"NPAE\":%.5f,\"TF\":%.5f,\"AZSCALE\":%.6f}}",
         pointingModel.loaded ? "true" : "false",
         (unsigned)pointingModel.version, (unsigned)pointingModel.nScans,
         pointingModel.fittedUtc.c_str(),
         pointingModel.IE, pointingModel.IA, pointingModel.AN, pointingModel.AE,
-        pointingModel.CA, pointingModel.NPAE, pointingModel.TF);
+        pointingModel.CA, pointingModel.NPAE, pointingModel.TF,
+        pointingModel.AZSCALE);
     return String(buf);
 }

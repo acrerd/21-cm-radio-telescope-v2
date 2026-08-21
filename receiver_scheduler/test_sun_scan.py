@@ -373,9 +373,12 @@ def test_pointing_model_recovers_weighted_four_parameter_solution():
     assert actual == pytest.approx(expected, abs=1e-9)
     # The same four numbers under the names the controller uses, and the TRUE
     # site position recorded alongside rather than adjusted by the tilt.
-    assert model["terms"] == pytest.approx(
+    assert {k: model["terms"][k] for k in ("IE", "IA", "AN", "AE")} == pytest.approx(
         {"IE": expected[0], "IA": expected[1],
          "AN": expected[2], "AE": expected[3]}, abs=1e-9)
+    # These scans span enough azimuth for a scale term, and it must come out at
+    # zero on data with no scale error rather than soaking up part of IA.
+    assert model["terms"]["AZSCALE"] == pytest.approx(0.0, abs=1e-9)
     assert model["site_lat"] == pytest.approx(55.9)
     assert model["site_lon"] == pytest.approx(-4.3)
     assert "effective_lat" not in model
@@ -587,75 +590,56 @@ def test_scan_uncertainty_includes_the_encoder_grid():
     assert sun_scan._ENCODER_QUANTISATION_SIGMA_DEG == pytest.approx(0.1443, abs=1e-4)
 
 
-def _timestamped(data, start="2026-08-20T08:00:00", step_hours=2.0):
-    """Give synthetic scans timestamps spanning a single session."""
-    from datetime import datetime, timedelta
-    t0 = datetime.fromisoformat(start)
-    for i, entry in enumerate(data):
-        entry["timestamp"] = (t0 + timedelta(hours=step_hours * i)).isoformat()
-    return data
+def test_azimuth_scale_is_fitted_and_exported():
+    """A scaling between measured and true drive azimuth is a mount property.
 
-
-def test_azimuth_drift_is_fitted_and_kept_out_of_the_terms():
-    """A drift through the session is absorbed, not pushed into the tilt.
-
-    A drift in time is not a mount geometry: the controller holds a static
-    model and could not apply a rate. Fitting it protects AN and AE from
-    leaning on it - on the real 2026-08-20 day, leaving it out moved AN by 4.5
-    of its own sigma - but it must not reach `terms`.
+    The reported azimuth is a count of encoder pulses; if a pulse is not exactly
+    half a degree the error grows with distance from the encoder zero. No
+    geometric term can represent that, so leaving it out pushes it into the
+    tilt.
     """
-    azimuths = [80, 100, 120, 140, 160, 180, 200, 220, 240]
+    azimuths = [60, 90, 120, 150, 180, 210, 240, 270]
     data, expected = _synthetic_pointing_data(azimuths)
-    _timestamped(data, step_hours=1.25)
-    rate = 0.05  # deg/hour, injected into azimuth only
-    hours = np.array([1.25 * i for i in range(len(data))])
-    for entry, h in zip(data, hours - hours.mean()):
-        entry["az_error_deg"] += rate * h
+    scale = 0.004  # deg per deg
+    for entry in data:
+        entry["az_error_deg"] += scale * entry["sun_az_deg"]
 
     model = sun_scan.fit_pointing_model(data, true_lat=55.9, true_lon=-4.3)
 
     assert model["success"] is True
-    assert len(model["azimuth_drift"]) == 1
-    assert model["azimuth_drift"][0]["deg_per_hour"] == pytest.approx(rate, abs=0.01)
-    assert model["azimuth_drift"][0]["session"] == "2026-08-20"
-    # The drift is a diagnostic, never a transmitted term.
-    assert set(model["terms"]) == {"IE", "IA", "AN", "AE"}
-    # And the tilt survives it: recovered despite the injected drift.
+    assert model["az_scale"]["deg_per_deg"] == pytest.approx(scale, abs=5e-4)
+    # Exported for the controller, which applies it like any other term.
+    assert model["terms"]["AZSCALE"] == pytest.approx(scale, abs=5e-4)
+    # And the tilt is recovered rather than bent to absorb the scale.
     assert model["terms"]["AN"] == pytest.approx(expected[2], abs=0.05)
     assert model["terms"]["AE"] == pytest.approx(expected[3], abs=0.05)
 
 
-def test_no_drift_fitted_for_a_short_or_sparse_session():
-    """Too few scans, or too short a span, and a drift would only trade against tilt."""
-    data, _ = _synthetic_pointing_data([80, 105, 135, 165, 195, 225])
-    _timestamped(data, step_hours=2.0)          # 6 scans: below _DRIFT_MIN_SCANS
-    assert sun_scan.fit_pointing_model(data, true_lat=55.9, true_lon=-4.3)["azimuth_drift"] == []
+def test_azimuth_scale_not_fitted_on_a_narrow_arc():
+    """Over a short arc a scale error is indistinguishable from a constant offset.
 
-    azimuths = [80, 100, 120, 140, 160, 180, 200, 220, 240]
-    short, _ = _synthetic_pointing_data(azimuths)
-    _timestamped(short, step_hours=0.1)         # 9 scans but under an hour
-    assert sun_scan.fit_pointing_model(short, true_lat=55.9, true_lon=-4.3)["azimuth_drift"] == []
-
-
-def test_pointing_model_errors_floored_for_consistent_scans():
-    """Mutually consistent scans must not overclaim precision.
-
-    The synthetic data are exact by construction, so reduced chi-squared
-    is ~0.  Scaling the covariance by it would shrink the parameter errors
-    towards zero and inflate the tilt significance the weak-calibration gate
-    relies on; the chi-squared scale must therefore be floored at 1, leaving
-    the errors set by the stated per-scan sigmas.
+    Fitting it anyway would let it trade against IA, so it is left out and
+    omitted from the terms rather than sent as a fitted zero.
     """
-    data, _ = _synthetic_pointing_data([80, 105, 135, 165, 195, 225])
+    data, _ = _synthetic_pointing_data([150, 160, 170, 180, 190, 200])
 
     model = sun_scan.fit_pointing_model(data, true_lat=55.9, true_lon=-4.3)
 
     assert model["success"] is True
-    assert model["reduced_chi_squared"] < 0.1
-    # Stated sigma is 0.05 deg over six scans, so a few hundredths of a degree.
-    # Without the chi-squared floor these would collapse to ~0.
-    for err in model["parameter_errors_deg"].values():
-        assert err > 0.01
+    assert model["az_scale"] is None
+    assert "AZSCALE" not in model["terms"]
+
+
+def test_azimuth_scale_reaches_the_wire_document():
+    azimuths = [60, 90, 120, 150, 180, 210, 240, 270]
+    data, _ = _synthetic_pointing_data(azimuths)
+    for entry in data:
+        entry["az_error_deg"] += 0.004 * entry["sun_az_deg"]
+    model = sun_scan.fit_pointing_model(data, true_lat=55.9, true_lon=-4.3)
+
+    document = sun_scan.pointing_model_document(model)
+
+    assert document["terms"]["AZSCALE"] == pytest.approx(0.004, abs=5e-4)
 
 
 def test_pointing_model_reports_tilt_significance():
