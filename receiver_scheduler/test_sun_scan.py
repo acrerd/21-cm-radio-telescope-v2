@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 """Tests for sun_scan.py scan geometry."""
 
+import io
 import json
 import math
 import os
 import sys
 import threading
 import time
+import urllib.error
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -720,3 +722,47 @@ def test_pointing_model_reports_tilt_significance():
 
     assert "min_tilt_significance" in model
     assert model["parameter_significance"]["alt_offset"] > model["min_tilt_significance"]
+
+
+def test_srt_api_retries_a_dropped_connection():
+    """The controller drops connections occasionally; a scan must survive it.
+
+    Every endpoint on this API is idempotent - /direct and /go-home command an
+    absolute position, the rest are reads or stores - so a retry cannot move
+    the telescope twice. Observed in practice on 2026-08-21: a slew command
+    refused with "Connection reset by peer" straight after a long slew, which
+    killed the run that issued it.
+    """
+    good = MagicMock()
+    good.__enter__.return_value.read.return_value = b'{"ok": true, "alt": 12.0}'
+
+    with patch.object(sun_scan.urllib.request, "urlopen",
+                      side_effect=[ConnectionResetError(104, "reset"), good]) as urlopen, \
+         patch.object(sun_scan.time, "sleep"):
+        result = sun_scan._srt_api("http://ctrl", "/direct", {"alt": "12"})
+
+    assert result == {"ok": True, "alt": 12.0}
+    assert urlopen.call_count == 2
+
+
+def test_srt_api_gives_up_after_repeated_failures():
+    with patch.object(sun_scan.urllib.request, "urlopen",
+                      side_effect=ConnectionResetError(104, "reset")) as urlopen, \
+         patch.object(sun_scan.time, "sleep"):
+        with pytest.raises(RuntimeError, match="request failed"):
+            sun_scan._srt_api("http://ctrl", "/status")
+    assert urlopen.call_count == sun_scan._API_RETRIES
+
+
+def test_a_rejected_target_is_an_answer_not_a_transport_failure():
+    """A 4xx with a JSON body is the controller explaining itself; do not retry it."""
+    err = urllib.error.HTTPError(
+        "http://ctrl/direct", 400, "Bad Request", {},
+        io.BytesIO(b'{"ok": false, "error": "outside the mount limits"}'))
+
+    with patch.object(sun_scan.urllib.request, "urlopen", side_effect=err) as urlopen:
+        result = sun_scan._srt_api("http://ctrl", "/direct", {"alt": "95"})
+
+    assert result["ok"] is False
+    assert "mount limits" in result["error"]
+    assert urlopen.call_count == 1

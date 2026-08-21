@@ -165,12 +165,42 @@ def _load_scheduler_config() -> dict:
 # SRT telescope control (reuses same HTTP API as the scheduler)
 # ---------------------------------------------------------------------------
 
+# The controller drops connections occasionally - it is an ESP32 serving a web
+# UI, a serial link and an NTP client from the same small pile of RAM, with
+# known cross-task locking weaknesses (issue #1). Observed in practice: a slew
+# command refused with "Connection reset by peer" immediately after a long
+# slew, which killed the scan that issued it.
+#
+# Retrying is safe for this API because every endpoint on it is idempotent:
+# /direct and /go-home set an absolute target rather than moving by a relative
+# amount, /status and /ping are reads, and /pointing/apply stores a document.
+# If the request arrived and only the reply was lost, the retry commands the
+# same position again and nothing moves twice.
+_API_RETRIES = 3
+_API_RETRY_DELAY_S = 0.4
+
+
 def _srt_api(base_url: str, endpoint: str, params: dict | None = None,
              timeout: int = 10) -> dict:
     """Call an SRT controller endpoint or raise a useful control error."""
     url = f"{base_url}{endpoint}"
     if params:
         url += "?" + urllib.parse.urlencode(params)
+    for attempt in range(1, _API_RETRIES + 1):
+        try:
+            return _srt_api_once(url, timeout)
+        except RuntimeError:
+            # An HTTPError carrying a JSON body is an answer, not a failure, and
+            # _srt_api_once returns it rather than raising - so anything raised
+            # here is a transport problem and worth another go.
+            if attempt == _API_RETRIES:
+                raise
+            log.debug("Retrying %s after a transport error (attempt %d)",
+                      endpoint, attempt)
+            time.sleep(_API_RETRY_DELAY_S)
+
+
+def _srt_api_once(url: str, timeout: int) -> dict:
     try:
         with urllib.request.urlopen(url, timeout=timeout) as resp:
             payload = resp.read().decode(errors="replace")
@@ -186,10 +216,10 @@ def _srt_api(base_url: str, endpoint: str, params: dict | None = None,
             return json.loads(exc.read().decode(errors="replace"), strict=False)
         except Exception:
             raise RuntimeError(
-                f"SRT controller request failed at {base_url}{endpoint}: {exc}") from exc
+                f"SRT controller request failed at {url}: {exc}") from exc
     except Exception as exc:
         raise RuntimeError(
-            f"SRT controller request failed at {base_url}{endpoint}: {exc}") from exc
+            f"SRT controller request failed at {url}: {exc}") from exc
 
 
 class ScanCancelled(RuntimeError):
@@ -215,6 +245,29 @@ def _cancellable_sleep(seconds: float, cancel_event=None) -> bool:
 def _check_cancelled(cancel_event, what: str) -> None:
     if cancel_event is not None and cancel_event.is_set():
         raise ScanCancelled(f"Sun scan cancelled during {what}")
+
+
+# How often to ask the controller whether the slew has finished.
+#
+# This used to be one second, which meant arrival was noticed up to a second
+# after it happened - on every point of every raster. Measured on 2026-08-21 a
+# one-degree move takes about 1.5 s end to end of which only 0.3 s is motion
+# (the axes run at 3.9 deg/s in altitude and 2.9 in azimuth), so that polling
+# interval was most of the cost of a scan: a 9x9 raster spends around five
+# minutes waiting for news that had already arrived.
+#
+# Not faster than this, though. Polling the controller flat out, with no gap at
+# all, resets the connection after a few requests; a 50 ms gap sustained 14 Hz
+# indefinitely in testing. 100 ms keeps a wide margin on that while still
+# bounding the wasted time per point at a tenth of a second, and it halves the
+# request rate seen by an ESP32 that has known locking weaknesses (issue #1).
+_SLEW_POLL_INTERVAL_S = 0.1
+
+# A transient status failure must not abort a slew. At 1 Hz a five-second slew
+# asked five times and a single failure was fairly damning; at 10 Hz it asks
+# fifty, so the odd dropped connection is expected rather than exceptional and
+# only a run of them means the controller has actually gone away.
+_SLEW_STATUS_FAILURES_ALLOWED = 10
 
 
 def _slew_to(base_url: str, alt: float, az: float,
@@ -253,9 +306,19 @@ def _slew_to(base_url: str, alt: float, az: float,
         target_alt, target_az = alt, az
 
     t0 = time.time()
+    status_failures = 0
     while time.time() - t0 < slew_timeout:
         _check_cancelled(cancel_event, "slew")
-        status = _srt_api(base_url, "/status")
+        try:
+            status = _srt_api(base_url, "/status")
+        except RuntimeError:
+            status_failures += 1
+            if status_failures > _SLEW_STATUS_FAILURES_ALLOWED:
+                raise
+            if _cancellable_sleep(_SLEW_POLL_INTERVAL_S, cancel_event):
+                raise ScanCancelled("Sun scan cancelled during slew")
+            continue
+        status_failures = 0
         current_alt = status.get("alt")
         current_az = status.get("az")
         if status.get("fault_active"):
@@ -278,7 +341,7 @@ def _slew_to(base_url: str, alt: float, az: float,
                 f"current Alt={float(current_alt):.2f} deg Az={float(current_az):.2f} deg, "
                 f"target Alt={alt:.2f} deg Az={az:.2f} deg, "
                 f"status={status.get('status', 'unknown')}")
-        if _cancellable_sleep(1, cancel_event):
+        if _cancellable_sleep(_SLEW_POLL_INTERVAL_S, cancel_event):
             raise ScanCancelled("Sun scan cancelled during slew")
 
     raise RuntimeError(
