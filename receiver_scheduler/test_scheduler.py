@@ -1829,3 +1829,33 @@ class TestScheduledHorizonScan:
             sched.horizon_state.update(saved)
             sched.horizon_cancel.clear()
             sched.observation_starting = False
+
+
+class TestHorizonBandwidth:
+    def test_a_scheduled_horizon_scan_carries_its_bandwidth(self):
+        """Bandwidth is a free choice for this measurement, so it is a setting.
+
+        At 2.4 MHz and 0.5 s the radiometric precision is 9e-4 and at 1 MHz it
+        is 1.4e-3, against a step of order 60% - so narrower costs nothing and
+        samples less spectrum either side of the protected band.
+        """
+        obs = dict(sched.DEFAULT_OBSERVATION, name="Horizon",
+                   coord_system="horizon", bandwidth_mhz=1.0)
+        started = []
+        saved, saved_end = sched.current_observation, sched.observation_end_time
+        try:
+            with patch.object(sched, '_run_horizon_scan',
+                              side_effect=lambda p: started.append(p)), \
+                 patch.object(sched, 'stop_booted_receiver'), \
+                 patch.object(sched, 'current_process', None):
+                assert sched.start_observation(obs) is True
+                for _ in range(50):
+                    if started:
+                        break
+                    time.sleep(0.02)
+            assert started[0]["bandwidth_mhz"] == 1.0
+        finally:
+            sched.current_observation = saved
+            sched.observation_end_time = saved_end
+            sched.horizon_state["running"] = False
+            sched.horizon_cancel.clear()

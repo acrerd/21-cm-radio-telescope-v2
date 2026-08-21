@@ -542,3 +542,37 @@ def test_a_run_of_open_azimuths_does_not_retry_each_one():
     assert estimators[0] == "unobstructed"
     # Only the first azimuth pays for discovering the horizon is out of reach.
     assert all(e["attempts"] == 1 for e in profile["entries"][1:])
+
+
+def test_a_weak_but_significant_step_is_not_discarded():
+    """A metal building is a faint step, not an absent one.
+
+    Metal has very low emissivity, so it reflects cold sky instead of radiating
+    at ambient and shows only a residue. Measured on 2026-08-21: 2.3% of sky
+    where the eastern treeline gives 59%. Against radiometric noise of 0.09%
+    that is a 25 sigma detection, and the old flat 5% threshold threw it away
+    and called the building open sky - the unsafe direction.
+    """
+    alts = np.arange(2.0, 40.0, 1.0)
+    sigma = 5.8 * hs._FWHM_TO_SIGMA
+    faint = hs.horizon_step(alts, 1.0, 0.023, 12.0, sigma)
+    faint = faint + np.random.default_rng(5).normal(0, 0.0009, len(alts))
+
+    fit = hs.fit_horizon_edge(alts, faint, reached_mount_limit=True,
+                              sky_reference=1.0)
+
+    assert fit["estimator"] != "unobstructed", "a 25 sigma step is not open sky"
+    assert fit["success"] is True
+    assert fit["edge_deg"] == pytest.approx(12.0, abs=1.0)
+    assert fit["contrast_sigma"] > 5
+
+
+def test_a_genuinely_flat_cut_is_still_open_sky():
+    """The significance test must not turn noise into obstructions."""
+    alts = np.arange(2.0, 40.0, 1.0)
+    flat = 1.0 + np.random.default_rng(7).normal(0, 0.0009, len(alts))
+
+    fit = hs.fit_horizon_edge(alts, flat, reached_mount_limit=True,
+                              sky_reference=1.0)
+
+    assert fit["estimator"] == "unobstructed"

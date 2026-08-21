@@ -90,9 +90,23 @@ DEFAULT_BEAM_FWHM_DEG = 5.8       # as measured by the Sun scans
 # systematics in an H1 observation.
 DEFAULT_CLEARANCE_FRACTION = 0.01
 
-# A cut with less contrast than this saw no horizon at all - open sky all the
-# way down, or a receiver problem.
-_MIN_CONTRAST_FRACTION = 0.05
+# Is there a step in this cut at all? That is a question about significance
+# against the noise, not about an arbitrary percentage - and treating it as the
+# latter made the scan blind to exactly the obstructions hardest to see.
+#
+# On 2026-08-21 the northeastern azimuths returned a contrast of 2.3% of sky
+# where the eastern treeline gives 59%. A metal-clad building stands there:
+# metal has very low emissivity, so it reflects cold sky rather than radiating
+# at ambient, and shows only a faint emissive residue. But radiometric noise at
+# 2.4 MHz and 0.5 s is 0.09%, so 2.3% is a 25 sigma detection - and a flat 5%
+# threshold discarded it and reported the building as open sky, which is the
+# unsafe direction to be wrong in.
+#
+# So the test is significance against the measured scatter of the sky samples,
+# with a small absolute floor only to catch a pathological cut whose sky
+# scatter has come out at zero.
+_MIN_CONTRAST_SIGMA = 5.0
+_MIN_CONTRAST_FRACTION = 0.003
 
 # How far the fitted transition width may stray from the known beam before the
 # straight-edge model is declared inapplicable. A tall narrow structure is not
@@ -201,7 +215,11 @@ def fit_horizon_edge(altitudes, powers,
     result["threshold"] = float(threshold)
     result["p_sky"] = p_sky_guess
     result["p_ground"] = p_ground_guess
-    if contrast_guess / scale < _MIN_CONTRAST_FRACTION:
+    significant = (contrast_guess > _MIN_CONTRAST_SIGMA * sky_sigma
+                   and contrast_guess / scale >= _MIN_CONTRAST_FRACTION)
+    result["contrast_sigma"] = (float(contrast_guess / sky_sigma)
+                                if sky_sigma > 0 else float("inf"))
+    if not significant:
         # No step anywhere in the cut. Which of two very different things that
         # means depends on whether the mount had run out of altitude: the
         # observatory stands on a hill, so at some azimuths the skyline is
@@ -227,8 +245,10 @@ def fit_horizon_edge(altitudes, powers,
         if reached_mount_limit and looks_like_sky:
             result["estimator"] = "unobstructed"
             result["success"] = True
-            result["quality"] = ("no obstruction above the mount limit: "
-                                 f"contrast is {100 * contrast_guess / scale:.1f}% of sky")
+            result["quality"] = (
+                "no obstruction above the mount limit: contrast is "
+                f"{100 * contrast_guess / scale:.2f}% of sky, "
+                f"{result['contrast_sigma']:.1f} sigma")
             result["edge_reported_deg"] = float(alt.min())
             result["alt_clear"] = float(alt.min())
             result["alt_clear_measured"] = float(alt.min())
@@ -244,8 +264,10 @@ def fit_horizon_edge(altitudes, powers,
                                  f"sky reference of {sky_reference:.4g}")
             result["estimator"] = "all_ground"
             return result
-        result["quality"] = (f"no horizon in this cut: contrast is "
-                             f"{100 * contrast_guess / scale:.1f}% of sky")
+        result["quality"] = (
+            f"no horizon in this cut: contrast is "
+            f"{100 * contrast_guess / scale:.2f}% of sky, "
+            f"{result['contrast_sigma']:.1f} sigma")
         result["estimator"] = "none"
         return result
     # And it must take a run of consecutive samples, not one. A single sample
@@ -347,12 +369,18 @@ def _demo_edge(az: float) -> float:
     return _DEMO_BASE_EDGE
 
 
+# Seeded, so a demo scan is reproducible. An unseeded draw made the recovery
+# test flaky, and a test that fails one run in three is worse than no test:
+# it teaches you to re-run rather than to look.
+_demo_rng = np.random.default_rng(20260821)
+
+
 def _demo_power(alt: float, az: float, beam_fwhm_deg: float,
-                rng=np.random) -> float:
+                rng=None) -> float:
     """Total power for the synthetic horizon, with the beam already convolved."""
     sigma = beam_fwhm_deg * _FWHM_TO_SIGMA
     p = horizon_step(alt, 1.0, 1.6, _demo_edge(az), sigma)
-    return float(p + rng.normal(0.0, 0.004))
+    return float(p + (rng or _demo_rng).normal(0.0, 0.004))
 
 
 # ---------------------------------------------------------------------------

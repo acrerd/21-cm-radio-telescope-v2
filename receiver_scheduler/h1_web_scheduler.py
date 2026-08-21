@@ -1500,6 +1500,7 @@ def _start_horizon_observation(obs: dict, duration_override: int = None) -> bool
         "alt_step": float(obs.get("horizon_alt_step", 1.0)),
         "integration_time_s": float(obs.get("integration_time_s", 0.5)),
         "center_freq_mhz": float(obs.get("center_freq_mhz", 1420.405752)),
+        "bandwidth_mhz": float(obs.get("bandwidth_mhz", 2.4)),
         "gain_db": float(obs.get("gain_db", 40)),
         "sdr_type": obs.get("sdr_type", "b210"),
     }
@@ -3963,6 +3964,12 @@ def _run_horizon_scan(params: dict):
             clearance_fraction=params.get("clearance_fraction", 0.01),
             sdr_type=params.get("sdr_type", "b210"),
             center_freq=params.get("center_freq_mhz", 1420.405752) * 1e6,
+            # Bandwidth is a free choice here rather than a trade-off: at
+            # 2.4 MHz and 0.5 s the radiometric precision is 9e-4, and at 1 MHz
+            # it is 1.4e-3, against a sky-to-ground step of order 60%. Narrower
+            # samples less spectrum either side of the protected 1420 MHz band,
+            # so it is the safer choice against terrestrial RFI.
+            sample_rate=params.get("bandwidth_mhz", 2.4) * 1e6,
             gain=params.get("gain_db", 40.0),
             srt_url=SRT_CONTROLLER_URL,
             slew_timeout=SRT_SLEW_TIMEOUT,
