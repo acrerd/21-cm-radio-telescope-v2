@@ -655,7 +655,9 @@ def generate_image(alt_offsets_grid: np.ndarray, az_offsets_grid: np.ndarray,
     fig.suptitle("\n".join(title_parts), fontsize=11)
     fig.tight_layout(rect=[0, 0, 1, 0.90])
 
-    fig.savefig(output_path, dpi=150, bbox_inches="tight")
+    _style_dark(fig)
+    fig.savefig(output_path, dpi=150, bbox_inches="tight",
+                facecolor=fig.get_facecolor(), edgecolor="none")
     plt.close(fig)
     log.info("Image saved to %s", output_path)
     return output_path
@@ -1492,6 +1494,45 @@ def load_pointing_model() -> dict | None:
         return None
 
 
+# Plot theme, matching the scheduler page these images are shown on.
+_PLOT_FIG_BG = "#1a1a2e"
+_PLOT_AXES_BG = "#0f0f23"
+_PLOT_FG = "#cccccc"
+_PLOT_GRID = "#333333"
+
+
+def _style_dark(fig):
+    """Make a figure readable against the scheduler's dark page.
+
+    savefig(facecolor=...) paints only the figure background. The axes keep
+    matplotlib's light defaults, so everything drawn outside a panel - axis
+    labels, tick labels, titles - was dark text on a dark ground. The axis
+    labels were always there; they were simply invisible, which reads as a plot
+    that has none.
+    """
+    fig.patch.set_facecolor(_PLOT_FIG_BG)
+    if fig._suptitle is not None:
+        fig._suptitle.set_color(_PLOT_FG)
+    for ax in fig.get_axes():
+        is_colorbar = ax.get_label() == "<colorbar>"
+        ax.set_facecolor(_PLOT_AXES_BG)
+        for spine in ax.spines.values():
+            spine.set_color(_PLOT_GRID)
+        ax.tick_params(colors=_PLOT_FG, which="both")
+        ax.xaxis.label.set_color(_PLOT_FG)
+        ax.yaxis.label.set_color(_PLOT_FG)
+        ax.title.set_color(_PLOT_FG)
+        if not is_colorbar:
+            ax.grid(True, color=_PLOT_GRID, alpha=0.4)
+            ax.set_axisbelow(True)
+        legend = ax.get_legend()
+        if legend is not None:
+            legend.get_frame().set_facecolor(_PLOT_AXES_BG)
+            legend.get_frame().set_edgecolor(_PLOT_GRID)
+            for text in legend.get_texts():
+                text.set_color(_PLOT_FG)
+
+
 def generate_calibration_plot(model: dict, output_path: str = "calibration_day.png") -> str:
     """Generate a plot showing the calibration day results.
 
@@ -1586,8 +1627,9 @@ def generate_calibration_plot(model: dict, output_path: str = "calibration_day.p
 
     fig.suptitle("Pointing Calibration Day", fontsize=14)
     fig.tight_layout(rect=[0, 0, 1, 0.96])
+    _style_dark(fig)
     fig.savefig(output_path, dpi=150, bbox_inches="tight",
-                facecolor="#1a1a2e", edgecolor="none")
+                facecolor=fig.get_facecolor(), edgecolor="none")
     plt.close(fig)
     log.info("Calibration plot saved to %s", output_path)
     return output_path
