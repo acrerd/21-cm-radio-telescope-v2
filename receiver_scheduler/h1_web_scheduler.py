@@ -3327,7 +3327,24 @@ HTML_TEMPLATE = '''
                     html += row('Median edge', med(edges).toFixed(1) + '&deg;');
                     html += row('Median clearance', med(clears).toFixed(1) + '&deg;');
                 }
-                const b = m.direction_bias || {};
+                const refs = m.sky_references || [];
+                if (refs.length > 1) {
+                    // The sky reference is the run's own health check: it is the
+                    // same position every time, so a drift in it is the
+                    // instrument, not the sky. A collapse in it is what a
+                    // mount that has lost its position looks like from here.
+                    const levels = refs.map(r => r.level);
+                    const drift = 100 * (Math.max(...levels) - Math.min(...levels))
+                                  / Math.min(...levels);
+                    html += row('Sky reference drift',
+                        '<span style="color:' + (drift > 10 ? '#ff4757' : '#888') + ';">' +
+                        drift.toFixed(1) + '% across ' + refs.length + ' checks</span>');
+                }
+                if (m.complete === false) {
+                    html += row('<span style="color:#ffa502;">Incomplete</span>',
+                        '<span style="color:#ffa502;">azimuths still blocked at the ceiling</span>');
+                }
+                const b = {};
                 if (b.available) {
                     // Up-cuts against down-cuts: a real horizon has no reason to
                     // zigzag with the parity of the azimuth index, so anything
@@ -3933,7 +3950,7 @@ def _run_sun_scan(params: dict):
 
 def _run_horizon_scan(params: dict):
     """Map the obstructed horizon, in a worker thread."""
-    from horizon_scan import (generate_horizon_plot, horizon_scan,
+    from horizon_scan import (generate_horizon_plot, horizon_strip_scan,
                               save_horizon_profile)
 
     # The azimuth count is known before the first cut finishes, and the first
@@ -3953,15 +3970,17 @@ def _run_horizon_scan(params: dict):
         def progress(idx, total, info):
             horizon_state.update(progress=idx + 1, total=total, point_info=info)
 
-        profile = horizon_scan(
+        profile = horizon_strip_scan(
             az_start=az_start,
             az_end=az_end,
             az_step=az_step,
-            alt_step=params.get("alt_step", 1.0),
-            window_deg=params.get("window_deg", 6.0),
-            integration_time_s=params.get("integration_time_s", 0.5),
+            alt_start=params.get("alt_start", 5.0),
+            alt_step=params.get("alt_step", 5.0),
+            alt_max=params.get("alt_max", 60.0),
+            settle_s=params.get("settle_s", 2.0),
+            integration_time_s=params.get("integration_time_s", 2.0),
+            home_every_strips=params.get("home_every_strips", 2),
             beam_fwhm_deg=params.get("beam_fwhm_deg", 5.8),
-            clearance_fraction=params.get("clearance_fraction", 0.01),
             sdr_type=params.get("sdr_type", "b210"),
             center_freq=params.get("center_freq_mhz", 1420.405752) * 1e6,
             # Bandwidth is a free choice here rather than a trade-off: at
@@ -4846,7 +4865,7 @@ def api_horizon_status():
 @app.route('/api/horizon/profile', methods=['GET'])
 def api_horizon_profile():
     """The stored profile, summarised - the raw cuts are far too big for the UI."""
-    from horizon_scan import direction_bias, load_horizon_profile, profile_floors
+    from horizon_scan import load_horizon_profile, profile_floors
     profile = load_horizon_profile()
     if not profile:
         return jsonify({'success': False, 'error': 'No horizon profile measured yet'})
@@ -4864,7 +4883,13 @@ def api_horizon_profile():
         'duration_s': profile.get("duration_s"),
         'clearance_fraction': profile.get("clearance_fraction"),
         'beam_fwhm_deg': profile.get("beam_fwhm_deg"),
-        'direction_bias': direction_bias(profile),
+        'strips': profile.get("strips", []),
+        'control_azimuths': profile.get("control_azimuths", []),
+        'sky_references': [
+            {'utc': r.get('utc'), 'level': r.get('level'), 'sigma': r.get('sigma')}
+            for r in profile.get("sky_references", [])
+        ],
+        'complete': profile.get("complete"),
         'floors': profile_floors(profile),
         'azimuths': [
             {
