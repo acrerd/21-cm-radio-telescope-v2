@@ -93,6 +93,13 @@ _DEFAULT_CONFIG = {
     "observer_lon": -4.307865,
     "observer_elevation": 50,
     "min_elevation": 10.0,
+    # The obstructed horizon, as [az_min, az_max, min_sun_alt] sectors. The Sun
+    # is not scanned while it sits inside one, and scans already on file from
+    # inside one are left out of the pointing fit: the trees are a 290 K source
+    # at 1.4 GHz, not a screen, so they pull the fitted centroid down towards
+    # themselves. See _DEFAULT_OBSTRUCTION_SECTORS in sun_scan.py, which holds
+    # the same value and the measurement it came from.
+    "obstruction_sectors": [[45.0, 120.0, 30.0]],
 }
 
 
@@ -1823,6 +1830,19 @@ HTML_TEMPLATE = '''
                     </div>
                 </div>
 
+                <div class="section-title">Obstructed Horizon</div>
+                <div class="form-group">
+                    <label>Sectors (az_min-az_max:min_sun_alt, comma separated)</label>
+                    <input type="text" id="cfgObstructionSectors" placeholder="45-120:30">
+                    <p style="color:#888; font-size:12px; margin-top:6px;">
+                        While the Sun is inside one of these azimuth ranges and below
+                        the stated altitude it is not scanned, and scans already on
+                        file from there are left out of the pointing fit. Trees emit
+                        at 1420&nbsp;MHz, so a raster that catches the skyline drags
+                        the fitted beam centre down into it.
+                    </p>
+                </div>
+
                 <div class="section-title">Receiver</div>
                 <div class="form-group">
                     <label>Receiver Python Executable</label>
@@ -3086,6 +3106,8 @@ HTML_TEMPLATE = '''
                     info += data.scans_completed + ' scans completed';
                     if (data.phase === 'waiting_for_sunrise') {
                         info += '<br><span style="color:#ffaa00;">Waiting for the Sun to reach 5&deg; altitude</span>';
+                    } else if (data.phase === 'waiting_for_clear_horizon') {
+                        info += '<br><span style="color:#ffaa00;">Sun is behind the obstructed horizon; waiting for it to clear</span>';
                     } else if (data.phase === 'homing') {
                         info += '<br><span style="color:#ffaa00;">Running physical homing sequence before scan</span>';
                     } else if (data.phase === 'retrying') {
@@ -3144,6 +3166,9 @@ HTML_TEMPLATE = '''
                     }
                     if (m.n_superseded) {
                         html += '<tr><td style="color:#888; padding:4px 8px;">Older scans skipped</td><td style="color:#ffa502;">' + m.n_superseded + ' (recorded before the resident pointing model)</td></tr>';
+                    }
+                    if (m.n_obstructed) {
+                        html += '<tr><td style="color:#888; padding:4px 8px;">Behind the horizon</td><td style="color:#ffa502;">' + m.n_obstructed + ' (Sun inside an obstruction sector)</td></tr>';
                     }
                     html += '</table>';
                     document.getElementById('cdModel').innerHTML = html;
@@ -3206,6 +3231,30 @@ HTML_TEMPLATE = '''
         }
 
         // ---- Configuration ----
+        // The obstruction sectors are stored as [az_min, az_max, min_sun_alt]
+        // triples and edited as "45-120:30, 300-330:12" — three numbers in a
+        // box beat hand-written JSON in a box.
+        function formatObstructionSectors(sectors) {
+            if (!Array.isArray(sectors)) return '';
+            return sectors.map(s => s[0] + '-' + s[1] + ':' + s[2]).join(', ');
+        }
+
+        function parseObstructionSectors(text) {
+            const sectors = [];
+            for (const part of text.split(',')) {
+                const chunk = part.trim();
+                if (!chunk) continue;
+                // Character classes spelled out: this whole page is a Python
+                // string, where a backslash escape would be Python's first.
+                const m = chunk.match(/^(-?[0-9.]+) *- *(-?[0-9.]+) *: *(-?[0-9.]+)$/);
+                if (!m) return null;
+                const values = [parseFloat(m[1]), parseFloat(m[2]), parseFloat(m[3])];
+                if (values.some(v => !isFinite(v))) return null;
+                sectors.push(values);
+            }
+            return sectors;
+        }
+
         function loadConfig() {
             fetch('/api/config').then(r => r.json()).then(cfg => {
                 document.getElementById('cfgBannerName').value = cfg.banner_name || '';
@@ -3217,6 +3266,8 @@ HTML_TEMPLATE = '''
                 document.getElementById('cfgObsLon').value = cfg.observer_lon ?? -4.3;
                 document.getElementById('cfgObsElev').value = cfg.observer_elevation ?? 50;
                 document.getElementById('cfgMinElev').value = cfg.min_elevation ?? 10;
+                document.getElementById('cfgObstructionSectors').value =
+                    formatObstructionSectors(cfg.obstruction_sectors);
                 document.getElementById('cfgReceiverPythonPath').value = cfg.receiver_python_path || cfg.python_path || '';
                 document.getElementById('cfgDataFolder').value = cfg.data_output_folder || '';
                 document.getElementById('cfgLogLines').value = cfg.log_lines || 100;
@@ -3226,6 +3277,15 @@ HTML_TEMPLATE = '''
         }
 
         function saveConfig() {
+            // Refuse the whole save rather than store an empty mask: silently
+            // dropping a typo here would let the next calibration day scan
+            // straight through the trees.
+            const sectors = parseObstructionSectors(
+                document.getElementById('cfgObstructionSectors').value);
+            if (sectors === null) {
+                alert('Obstruction sectors must look like "45-120:30", separated by commas.');
+                return;
+            }
             const cfg = {
                 banner_name: document.getElementById('cfgBannerName').value,
                 banner_subtitle: document.getElementById('cfgBannerSubtitle').value,
@@ -3236,6 +3296,7 @@ HTML_TEMPLATE = '''
                 observer_lon: parseFloat(document.getElementById('cfgObsLon').value) || 0,
                 observer_elevation: parseFloat(document.getElementById('cfgObsElev').value) || 0,
                 min_elevation: parseFloat(document.getElementById('cfgMinElev').value) || 10,
+                obstruction_sectors: sectors,
                 receiver_python_path: document.getElementById('cfgReceiverPythonPath').value,
                 data_output_folder: document.getElementById('cfgDataFolder').value,
                 log_lines: parseInt(document.getElementById('cfgLogLines').value) || 100,
@@ -3408,7 +3469,8 @@ def _run_sun_scan(params: dict):
 
 def _run_calibration_day(params: dict):
     """Run repeated sun scans at a fixed interval until sunset or cancelled."""
-    from sun_scan import get_sun_altaz, save_scan_to_pointing_data
+    from sun_scan import (get_sun_altaz, parse_obstruction_sectors,
+                          save_scan_to_pointing_data, sun_is_obstructed)
 
     interval = params.get("interval_minutes", 30)
     cal_day_state.update(running=True, finished=False, phase="starting",
@@ -3446,6 +3508,21 @@ def _run_calibration_day(params: dict):
                     sun_alt, _ = get_sun_altaz(lat, lon, elev)
                 log.info("Calibration day: sun is up (alt=%.1f°), starting scans",
                          sun_alt)
+                continue
+
+            # Skip the treeline. A scan taken through it is not a weak scan, it
+            # is a wrong one - the foliage is a bright extended source under the
+            # Sun and the Gaussian centroid slides into it - and it would be
+            # saved looking as respectable as any other. Waiting costs one
+            # interval; the fit would have to throw the scan out anyway.
+            sectors = parse_obstruction_sectors(cfg.get("obstruction_sectors"))
+            if sun_is_obstructed(sun_alt, sun_az, sectors):
+                log.info("Calibration day: Sun at alt=%.1f° az=%.1f° is behind a "
+                         "configured obstruction; waiting for it to clear",
+                         sun_alt, sun_az)
+                cal_day_state["phase"] = "waiting_for_clear_horizon"
+                if cal_day_cancel.wait(60):
+                    return
                 continue
 
             # Wait for any running single scan to finish
@@ -4044,6 +4121,7 @@ def api_calday_fit():
         model = fit_pointing_model(
             true_lat=cfg.get("observer_lat"),
             true_lon=cfg.get("observer_lon"),
+            obstruction_sectors=cfg.get("obstruction_sectors"),
         )
         if model.get("success"):
             # Stamped at fit time, not at apply time, so the date the controller

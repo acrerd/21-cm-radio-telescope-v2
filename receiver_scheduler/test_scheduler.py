@@ -171,6 +171,43 @@ class TestCalibrationDayRetry:
             sched.cal_day_state.update(original_cal_state)
             sched.cal_day_cancel.clear()
 
+    def test_no_scan_is_taken_while_the_sun_is_behind_an_obstruction(self):
+        """A scan through the treeline is wrong, not weak, so it is not taken.
+
+        Foliage is a bright extended source at 1420 MHz. Caught in the lower
+        rows of the raster it drags the fitted beam centre down into itself, and
+        the resulting scan is saved looking as respectable as any other.
+        """
+        original_cal_state = dict(sched.cal_day_state)
+        phases = []
+
+        def stop_waiting(_timeout):
+            phases.append(sched.cal_day_state["phase"])
+            sched.cal_day_cancel.set()
+            return True
+
+        try:
+            with patch('sun_scan.get_sun_altaz', return_value=(25.0, 100.0)), \
+                 patch.object(sched, 'load_config', return_value={
+                     "observer_lat": 55.9, "observer_lon": -4.3,
+                     "observer_elevation": 50,
+                     "obstruction_sectors": [[45, 120, 30]],
+                 }), \
+                 patch.object(sched.cal_day_cancel, 'wait', side_effect=stop_waiting), \
+                 patch.object(sched, '_run_sun_scan') as run_scan, \
+                 patch.object(sched.time, 'sleep'):
+                sched._run_calibration_day({
+                    "sdr_type": "b210",
+                    "interval_minutes": 30,
+                })
+
+            run_scan.assert_not_called()
+            assert phases == ["waiting_for_clear_horizon"]
+        finally:
+            sched.cal_day_state.clear()
+            sched.cal_day_state.update(original_cal_state)
+            sched.cal_day_cancel.clear()
+
 
 # =============================================================================
 # parse_tle

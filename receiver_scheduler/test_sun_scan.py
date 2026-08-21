@@ -642,6 +642,73 @@ def test_azimuth_scale_reaches_the_wire_document():
     assert document["terms"]["AZSCALE"] == pytest.approx(0.004, abs=5e-4)
 
 
+def test_obstruction_sectors_are_parsed_defensively():
+    """A hand-edited config costs the malformed sector, not the fit."""
+    sectors = sun_scan.parse_obstruction_sectors([
+        [45, 120, 30],          # good
+        [10, 20],               # too short
+        ["east", 120, 30],      # not numeric
+        [45, 120, float("nan")],
+        "45-120:30",            # the UI's text form, not the stored form
+    ])
+
+    assert sectors == [(45.0, 120.0, 30.0)]
+    # Nothing configured must not become a mask over the whole sky.
+    assert sun_scan.parse_obstruction_sectors(None) == []
+    assert sun_scan.parse_obstruction_sectors("nonsense") == []
+
+
+def test_sun_is_obstructed_only_below_the_sector_altitude():
+    sectors = sun_scan.parse_obstruction_sectors([[45, 120, 30]])
+
+    assert sun_scan.sun_is_obstructed(28.8, 112.0, sectors) is True
+    # The same altitude in the west, where the skyline is clear.
+    assert sun_scan.sun_is_obstructed(28.5, 248.3, sectors) is False
+    # Above the sector: the raster clears the trees.
+    assert sun_scan.sun_is_obstructed(32.6, 119.4, sectors) is False
+
+
+def test_obstruction_sector_wraps_through_north():
+    sectors = sun_scan.parse_obstruction_sectors([[330, 30, 15]])
+
+    assert sun_scan.sun_is_obstructed(10.0, 350.0, sectors) is True
+    assert sun_scan.sun_is_obstructed(10.0, 5.0, sectors) is True
+    assert sun_scan.sun_is_obstructed(10.0, 180.0, sectors) is False
+    # A full turn is expressible, and is not read as the single ray az = 0.
+    everywhere = sun_scan.parse_obstruction_sectors([[0, 360, 15]])
+    assert sun_scan.sun_is_obstructed(10.0, 180.0, everywhere) is True
+
+
+def test_scans_behind_an_obstruction_are_left_out_of_the_fit():
+    """Trees at 1420 MHz are a source, so those scans are wrong, not just noisy.
+
+    The skyline puts a ramp of ~290 K foliage under the Sun in the lower rows of
+    the raster and the single Gaussian slides down into it. On 2026-08-20 the
+    first four scans of the day fitted 0.5-1.2 deg low in altitude for that
+    reason while the evening scans at the same altitudes in the west were clean.
+    Such a scan reports a small centroid uncertainty and would otherwise be
+    weighted like any other.
+    """
+    data, expected = _synthetic_pointing_data([80, 105, 135, 165, 195, 225])
+    contaminated = dict(data[0])          # az 80, alt 25 - low in the east
+    contaminated["alt_error_deg"] -= 1.2  # dragged down into the trees
+    spoiled = [contaminated] + data[1:]
+
+    without_mask = sun_scan.fit_pointing_model(spoiled, true_lat=55.9, true_lon=-4.3)
+    masked = sun_scan.fit_pointing_model(spoiled, true_lat=55.9, true_lon=-4.3,
+                                         obstruction_sectors=[[45, 120, 30]])
+
+    assert masked["n_obstructed"] == 1
+    assert masked["n_scans"] == 5
+    assert without_mask["n_obstructed"] == 0
+    # The remaining scans are exact, so the mask recovers the true parameters
+    # while the contaminated fit is pulled well away from them.
+    assert [masked["alt_offset_deg"], masked["az_offset_deg"],
+            masked["tilt_north_deg"], masked["tilt_east_deg"]] == pytest.approx(
+        expected, abs=1e-9)
+    assert abs(without_mask["alt_offset_deg"] - expected[0]) > 0.1
+
+
 def test_pointing_model_reports_tilt_significance():
     data, _ = _synthetic_pointing_data([80, 105, 135, 165, 195, 225])
     noisy = [dict(entry) for entry in data]

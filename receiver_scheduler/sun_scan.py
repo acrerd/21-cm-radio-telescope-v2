@@ -61,6 +61,76 @@ _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 _CONFIG_FILE = os.path.join(_SCRIPT_DIR, "scheduler_config.json")
 
 
+# The obstructed horizon - the treeline, in practice.
+#
+# Trees are not a screen at 1.4 GHz, they are a source: foliage at ~290 K is
+# bright against a Sun that lifts the total power by only a factor of a few
+# through this dish. When the lower rows of the raster fall on the skyline the
+# map carries a ramp of ground emission underneath the Sun, the single Gaussian
+# is pulled down into it, and the scan reports an altitude error that has
+# nothing to do with the mount. On 2026-08-20 the first four scans of the day
+# (Sun at 18-29 deg, azimuth 94-112) fitted 0.5-1.2 deg low for exactly that
+# reason - one of them lost the Sun altogether - while the evening scans at the
+# same altitudes in the west were clean, which is what identifies it as a fixed
+# obstruction rather than anything about low elevation as such.
+#
+# Each sector is [az_min, az_max, min_sun_alt] in degrees: while the Sun is
+# inside that azimuth range and below that altitude it is not scanned, and any
+# scan already on file from there is left out of the fit. The altitude is a
+# floor for the *Sun*, not the height of the trees - it already allows for the
+# half-width of the raster and the beam - so it is read straight off a
+# calibration day rather than surveyed. az_min > az_max wraps through north.
+_DEFAULT_OBSTRUCTION_SECTORS = [[45.0, 120.0, 30.0]]
+
+
+def parse_obstruction_sectors(sectors) -> list:
+    """Sanitise configured obstruction sectors into (az_min, az_max, min_alt).
+
+    Hand-edited config must cost at most the sector that is malformed. A junk
+    entry is dropped with a warning rather than allowed to except out of a
+    calibration fit or, worse, silently mask the whole sky.
+    """
+    parsed = []
+    if not isinstance(sectors, (list, tuple)):
+        if sectors is not None:
+            log.warning("Ignoring obstruction sectors: expected a list, got %r",
+                        type(sectors).__name__)
+        return parsed
+    for sector in sectors:
+        if not isinstance(sector, (list, tuple)) or len(sector) != 3:
+            log.warning("Ignoring malformed obstruction sector %r "
+                        "(expected [az_min, az_max, min_alt])", sector)
+            continue
+        try:
+            az_min, az_max, min_alt = (float(v) for v in sector)
+        except (TypeError, ValueError):
+            log.warning("Ignoring obstruction sector with non-numeric bounds: %r",
+                        sector)
+            continue
+        if not all(math.isfinite(v) for v in (az_min, az_max, min_alt)):
+            log.warning("Ignoring obstruction sector with non-finite bounds: %r",
+                        sector)
+            continue
+        parsed.append((az_min, az_max, min_alt))
+    return parsed
+
+
+def sun_is_obstructed(alt_deg: float, az_deg: float, sectors) -> bool:
+    """Is this Sun position behind a configured obstruction?"""
+    for az_min, az_max, min_alt in sectors:
+        if alt_deg >= min_alt:
+            continue
+        # Width of the sector measured eastwards from az_min, so a sector that
+        # wraps through north needs no special case. The equal-bounds guard is
+        # what lets [0, 360, alt] mean the whole horizon rather than one ray.
+        width = (az_max - az_min) % 360.0
+        if width == 0.0 and az_max != az_min:
+            width = 360.0
+        if (az_deg - az_min) % 360.0 <= width:
+            return True
+    return False
+
+
 def _load_scheduler_config() -> dict:
     """Load observer location and SRT URL from the scheduler config file."""
     defaults = {
@@ -73,6 +143,7 @@ def _load_scheduler_config() -> dict:
         "observer_lon": -4.307865,
         "observer_elevation": 50,
         "slew_timeout": 300,
+        "obstruction_sectors": _DEFAULT_OBSTRUCTION_SECTORS,
     }
     try:
         with open(_CONFIG_FILE) as f:
@@ -1141,7 +1212,8 @@ def _pointing_model_matrix(alt_deg: np.ndarray, az_deg: np.ndarray) -> np.ndarra
 
 def fit_pointing_model(data: list | None = None,
                        true_lat: float | None = None,
-                       true_lon: float | None = None) -> dict:
+                       true_lon: float | None = None,
+                       obstruction_sectors: list | None = None) -> dict:
     """Fit the 4-parameter pointing/tilt model to accumulated sun scan data.
 
     Parameters
@@ -1149,6 +1221,11 @@ def fit_pointing_model(data: list | None = None,
     data      : list of scan entries (default: load from file)
     true_lat  : observer latitude for effective lat/lon calculation
     true_lon  : observer longitude for effective lat/lon calculation
+    obstruction_sectors : [az_min, az_max, min_sun_alt] sectors whose scans are
+                dropped as contaminated by the skyline (default: none). Like
+                true_lat/true_lon this is a property of the site that the
+                caller supplies from the scheduler config, so the fit itself
+                stays a pure function of the data it is handed.
 
     Returns
     -------
@@ -1178,9 +1255,11 @@ def fit_pointing_model(data: list | None = None,
     # only two scans, but at least four well-spread scans are required to detect
     # poor geometry and produce meaningful uncertainty estimates.
     required = ("sun_alt_deg", "sun_az_deg", "alt_error_deg", "az_error_deg")
+    sectors = parse_obstruction_sectors(obstruction_sectors)
     good = []
     rejected = 0
     superseded = 0
+    obstructed = 0
     for entry in data:
         # Only absolute (T, D) records can be pooled - see _SCAN_RECORD_VERSION.
         # Read defensively: this file is on disk and has been hand-edited before,
@@ -1204,8 +1283,17 @@ def fit_pointing_model(data: list | None = None,
         if not 0.0 <= values[0] < 89.5:
             rejected += 1
             continue
+        # Counted apart from the rejects: these scans fitted perfectly well,
+        # they were just fitting the treeline as much as the Sun.
+        if sun_is_obstructed(values[0], values[1], sectors):
+            obstructed += 1
+            continue
         good.append(entry)
 
+    if obstructed:
+        log.info("Leaving out %d scan(s) taken with the Sun behind a configured "
+                 "obstruction; the skyline biases the Gaussian centroid",
+                 obstructed)
     if superseded:
         log.info("Skipping %d scan(s) recorded before the resident pointing model; "
                  "they are residuals against a model that is no longer knowable",
@@ -1216,12 +1304,16 @@ def fit_pointing_model(data: list | None = None,
         if superseded:
             error += (f" ({superseded} older scan(s) predate the resident pointing "
                       "model and cannot be pooled with these; collect fresh scans)")
+        if obstructed:
+            error += (f" ({obstructed} scan(s) left out with the Sun behind an "
+                      "obstruction sector)")
         return {
             "success": False,
             "error": error,
             "n_scans": len(good),
             "n_rejected": rejected,
             "n_superseded": superseded,
+            "n_obstructed": obstructed,
         }
 
     alt_sun = np.array([d["sun_alt_deg"] for d in good], dtype=float)
@@ -1249,6 +1341,7 @@ def fit_pointing_model(data: list | None = None,
                       "collect scans spanning at least 30 deg"),
             "n_scans": n,
             "n_rejected": rejected,
+            "n_obstructed": obstructed,
             "az_coverage_deg": az_coverage,
         }
 
@@ -1269,6 +1362,13 @@ def fit_pointing_model(data: list | None = None,
     # across the mount's 355 deg range. Left out it does not average away, it
     # leans on the tilt - it moved AN by 4.5 of its own sigma and IE by 3.3,
     # which is a plausible reason two scan days disagreed about the pole tilt.
+    #
+    # Those figures come from all 22 scans of that day. Dropping the four whose
+    # rasters caught the eastern treeline (see _DEFAULT_OBSTRUCTION_SECTORS)
+    # takes it to +0.0025 deg/deg at 1.9 sigma - still the same sign and order,
+    # but no longer significant on its own, because the discarded scans were the
+    # ones furthest around the arc. A second calibration day, ideally at another
+    # season so azimuth and time of day part company, is what will settle it.
     #
     # It is a static property of the mount, so unlike a per-session nuisance
     # term it pools across observing days and is exported for the controller to
@@ -1334,6 +1434,7 @@ def fit_pointing_model(data: list | None = None,
                       "collect scans over a wider part of the day"),
             "n_scans": n,
             "n_rejected": rejected,
+            "n_obstructed": obstructed,
             "az_coverage_deg": az_coverage,
             "condition_number": condition_number,
         }
@@ -1389,6 +1490,7 @@ def fit_pointing_model(data: list | None = None,
         "n_scans": n,
         "n_rejected": rejected,
         "n_superseded": superseded,
+        "n_obstructed": obstructed,
         "az_coverage_deg": az_coverage,
         "condition_number": condition_number,
         "reduced_chi_squared": reduced_chi_squared,
@@ -1607,6 +1709,12 @@ def generate_calibration_plot(model: dict, output_path: str = "calibration_day.p
         "",
         f"Scans used: {model['n_scans']}",
         f"Az coverage: {az.min():.0f}° — {az.max():.0f}°",
+    ]
+    # Worth saying on the plot: a day whose morning points are missing looks
+    # like a day that failed, unless it says why they are not there.
+    if model.get("n_obstructed"):
+        lines.append(f"Behind obstruction: {model['n_obstructed']} (not fitted)")
+    lines += [
         "",
         f"Alt zero offset:  {model['alt_offset_deg']:+.3f}°",
         f"Az zero offset:   {model['az_offset_deg']:+.3f}°",
