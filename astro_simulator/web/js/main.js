@@ -1,6 +1,6 @@
 // Bootstrap: fetch + gunzip the data bundles, build the engine, wire
 // the UI.  URL parameters replace the desktop CLI flags:
-//   ?site=Name&lat=..&lon=..&height=..&controller=http://...
+//   ?site=Name&lat=..&lon=..&height=..
 
 import { SkyData } from "./skydata.js";
 import { SkyMap } from "./map.js";
@@ -51,8 +51,6 @@ async function boot() {
       lon: parseFloat(params.get("lon") ?? meta.site.lon),
       height: parseFloat(params.get("height") ?? meta.site.height),
     };
-    const controller = params.get("controller") || meta.controller;
-
     status.textContent = "decoding...";
     await new Promise((r) => setTimeout(r));      // let the text paint
     const sky = new SkyData(cubeBuf, contBuf, meta);
@@ -77,7 +75,6 @@ async function boot() {
       frameBtn: document.getElementById("btn-frame"),
       mapBtn: document.getElementById("btn-map"),
       targetsBtn: document.getElementById("btn-targets"),
-      realiseBtn: document.getElementById("btn-realise"),
       homeBtn: document.getElementById("btn-home"),
       saveBtn: document.getElementById("btn-save"),
       targetsMenu: document.getElementById("targets-menu"),
@@ -96,7 +93,7 @@ async function boot() {
     map.draw();
     plot.message("click the map");
 
-    const ui = setupUI({ sky, map, plot, els, site, controller });
+    const ui = setupUI({ sky, map, plot, els, site });
     setInterval(() => map.draw(), 60000);         // horizon drifts
 
     // deep link: ?l=..&b=..[&beam=..][&mode=cont] points at startup

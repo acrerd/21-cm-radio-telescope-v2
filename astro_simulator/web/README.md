@@ -26,7 +26,6 @@ URL parameters replace the desktop CLI flags:
 | parameter | meaning | default |
 |---|---|---|
 | `?site=&lat=&lon=&height=` | observer site | Glasgow 55.87, −4.29 |
-| `?controller=` | SRT controller base URL for Realise | `http://192.168.50.120` |
 | `?l=&b=` | point the dish at startup (deep link) | — |
 | `?mode=cont` | start in continuum/drift mode | H I |
 
@@ -42,8 +41,8 @@ site visibility loops and the live horizon; the 1420 MHz continuum
 map with drift scans (τ-per-sample noise); display maps blurred to
 the current beam, like the desktop; observer-site entry boxes (name,
 lat, lon — default Glasgow) that move the horizon, visibility loops,
-Moon, topocentric frame and Realise together; Realise against the
-real controller; wheel-zoom, `s`/Save for PNG + txt export.
+Moon and topocentric frame together; wheel-zoom, `s`/Save for PNG +
+txt export.
 
 Known divergences from the desktop app, all deliberate:
 - compact data only — the minimum beam is the compact floor (~1.54°),
@@ -51,11 +50,23 @@ Known divergences from the desktop app, all deliberate:
 - Moon position is Meeus + topocentric parallax (~0.3°) and the
   topocentric velocity frame is good to ~40 m/s (~1/30 channel),
   versus astropy on the desktop;
-- **Realise needs CORS**: the ESP32 controller must send
-  `Access-Control-Allow-Origin: *` (one line in `web_server.cpp`)
-  for a static page to call it, or serve this folder from the same
-  origin (e.g. a scheduler route). Until then the button reports the
-  failure without side effects.
+- **no Realise button — this version cannot command the telescope.**
+  Use `astro_simulator.py --controller ...` for that; it makes
+  server-side requests with no browser in the way. Three things stood
+  between a hosted page and the controller, and the address was the
+  least of them: the published copy is served over **HTTPS** while the
+  controller speaks plain HTTP, which browsers block as mixed content;
+  the controller sends **no `Access-Control-Allow-Origin` header** and
+  404s the preflight, so a cross-origin page could not read a reply
+  even if it arrived; and the controller now lives on a **private link**
+  that only the observatory host can reach at all. The middle one is
+  also a protection worth keeping: same-origin policy is what stops any
+  page visited on the observatory host from driving an unauthenticated
+  telescope API, and `Access-Control-Allow-Origin: *` would remove it.
+  There was a sharp edge here too — through an ssh tunnel to
+  `http://localhost`, the GET is a simple request, so the browser sends
+  it and the dish moves, then blocks the response and reports a network
+  error. The button appeared to fail while commanding the telescope.
 
 ## Published copy (GitHub Pages)
 

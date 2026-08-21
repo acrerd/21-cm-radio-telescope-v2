@@ -1,6 +1,6 @@
 // UI wiring: parameter row (with the desktop's clamp/write-back and
 // f_c display-precision rules), targets menu, frame cycling, map mode,
-// drift scans, Realise, save.  Port of the desktop main() closures.
+// drift scans and save.  Port of the desktop main() closures.
 
 import { jdFromDate, decimalYear, galToEq, raDecToAltAz, sepDeg }
   from "./coordinates.js";
@@ -31,7 +31,7 @@ const TARGETS = [
 const FRAME_NAMES = { lsr: "LSR", ssb: "SSB", topo: "Topo" };
 
 export function setupUI(cfg) {
-  const { sky, map, plot, els, site, controller } = cfg;
+  const { sky, map, plot, els, site } = cfg;
   const state = { last: null, frame: "lsr", params: null, mode: "hi" };
   const messages = [];
 
@@ -334,7 +334,7 @@ export function setupUI(cfg) {
   buildTargetsMenu();
 
   // observer site: name/lat/lon boxes; the Moon's parallax, horizon,
-  // visibility loops, topocentric frame and Realise all follow
+  // visibility loops and the topocentric frame all follow
   function initSiteBoxes() {
     els.siteName.value = site.name;
     els.siteLat.value = `${site.lat}`;
@@ -374,51 +374,6 @@ export function setupUI(cfg) {
   initSiteBoxes();
   els.targetsBtn.addEventListener("click", () => {
     menu.style.display = menu.style.display === "none" ? "block" : "none";
-  });
-
-  // realise
-  async function controllerCall(endpoint, params) {
-    let url = controller.replace(/\/+$/, "") + endpoint;
-    if (params) url += "?" + new URLSearchParams(params);
-    try {
-      const r = await fetch(url, { signal: AbortSignal.timeout(4000) });
-      return await r.json();
-    } catch (err) {
-      message(`SRT controller not reachable (${url}): ${err.message}`);
-      return null;
-    }
-  }
-
-  els.realiseBtn.addEventListener("click", async () => {
-    const p = applyParams();
-    if (!p) return;
-    const { glon, glat } = p;
-    let r;
-    if (state.mode !== "cont") {
-      message(`Realise: asking the SRT to track l=${glon.toFixed(2)}°, ` +
-              `b=${glat.toFixed(2)}°...`);
-      r = await controllerCall("/track/galactic",
-          { l: glon.toFixed(3), b: glat.toFixed(3) });
-    } else {
-      let dur = parseFloat(boxes.sd.value);
-      dur = Number.isFinite(dur) ? Math.min(1435, Math.max(2, dur)) : 240;
-      const eq = galToEq(glon, glat);
-      const jd = jdFromDate(new Date());
-      const aa = raDecToAltAz(eq.ra - 15.041 * dur / 120.0, eq.dec,
-                              site.lat, site.lon, jd);
-      if (aa.alt <= 0) {
-        message(`Realise: the drift-scan start is below the horizon ` +
-                `(alt ${aa.alt.toFixed(1)}°) - not sent.`);
-        return;
-      }
-      message(`Realise: parking the SRT at alt ${aa.alt.toFixed(1)}°, ` +
-              `az ${aa.az.toFixed(1)}°; transit in ${(dur / 2).toFixed(0)}` +
-              ` min...`);
-      await controllerCall("/tracking/enable", { enable: 0 });
-      r = await controllerCall("/direct",
-          { alt: aa.alt.toFixed(2), az: aa.az.toFixed(2) });
-    }
-    if (r !== null) message(`  controller: ${JSON.stringify(r)}`);
   });
 
   // home / save
