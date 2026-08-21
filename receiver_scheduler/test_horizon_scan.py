@@ -576,3 +576,104 @@ def test_a_genuinely_flat_cut_is_still_open_sky():
                               sky_reference=1.0)
 
     assert fit["estimator"] == "unobstructed"
+
+
+# ---------------------------------------------------------------------------
+# Strip scan
+# ---------------------------------------------------------------------------
+
+def test_strips_peel_away_as_azimuths_clear():
+    """The horizon is monotonic: sky at 10 degrees means sky at 15.
+
+    So each strip need only visit what is still blocked, and the work shrinks
+    as it climbs. This is what makes a coarse whole-sky scan affordable.
+    """
+    profile = hs.horizon_strip_scan(sdr_type="demo", settle_s=0.0, alt_max=60.0)
+
+    counts = [s["n_measured"] for s in profile["strips"]]
+    assert counts[0] > counts[-1]
+    assert counts == sorted(counts, reverse=True), "a strip must never grow"
+    assert profile["strips"][0]["n_cleared"] > 0
+
+
+def test_a_cleared_azimuth_is_never_revisited():
+    visited = {}
+    real = hs._measure_at
+
+    def counting(base_url, alt, az, *args, **kwargs):
+        visited.setdefault(round(float(az), 1), []).append(round(float(alt), 1))
+        return real(base_url, alt, az, *args, **kwargs)
+
+    with __import__("unittest.mock", fromlist=["patch"]).patch.object(
+            hs, "_measure_at", counting):
+        profile = hs.horizon_strip_scan(sdr_type="demo", settle_s=0.0,
+                                        alt_max=60.0)
+
+    controls = {round(a, 1) for a in profile["control_azimuths"]}
+    for entry in profile["entries"]:
+        cleared = entry["fit"]["alt_clear"]
+        az = round(entry["az_deg"], 1)
+        if entry["fit"]["estimator"] != "strip_threshold":
+            continue
+        if az in controls:
+            continue          # controls are revisited on purpose, as references
+        higher = [a for a in visited.get(az, [])
+                  if a > cleared + 0.1 and a < hs.SKY_REFERENCE_ALT - 1]
+        assert not higher, f"az {az} was measured again at {higher} after clearing"
+
+
+def test_the_clear_sky_reference_comes_from_known_clear_azimuths():
+    """The strip's own distribution cannot be the reference at the top.
+
+    By the final strips everything still pending is blocked, so a percentile of
+    the strip would sit at a blocked level and clear the tower along with the
+    sky. Re-measuring a few already-cleared azimuths at each altitude gives a
+    reference that stays valid, and at the right airmass.
+    """
+    profile = hs.horizon_strip_scan(sdr_type="demo", settle_s=0.0, alt_max=60.0)
+
+    sources = [s["clear_level_from"] for s in profile["strips"]]
+    assert sources[0] == "strip", "the first strip has nothing else to go on"
+    assert all(s == "controls" for s in sources[1:]), sources
+    assert all(s["n_controls"] >= 3 for s in profile["strips"][1:])
+
+
+def test_an_azimuth_blocked_to_the_ceiling_says_so():
+    """Never silently report the ceiling as if it were a measured clearance."""
+    profile = hs.horizon_strip_scan(sdr_type="demo", settle_s=0.0,
+                                    alt_start=5.0, alt_max=10.0)
+    blocked = [e for e in profile["entries"]
+               if e["fit"]["estimator"] == "blocked_above_ceiling"]
+    assert blocked, "the demo tower stands well above a 10 degree ceiling"
+    for entry in blocked:
+        assert entry["fit"]["limited_by_ceiling"] is True
+        assert "ceiling" in entry["fit"]["quality"]
+    assert profile["complete"] is False
+
+
+def test_a_strip_profile_still_drives_the_floor_and_the_landscape(tmp_path):
+    """The traversal changed; the things that consume a profile did not."""
+    profile = hs.horizon_strip_scan(sdr_type="demo", settle_s=0.0, alt_max=60.0)
+
+    floors = hs.profile_floors(profile)
+    assert len(floors) == profile["n_azimuths"]
+    assert hs.horizon_floor(profile, 180.0) > 0
+    folder = hs.write_stellarium_landscape(profile, str(tmp_path / "l"))
+    assert os.path.isfile(os.path.join(folder, "landscape.ini"))
+
+
+def test_the_mount_is_homed_between_strips():
+    """Bounds any lost counts to a couple of strips instead of a whole sweep."""
+    homed = []
+    with __import__("unittest.mock", fromlist=["patch"]).patch.object(
+            hs, "_home_and_wait", side_effect=lambda *a, **k: homed.append(1)):
+        # demo mode deliberately skips homing, so drive the real path
+        with __import__("unittest.mock", fromlist=["patch"]).patch.object(
+                hs, "_measure_at",
+                side_effect=lambda base, alt, az, *a, **k: {
+                    "true_alt": alt, "true_az": az, "drive_alt": alt,
+                    "drive_az": az, "power": hs._demo_power(alt, az, 5.8)}):
+            hs.horizon_strip_scan(sdr_type="b210", srt_url="http://ctrl",
+                                  settle_s=0.0, alt_max=30.0,
+                                  home_every_strips=2)
+    assert homed, "the mount should have been homed at least once"

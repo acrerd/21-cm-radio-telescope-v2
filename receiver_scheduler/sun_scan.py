@@ -256,12 +256,15 @@ def _check_cancelled(cancel_event, what: str) -> None:
 # interval was most of the cost of a scan: a 9x9 raster spends around five
 # minutes waiting for news that had already arrived.
 #
-# Not faster than this, though. Polling the controller flat out, with no gap at
-# all, resets the connection after a few requests; a 50 ms gap sustained 14 Hz
-# indefinitely in testing. 100 ms keeps a wide margin on that while still
-# bounding the wasted time per point at a tenth of a second, and it halves the
-# request rate seen by an ESP32 that has known locking weaknesses (issue #1).
-_SLEW_POLL_INTERVAL_S = 0.1
+# Not faster than this, though, and deliberately slower than the controller can
+# stand. Polling flat out with no gap resets the connection after a few
+# requests; a 50 ms gap sustained 14 Hz indefinitely in testing. But sustainable
+# is not the same as wise on a device with known cross-task locking weaknesses
+# (issue #1), and the arithmetic does not justify pushing it: the average wait
+# per point is half the interval, so 200 ms costs 0.1 s against 0.05 s at
+# 100 ms - a twentieth of a second per point - for half the request rate.
+# The gain over the old one-second interval is 0.4 s of that 0.45 s either way.
+_SLEW_POLL_INTERVAL_S = 0.2
 
 # A transient status failure must not abort a slew. At 1 Hz a five-second slew
 # asked five times and a single failure was fairly damning; at 10 Hz it asks

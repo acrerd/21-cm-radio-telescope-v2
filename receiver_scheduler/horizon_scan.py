@@ -359,7 +359,7 @@ _DEMO_HORIZON = [
     (340.0, 360.0, 34.0),
     (0.0, 20.0, 34.0),
 ]
-_DEMO_BASE_EDGE = 5.0
+_DEMO_BASE_EDGE = 2.0
 
 
 def _demo_edge(az: float) -> float:
@@ -389,7 +389,7 @@ def _demo_power(alt: float, az: float, beam_fwhm_deg: float,
 
 def _measure_at(base_url, alt, az, sdr_type, integration_time_s, center_freq,
                 sample_rate, gain, beam_fwhm_deg, power_meter, cancel_event,
-                position_tolerance, slew_timeout):
+                position_tolerance, slew_timeout, settle_s: float = 0.0):
     """Point at one true alt/az and measure the power there.
 
     Returns the position the mount actually reached, in both frames. The true
@@ -407,6 +407,12 @@ def _measure_at(base_url, alt, az, sdr_type, integration_time_s, center_freq,
                                    slew_timeout=slew_timeout,
                                    position_tolerance=position_tolerance,
                                    cancel_event=cancel_event)
+    # Let the structure stop moving before integrating. The wobble measured on
+    # 2026-08-21 was small - under a third of a degree, against a 5.8 degree
+    # beam - but the integration is now seconds rather than a fraction of one,
+    # so there is nothing to be gained by starting it early.
+    if settle_s > 0 and _cancellable_sleep(settle_s, cancel_event):
+        raise ScanCancelled("Horizon scan cancelled while settling")
     status = _srt_api(base_url, "/status")
     if power_meter is not None:
         power = power_meter.measure(integration_time_s)
@@ -1092,3 +1098,317 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+# ---------------------------------------------------------------------------
+# Strip scan: constant altitude, sweeping azimuth
+# ---------------------------------------------------------------------------
+#
+# The cut scan above moves the altitude axis thousands of times and repeatedly
+# into its lower limit. On 2026-08-21 that axis lost encoder counts partway
+# through a sweep: the reported position drifted from the real one, the tower
+# faded from the beam, and every azimuth after it recorded sky while believing
+# it was measuring the horizon. Nothing in the scan noticed.
+#
+# Strips invert the traversal. Altitude moves once per strip and azimuth does
+# the rest, so the axis that failed is barely exercised and never driven to its
+# limit. Three further defences follow from the shape:
+#
+#   - the mount is re-homed every couple of strips, which bounds any count loss
+#     to one strip rather than letting it accumulate over a whole sweep;
+#   - a sky reference is measured at high altitude at the start of every strip,
+#     which is a running check on the instrument - had it been there on the
+#     21st it would have shown the fault within twenty minutes;
+#   - an azimuth found clear is dropped from every higher strip, because the
+#     horizon is monotonic: sky at 10 degrees means sky at 15. Most of the sky
+#     is resolved by the first two or three strips and the work peels away.
+#
+# What it costs is resolution. At 5 degree altitude steps there are about two
+# samples across a 5.8 degree beam, far too few to fit an edge, so this reports
+# the lowest altitude at which an azimuth reads clear rather than a fitted
+# geometric edge. That is the operationally useful number, quantised to the
+# altitude step, and it is what the exclusion logic actually consumes.
+
+DEFAULT_STRIP_AZ_STEP = 5.0
+DEFAULT_STRIP_ALT_STEP = 5.0
+DEFAULT_STRIP_ALT_START = 5.0
+DEFAULT_STRIP_ALT_MAX = 60.0
+DEFAULT_SETTLE_S = 2.0
+DEFAULT_STRIP_INTEGRATION_S = 2.0
+DEFAULT_HOME_EVERY_STRIPS = 2
+
+# Where the per-strip sky reference is taken. High enough to be clear of
+# everything, and the same place every time so the series is comparable.
+SKY_REFERENCE_ALT = 85.0
+SKY_REFERENCE_AZ = 180.0
+
+# How far above the strip's own clear-sky level a sample may sit and still count
+# as clear, in units of the reference scatter. The metal-clad building showed
+# 2.3% of sky, about ten sigma, so this keeps it flagged as blocked.
+_CLEAR_SIGMA = 5.0
+
+_STRIP_RECORD_VERSION = 2
+
+
+def _home_and_wait(base_url: str, timeout: int = 300, cancel_event=None) -> dict:
+    """Run the Due homing sequence and wait for Ready."""
+    result = _srt_api(base_url, "/home")
+    if not (result and result.get("ok")):
+        raise RuntimeError(f"Controller rejected the homing command: {result}")
+    log.info("Homing the mount to re-establish the encoder zero")
+    started, started_at, last = False, time.time(), None
+    while time.time() - started_at < timeout:
+        _check_cancelled(cancel_event, "homing")
+        status = _srt_api(base_url, "/status")
+        last = status
+        state = str(status.get("status", "")).strip().lower()
+        if status.get("fault_active") or state == "fault":
+            raise RuntimeError("Telescope fault during homing: %s"
+                               % (status.get("fault") or state))
+        if state == "homing":
+            started = True
+        elif started and state == "ready" and not status.get("is_slewing", False):
+            log.info("Homing complete at drive alt %.2f az %.2f",
+                     float(status.get("alt", 0.0)), float(status.get("az", 0.0)))
+            return status
+        if not started and time.time() - started_at >= 10:
+            raise RuntimeError("Telescope did not begin homing; last status %s" % last)
+        if _cancellable_sleep(0.5, cancel_event):
+            raise ScanCancelled("Horizon scan cancelled during homing")
+    raise RuntimeError(f"Homing timed out after {timeout}s; last status {last}")
+
+
+def _sky_reference(base_url, sdr_type, integration_time_s, center_freq,
+                   sample_rate, gain, beam_fwhm_deg, power_meter, cancel_event,
+                   position_tolerance, slew_timeout, settle_s, samples=4):
+    """Measure the clear sky at a fixed high position: level and scatter.
+
+    Serves two purposes. Its scatter sets the threshold for deciding an azimuth
+    is clear, measured rather than assumed. And its level, recorded once per
+    strip, is a running health check on the whole chain - a collapse in it, or
+    in the contrast it implies, is what a drifting mount or a failing signal
+    path looks like from the outside.
+    """
+    values = []
+    for _ in range(samples):
+        point = _measure_at(base_url, SKY_REFERENCE_ALT, SKY_REFERENCE_AZ,
+                            sdr_type, integration_time_s, center_freq,
+                            sample_rate, gain, beam_fwhm_deg, power_meter,
+                            cancel_event, position_tolerance, slew_timeout,
+                            settle_s=settle_s)
+        values.append(point["power"])
+    array = np.asarray(values, dtype=float)
+    return {
+        "alt_deg": SKY_REFERENCE_ALT,
+        "az_deg": SKY_REFERENCE_AZ,
+        "level": float(array.mean()),
+        "sigma": float(array.std(ddof=1)) if len(array) > 1 else 0.0,
+        "samples": values,
+        "utc": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+def horizon_strip_scan(az_start: float = 5.0,
+                       az_end: float = 350.0,
+                       az_step: float = DEFAULT_STRIP_AZ_STEP,
+                       alt_start: float = DEFAULT_STRIP_ALT_START,
+                       alt_step: float = DEFAULT_STRIP_ALT_STEP,
+                       alt_max: float = DEFAULT_STRIP_ALT_MAX,
+                       settle_s: float = DEFAULT_SETTLE_S,
+                       integration_time_s: float = DEFAULT_STRIP_INTEGRATION_S,
+                       home_every_strips: int = DEFAULT_HOME_EVERY_STRIPS,
+                       beam_fwhm_deg: float = DEFAULT_BEAM_FWHM_DEG,
+                       sdr_type: str = "b210",
+                       center_freq: float = 1420.405752e6,
+                       sample_rate: float = 2.4e6,
+                       gain: float = 40.0,
+                       srt_url: str | None = None,
+                       slew_timeout: int = 150,
+                       position_tolerance: float = 0.5,
+                       progress_callback=None,
+                       cancel_event=None) -> dict:
+    """Sweep azimuth at each of a series of altitudes, climbing until clear."""
+    cfg = _load_scheduler_config()
+    base_url = (srt_url or cfg.get("srt_controller_url", "")).rstrip("/")
+    if sdr_type != "demo" and not base_url:
+        raise RuntimeError("No SRT controller URL configured")
+
+    azimuths = [float(a) for a in np.arange(az_start, az_end + 0.001, az_step)]
+    altitudes = [float(a) for a in np.arange(alt_start, alt_max + 0.001, alt_step)]
+    started = datetime.now(timezone.utc)
+
+    power_meter = None
+    if sdr_type == "b210":
+        from sun_scan import _B210PowerMeter
+        power_meter = _B210PowerMeter(center_freq, sample_rate, gain)
+
+    pending = list(azimuths)
+    control_azimuths: list = []
+    clearance: dict = {}
+    columns: dict = {az: [] for az in azimuths}
+    references = []
+    reference = None
+    strips = []
+
+    def measure(alt, az):
+        return _measure_at(base_url, float(alt), float(az), sdr_type,
+                           integration_time_s, center_freq, sample_rate, gain,
+                           beam_fwhm_deg, power_meter, cancel_event,
+                           position_tolerance, slew_timeout, settle_s=settle_s)
+
+    try:
+        for index, alt in enumerate(altitudes):
+            if not pending:
+                break
+            _check_cancelled(cancel_event, "horizon strip scan")
+
+            # The sky reference sits high, so taking one costs a large
+            # altitude move each way - on the very axis this pattern exists to
+            # spare. So it is taken at the start and then only when the mount
+            # has just homed, which runs the axis over its full range anyway.
+            if reference is None or index % max(1, home_every_strips) == 0:
+                reference = _sky_reference(
+                    base_url, sdr_type, integration_time_s, center_freq,
+                    sample_rate, gain, beam_fwhm_deg, power_meter, cancel_event,
+                    position_tolerance, slew_timeout, settle_s)
+                reference["strip_alt_deg"] = alt
+                references.append(reference)
+            log.info("Strip at alt %.0f deg: %d azimuths pending, sky reference "
+                     "%.6g +- %.2g", alt, len(pending), reference["level"],
+                     reference["sigma"])
+
+            # Re-measure a few azimuths already known to be clear, at this
+            # altitude. They are what the threshold is judged against: the
+            # strip's own distribution cannot serve once most of what remains
+            # is blocked, and by the top strip everything remaining is blocked,
+            # so a percentile of it would clear the tower along with the sky.
+            controls = []
+            for az in control_azimuths:
+                _check_cancelled(cancel_event, "horizon strip scan")
+                controls.append(measure(alt, az)["power"])
+
+            # Serpentine in azimuth: no long return slew between strips.
+            order = sorted(pending, reverse=(index % 2 == 1))
+            measured = []
+            for az in order:
+                _check_cancelled(cancel_event, "horizon strip scan")
+                point = measure(alt, az)
+                point["strip_alt_deg"] = alt
+                columns[az].append((point["true_alt"], point["power"]))
+                measured.append((az, point["power"]))
+                if progress_callback:
+                    progress_callback(index, len(altitudes), {
+                        "alt": alt, "az": az, "power": point["power"],
+                        "pending": len(pending),
+                        "sky_reference": reference["level"],
+                    })
+
+            # The clear-sky level at *this* altitude, from the strip itself.
+            # It cannot come from the zenith reference: even an unobstructed
+            # horizon is warmer low down through airmass and spillover - 0.0114
+            # against 0.0089 at the zenith, measured on 2026-08-21 - so a zenith
+            # threshold would call every low azimuth blocked.
+            powers = np.array([p for _, p in measured], dtype=float)
+            if controls:
+                clear_level = float(np.median(controls))
+                clear_from = 'controls'
+            else:
+                # Bootstrap only: the most open azimuths in the strip stand in
+                # for a clear-sky level until some azimuth has actually been
+                # cleared. It assumes the first strip contains open sky, which
+                # is why the first strip should start below the bulk of the
+                # horizon; if it does not, nothing clears and the next strip
+                # tries again one step higher.
+                clear_level = float(np.percentile(powers, 5))
+                clear_from = 'strip'
+
+            threshold = clear_level + _CLEAR_SIGMA * max(reference["sigma"], 1e-12)
+            newly_clear = [az for az, p in measured if p <= threshold]
+            for az in newly_clear:
+                clearance[az] = alt
+                pending.remove(az)
+            # Keep a few of the first azimuths to clear as controls for every
+            # strip above, spread across the sweep so one local oddity cannot
+            # set the reference by itself.
+            if not control_azimuths and len(newly_clear) >= 3:
+                step = max(1, len(newly_clear) // 3)
+                control_azimuths = newly_clear[::step][:3]
+                log.info("Control azimuths for the clear-sky reference: %s",
+                         ", ".join("%.0f" % a for a in control_azimuths))
+            strips.append({
+                "alt_deg": alt,
+                "n_measured": len(measured),
+                "n_controls": len(controls),
+                "clear_level_from": clear_from,
+                "clear_level": clear_level,
+                "threshold": threshold,
+                "n_cleared": len(newly_clear),
+                "n_pending_after": len(pending),
+                "sky_reference": reference["level"],
+            })
+            log.info("Strip at alt %.0f deg: %d of %d cleared, %d still blocked",
+                     alt, len(newly_clear), len(measured), len(pending))
+
+            if (pending and home_every_strips
+                    and (index + 1) % home_every_strips == 0
+                    and sdr_type != "demo"):
+                _home_and_wait(base_url, cancel_event=cancel_event)
+    finally:
+        if power_meter is not None:
+            power_meter.close()
+
+    finished = datetime.now(timezone.utc)
+    entries = []
+    for az in azimuths:
+        column = sorted(columns[az])
+        cleared_at = clearance.get(az)
+        entries.append({
+            "az_deg": az,
+            "cut_alt_deg": [a for a, _ in column],
+            "cut_power": [p for _, p in column],
+            "fit": {
+                "success": True,
+                "estimator": "strip_threshold" if cleared_at is not None
+                             else "blocked_above_ceiling",
+                "alt_clear": float(cleared_at) if cleared_at is not None
+                             else float(alt_max),
+                "edge_reported_deg": float(cleared_at) if cleared_at is not None
+                                     else float(alt_max),
+                "quality": ("clear from %.0f deg" % cleared_at) if cleared_at is not None
+                           else "still blocked at the ceiling of %.0f deg" % alt_max,
+                "limited_by_ceiling": cleared_at is None,
+            },
+        })
+
+    return {
+        "record_version": _STRIP_RECORD_VERSION,
+        "pattern": "strips",
+        "started_utc": started.isoformat(),
+        "finished_utc": finished.isoformat(),
+        "duration_s": (finished - started).total_seconds(),
+        "az_step_deg": az_step,
+        "alt_step_deg": alt_step,
+        "alt_min_deg": alt_start,
+        "alt_max_deg": alt_max,
+        "settle_s": settle_s,
+        "integration_time_s": integration_time_s,
+        "home_every_strips": home_every_strips,
+        "beam_fwhm_deg": beam_fwhm_deg,
+        "sdr_type": sdr_type,
+        "center_freq_hz": center_freq,
+        "sample_rate_hz": sample_rate,
+        "gain_db": gain,
+        "site_lat": cfg.get("observer_lat"),
+        "site_lon": cfg.get("observer_lon"),
+        "n_azimuths": len(entries),
+        "strips": strips,
+        # Which azimuths were re-measured at every altitude to provide the
+        # clear-sky reference. Recorded because the derived clearances depend
+        # on them: if one turns out to have been obstructed after all, every
+        # threshold above the first strip was set too high.
+        "control_azimuths": control_azimuths,
+        "sky_references": references,
+        "entries": entries,
+        "success": bool(entries),
+        "complete": not pending,
+    }
