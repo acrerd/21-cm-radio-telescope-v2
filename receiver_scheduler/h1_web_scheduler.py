@@ -15,6 +15,7 @@ import shutil
 import subprocess
 import sys
 import signal
+import tempfile
 import threading
 import time
 from datetime import datetime, timedelta, timezone
@@ -100,6 +101,13 @@ _DEFAULT_CONFIG = {
     # themselves. See _DEFAULT_OBSTRUCTION_SECTORS in sun_scan.py, which holds
     # the same value and the measurement it came from.
     "obstruction_sectors": [[45.0, 120.0, 30.0]],
+    # Safety camera: a USB webcam watching the dish. One frame per request, on
+    # demand - see /api/camera/snapshot.
+    "camera_device": "/dev/video0",
+    "camera_resolution": "640x480",
+    # Which PipeWire node to capture from. Empty means the default video
+    # source, which is right while there is only one camera on the machine.
+    "camera_pipewire_target": "",
 }
 
 
@@ -1656,6 +1664,7 @@ HTML_TEMPLATE = '''
         <div class="tabs">
             <div class="tab active" onclick="switchTab('scheduler')">Scheduler</div>
             <div class="tab" onclick="switchTab('sunscan')">Sun Scan</div>
+            <div class="tab" onclick="switchTab('camera')">Camera</div>
             <div class="tab" onclick="switchTab('config')">Configuration</div>
             <div class="tab" onclick="switchTab('log')">Log</div>
         </div>
@@ -1782,6 +1791,34 @@ HTML_TEMPLATE = '''
             </div>
         </div>
 
+        <div class="tab-content" id="tab-camera">
+            <div class="config-form">
+                <div class="section-title">Safety Camera</div>
+                <div style="display:flex; gap:10px; align-items:center; margin-bottom:12px;">
+                    <button class="btn btn-primary" id="camRefreshBtn" onclick="refreshCamera()">Refresh</button>
+                    <label style="color:#888; font-size:12px;">
+                        Auto-refresh
+                        <select id="camAutoRefresh" onchange="onCameraAutoChange()" style="margin-left:6px;">
+                            <option value="0" selected>Off</option>
+                            <option value="1">Every 1 s</option>
+                            <option value="5">Every 5 s</option>
+                        </select>
+                    </label>
+                    <span id="camStatus" style="color:#888; font-size:12px;">Not captured yet.</span>
+                </div>
+                <div id="camView" style="text-align:center; background:#0f0f23; border:1px solid #333; border-radius:8px; padding:15px; min-height:120px;">
+                    <span style="color:#888;">Press Refresh to capture a frame.</span>
+                </div>
+                <p style="color:#888; font-size:12px; margin-top:10px;">
+                    One frame is captured per refresh, straight from the camera &mdash;
+                    nothing is recorded or kept on disk, and the device is released
+                    again immediately. Auto-refresh stops on its own whenever this tab
+                    is not the one on screen, so a forgotten browser tab cannot leave
+                    the camera running overnight.
+                </p>
+            </div>
+        </div>
+
         <div class="tab-content" id="tab-config">
             <div class="config-form">
                 <div class="section-title">Appearance</div>
@@ -1841,6 +1878,18 @@ HTML_TEMPLATE = '''
                         at 1420&nbsp;MHz, so a raster that catches the skyline drags
                         the fitted beam centre down into it.
                     </p>
+                </div>
+
+                <div class="section-title">Safety Camera</div>
+                <div class="form-grid">
+                    <div class="form-group">
+                        <label>Video Device</label>
+                        <input type="text" id="cfgCameraDevice" placeholder="/dev/video0">
+                    </div>
+                    <div class="form-group">
+                        <label>Capture Resolution</label>
+                        <input type="text" id="cfgCameraResolution" placeholder="640x480">
+                    </div>
                 </div>
 
                 <div class="section-title">Receiver</div>
@@ -2962,6 +3011,87 @@ HTML_TEMPLATE = '''
             if (name === 'config') loadConfig();
             if (name === 'log') loadLog();
             if (name === 'sunscan') { pollSunScan(); loadCalModel(); }
+            // Leaving the tab stops the loop; scheduleCameraRefresh cancels
+            // itself whenever the camera tab is not the one on screen.
+            if (name === 'camera' && !camObjectUrl) refreshCamera();
+            else scheduleCameraRefresh();
+        }
+
+        // ---- Safety camera ----
+        // Fetched as a blob rather than pointed at with an <img src>: it keeps
+        // the previous frame on screen while the next is being taken, and a
+        // failure arrives as the server's actual message instead of a broken
+        // image icon.
+        let camObjectUrl = null;
+        let camTimer = null;
+
+        function cameraTabVisible() {
+            const tab = document.getElementById('tab-camera');
+            return !document.hidden && tab && tab.classList.contains('active');
+        }
+
+        // Chained from the end of each capture rather than run on an interval:
+        // at 1 s the capture takes a good fraction of the gap, and setInterval
+        // would queue requests behind each other the moment one ran long.
+        function scheduleCameraRefresh() {
+            if (camTimer) { clearTimeout(camTimer); camTimer = null; }
+            const every = parseInt(document.getElementById('camAutoRefresh').value, 10);
+            if (!every || !cameraTabVisible()) return;
+            camTimer = setTimeout(refreshCamera, every * 1000);
+        }
+
+        function onCameraAutoChange() {
+            if (camTimer) { clearTimeout(camTimer); camTimer = null; }
+            if (parseInt(document.getElementById('camAutoRefresh').value, 10)) refreshCamera();
+        }
+
+        // A hidden tab keeps its timers in some browsers and throttles them in
+        // others; neither should leave the camera streaming, so pause outright
+        // and pick up again when the page comes back.
+        document.addEventListener('visibilitychange', () => {
+            if (document.hidden) {
+                if (camTimer) { clearTimeout(camTimer); camTimer = null; }
+            } else {
+                scheduleCameraRefresh();
+            }
+        });
+
+        function refreshCamera() {
+            const button = document.getElementById('camRefreshBtn');
+            const status = document.getElementById('camStatus');
+            button.disabled = true;
+            status.textContent = 'Capturing…';
+            fetch('/api/camera/snapshot', {cache: 'no-store'}).then(r => {
+                if (!r.ok) {
+                    return r.json()
+                        .catch(() => ({error: 'HTTP ' + r.status}))
+                        .then(d => { throw new Error(d.error || ('HTTP ' + r.status)); });
+                }
+                const captured = r.headers.get('X-Capture-Time');
+                const frames = r.headers.get('X-Capture-Frames');
+                return r.blob().then(blob => ({blob, captured, frames}));
+            }).then(({blob, captured, frames}) => {
+                const url = URL.createObjectURL(blob);
+                document.getElementById('camView').innerHTML =
+                    '<img src="' + url + '" alt="Safety camera view" ' +
+                    'style="max-width:100%; border-radius:6px;">';
+                // Only after the new frame is on screen, or the browser may
+                // still be decoding the old one.
+                if (camObjectUrl) URL.revokeObjectURL(camObjectUrl);
+                camObjectUrl = url;
+                const when = captured ? new Date(captured) : new Date();
+                status.innerHTML = '<span style="color:#00d4ff;">Captured ' +
+                    when.toLocaleTimeString() + '</span>' +
+                    (frames ? '<span style="color:#888;"> &middot; ' + frames +
+                              (frames === '1' ? ' frame' : ' frames') + '</span>' : '');
+            }).catch(e => {
+                status.innerHTML = '<span style="color:#ff4757;">' + e.message + '</span>';
+            }).finally(() => {
+                button.disabled = false;
+                // Chained even after a failure, so a camera that comes back
+                // recovers on its own rather than needing a click.
+                scheduleCameraRefresh();
+            });
         }
 
         // ---- Sun Scan ----
@@ -3268,6 +3398,8 @@ HTML_TEMPLATE = '''
                 document.getElementById('cfgMinElev').value = cfg.min_elevation ?? 10;
                 document.getElementById('cfgObstructionSectors').value =
                     formatObstructionSectors(cfg.obstruction_sectors);
+                document.getElementById('cfgCameraDevice').value = cfg.camera_device || '';
+                document.getElementById('cfgCameraResolution').value = cfg.camera_resolution || '';
                 document.getElementById('cfgReceiverPythonPath').value = cfg.receiver_python_path || cfg.python_path || '';
                 document.getElementById('cfgDataFolder').value = cfg.data_output_folder || '';
                 document.getElementById('cfgLogLines').value = cfg.log_lines || 100;
@@ -3297,6 +3429,8 @@ HTML_TEMPLATE = '''
                 observer_elevation: parseFloat(document.getElementById('cfgObsElev').value) || 0,
                 min_elevation: parseFloat(document.getElementById('cfgMinElev').value) || 10,
                 obstruction_sectors: sectors,
+                camera_device: document.getElementById('cfgCameraDevice').value,
+                camera_resolution: document.getElementById('cfgCameraResolution').value,
                 receiver_python_path: document.getElementById('cfgReceiverPythonPath').value,
                 data_output_folder: document.getElementById('cfgDataFolder').value,
                 log_lines: parseInt(document.getElementById('cfgLogLines').value) || 100,
@@ -4252,6 +4386,208 @@ def api_calday_model():
     from sun_scan import load_pointing_model
     model = load_pointing_model()
     return jsonify(model or {'success': False, 'error': 'No model fitted yet'})
+
+
+# =============================================================================
+# Safety camera
+# =============================================================================
+
+# One frame at a time. Capture is a subprocess that takes the camera for its
+# duration, so two clicks landing together would have the second fail and look
+# like a broken camera rather than a queued one.
+_camera_lock = threading.Lock()
+CAMERA_CAPTURE_TIMEOUT = 20
+
+# The first frames off a USB webcam are black or wildly mis-exposed while its
+# automatic gain settles, and a black picture is worse than none on a safety
+# camera: it reads as "nothing is there". Every frame is written over the same
+# place and only the last survives.
+#
+# How many are needed depends on how recently the camera last ran, because the
+# sensor keeps its exposure state across a quick close and reopen. Measured on
+# this camera against a settled 15-frame reference, a single frame came out at
+# -0.2% mean luminance after 1s idle, -1.0% after 3s, -3.0% after 5s, then
+# -11.8% after 15s and -17.3% after a minute. So the state survives a few
+# seconds and is gone by fifteen; six is inside the flat part with margin, and
+# covers both auto-refresh rates offered by the page.
+#
+# This is what makes a 1s auto-refresh cheap: 15 frames is 0.67s of streaming
+# and about 0.1 core-seconds, while 2 frames is 0.13s and a quarter of the CPU.
+# Process start-up is only 40ms, so the frames are nearly the whole cost.
+CAMERA_COLD_FRAMES = 15
+CAMERA_WARM_FRAMES = 2
+CAMERA_WARM_WINDOW_S = 6.0
+
+# When the camera last delivered a frame (monotonic). Written under
+# _camera_lock, which is also what stops two captures interleaving.
+_camera_last_capture = 0.0
+
+
+def _camera_env() -> dict:
+    """Environment for the capture subprocess.
+
+    Two things have to be right. PipeWire is reached through the user runtime
+    directory, which is present when the scheduler is started from the desktop
+    launcher but is worth defaulting rather than assuming. And the capture uses
+    the *system* GStreamer, because radioconda's build has neither pipewiresrc
+    nor v4l2src: conda's library and plugin paths must not be handed to it or it
+    loads half of one installation and half of the other.
+    """
+    env = dict(os.environ)
+    env.setdefault("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")
+    for conda_var in ("GST_PLUGIN_PATH", "GST_PLUGIN_SYSTEM_PATH", "LD_LIBRARY_PATH"):
+        env.pop(conda_var, None)
+    return env
+
+
+def _camera_resolution(cfg: dict) -> tuple[int, int]:
+    """Requested capture size, falling back to the default on anything odd."""
+    text = str(cfg.get("camera_resolution") or _DEFAULT_CONFIG["camera_resolution"])
+    try:
+        width, height = (int(part) for part in text.lower().split("x", 1))
+        if width > 0 and height > 0:
+            return width, height
+    except (TypeError, ValueError):
+        pass
+    log.warning("Ignoring camera_resolution %r; using %s",
+                text, _DEFAULT_CONFIG["camera_resolution"])
+    return (int(part) for part in _DEFAULT_CONFIG["camera_resolution"].split("x"))
+
+
+def _newest_frame(workdir: str) -> str | None:
+    frames = sorted(f for f in os.listdir(workdir) if f.endswith(".jpg"))
+    return os.path.join(workdir, frames[-1]) if frames else None
+
+
+def _capture_via_pipewire(workdir: str, width: int, height: int,
+                          target: str, frames: int) -> tuple[str | None, str]:
+    """Capture through PipeWire, which owns the camera on a desktop session.
+
+    This is the path that works here. On this host wireplumber holds
+    /dev/video0 open for the life of the session, so anything opening the V4L2
+    device directly gets EBUSY however idle the camera looks; going through
+    PipeWire shares it instead of fighting for it.
+    """
+    gst = shutil.which("gst-launch-1.0", path="/usr/bin:/bin")
+    if not gst:
+        return None, "the system gst-launch-1.0 is not installed"
+    source = ["pipewiresrc", f"num-buffers={frames}"]
+    if target:
+        source.append(f"target-object={target}")
+    command = [gst, "-q"] + source + [
+        "!", "videoconvert", "!", "videoscale",
+        "!", f"video/x-raw,width={width},height={height}",
+        "!", "jpegenc", "quality=85",
+        "!", "multifilesink", f"location={os.path.join(workdir, 'frame%03d.jpg')}",
+    ]
+    try:
+        result = subprocess.run(command, capture_output=True, env=_camera_env(),
+                                timeout=CAMERA_CAPTURE_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        return None, f"PipeWire did not deliver a frame within {CAMERA_CAPTURE_TIMEOUT}s"
+    frame = _newest_frame(workdir)
+    if result.returncode != 0 or not frame:
+        stderr = (result.stderr or b"").decode(errors="replace").strip()
+        return None, stderr.splitlines()[-1] if stderr else "no frame from PipeWire"
+    return frame, ""
+
+
+def _capture_via_v4l2(workdir: str, device: str, width: int,
+                      height: int, frames: int) -> tuple[str | None, str]:
+    """Capture straight off the V4L2 device with ffmpeg.
+
+    The fallback for when there is no desktop session running and so no
+    PipeWire to ask - the device is then free for the taking.
+    """
+    ffmpeg = os.path.join(os.path.dirname(sys.executable), "ffmpeg")
+    if not (os.path.isfile(ffmpeg) and os.access(ffmpeg, os.X_OK)):
+        ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
+        return None, "ffmpeg was not found"
+    if not os.path.exists(device):
+        return None, f"{device} does not exist"
+    frame = os.path.join(workdir, "frame.jpg")
+    command = [
+        ffmpeg, "-hide_banner", "-loglevel", "error",
+        "-f", "v4l2", "-video_size", f"{width}x{height}", "-i", device,
+        "-frames:v", str(frames), "-update", "1", "-q:v", "3",
+        "-y", frame,
+    ]
+    try:
+        result = subprocess.run(command, capture_output=True, env=_camera_env(),
+                                timeout=CAMERA_CAPTURE_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        return None, f"{device} did not deliver a frame within {CAMERA_CAPTURE_TIMEOUT}s"
+    if result.returncode != 0 or not os.path.isfile(frame):
+        stderr = (result.stderr or b"").decode(errors="replace").strip()
+        if "Device or resource busy" in stderr:
+            return None, f"{device} is held by another application"
+        return None, stderr.splitlines()[-1] if stderr else "no frame from ffmpeg"
+    return frame, ""
+
+
+@app.route('/api/camera/snapshot', methods=['GET'])
+def api_camera_snapshot():
+    """A single frame from the safety camera, as JPEG.
+
+    Deliberately one frame per request rather than a stream: the point is to
+    look at the dish when you want to, and a permanently open V4L2 device would
+    be one more thing holding hardware across an overnight run.
+    """
+    cfg = load_config()
+    device = cfg.get("camera_device") or _DEFAULT_CONFIG["camera_device"]
+    target = str(cfg.get("camera_pipewire_target") or "")
+    width, height = _camera_resolution(cfg)
+
+    global _camera_last_capture
+
+    if not _camera_lock.acquire(timeout=CAMERA_CAPTURE_TIMEOUT):
+        return jsonify({'success': False,
+                        'error': 'Another snapshot is still being captured'}), 409
+    try:
+        # A capture that failed says nothing about the sensor's state, so the
+        # next one after a failure pays the full warm-up again.
+        warm = (time.monotonic() - _camera_last_capture) <= CAMERA_WARM_WINDOW_S
+        frames = CAMERA_WARM_FRAMES if warm else CAMERA_COLD_FRAMES
+        with tempfile.TemporaryDirectory(prefix="srt-camera-") as workdir:
+            captured_utc = datetime.now(timezone.utc)
+            frame, pipewire_error = _capture_via_pipewire(workdir, width, height,
+                                                          target, frames)
+            source = "pipewire"
+            v4l2_error = ""
+            if not frame:
+                # Not a retry of the same thing: the two paths fail in opposite
+                # circumstances, PipeWire when there is no session to ask and
+                # V4L2 when there is one holding the device.
+                frame, v4l2_error = _capture_via_v4l2(workdir, device, width,
+                                                      height, frames)
+                source = "v4l2"
+            if not frame:
+                # Forget how warm the camera was. Whatever just went wrong may
+                # have been the device disappearing and re-enumerating, which
+                # resets the sensor: the next capture has to prove the exposure
+                # rather than assume it.
+                _camera_last_capture = 0.0
+                log.warning("Camera capture failed: pipewire: %s; v4l2: %s",
+                            pipewire_error, v4l2_error)
+                return jsonify({
+                    'success': False,
+                    'error': (f'Could not capture a frame. Through PipeWire: '
+                              f'{pipewire_error}. Directly from {device}: {v4l2_error}.'),
+                }), 503
+            with open(frame, "rb") as f:
+                jpeg = f.read()
+        _camera_last_capture = time.monotonic()
+    finally:
+        _camera_lock.release()
+
+    return app.response_class(jpeg, mimetype="image/jpeg", headers={
+        # The browser must never show a cached frame on a safety camera.
+        "Cache-Control": "no-store, must-revalidate",
+        "X-Capture-Time": captured_utc.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "X-Capture-Source": source,
+        "X-Capture-Frames": str(frames),
+    })
 
 
 def _handle_sigterm(signum, frame):
