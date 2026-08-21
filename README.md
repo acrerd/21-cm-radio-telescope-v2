@@ -193,8 +193,7 @@ Compile-time defaults are in `esp32_controller_arduino/src/config.h`:
 
 #### Option 2: Wired Controller, Hostname, or Your Network
 1. From the observatory computer, browse directly to: `http://192.168.50.120/`
-   (reachable over the private link; other machines on the observatory LAN need
-   a forwarding rule on that host)
+   (reachable over the private link only — see below for remote access)
 2. If mDNS is supported, `http://srt-controller.local/` should also resolve
 3. If the controller joins a different network, connect to the AP first
 4. Go to **WiFi** tab, click **Scan**
@@ -202,6 +201,25 @@ Compile-time defaults are in `esp32_controller_arduino/src/config.h`:
 6. Browse to the hostname or the new IP
 
 Credentials are saved and the ESP32 auto-reconnects on boot. The AP stays active as fallback.
+
+#### Option 4: Remotely, over an ssh tunnel
+
+The controller is on a private link and the scheduler binds loopback, so neither
+is reachable from the network. Reach them *through* the observatory host:
+
+```bash
+ssh -L 8080:192.168.50.120:80 -L 5000:127.0.0.1:5000 astro@ettus3.astro.gla.ac.uk
+```
+
+Then `http://localhost:8080` for the controller and `http://localhost:5000` for
+the scheduler. Forward port 5000 even if you only want the controller: its page
+fetches the scheduler at `127.0.0.1:5000` for the Sun Scan, Calibration Day and
+firmware-update buttons, and through a tunnel that resolves to your own machine.
+
+For applications rather than web pages — Stellarium, VS Code, the receiver GUI —
+use `waypipe ssh astro@ettus3.astro.gla.ac.uk <command>`. Full details, including
+the WSL2 client requirements, are in
+[Observatory Host Setup](docs/OBSERVATORY_HOST_SETUP.md#10-remote-access).
 
 #### Option 3: Direct WiFi Setup for a New Network
 1. Connect to the AP first

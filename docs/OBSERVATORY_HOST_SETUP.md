@@ -373,16 +373,80 @@ the scheduler config.
 
 ---
 
-## 10. What this does not do
+## 10. Remote access
+
+Neither web UI is reachable from the network, and that is the design: the
+controller sits on the private link where only this host can see it, and the
+scheduler binds loopback (section 7). So remote access means reaching them
+*through* this host rather than exposing them.
+
+### The web UIs: an ssh tunnel
+
+Both are just web pages, so this needs no graphical forwarding at all. From the
+remote machine:
+
+```bash
+ssh -L 8080:192.168.50.120:80 -L 5000:127.0.0.1:5000 astro@ettus3.astro.gla.ac.uk
+```
+
+Then, in a browser on the remote machine:
+
+| | |
+|---|---|
+| `http://localhost:8080` | controller UI |
+| `http://localhost:5000` | scheduler |
+
+This works because the ssh session terminates *on the observatory host*, so the
+forwards originate from the one machine that can see both the private link and
+the loopback-bound scheduler. Nothing new is exposed: the tunnel is
+authenticated by the ssh login, and both services stay unreachable from the
+network.
+
+**Forward port 5000 as well, even if you only want the controller.** The
+controller's own page fetches the scheduler at `http://127.0.0.1:5000` for its
+Scheduler link, Sun Scan and Calibration Day buttons and the firmware update
+control. Through a tunnel that resolves to the *remote* machine, so without the
+second forward those buttons fail with nothing but a browser console message.
+
+Two mistakes give the same `channel N: open failed` from ssh, and the text after
+the colon tells you which:
+
+- `-L 8080:192.168.50.120:8080` — the controller serves on port **80**. The
+  remote port is 80; only the local one is 8080.
+- Forwarding to the scheduler while it is not running. `connect failed:
+  Connection refused` means the far end had nothing listening. Note the
+  scheduler does not start at boot by design, so after a reboot there is nothing
+  on port 5000 until the launcher has been used.
+
+### Applications: waypipe
+
+For anything that genuinely needs a desktop — Stellarium, VS Code, the receiver
+GUI — use waypipe, which is installed on the host:
+
+```bash
+waypipe ssh astro@ettus3.astro.gla.ac.uk stellarium
+```
+
+The client needs waypipe too, and a Wayland session. **From WSL2 that means
+WSLg** (Windows 11, or Windows 10 with a recent WSL): install `waypipe` inside
+the WSL distribution and check `echo $WAYLAND_DISPLAY` returns something.
+Compare `waypipe --version` at both ends, since mismatched versions can fail to
+connect. Expect it to be usable but not fast — waypipe's dmabuf and video
+acceleration do not survive the hop into WSLg, so it falls back to software
+transfer.
+
+## 11. What this does not do
 
 **Access from other machines on the site network is not set up**, deliberately.
 The host NATs *outbound* for the controller; nothing routes inbound. If someone
 else needs the controller UI, the host needs a forwarding rule or a reverse
 proxy — which partly re-exposes the thing the private link was meant to protect.
-Remote use at Acre Road is waypipe into the observatory computer instead.
+Use the ssh tunnel in section 10 instead.
 
-**The site interface keeps whatever the site gives it.** Nothing in this setup
-depends on its address: the masquerade rule matches on the link subnet, the ufw
-rules name interfaces rather than addresses, and `never-default` keeps the link
-out of the routing decision. The site interface can be renumbered or moved to a
-different port and the controller will not notice.
+**Nothing here depends on the site interface's address.** The masquerade rule
+matches on the link subnet, the ufw rules name interfaces rather than addresses,
+and `never-default` keeps the link out of the routing decision. The site
+interface can be renumbered, moved to a different socket, or switched between
+DHCP and a static address, and the controller will not notice — verified on
+2026-08-21 by moving this host from a DHCP 192.168.106.x address to a static
+public one, after which the controller's clock still synced on the first reboot.
