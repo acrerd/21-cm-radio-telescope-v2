@@ -478,11 +478,25 @@ def srt_set_calibrator(on: bool) -> bool:
 
 
 def srt_go_position(name: str, alt: float, az: float) -> bool:
-    """Send telescope to a named position."""
+    """Send telescope to a named position.
+
+    Stow goes through /go-home, not /direct. Parking is mechanical - "leave the
+    mount here" - so the controller holds settings.stowAlt/stowAz in DRIVE
+    coordinates and deliberately bypasses the pointing model on that path.
+    /direct takes a TRUE sky position and applies the model, so stowing through
+    it puts the stow in the wrong frame. At the default zenith stow that is not
+    academic: azimuth is degenerate at the pole and the model's tan(alt) term
+    asks for a ~10 deg azimuth correction that moves the beam by nothing, so the
+    dish parked at drive azimuth 170 instead of 180 and swung 10 deg to get
+    there. Using /go-home also honours whatever stow the controller is actually
+    configured with, rather than assuming the 90/180 default.
+    """
     if not SRT_CONTROLLER_URL:
         return True
     if name == "home":
         result = srt_api_call("/home")
+    elif name == "stow":
+        result = srt_api_call("/go-home")
     else:
         result = srt_api_call("/direct", {"alt": alt, "az": az})
     if result and result.get('ok'):

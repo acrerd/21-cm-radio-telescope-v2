@@ -820,9 +820,18 @@ class TestSrtGoPosition:
 
     @patch.object(sched, 'SRT_CONTROLLER_URL', "http://fake")
     @patch.object(sched, 'srt_api_call', return_value={"ok": True})
-    def test_go_stow(self, mock_api):
+    def test_go_stow_uses_go_home_not_direct(self, mock_api):
+        """Stow is a DRIVE position and must not go through the pointing model.
+
+        /direct takes a TRUE sky position and applies the model. At the default
+        zenith stow that is not academic: azimuth is degenerate at the pole and
+        the model's tan(alt) term asks for a ~10 deg azimuth correction that
+        moves the beam by nothing, so the dish parked at drive azimuth 170
+        instead of 180 and swung 10 deg to get there. /go-home sends the
+        controller's own stowAlt/stowAz, in drive coordinates, model bypassed.
+        """
         assert sched.srt_go_position("stow", 90, 180) is True
-        mock_api.assert_called_once_with("/direct", {"alt": 90, "az": 180})
+        mock_api.assert_called_once_with("/go-home")
 
     @patch.object(sched, 'srt_api_call', return_value={"ok": True})
     @patch.object(sched, 'srt_get_status', side_effect=[
