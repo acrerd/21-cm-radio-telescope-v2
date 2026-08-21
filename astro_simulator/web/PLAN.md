@@ -178,12 +178,15 @@ Frame / Realise / scan-length. Behaviour parity checklist:
 - Home button resets parameters and view (no matplotlib toolbar; a
   small custom button set: home, save).
 - live RA/Dec + Alt/Az pointing readout, 1 s tick.
-- **Realise**: `fetch()` to the controller
-  (`/track/galactic`, `/tracking/enable`, `/direct`), default
-  `http://192.168.50.120`, overridable by `?controller=` URL param.
-  Requires a CORS header on the ESP32 (`Access-Control-Allow-Origin`)
-  — a one-line addition to `web_server.cpp` shipped separately;
-  until then the button reports the CORS failure clearly. (Serving
+- ~~**Realise**~~: **dropped, 2026-08-21.** A hosted page cannot command
+  the controller: the published copy is HTTPS against a plain-HTTP
+  controller (mixed content), the controller sends no
+  `Access-Control-Allow-Origin` and 404s the preflight, and it now sits
+  on a private link only the observatory host can reach. The CORS header
+  this plan called for is not a gap to close but a protection to keep —
+  same-origin policy is what stops any page visited on that host from
+  driving an unauthenticated telescope API. `astro_simulator.py
+  --controller` keeps the capability. See README. (Serving
   this page *from the scheduler* Flask app is a later option that
   sidesteps CORS entirely; the page stays static either way.)
 - site: Glasgow defaults from `meta.json`; `?lat=&lon=&height=&site=`
