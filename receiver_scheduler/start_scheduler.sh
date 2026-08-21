@@ -31,8 +31,13 @@ LOCK_FILE="/tmp/srt-h1-scheduler.lock"
 # Guards two windows opening close enough together that both pass the check
 # below before either has bound the port. Held for the life of the scheduler:
 # exec keeps the descriptor open in the process that replaces this one.
+#
+# Waits a few seconds rather than failing outright: on a restart the outgoing
+# scheduler can still hold this lock for a moment after it has released port
+# 5000, and refusing to start then leaves nothing running at all. A genuine
+# second instance holds the lock indefinitely and is still refused.
 exec 9>"$LOCK_FILE"
-if ! flock --nonblock 9; then
+if ! flock --wait 10 9; then
     echo "The H1 scheduler is already being started by another VS Code window."
     exit 0
 fi

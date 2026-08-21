@@ -1033,6 +1033,18 @@ def sun_scan(
 # skipped by the fit.
 _SCAN_RECORD_VERSION = 2
 
+# One encoder pulse is half a degree (PULSES_PER_DEGREE = 2 on the Due) and the
+# reported drive position is a count of those pulses, so the beam axis is
+# somewhere inside a 0.5 deg cell rather than exactly on the grid point named.
+_ENCODER_PULSE_DEG = 0.5
+_ENCODER_QUANTISATION_SIGMA_DEG = _ENCODER_PULSE_DEG / math.sqrt(12.0)
+
+# A per-session azimuth drift is only fitted for a session that can actually
+# constrain one. Below these it would trade against the tilt terms rather than
+# measure anything.
+_DRIFT_MIN_SCANS = 8
+_DRIFT_MIN_SPAN_HOURS = 3.0
+
 _POINTING_DATA_FILE = os.path.join(_SCRIPT_DIR, "pointing_data.json")
 _POINTING_MODEL_FILE = os.path.join(_SCRIPT_DIR, "pointing_model.json")
 
@@ -1244,13 +1256,73 @@ def fit_pointing_model(data: list | None = None,
     A = _pointing_model_matrix(alt_sun, az_sun)
     b = np.concatenate([d_alt, d_az])
 
-    def scan_uncertainty(entry: dict, key: str) -> float:
-        """Per-scan sigma: the Gaussian centroid uncertainty for this scan.
+    # Per-session azimuth drift.
+    #
+    # The 2026-08-20 scans show the azimuth residual marching steadily through
+    # the day - +0.03 deg/hour raw, 4.4 sigma once fitted - while the altitude
+    # residual does not (0.2 sigma). A geometric term cannot produce that: the
+    # Sun's alt/az are near enough symmetric about noon, and this is monotonic.
+    # Left unmodelled it does not average away, it leans on the tilt terms; on
+    # that day it moved AN by 4.5 of its own sigma and IE by 3.3. That is a
+    # plausible reason two scan days disagreed about the pole tilt.
+    #
+    # It is fitted per session and deliberately NOT exported in `terms`. Two
+    # reasons. It is not a mount geometry the controller could apply - the
+    # controller holds a static model, and this is a rate. And in a single
+    # solar day azimuth and time are ~99.8% correlated, so a drift in time and
+    # an azimuth encoder scale error describe the data equally well and cannot
+    # be told apart here; naming it as either would assert more than is known.
+    # Separating them needs a mechanical test of the azimuth scale, or scans
+    # from a different season where the two are no longer aligned.
+    session_times: dict[str, list[tuple[int, float]]] = {}
+    for i, entry in enumerate(good):
+        try:
+            when = datetime.fromisoformat(str(entry["timestamp"]))
+        except (KeyError, TypeError, ValueError):
+            continue
+        session_times.setdefault(when.date().isoformat(), []).append(
+            (i, when.timestamp()))
 
-        No quantisation floor. It was there because the fit did not know where
-        the mount actually pointed; now that each point records the drive
-        position it reached, the encoder grid is part of the measurement rather
-        than an unmodelled error on top of it.
+    drift_sessions = []
+    drift_columns = []
+    for session in sorted(session_times):
+        members = session_times[session]
+        if len(members) < _DRIFT_MIN_SCANS:
+            continue
+        idx = np.array([i for i, _ in members])
+        hours = np.array([t for _, t in members]) / 3600.0
+        span = float(hours.max() - hours.min())
+        if span < _DRIFT_MIN_SPAN_HOURS:
+            continue
+        column = np.zeros(2 * n)
+        # Azimuth equations only, and centred so the drift is orthogonal to the
+        # constant azimuth offset it would otherwise partly duplicate.
+        column[n + idx] = hours - hours.mean()
+        drift_columns.append(column)
+        drift_sessions.append({"session": session, "n_scans": len(members),
+                               "span_hours": span})
+
+    if drift_columns:
+        A = np.column_stack([A] + drift_columns)
+
+    def scan_uncertainty(entry: dict, key: str) -> float:
+        """Per-scan sigma: the Gaussian centroid uncertainty, plus the encoder grid.
+
+        The centroid uncertainty alone is not the whole error. It comes from
+        curve_fit, which assumes the abscissae are exact, and they are not: the
+        raster is plotted against the *reported* drive position, which is a
+        count of half-degree encoder pulses, so the beam axis is somewhere
+        inside that cell. Recording the reached position removed the Due's
+        commanded-versus-reported rounding from the fit - that part of the old
+        rationale for dropping this floor was right - but it cannot remove
+        reported-versus-physical, which is what this allows for.
+
+        Leaving it out is not cosmetic. On the 2026-08-20 calibration day the
+        stated sigmas were ~0.02 deg against residuals of 0.10 deg in altitude
+        and 0.24 deg in azimuth, giving reduced chi-squared 28 and a model that
+        could not be applied; with the grid in the budget the same scans give
+        1.05. A floor that lands chi-squared near 1 rather than somewhere
+        arbitrary is itself evidence it is the right size.
         """
         try:
             value = float(entry.get(key, 1.0))
@@ -1258,7 +1330,7 @@ def fit_pointing_model(data: list | None = None,
             value = 1.0
         if not math.isfinite(value) or value <= 0.0:
             value = 1.0
-        return value
+        return math.hypot(value, _ENCODER_QUANTISATION_SIGMA_DEG)
 
     alt_unc = np.array([
         scan_uncertainty(d, "alt_error_uncertainty_deg") for d in good
@@ -1275,7 +1347,7 @@ def fit_pointing_model(data: list | None = None,
 
     rank = int(np.linalg.matrix_rank(A_weighted))
     condition_number = float(np.linalg.cond(A_weighted))
-    if rank < 4 or not math.isfinite(condition_number) or condition_number > 1e4:
+    if rank < A.shape[1] or not math.isfinite(condition_number) or condition_number > 1e4:
         return {
             "success": False,
             "error": ("Calibration geometry cannot constrain all four parameters "
@@ -1304,7 +1376,7 @@ def fit_pointing_model(data: list | None = None,
     rms_alt = float(np.sqrt(np.mean(res_alt ** 2)))
     rms_az = float(np.sqrt(np.mean(res_az ** 2)))
     weighted_residual = (b - predicted) / uncertainties
-    dof = max(2 * n - 4, 1)
+    dof = max(2 * n - A.shape[1], 1)
     reduced_chi_squared = float(np.sum(weighted_residual ** 2) / dof)
     # Floor the chi-squared scale at 1: mount-quantisation error is partly
     # systematic, so mutually consistent scans give chi2_red << 1, and
@@ -1350,6 +1422,13 @@ def fit_pointing_model(data: list | None = None,
         "parameter_significance": {k: float(v) for k, v in significances.items()},
         "min_tilt_significance": float(min(significances["tilt_north"],
                                            significances["tilt_east"])),
+        "azimuth_drift": [
+            dict(entry, deg_per_hour=float(x[4 + j]),
+                 sigma_deg_per_hour=float(parameter_errors[4 + j]),
+                 significance=significance(float(x[4 + j]),
+                                           float(parameter_errors[4 + j])))
+            for j, entry in enumerate(drift_sessions)
+        ],
         "residuals_alt": res_alt.tolist(),
         "residuals_az": res_az.tolist(),
         "scan_azimuths": az_sun.tolist(),

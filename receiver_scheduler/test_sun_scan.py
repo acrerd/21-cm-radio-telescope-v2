@@ -337,7 +337,10 @@ def _synthetic_pointing_data(azimuths):
     Sun appears. The fit must take the refraction back out, so recovering
     ``expected`` exactly is also a check that it does.
     """
-    altitudes = np.array([25.0, 35.0, 45.0, 55.0, 50.0, 30.0])[:len(azimuths)]
+    _alts = [25.0, 35.0, 45.0, 55.0, 50.0, 30.0]
+    # Cycle when more azimuths are asked for, so a caller needing enough scans
+    # to fit a session drift still gets a spread of altitudes.
+    altitudes = np.array([_alts[i % len(_alts)] for i in range(len(azimuths))])
     azimuths = np.asarray(azimuths, dtype=float)
     expected = np.array([0.35, -0.20, 0.12, -0.08])
     matrix = sun_scan._pointing_model_matrix(altitudes, azimuths)
@@ -559,12 +562,17 @@ def test_scans_recorded_before_the_resident_model_are_not_pooled():
     assert "predate" in model["error"]
 
 
-def test_scan_uncertainty_is_the_centroid_uncertainty_alone():
-    """No quantisation floor: the drive position is measured, not guessed at.
+def test_scan_uncertainty_includes_the_encoder_grid():
+    """The centroid uncertainty is not the whole error.
 
-    It used to be combined in quadrature with 0.144 deg because the fit did not
-    know where the mount actually pointed. Scan records now carry the reported
-    drive position, so that allowance would only inflate every sigma.
+    Recording the reached drive position removed the Due's commanded-versus-
+    reported rounding from the fit, but the reported position is still a count
+    of half-degree pulses, so the beam axis is somewhere inside that cell.
+    curve_fit assumes exact abscissae and cannot know this, so however small a
+    centroid uncertainty a scan claims, no scan is better than the grid.
+
+    Without it the 2026-08-20 calibration day fitted at reduced chi-squared 28
+    and could not be applied; with it, 1.05.
     """
     data, _ = _synthetic_pointing_data([80, 105, 135, 165, 195, 225])
     for entry in data:
@@ -574,9 +582,59 @@ def test_scan_uncertainty_is_the_centroid_uncertainty_alone():
     model = sun_scan.fit_pointing_model(data, true_lat=55.9, true_lon=-4.3)
 
     assert model["success"] is True
-    # Exact data with tiny stated uncertainties: the errors follow the stated
-    # sigmas now rather than being held up by a mount-quantisation floor.
-    assert model["parameter_errors_deg"]["tilt_north"] < 1e-3
+    # A vanishing stated sigma must not buy a vanishing parameter error.
+    assert model["parameter_errors_deg"]["tilt_north"] > 0.01
+    assert sun_scan._ENCODER_QUANTISATION_SIGMA_DEG == pytest.approx(0.1443, abs=1e-4)
+
+
+def _timestamped(data, start="2026-08-20T08:00:00", step_hours=2.0):
+    """Give synthetic scans timestamps spanning a single session."""
+    from datetime import datetime, timedelta
+    t0 = datetime.fromisoformat(start)
+    for i, entry in enumerate(data):
+        entry["timestamp"] = (t0 + timedelta(hours=step_hours * i)).isoformat()
+    return data
+
+
+def test_azimuth_drift_is_fitted_and_kept_out_of_the_terms():
+    """A drift through the session is absorbed, not pushed into the tilt.
+
+    A drift in time is not a mount geometry: the controller holds a static
+    model and could not apply a rate. Fitting it protects AN and AE from
+    leaning on it - on the real 2026-08-20 day, leaving it out moved AN by 4.5
+    of its own sigma - but it must not reach `terms`.
+    """
+    azimuths = [80, 100, 120, 140, 160, 180, 200, 220, 240]
+    data, expected = _synthetic_pointing_data(azimuths)
+    _timestamped(data, step_hours=1.25)
+    rate = 0.05  # deg/hour, injected into azimuth only
+    hours = np.array([1.25 * i for i in range(len(data))])
+    for entry, h in zip(data, hours - hours.mean()):
+        entry["az_error_deg"] += rate * h
+
+    model = sun_scan.fit_pointing_model(data, true_lat=55.9, true_lon=-4.3)
+
+    assert model["success"] is True
+    assert len(model["azimuth_drift"]) == 1
+    assert model["azimuth_drift"][0]["deg_per_hour"] == pytest.approx(rate, abs=0.01)
+    assert model["azimuth_drift"][0]["session"] == "2026-08-20"
+    # The drift is a diagnostic, never a transmitted term.
+    assert set(model["terms"]) == {"IE", "IA", "AN", "AE"}
+    # And the tilt survives it: recovered despite the injected drift.
+    assert model["terms"]["AN"] == pytest.approx(expected[2], abs=0.05)
+    assert model["terms"]["AE"] == pytest.approx(expected[3], abs=0.05)
+
+
+def test_no_drift_fitted_for_a_short_or_sparse_session():
+    """Too few scans, or too short a span, and a drift would only trade against tilt."""
+    data, _ = _synthetic_pointing_data([80, 105, 135, 165, 195, 225])
+    _timestamped(data, step_hours=2.0)          # 6 scans: below _DRIFT_MIN_SCANS
+    assert sun_scan.fit_pointing_model(data, true_lat=55.9, true_lon=-4.3)["azimuth_drift"] == []
+
+    azimuths = [80, 100, 120, 140, 160, 180, 200, 220, 240]
+    short, _ = _synthetic_pointing_data(azimuths)
+    _timestamped(short, step_hours=0.1)         # 9 scans but under an hour
+    assert sun_scan.fit_pointing_model(short, true_lat=55.9, true_lon=-4.3)["azimuth_drift"] == []
 
 
 def test_pointing_model_errors_floored_for_consistent_scans():
