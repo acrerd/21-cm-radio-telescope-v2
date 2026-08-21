@@ -55,6 +55,18 @@ _file.setLevel(logging.DEBUG)
 _file.setFormatter(_fmt)
 log.addHandler(_file)
 
+# The scan modules keep their own loggers, and handlers were only ever attached
+# to this one - so everything they said went nowhere. That is tolerable for a
+# ten-minute Sun raster watched from the page, and not for a horizon scan that
+# runs for an hour and a half unattended overnight: the per-azimuth results and
+# the "extending the cut upwards" lines are precisely what someone reads the
+# next morning to find out what happened.
+for _module in ("sun_scan", "horizon_scan"):
+    _module_log = logging.getLogger(_module)
+    _module_log.setLevel(logging.INFO)
+    _module_log.addHandler(_console)
+    _module_log.addHandler(_file)
+
 # Suppress noisy Flask/werkzeug request logs
 logging.getLogger('werkzeug').setLevel(logging.WARNING)
 
@@ -1019,6 +1031,21 @@ sun_scan_state: dict = {
     "image_path": None,
 }
 
+# Horizon scan state. A separate activity from the Sun scan but the same
+# contract: it holds the SDR and the mount, so a scheduled observation
+# preempts it, and it is cancellable between points.
+horizon_thread: Optional[threading.Thread] = None
+horizon_cancel = threading.Event()
+horizon_state: dict = {
+    "running": False,
+    "progress": 0,
+    "total": 0,
+    "point_info": None,
+    "profile": None,
+    "error": None,
+    "started_utc": None,
+}
+
 # Calibration day state
 cal_day_thread: Optional[threading.Thread] = None
 cal_day_cancel = threading.Event()
@@ -1057,6 +1084,12 @@ DEFAULT_OBSERVATION = {
     "sdr_type": "b210",
     "calibrator": False,
     "end_action": "none",
+    # Horizon scans (coord_system "horizon") have no target: they visit every
+    # azimuth in turn, so these describe the sweep instead of a position.
+    "horizon_az_start": 5.0,
+    "horizon_az_end": 350.0,
+    "horizon_az_step": 5.0,
+    "horizon_alt_step": 1.0,
     "enabled": True,
 }
 
@@ -1140,6 +1173,11 @@ def start_observation(obs: dict, duration_override: int = None) -> bool:
     if obs.get('coord_system') == 'calibration':
         return _start_calibration_observation(obs, duration_override)
 
+    # Horizon scan: likewise a thread, and likewise owns the SDR and the mount
+    # for its whole run.
+    if obs.get('coord_system') == 'horizon':
+        return _start_horizon_observation(obs, duration_override)
+
     # Claim the start under the lock, then do the slow telescope work
     # (pointing and the slew wait, potentially minutes) with the lock
     # released so /api/status and /api/stop stay responsive throughout.
@@ -1162,12 +1200,15 @@ def start_observation(obs: dict, duration_override: int = None) -> bool:
         # calibration day: cancel it and wait for the SDR to be released.
         # Cancellation is only polled between grid points, so a slew plus
         # an integration can pass before it takes effect.
-        if sun_scan_state["running"] or cal_day_state["running"]:
-            log.info("Scheduled observation preempts the running Sun scan/calibration")
+        if (sun_scan_state["running"] or cal_day_state["running"]
+                or horizon_state["running"]):
+            log.info("Scheduled observation preempts the running Sun scan/calibration/horizon scan")
             sun_scan_cancel.set()
             cal_day_cancel.set()
+            horizon_cancel.set()
             deadline = time.time() + SUN_SCAN_PREEMPT_TIMEOUT
-            while sun_scan_state["running"] or cal_day_state["running"]:
+            while (sun_scan_state["running"] or cal_day_state["running"]
+                   or horizon_state["running"]):
                 if start_abort.is_set():
                     log.info("Observation start aborted while waiting for the Sun scan to stop")
                     return False
@@ -1306,6 +1347,21 @@ def stop_observation() -> bool:
         observation_end_time = None
         return True
 
+    # Horizon scan: same shape as the calibration branch above. A partial
+    # profile is never saved, so stopping simply abandons the run.
+    if current_observation and current_observation.get('coord_system') == 'horizon':
+        name = current_observation.get('name', '?')
+        end_action = current_observation.get('end_action', 'none')
+        horizon_cancel.set()
+        if SRT_CONTROLLER_URL and end_action == 'home':
+            srt_go_position("home", 0, 0)
+        elif SRT_CONTROLLER_URL and end_action == 'stow':
+            srt_go_position("stow", 90, 180)
+        log.info("Stopped horizon scan: %s", name)
+        current_observation = None
+        observation_end_time = None
+        return True
+
     with process_lock:
         if current_process is None:
             return was_starting
@@ -1401,6 +1457,59 @@ def _start_calibration_observation(obs: dict, duration_override: int = None) -> 
     cal_day_thread.start()
 
     log.info("Started calibration day: %s (ends at %s)",
+             obs.get('name'), observation_end_time.strftime('%H:%M:%S'))
+    return True
+
+
+def _start_horizon_observation(obs: dict, duration_override: int = None) -> bool:
+    """Start a horizon scan as a scheduled observation.
+
+    The horizon is a twice-a-year measurement - after the trees are pruned, or
+    once a season has changed what they block - and it wants a dark, dry, calm
+    night rather than whoever happens to be awake. So it is schedulable on the
+    same terms as the calibration day: a thread that owns the SDR and the mount,
+    tracked as the running observation so the scheduler neither starts a second
+    one nor restarts this one when it finishes.
+    """
+    global current_observation, observation_end_time, horizon_thread
+
+    if horizon_state["running"]:
+        log.warning("Horizon scan already running")
+        return False
+
+    with process_lock:
+        if current_process is not None and current_process.poll() is None:
+            log.warning("Receiver busy - cannot start the horizon scan")
+            return False
+
+    stop_booted_receiver()
+
+    duration = duration_override or obs.get('duration_minutes', 180)
+    now = datetime.now()
+    observation_end_time = now + timedelta(minutes=duration)
+    current_observation = {
+        **obs,
+        'started_at': now.isoformat(),
+        'ends_at': observation_end_time.isoformat(),
+    }
+
+    params = {
+        "az_start": float(obs.get("horizon_az_start", 5.0)),
+        "az_end": float(obs.get("horizon_az_end", 350.0)),
+        "az_step": float(obs.get("horizon_az_step", 5.0)),
+        "alt_step": float(obs.get("horizon_alt_step", 1.0)),
+        "integration_time_s": float(obs.get("integration_time_s", 0.5)),
+        "center_freq_mhz": float(obs.get("center_freq_mhz", 1420.405752)),
+        "gain_db": float(obs.get("gain_db", 40)),
+        "sdr_type": obs.get("sdr_type", "b210"),
+    }
+
+    horizon_cancel.clear()
+    horizon_thread = threading.Thread(target=_run_horizon_scan, args=(params,),
+                                      daemon=True)
+    horizon_thread.start()
+
+    log.info("Started horizon scan: %s (ends at %s)",
              obs.get('name'), observation_end_time.strftime('%H:%M:%S'))
     return True
 
@@ -1505,6 +1614,11 @@ def scheduler_thread():
                 # A naturally completed/failed calibration remains owned by its
                 # scheduled slot so the scheduler does not restart it repeatedly.
                 is_running = cal_day_state["running"] or cal_day_state["finished"]
+            # And the horizon scan, for the same reason: it finishes when it has
+            # been round the sky, typically well inside its slot, and must not
+            # then be started again from the top.
+            if not is_running and current_observation and current_observation.get('coord_system') == 'horizon':
+                is_running = horizon_state["running"] or bool(horizon_state["profile"])
 
             if due_obs:
                 if is_running and running_name == due_obs.get('name', ''):
@@ -1664,6 +1778,7 @@ HTML_TEMPLATE = '''
         <div class="tabs">
             <div class="tab active" onclick="switchTab('scheduler')">Scheduler</div>
             <div class="tab" onclick="switchTab('sunscan')">Sun Scan</div>
+            <div class="tab" onclick="switchTab('horizon')">Horizon</div>
             <div class="tab" onclick="switchTab('camera')">Camera</div>
             <div class="tab" onclick="switchTab('config')">Configuration</div>
             <div class="tab" onclick="switchTab('log')">Log</div>
@@ -1787,6 +1902,66 @@ HTML_TEMPLATE = '''
                         <div id="cdPlotContainer" style="text-align:center;">
                         </div>
                     </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="tab-content" id="tab-horizon">
+            <div style="display:flex; gap:20px; flex-wrap:wrap;">
+                <div class="config-form" style="flex:0 0 320px;">
+                    <div class="section-title">Horizon Scan</div>
+                    <p style="color:#888; font-size:12px; margin-bottom:12px;">
+                        Maps the skyline by radiometry: trees, roofs and the dome
+                        tower are all near 290&nbsp;K at 1420&nbsp;MHz, so lowering
+                        the beam through them is a large step in total power. Run it
+                        at night, dry and calm &mdash; the Sun would swamp the sky
+                        level and wet or moving foliage changes what is measured.
+                    </p>
+                    <div class="form-group">
+                        <label>Azimuth Step (degrees)</label>
+                        <input type="number" id="hzAzStep" min="1" max="30" step="1" value="5">
+                    </div>
+                    <div class="form-group">
+                        <label>Altitude Step (degrees)</label>
+                        <input type="number" id="hzAltStep" min="0.5" max="5" step="0.5" value="1">
+                    </div>
+                    <div class="form-group">
+                        <label>Integration per Point (s)</label>
+                        <input type="number" id="hzIntegration" min="0.05" max="10" step="0.05" value="0.5">
+                    </div>
+                    <div class="form-group">
+                        <label>SDR</label>
+                        <select id="hzSdrType">
+                            <option value="b210">B210</option>
+                            <option value="rtlsdr">RTL-SDR</option>
+                            <option value="demo">Demo (no hardware)</option>
+                        </select>
+                    </div>
+                    <div style="display:flex; gap:10px; margin-top:15px;">
+                        <button class="btn btn-primary" id="hzStartBtn" onclick="startHorizon()">Start Scan</button>
+                        <button class="btn btn-danger" id="hzStopBtn" style="display:none" onclick="stopHorizon()">Stop</button>
+                    </div>
+                    <div id="hzStatus" style="margin-top:12px; font-size:13px;">
+                        <span style="color:#888;">Idle.</span>
+                    </div>
+                </div>
+                <div style="flex:1; min-width:420px;">
+                    <div class="section-title">Measured Profile</div>
+                    <div id="hzProfile" style="background:#0f0f23; border:1px solid #333; border-radius:8px; padding:15px; margin-bottom:15px;">
+                        <span style="color:#888;">No horizon profile measured yet.</span>
+                    </div>
+                    <div id="hzLandscape" style="display:none; margin-bottom:15px;">
+                        <a class="btn btn-secondary" href="/api/horizon/landscape?use=clearance"
+                           style="text-decoration:none;">Stellarium landscape (clean sky)</a>
+                        <a class="btn btn-secondary" href="/api/horizon/landscape?use=edge"
+                           style="text-decoration:none; margin-left:8px;">Stellarium landscape (skyline)</a>
+                        <p style="color:#888; font-size:12px; margin-top:8px;">
+                            A polygonal landscape built from the measurement itself.
+                            Install in Stellarium with Sky and Viewing Options &rarr;
+                            Landscape &rarr; Add/remove landscapes.
+                        </p>
+                    </div>
+                    <div id="hzPlotContainer" style="text-align:center;"></div>
                 </div>
             </div>
         </div>
@@ -1987,6 +2162,7 @@ HTML_TEMPLATE = '''
                                 <option value="object">Solar System Object</option>
                                 <option value="satellite">Satellite (TLE)</option>
                                 <option value="calibration">Calibration Day (Sun Scan)</option>
+                                <option value="horizon">Horizon Scan</option>
                             </select>
                         </div>
                     </div>
@@ -2046,6 +2222,32 @@ HTML_TEMPLATE = '''
                             <div class="form-group">
                                 <label>Scan Interval (minutes)</label>
                                 <input type="number" id="obsCalInterval" min="5" max="120" value="30">
+                            </div>
+                        </div>
+                    </div>
+                    <div id="horizonInput" style="margin-top:15px; display:none">
+                        <p style="color:#888; font-size:12px; margin-bottom:10px;">
+                            Maps the obstructed horizon by radiometry, one altitude cut
+                            per azimuth. Schedule it for a dark, dry, calm night: the Sun
+                            swamps the sky level, and wet or wind-blown foliage is not the
+                            horizon you want recorded. Allow about two hours.
+                        </p>
+                        <div class="form-grid">
+                            <div class="form-group">
+                                <label>Azimuth Step (degrees)</label>
+                                <input type="number" id="obsHorizonAzStep" min="1" max="30" step="1" value="5">
+                            </div>
+                            <div class="form-group">
+                                <label>Altitude Step (degrees)</label>
+                                <input type="number" id="obsHorizonAltStep" min="0.5" max="5" step="0.5" value="1">
+                            </div>
+                            <div class="form-group">
+                                <label>Azimuth Start (degrees)</label>
+                                <input type="number" id="obsHorizonAzStart" min="0" max="360" step="1" value="5">
+                            </div>
+                            <div class="form-group">
+                                <label>Azimuth End (degrees)</label>
+                                <input type="number" id="obsHorizonAzEnd" min="0" max="360" step="1" value="350">
                             </div>
                         </div>
                     </div>
@@ -2299,15 +2501,19 @@ HTML_TEMPLATE = '''
             const isSat = sys === 'satellite';
             const isCal = sys === 'calibration';
             const isDrift = sys === 'drift';
+            const isHorizon = sys === 'horizon';
             document.getElementById('objectSelector').style.display = isObject ? '' : 'none';
             document.getElementById('satelliteInput').style.display = isSat ? '' : 'none';
             document.getElementById('calibrationInput').style.display = isCal ? '' : 'none';
+            document.getElementById('horizonInput').style.display = isHorizon ? '' : 'none';
             document.getElementById('driftInput').style.display = isDrift ? '' : 'none';
-            document.getElementById('coordInputs').style.display = (isObject || isSat || isCal) ? 'none' : '';
+            // A horizon scan has no target: it goes to every azimuth in turn.
+            document.getElementById('coordInputs').style.display =
+                (isObject || isSat || isCal || isHorizon) ? 'none' : '';
             // Drift scans derive start time and duration from T and the window
             document.getElementById('obsStartTime').disabled = isDrift;
             document.getElementById('obsDuration').disabled = isDrift;
-            if (isObject || isSat || isCal) return;
+            if (isObject || isSat || isCal || isHorizon) return;
             if (isDrift) updateDriftDerived();
             const cfg = COORD_CONFIG[isDrift ? document.getElementById('obsDriftFrame').value : sys];
             document.getElementById('coord1Label').textContent = cfg.c1;
@@ -2576,6 +2782,10 @@ HTML_TEMPLATE = '''
             document.getElementById('obsCalGridN').value = obs.cal_grid_n || 5;
             document.getElementById('obsCalSpacing').value = obs.cal_spacing_deg || 1.5;
             document.getElementById('obsCalInterval').value = obs.cal_interval_min || 30;
+            document.getElementById('obsHorizonAzStep').value = obs.horizon_az_step || 5;
+            document.getElementById('obsHorizonAltStep').value = obs.horizon_alt_step || 1;
+            document.getElementById('obsHorizonAzStart').value = obs.horizon_az_start ?? 5;
+            document.getElementById('obsHorizonAzEnd').value = obs.horizon_az_end ?? 350;
             document.getElementById('obsDriftFrame').value = obs.drift_frame || DEFAULTS.drift_frame;
             document.getElementById('obsDriftTime').value = obs.drift_time || DEFAULTS.drift_time;
             document.getElementById('obsDriftWindow').value = obs.drift_window_min ?? DEFAULTS.drift_window_min;
@@ -2655,6 +2865,10 @@ HTML_TEMPLATE = '''
                 cal_grid_n: parseInt(document.getElementById('obsCalGridN').value) || 5,
                 cal_spacing_deg: parseFloat(document.getElementById('obsCalSpacing').value) || 1.5,
                 cal_interval_min: parseInt(document.getElementById('obsCalInterval').value) || 30,
+                horizon_az_step: parseFloat(document.getElementById('obsHorizonAzStep').value) || 5,
+                horizon_alt_step: parseFloat(document.getElementById('obsHorizonAltStep').value) || 1,
+                horizon_az_start: parseFloat(document.getElementById('obsHorizonAzStart').value) || 5,
+                horizon_az_end: parseFloat(document.getElementById('obsHorizonAzEnd').value) || 350,
                 drift_frame: document.getElementById('obsDriftFrame').value,
                 drift_time: document.getElementById('obsDriftTime').value,
                 drift_window_min: parseInt(document.getElementById('obsDriftWindow').value) || 30,
@@ -3013,8 +3227,123 @@ HTML_TEMPLATE = '''
             if (name === 'sunscan') { pollSunScan(); loadCalModel(); }
             // Leaving the tab stops the loop; scheduleCameraRefresh cancels
             // itself whenever the camera tab is not the one on screen.
+            if (name === 'horizon') pollHorizon();
             if (name === 'camera' && !camObjectUrl) refreshCamera();
             else scheduleCameraRefresh();
+        }
+
+        // ---- Horizon scan ----
+        let hzPollTimer = null;
+
+        function startHorizon() {
+            const params = {
+                az_step: parseFloat(document.getElementById('hzAzStep').value) || 5,
+                alt_step: parseFloat(document.getElementById('hzAltStep').value) || 1,
+                integration_time_s: parseFloat(document.getElementById('hzIntegration').value) || 0.5,
+                sdr_type: document.getElementById('hzSdrType').value,
+            };
+            fetch('/api/horizon/start', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify(params)
+            }).then(r => r.json()).then(d => {
+                if (!d.success) {
+                    document.getElementById('hzStatus').innerHTML =
+                        '<span style="color:#ff4757;">' + (d.error || 'Could not start') + '</span>';
+                    return;
+                }
+                pollHorizon();
+            }).catch(e => alert('Horizon scan request failed: ' + e));
+        }
+
+        function stopHorizon() {
+            fetch('/api/horizon/stop', {method: 'POST'}).then(() => pollHorizon());
+        }
+
+        function pollHorizon() {
+            fetch('/api/horizon/status').then(r => r.json()).then(d => {
+                const status = document.getElementById('hzStatus');
+                document.getElementById('hzStartBtn').style.display = d.running ? 'none' : 'inline-block';
+                document.getElementById('hzStopBtn').style.display = d.running ? 'inline-block' : 'none';
+                if (d.running) {
+                    let info = '<span style="color:#00d4ff;">Scanning</span> &mdash; azimuth ' +
+                               d.progress + ' of ' + d.total;
+                    const p = d.point_info;
+                    if (p) {
+                        info += '<br><span style="color:#888;">az ' + p.az.toFixed(0) + '&deg;: ' +
+                                (p.edge === null ? 'no edge found'
+                                 : 'edge ' + p.edge.toFixed(1) + '&deg;, clear above ' +
+                                   (p.clear === null ? '?' : p.clear.toFixed(1)) + '&deg;') +
+                                ' (' + p.estimator + ')</span>';
+                    }
+                    status.innerHTML = info;
+                } else if (d.error) {
+                    status.innerHTML = '<span style="color:#ff4757;">' + d.error + '</span>';
+                } else {
+                    status.innerHTML = '<span style="color:#888;">Idle.</span>';
+                }
+                if (d.running) {
+                    if (hzPollTimer) clearTimeout(hzPollTimer);
+                    hzPollTimer = setTimeout(pollHorizon, 2000);
+                } else {
+                    if (hzPollTimer) { clearTimeout(hzPollTimer); hzPollTimer = null; }
+                    loadHorizonProfile();
+                }
+            }).catch(() => {});
+        }
+
+        function loadHorizonProfile() {
+            fetch('/api/horizon/profile').then(r => r.json()).then(m => {
+                const box = document.getElementById('hzProfile');
+                if (!m.success) {
+                    box.innerHTML = '<span style="color:#888;">' + (m.error || 'No profile') + '</span>';
+                    return;
+                }
+                const clears = m.azimuths.map(a => a.clear).filter(v => v !== null);
+                const edges = m.azimuths.map(a => a.edge).filter(v => v !== null);
+                const envelope = m.azimuths.filter(a => a.estimator === 'envelope').length;
+                const highest = m.azimuths.reduce((b, a) =>
+                    (a.edge !== null && (b === null || a.edge > b.edge)) ? a : b, null);
+                let html = '<table style="width:100%; font-size:13px;">';
+                const row = (k, v) => '<tr><td style="color:#888; padding:4px 8px;">' + k +
+                                      '</td><td>' + v + '</td></tr>';
+                if (m.sdr_type === 'demo') {
+                    html += row('<span style="color:#ff4757;">Source</span>',
+                        '<span style="color:#ff4757;">Simulated &mdash; this is not the ' +
+                        'observatory horizon</span>');
+                }
+                html += row('Measured', new Date(m.measured_utc).toLocaleString());
+                html += row('Azimuths', m.n_azimuths + ' at ' + m.az_step_deg + '&deg; spacing' +
+                            (envelope ? ' <span style="color:#ffa502;">(' + envelope +
+                             ' by envelope)</span>' : ''));
+                html += row('Duration', (m.duration_s / 60).toFixed(0) + ' min');
+                if (highest) {
+                    html += row('Highest obstruction', highest.edge.toFixed(1) + '&deg; at az ' +
+                                highest.az.toFixed(0) + '&deg;');
+                }
+                if (edges.length) {
+                    const med = a => a.slice().sort((x, y) => x - y)[Math.floor(a.length / 2)];
+                    html += row('Median edge', med(edges).toFixed(1) + '&deg;');
+                    html += row('Median clearance', med(clears).toFixed(1) + '&deg;');
+                }
+                const b = m.direction_bias || {};
+                if (b.available) {
+                    // Up-cuts against down-cuts: a real horizon has no reason to
+                    // zigzag with the parity of the azimuth index, so anything
+                    // significant here is backlash in the altitude axis.
+                    const sig = b.significance;
+                    html += row('Up minus down cuts',
+                        '<span style="color:' + (sig > 3 ? '#ff4757' : '#888') + ';">' +
+                        (b.up_minus_down_deg >= 0 ? '+' : '') + b.up_minus_down_deg.toFixed(3) +
+                        ' &plusmn; ' + b.uncertainty_deg.toFixed(3) + '&deg; (' +
+                        sig.toFixed(1) + ' sigma)</span>');
+                }
+                html += '</table>';
+                box.innerHTML = html;
+                document.getElementById('hzLandscape').style.display = '';
+                document.getElementById('hzPlotContainer').innerHTML =
+                    '<img src="/api/horizon/plot?' + Date.now() + '" style="max-width:100%; border-radius:8px; border:1px solid #333;">';
+            }).catch(() => {});
         }
 
         // ---- Safety camera ----
@@ -3601,6 +3930,81 @@ def _run_sun_scan(params: dict):
         sun_scan_state["running"] = False
 
 
+def _run_horizon_scan(params: dict):
+    """Map the obstructed horizon, in a worker thread."""
+    from horizon_scan import (generate_horizon_plot, horizon_scan,
+                              save_horizon_profile)
+
+    # The azimuth count is known before the first cut finishes, and the first
+    # cut is the slowest one - it has no previous answer to start its window
+    # from. Leaving total at zero until the first progress callback showed
+    # "azimuth 0 of 0" for the first minute or two of a ninety-minute scan.
+    az_start = params.get("az_start", 5.0)
+    az_end = params.get("az_end", 350.0)
+    az_step = params.get("az_step", 5.0)
+    expected = max(1, int((az_end - az_start) / az_step) + 1)
+
+    horizon_state.update(running=True, progress=0, total=expected, point_info=None,
+                         profile=None, error=None,
+                         started_utc=datetime.now(timezone.utc).isoformat())
+    horizon_cancel.clear()
+    try:
+        def progress(idx, total, info):
+            horizon_state.update(progress=idx + 1, total=total, point_info=info)
+
+        profile = horizon_scan(
+            az_start=az_start,
+            az_end=az_end,
+            az_step=az_step,
+            alt_step=params.get("alt_step", 1.0),
+            window_deg=params.get("window_deg", 6.0),
+            integration_time_s=params.get("integration_time_s", 0.5),
+            beam_fwhm_deg=params.get("beam_fwhm_deg", 5.8),
+            clearance_fraction=params.get("clearance_fraction", 0.01),
+            sdr_type=params.get("sdr_type", "b210"),
+            center_freq=params.get("center_freq_mhz", 1420.405752) * 1e6,
+            gain=params.get("gain_db", 40.0),
+            srt_url=SRT_CONTROLLER_URL,
+            slew_timeout=SRT_SLEW_TIMEOUT,
+            position_tolerance=SRT_POSITION_TOLERANCE,
+            progress_callback=progress,
+            cancel_event=horizon_cancel,
+        )
+        save_horizon_profile(profile)
+        horizon_state["profile"] = profile
+        data_folder = get_config_value("data_output_folder")
+        os.makedirs(data_folder, exist_ok=True)
+        try:
+            generate_horizon_plot(profile,
+                                  os.path.join(data_folder, "horizon_profile.png"))
+        except Exception as exc:                      # noqa: BLE001
+            log.warning("Could not generate the horizon plot: %s", exc)
+        log.info("Horizon scan complete: %d azimuths in %.0f min",
+                 profile["n_azimuths"], profile["duration_s"] / 60)
+    except Exception as exc:                          # noqa: BLE001
+        # A partial profile must never replace a complete one - that file is the
+        # observatory's horizon - but throwing the measurements away is worse.
+        # An abandoned run on 2026-08-21 would have discarded ninety minutes of
+        # perfectly good cuts because the estimator was misbehaving, which is a
+        # reason to reprocess them, not to lose them. So partials are kept
+        # beside the real profile under their own name.
+        partial = getattr(exc, "partial_profile", None)
+        if partial and partial.get("entries"):
+            stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+            path = os.path.join(_SCRIPT_DIR, f"horizon_partial_{stamp}.json")
+            try:
+                from horizon_scan import save_horizon_profile
+                save_horizon_profile(partial, path)
+                log.info("Kept %d azimuths from the abandoned scan in %s",
+                         len(partial["entries"]), path)
+            except Exception as save_exc:             # noqa: BLE001
+                log.warning("Could not keep the partial horizon profile: %s", save_exc)
+        log.error("Horizon scan failed: %s", exc)
+        horizon_state["error"] = str(exc)
+    finally:
+        horizon_state["running"] = False
+
+
 def _run_calibration_day(params: dict):
     """Run repeated sun scans at a fixed interval until sunset or cancelled."""
     from sun_scan import (get_sun_altaz, parse_obstruction_sectors,
@@ -3770,6 +4174,8 @@ def get_status():
     # Also count calibration day as running
     if not running and current_observation and current_observation.get('coord_system') == 'calibration':
         running = cal_day_state["running"] or cal_day_state["finished"]
+    if not running and current_observation and current_observation.get('coord_system') == 'horizon':
+        running = horizon_state["running"]
     remaining = None
     if running and observation_end_time:
         remaining = max(0, (observation_end_time - datetime.now()).total_seconds())
@@ -4386,6 +4792,120 @@ def api_calday_model():
     from sun_scan import load_pointing_model
     model = load_pointing_model()
     return jsonify(model or {'success': False, 'error': 'No model fitted yet'})
+
+
+# =============================================================================
+# Horizon scan
+# =============================================================================
+
+@app.route('/api/horizon/start', methods=['POST'])
+def api_horizon_start():
+    global horizon_thread
+    if horizon_state["running"]:
+        return jsonify({'success': False, 'error': 'A horizon scan is already running'}), 409
+    if sun_scan_state["running"] or cal_day_state["running"]:
+        return jsonify({'success': False,
+                        'error': 'A Sun scan or calibration day is using the telescope'}), 409
+    with process_lock:
+        observing = current_process is not None and current_process.poll() is None
+    if observing:
+        return jsonify({'success': False,
+                        'error': 'An observation is running; it owns the SDR'}), 409
+    params = request.json or {}
+    horizon_thread = threading.Thread(target=_run_horizon_scan, args=(params,),
+                                      daemon=True)
+    horizon_thread.start()
+    return jsonify({'success': True})
+
+
+@app.route('/api/horizon/stop', methods=['POST'])
+def api_horizon_stop():
+    horizon_cancel.set()
+    return jsonify({'success': True})
+
+
+@app.route('/api/horizon/status', methods=['GET'])
+def api_horizon_status():
+    return jsonify({
+        'running': horizon_state["running"],
+        'progress': horizon_state["progress"],
+        'total': horizon_state["total"],
+        'point_info': horizon_state["point_info"],
+        'error': horizon_state["error"],
+        'started_utc': horizon_state["started_utc"],
+    })
+
+
+@app.route('/api/horizon/profile', methods=['GET'])
+def api_horizon_profile():
+    """The stored profile, summarised - the raw cuts are far too big for the UI."""
+    from horizon_scan import direction_bias, load_horizon_profile, profile_floors
+    profile = load_horizon_profile()
+    if not profile:
+        return jsonify({'success': False, 'error': 'No horizon profile measured yet'})
+    entries = profile.get("entries", [])
+    return jsonify({
+        'success': True,
+        'measured_utc': profile.get("finished_utc"),
+        # Carried so the page can say so: a profile measured with the demo SDR
+        # describes a synthetic horizon and must never be mistaken for the
+        # observatory's, least of all by whoever later wires it into the
+        # exclusion of real observations.
+        'sdr_type': profile.get("sdr_type"),
+        'n_azimuths': profile.get("n_azimuths"),
+        'az_step_deg': profile.get("az_step_deg"),
+        'duration_s': profile.get("duration_s"),
+        'clearance_fraction': profile.get("clearance_fraction"),
+        'beam_fwhm_deg': profile.get("beam_fwhm_deg"),
+        'direction_bias': direction_bias(profile),
+        'floors': profile_floors(profile),
+        'azimuths': [
+            {
+                'az': e["az_deg"],
+                'edge': (e["fit"] or {}).get("edge_reported_deg"),
+                'clear': (e["fit"] or {}).get("alt_clear"),
+                'estimator': (e["fit"] or {}).get("estimator"),
+                'quality': (e["fit"] or {}).get("quality"),
+            } for e in entries
+        ],
+    })
+
+
+@app.route('/api/horizon/landscape', methods=['GET'])
+def api_horizon_landscape():
+    """The measured horizon as a Stellarium landscape, ready to install.
+
+    Polygonal rather than a panorama: Stellarium fills the ground below a list
+    of azimuth/altitude pairs, so what it draws is the measurement itself
+    rather than an artist's impression of it. `use=clearance` (default) draws
+    the radiometrically clean sky, `use=edge` the geometric skyline.
+    """
+    from horizon_scan import load_horizon_profile, zip_stellarium_landscape
+    use = 'edge' if request.args.get('use') == 'edge' else 'clearance'
+    profile = load_horizon_profile()
+    if not profile:
+        return jsonify({'success': False,
+                        'error': 'No horizon profile measured yet'}), 404
+    data_folder = get_config_value("data_output_folder")
+    os.makedirs(data_folder, exist_ok=True)
+    zip_path = os.path.join(data_folder, f"acreroad_{use}_landscape.zip")
+    try:
+        zip_stellarium_landscape(profile, zip_path, use=use)
+    except ValueError as exc:
+        return jsonify({'success': False, 'error': str(exc)}), 400
+    from flask import send_file
+    return send_file(zip_path, mimetype='application/zip', as_attachment=True,
+                     download_name=os.path.basename(zip_path))
+
+
+@app.route('/api/horizon/plot', methods=['GET'])
+def api_horizon_plot():
+    plot_path = os.path.join(get_config_value("data_output_folder"),
+                             "horizon_profile.png")
+    if os.path.isfile(plot_path):
+        from flask import send_file
+        return send_file(plot_path, mimetype='image/png')
+    return ('', 404)
 
 
 # =============================================================================

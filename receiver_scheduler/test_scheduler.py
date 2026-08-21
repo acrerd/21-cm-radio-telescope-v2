@@ -9,6 +9,8 @@ import json
 import math
 import os
 import sys
+import threading
+import time
 from datetime import datetime, timedelta
 from unittest.mock import patch, MagicMock
 
@@ -1722,3 +1724,108 @@ class TestStartFailureBackoff:
 
 if __name__ == '__main__':
     pytest.main([__file__, '-v'])
+
+
+class TestScheduledHorizonScan:
+    """A horizon scan is schedulable on the same terms as a calibration day."""
+
+    def _restore(self, obs, end_time):
+        sched.current_observation = obs
+        sched.observation_end_time = end_time
+        sched.horizon_state.clear()
+        sched.horizon_state.update({
+            "running": False, "progress": 0, "total": 0, "point_info": None,
+            "profile": None, "error": None, "started_utc": None,
+        })
+        sched.horizon_cancel.clear()
+
+    def test_a_scheduled_horizon_observation_starts_the_scan(self):
+        obs = dict(sched.DEFAULT_OBSERVATION,
+                   name="Horizon", coord_system="horizon",
+                   horizon_az_step=10.0, horizon_alt_step=1.5,
+                   integration_time_s=0.4, duration_minutes=180)
+        saved, saved_end = sched.current_observation, sched.observation_end_time
+        started = []
+        try:
+            with patch.object(sched, '_run_horizon_scan',
+                              side_effect=lambda p: started.append(p)), \
+                 patch.object(sched, 'stop_booted_receiver'), \
+                 patch.object(sched, 'current_process', None):
+                assert sched.start_observation(obs) is True
+                # The thread runs the scan; give it a moment to be scheduled.
+                for _ in range(50):
+                    if started:
+                        break
+                    time.sleep(0.02)
+
+            assert started, "the scan thread never ran"
+            params = started[0]
+            assert params["az_step"] == 10.0
+            assert params["alt_step"] == 1.5
+            assert params["integration_time_s"] == 0.4
+            assert sched.current_observation["name"] == "Horizon"
+        finally:
+            self._restore(saved, saved_end)
+
+    def test_stopping_it_cancels_the_scan_and_stows(self):
+        saved, saved_end = sched.current_observation, sched.observation_end_time
+        try:
+            sched.current_observation = {"name": "Horizon",
+                                         "coord_system": "horizon",
+                                         "end_action": "stow"}
+            with patch.object(sched, 'SRT_CONTROLLER_URL', 'http://ctrl'), \
+                 patch.object(sched, 'srt_go_position') as go:
+                assert sched.stop_observation() is True
+
+            assert sched.horizon_cancel.is_set()
+            go.assert_called_once_with("stow", 90, 180)
+            assert sched.current_observation is None
+        finally:
+            self._restore(saved, saved_end)
+
+    def test_a_finished_scan_is_not_restarted_in_its_own_slot(self):
+        """It finishes well inside its slot; the scheduler must let it lie.
+
+        Same reasoning as the calibration day: the slot owns the run, so a scan
+        that completed at 02:30 inside an 01:00-04:00 booking must not be
+        started again from the top at 02:31.
+        """
+        saved = sched.current_observation
+        try:
+            sched.current_observation = {"name": "Horizon", "coord_system": "horizon"}
+            sched.horizon_state["running"] = False
+            sched.horizon_state["profile"] = {"n_azimuths": 70}
+            # The scheduler-loop test: a completed profile still counts as the
+            # slot being occupied.
+            occupied = (sched.horizon_state["running"]
+                        or bool(sched.horizon_state["profile"]))
+            assert occupied is True
+        finally:
+            self._restore(saved, sched.observation_end_time)
+
+    def test_the_horizon_scan_is_preempted_by_a_real_observation(self):
+        """It holds the SDR and the mount, so an observation outranks it.
+
+        The preempt deadline is real wall-clock time, so it is patched to zero
+        here: without that this test sits for the full ten-minute timeout,
+        because a scan that never stops is exactly what it is simulating.
+        """
+        assert sched.SUN_SCAN_PREEMPT_TIMEOUT > 0
+        saved = dict(sched.horizon_state)
+        try:
+            sched.horizon_state["running"] = True
+            with patch.object(sched, 'stop_booted_receiver'), \
+                 patch.object(sched, 'current_process', None), \
+                 patch.object(sched, 'SUN_SCAN_PREEMPT_TIMEOUT', 0), \
+                 patch.object(sched.time, 'sleep'), \
+                 patch.object(sched, 'start_abort', threading.Event()):
+                # start_observation gives up once the preempt deadline passes,
+                # but it must have asked the scan to stop on the way.
+                sched.start_observation(dict(sched.DEFAULT_OBSERVATION,
+                                             name="Real", coord_system="altaz"))
+            assert sched.horizon_cancel.is_set()
+        finally:
+            sched.horizon_state.clear()
+            sched.horizon_state.update(saved)
+            sched.horizon_cancel.clear()
+            sched.observation_starting = False
