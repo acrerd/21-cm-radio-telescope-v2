@@ -8,6 +8,7 @@ Run with: python -m pytest test_scheduler.py -v
 import json
 import math
 import os
+import re
 import sys
 import threading
 import time
@@ -1919,3 +1920,18 @@ class TestHorizonDefaultsMatchTheStripScan:
         # and none of the cut scan's fields linger
         for gone in ("hzWindow", "hzClearanceFraction"):
             assert 'id="%s"' % gone not in page
+
+
+def test_form_fields_are_not_restorable_by_the_browser():
+    """Browsers restore nameless inputs by position, not by identity.
+
+    Adding six fields to the horizon form shifted every restored value into the
+    wrong box: the altitude ceiling showed 300 (the slew timeout), the settle
+    time 300 (the homing timeout) and the re-home interval 55.9 (the observer
+    latitude). On a page that commands a telescope, a stale value silently
+    occupying the wrong field is not a cosmetic problem.
+    """
+    page = sched.HTML_TEMPLATE
+    for tag in ("<input ", "<select ", "<textarea "):
+        for match in re.finditer(re.escape(tag) + r'[^>]*>', page):
+            assert 'autocomplete="off"' in match.group(0), match.group(0)[:90]

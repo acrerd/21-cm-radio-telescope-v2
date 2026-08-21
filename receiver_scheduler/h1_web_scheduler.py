@@ -1801,7 +1801,7 @@ HTML_TEMPLATE = '''
                 <button class="btn btn-primary" onclick="openAddModal()">+ Add Observation</button>
                 <button class="btn btn-secondary" onclick="saveSchedule()">Save Schedule</button>
                 <button class="btn btn-secondary" onclick="document.getElementById('loadFile').click()">Load</button>
-                <input type="file" id="loadFile" class="file-input" accept=".json" onchange="loadFile(event)">
+                <input autocomplete="off" type="file" id="loadFile" class="file-input" accept=".json" onchange="loadFile(event)">
                 <button class="btn btn-secondary" onclick="exportSchedule()">Export JSON</button>
                 <button class="btn btn-secondary" onclick="clearPast()">Clear Past</button>
             </div>
@@ -1820,36 +1820,36 @@ HTML_TEMPLATE = '''
                     <div class="section-title">Scan Parameters</div>
                     <div class="form-group">
                         <label>Grid Size (n x n)</label>
-                        <input type="number" id="ssGridN" min="3" max="15" step="2" value="5">
+                        <input autocomplete="off" type="number" id="ssGridN" min="3" max="15" step="2" value="5">
                     </div>
                     <div class="form-group">
                         <label>Grid Spacing (degrees)</label>
-                        <input type="number" id="ssSpacing" min="0.1" max="10" step="0.1" value="1.5">
+                        <input autocomplete="off" type="number" id="ssSpacing" min="0.1" max="10" step="0.1" value="1.5">
                     </div>
                     <div class="form-group">
                         <label>Beam FWHM Hint (degrees)</label>
-                        <input type="number" id="ssBeamFwhm" min="0.5" max="20" step="0.1" value="3.0">
+                        <input autocomplete="off" type="number" id="ssBeamFwhm" min="0.5" max="20" step="0.1" value="3.0">
                     </div>
                     <div class="section-title">Receiver Settings</div>
                     <div class="form-group">
                         <label>Integration Time per Point (s)</label>
-                        <input type="number" id="ssIntegration" min="0.1" max="60" step="0.1" value="3.0">
+                        <input autocomplete="off" type="number" id="ssIntegration" min="0.1" max="60" step="0.1" value="3.0">
                     </div>
                     <div class="form-group">
                         <label>Center Frequency (MHz)</label>
-                        <input type="number" id="ssCenterFreq" step="any" value="1420.405752">
+                        <input autocomplete="off" type="number" id="ssCenterFreq" step="any" value="1420.405752">
                     </div>
                     <div class="form-group">
                         <label>Bandwidth (MHz)</label>
-                        <input type="number" id="ssBandwidth" step="0.1" value="2.4">
+                        <input autocomplete="off" type="number" id="ssBandwidth" step="0.1" value="2.4">
                     </div>
                     <div class="form-group">
                         <label>Gain (dB)</label>
-                        <input type="number" id="ssGain" min="0" max="80" value="40">
+                        <input autocomplete="off" type="number" id="ssGain" min="0" max="80" value="40">
                     </div>
                     <div class="form-group">
                         <label>SDR Type</label>
-                        <select id="ssSdrType">
+                        <select autocomplete="off" id="ssSdrType">
                             <option value="b210">Ettus B210</option>
                             <option value="rtlsdr">RTL-SDR</option>
                             <option value="demo">Demo (Simulated)</option>
@@ -1890,7 +1890,7 @@ HTML_TEMPLATE = '''
                         </p>
                         <div class="form-group">
                             <label>Scan Interval (minutes)</label>
-                            <input type="number" id="cdInterval" min="5" max="120" value="30">
+                            <input autocomplete="off" type="number" id="cdInterval" min="5" max="120" value="30">
                         </div>
                         <div style="margin-top:15px; display:flex; gap:10px; flex-wrap:wrap;">
                             <button class="btn btn-success" id="cdStartBtn" onclick="startCalDay()">Start Calibration Day</button>
@@ -1931,35 +1931,35 @@ HTML_TEMPLATE = '''
                     </p>
                     <div class="form-group">
                         <label>Azimuth Step (degrees)</label>
-                        <input type="number" id="hzAzStep" min="1" max="30" step="1" value="5">
+                        <input autocomplete="off" type="number" id="hzAzStep" min="1" max="30" step="1" value="5">
                     </div>
                     <div class="form-group">
                         <label>Altitude Step (degrees)</label>
-                        <input type="number" id="hzAltStep" min="1" max="15" step="1" value="5">
+                        <input autocomplete="off" type="number" id="hzAltStep" min="1" max="15" step="1" value="5">
                     </div>
                     <div class="form-group">
                         <label>Altitude Start (degrees)</label>
-                        <input type="number" id="hzAltStart" min="1" max="30" step="1" value="5">
+                        <input autocomplete="off" type="number" id="hzAltStart" min="1" max="30" step="1" value="5">
                     </div>
                     <div class="form-group">
                         <label>Altitude Ceiling (degrees)</label>
-                        <input type="number" id="hzAltMax" min="10" max="85" step="5" value="60">
+                        <input autocomplete="off" type="number" id="hzAltMax" min="10" max="85" step="5" value="60">
                     </div>
                     <div class="form-group">
                         <label>Settle after Slew (s)</label>
-                        <input type="number" id="hzSettle" min="0" max="10" step="0.5" value="2">
+                        <input autocomplete="off" type="number" id="hzSettle" min="0" max="10" step="0.5" value="2">
                     </div>
                     <div class="form-group">
                         <label>Integration per Point (s)</label>
-                        <input type="number" id="hzIntegration" min="0.1" max="10" step="0.1" value="2">
+                        <input autocomplete="off" type="number" id="hzIntegration" min="0.1" max="10" step="0.1" value="2">
                     </div>
                     <div class="form-group">
                         <label>Re-home every N strips</label>
-                        <input type="number" id="hzHomeEvery" min="0" max="10" step="1" value="2">
+                        <input autocomplete="off" type="number" id="hzHomeEvery" min="0" max="10" step="1" value="2">
                     </div>
                     <div class="form-group">
                         <label>SDR</label>
-                        <select id="hzSdrType">
+                        <select autocomplete="off" id="hzSdrType">
                             <option value="b210">B210</option>
                             <option value="rtlsdr">RTL-SDR</option>
                             <option value="demo">Demo (no hardware)</option>
@@ -2001,7 +2001,7 @@ HTML_TEMPLATE = '''
                     <button class="btn btn-primary" id="camRefreshBtn" onclick="refreshCamera()">Refresh</button>
                     <label style="color:#888; font-size:12px;">
                         Auto-refresh
-                        <select id="camAutoRefresh" onchange="onCameraAutoChange()" style="margin-left:6px;">
+                        <select autocomplete="off" id="camAutoRefresh" onchange="onCameraAutoChange()" style="margin-left:6px;">
                             <option value="0" selected>Off</option>
                             <option value="1">Every 1 s</option>
                             <option value="5">Every 5 s</option>
@@ -2027,26 +2027,26 @@ HTML_TEMPLATE = '''
                 <div class="section-title">Appearance</div>
                 <div class="form-group">
                     <label>Banner Name</label>
-                    <input type="text" id="cfgBannerName" placeholder="H1 Receiver Scheduler">
+                    <input autocomplete="off" type="text" id="cfgBannerName" placeholder="H1 Receiver Scheduler">
                 </div>
                 <div class="form-group">
                     <label>Banner Subtitle</label>
-                    <input type="text" id="cfgBannerSubtitle" placeholder="Hydrogen Line (21cm) Observation Manager">
+                    <input autocomplete="off" type="text" id="cfgBannerSubtitle" placeholder="Hydrogen Line (21cm) Observation Manager">
                 </div>
 
                 <div class="section-title">SRT Telescope Controller</div>
                 <div class="form-group">
                     <label>Controller URL (leave empty to disable)</label>
-                    <input type="text" id="cfgControllerUrl" placeholder="http://192.168.50.120">
+                    <input autocomplete="off" type="text" id="cfgControllerUrl" placeholder="http://192.168.50.120">
                 </div>
                 <div class="form-grid">
                     <div class="form-group">
                         <label>Slew Timeout (seconds)</label>
-                        <input type="number" id="cfgSlewTimeout" min="10" max="600">
+                        <input autocomplete="off" type="number" id="cfgSlewTimeout" min="10" max="600">
                     </div>
                     <div class="form-group">
                         <label>Position Tolerance (degrees)</label>
-                        <input type="number" id="cfgPositionTolerance" step="0.1" min="0.1" max="5">
+                        <input autocomplete="off" type="number" id="cfgPositionTolerance" step="0.1" min="0.1" max="5">
                     </div>
                 </div>
 
@@ -2054,26 +2054,26 @@ HTML_TEMPLATE = '''
                 <div class="form-grid">
                     <div class="form-group">
                         <label>Latitude (degrees, +N)</label>
-                        <input type="number" id="cfgObsLat" step="0.001" min="-90" max="90">
+                        <input autocomplete="off" type="number" id="cfgObsLat" step="0.001" min="-90" max="90">
                     </div>
                     <div class="form-group">
                         <label>Longitude (degrees, +E)</label>
-                        <input type="number" id="cfgObsLon" step="0.001" min="-180" max="180">
+                        <input autocomplete="off" type="number" id="cfgObsLon" step="0.001" min="-180" max="180">
                     </div>
                     <div class="form-group">
                         <label>Elevation (metres)</label>
-                        <input type="number" id="cfgObsElev" step="1" min="0" max="9000">
+                        <input autocomplete="off" type="number" id="cfgObsElev" step="1" min="0" max="9000">
                     </div>
                     <div class="form-group">
                         <label>Min Elevation for passes (degrees)</label>
-                        <input type="number" id="cfgMinElev" step="1" min="0" max="90">
+                        <input autocomplete="off" type="number" id="cfgMinElev" step="1" min="0" max="90">
                     </div>
                 </div>
 
                 <div class="section-title">Obstructed Horizon</div>
                 <div class="form-group">
                     <label>Sectors (az_min-az_max:min_sun_alt, comma separated)</label>
-                    <input type="text" id="cfgObstructionSectors" placeholder="45-120:30">
+                    <input autocomplete="off" type="text" id="cfgObstructionSectors" placeholder="45-120:30">
                     <p style="color:#888; font-size:12px; margin-top:6px;">
                         While the Sun is inside one of these azimuth ranges and below
                         the stated altitude it is not scanned, and scans already on
@@ -2087,36 +2087,36 @@ HTML_TEMPLATE = '''
                 <div class="form-grid">
                     <div class="form-group">
                         <label>Video Device</label>
-                        <input type="text" id="cfgCameraDevice" placeholder="/dev/video0">
+                        <input autocomplete="off" type="text" id="cfgCameraDevice" placeholder="/dev/video0">
                     </div>
                     <div class="form-group">
                         <label>Capture Resolution</label>
-                        <input type="text" id="cfgCameraResolution" placeholder="640x480">
+                        <input autocomplete="off" type="text" id="cfgCameraResolution" placeholder="640x480">
                     </div>
                 </div>
 
                 <div class="section-title">Receiver</div>
                 <div class="form-group">
                     <label>Receiver Python Executable</label>
-                    <input type="text" id="cfgReceiverPythonPath" placeholder="/home/astro/radioconda/bin/python">
+                    <input autocomplete="off" type="text" id="cfgReceiverPythonPath" placeholder="/home/astro/radioconda/bin/python">
                 </div>
 
                 <div class="section-title">Data Output</div>
                 <div class="form-group">
                     <label>Output Folder</label>
-                    <input type="text" id="cfgDataFolder" placeholder="Path to store observation data files">
+                    <input autocomplete="off" type="text" id="cfgDataFolder" placeholder="Path to store observation data files">
                 </div>
 
                 <div class="section-title">Log</div>
                 <div class="form-group">
                     <label>Log Lines to Display</label>
-                    <input type="number" id="cfgLogLines" min="20" max="1000" step="10">
+                    <input autocomplete="off" type="number" id="cfgLogLines" min="20" max="1000" step="10">
                 </div>
 
                 <div class="section-title">Notifications</div>
                 <div class="form-group">
                     <label>Sound on Start/Stop</label>
-                    <select id="cfgSoundEnabled">
+                    <select autocomplete="off" id="cfgSoundEnabled">
                         <option value="true">Enabled</option>
                         <option value="false">Disabled</option>
                     </select>
@@ -2133,7 +2133,7 @@ HTML_TEMPLATE = '''
             <div class="log-controls">
                 <button class="btn btn-secondary" onclick="loadLog()">Refresh</button>
                 <label style="color:#888; font-size:12px;">
-                    <input type="checkbox" id="logAutoRefresh" onchange="toggleLogRefresh()" checked> Auto-refresh (5s)
+                    <input autocomplete="off" type="checkbox" id="logAutoRefresh" onchange="toggleLogRefresh()" checked> Auto-refresh (5s)
                 </label>
             </div>
             <div class="log-container" id="logContent">Loading log...</div>
@@ -2147,12 +2147,12 @@ HTML_TEMPLATE = '''
                 <button class="close-btn" onclick="closeModal()">&times;</button>
             </div>
             <form id="obsForm">
-                <input type="hidden" id="obsIndex" value="-1">
+                <input autocomplete="off" type="hidden" id="obsIndex" value="-1">
 
                 <div class="form-grid">
                     <div class="form-group wide">
                         <label>Observation Name</label>
-                        <input type="text" id="obsName" required placeholder="e.g., Galactic Center Survey">
+                        <input autocomplete="off" type="text" id="obsName" required placeholder="e.g., Galactic Center Survey">
                     </div>
                 </div>
 
@@ -2160,19 +2160,19 @@ HTML_TEMPLATE = '''
                 <div class="form-grid">
                     <div class="form-group">
                         <label>Start Date</label>
-                        <input type="date" id="obsStartDate" onchange="onCoordChange()">
+                        <input autocomplete="off" type="date" id="obsStartDate" onchange="onCoordChange()">
                     </div>
                     <div class="form-group">
                         <label>Start Time</label>
-                        <input type="time" id="obsStartTime" required onchange="updateEndTime()">
+                        <input autocomplete="off" type="time" id="obsStartTime" required onchange="updateEndTime()">
                     </div>
                     <div class="form-group">
                         <label>Duration (minutes)</label>
-                        <input type="number" id="obsDuration" min="1" max="1440" required onchange="updateEndTime()">
+                        <input autocomplete="off" type="number" id="obsDuration" min="1" max="1440" required onchange="updateEndTime()">
                     </div>
                     <div class="form-group">
                         <label>End Time</label>
-                        <input type="time" id="obsEndTime" disabled style="background:#2a2a4a; color:#aaa;">
+                        <input autocomplete="off" type="time" id="obsEndTime" disabled style="background:#2a2a4a; color:#aaa;">
                     </div>
                 </div>
                 <div id="clashWarning" style="display:none; color:#ff4757; background:#3a1a1a; padding:8px 12px; border-radius:5px; margin-top:5px; font-size:13px;"></div>
@@ -2182,7 +2182,7 @@ HTML_TEMPLATE = '''
                     <div class="form-grid">
                         <div class="form-group">
                             <label>Coordinate System</label>
-                            <select id="obsCoordSystem" onchange="updateCoordLabels()">
+                            <select autocomplete="off" id="obsCoordSystem" onchange="updateCoordLabels()">
                                 <option value="altaz">Alt/Az (Horizontal)</option>
                                 <option value="radec">RA/Dec (Equatorial J2000)</option>
                                 <option value="galactic">Galactic (l, b)</option>
@@ -2197,7 +2197,7 @@ HTML_TEMPLATE = '''
                     <div class="form-grid" id="objectSelector" style="margin-top:15px; display:none">
                         <div class="form-group">
                             <label>Object</label>
-                            <select id="obsObjectName">
+                            <select autocomplete="off" id="obsObjectName">
                                 <option value="sun">Sun</option>
                                 <option value="moon">Moon</option>
                             </select>
@@ -2207,26 +2207,26 @@ HTML_TEMPLATE = '''
                         <div style="display:flex; gap:10px; align-items:flex-end; margin-bottom:10px;">
                             <div class="form-group" style="flex:1; margin:0;">
                                 <label>Search CelesTrak by name or NORAD ID</label>
-                                <input type="text" id="tleSearch" placeholder="e.g. ISS, NOAA 19, 25544" style="width:100%;">
+                                <input autocomplete="off" type="text" id="tleSearch" placeholder="e.g. ISS, NOAA 19, 25544" style="width:100%;">
                             </div>
                             <button class="btn btn-primary" type="button" onclick="fetchTle()" style="white-space:nowrap;">Fetch TLE</button>
                         </div>
                         <div id="tleResults" style="display:none; margin-bottom:10px;">
                             <div class="form-group">
                                 <label>Select satellite</label>
-                                <select id="tleResultSelect" onchange="selectTleResult()" style="width:100%;"></select>
+                                <select autocomplete="off" id="tleResultSelect" onchange="selectTleResult()" style="width:100%;"></select>
                             </div>
                         </div>
                         <div class="form-group">
                             <label>TLE (paste, search above, or load from file)</label>
-                            <textarea id="obsTleText" rows="4" style="width:100%; padding:8px; border:1px solid #333; border-radius:5px; background:#0f0f23; color:#fff; font-family:monospace; font-size:12px; resize:vertical;" placeholder="ISS (ZARYA)
+                            <textarea autocomplete="off" id="obsTleText" rows="4" style="width:100%; padding:8px; border:1px solid #333; border-radius:5px; background:#0f0f23; color:#fff; font-family:monospace; font-size:12px; resize:vertical;" placeholder="ISS (ZARYA)
 1 25544U 98067A   ...
 2 25544  51.6400  ..."></textarea>
                         </div>
                         <div style="display:flex; gap:10px; margin-top:8px; align-items:center; flex-wrap:wrap;">
                             <button class="btn btn-primary" type="button" onclick="predictPass()">Compute Next Pass</button>
                             <label class="btn btn-secondary" style="margin:0; cursor:pointer;">
-                                Load TLE File <input type="file" accept=".tle,.txt" style="display:none" onchange="loadTleFile(event)">
+                                Load TLE File <input autocomplete="off" type="file" accept=".tle,.txt" style="display:none" onchange="loadTleFile(event)">
                             </label>
                             <span id="passInfo" style="color:#888; font-size:12px;"></span>
                         </div>
@@ -2241,15 +2241,15 @@ HTML_TEMPLATE = '''
                         <div class="form-grid">
                             <div class="form-group">
                                 <label>Grid Size (n x n)</label>
-                                <input type="number" id="obsCalGridN" min="3" max="15" step="2" value="5">
+                                <input autocomplete="off" type="number" id="obsCalGridN" min="3" max="15" step="2" value="5">
                             </div>
                             <div class="form-group">
                                 <label>Grid Spacing (degrees)</label>
-                                <input type="number" id="obsCalSpacing" min="0.1" max="10" step="0.1" value="1.5">
+                                <input autocomplete="off" type="number" id="obsCalSpacing" min="0.1" max="10" step="0.1" value="1.5">
                             </div>
                             <div class="form-group">
                                 <label>Scan Interval (minutes)</label>
-                                <input type="number" id="obsCalInterval" min="5" max="120" value="30">
+                                <input autocomplete="off" type="number" id="obsCalInterval" min="5" max="120" value="30">
                             </div>
                         </div>
                     </div>
@@ -2263,19 +2263,19 @@ HTML_TEMPLATE = '''
                         <div class="form-grid">
                             <div class="form-group">
                                 <label>Azimuth Step (degrees)</label>
-                                <input type="number" id="obsHorizonAzStep" min="1" max="30" step="1" value="5">
+                                <input autocomplete="off" type="number" id="obsHorizonAzStep" min="1" max="30" step="1" value="5">
                             </div>
                             <div class="form-group">
                                 <label>Altitude Step (degrees)</label>
-                                <input type="number" id="obsHorizonAltStep" min="1" max="15" step="1" value="5">
+                                <input autocomplete="off" type="number" id="obsHorizonAltStep" min="1" max="15" step="1" value="5">
                             </div>
                             <div class="form-group">
                                 <label>Azimuth Start (degrees)</label>
-                                <input type="number" id="obsHorizonAzStart" min="0" max="360" step="1" value="5">
+                                <input autocomplete="off" type="number" id="obsHorizonAzStart" min="0" max="360" step="1" value="5">
                             </div>
                             <div class="form-group">
                                 <label>Azimuth End (degrees)</label>
-                                <input type="number" id="obsHorizonAzEnd" min="0" max="360" step="1" value="350">
+                                <input autocomplete="off" type="number" id="obsHorizonAzEnd" min="0" max="360" step="1" value="350">
                             </div>
                         </div>
                     </div>
@@ -2289,18 +2289,18 @@ HTML_TEMPLATE = '''
                         <div class="form-grid">
                             <div class="form-group">
                                 <label>Source Frame</label>
-                                <select id="obsDriftFrame" onchange="updateCoordLabels()">
+                                <select autocomplete="off" id="obsDriftFrame" onchange="updateCoordLabels()">
                                     <option value="radec">RA/Dec (J2000)</option>
                                     <option value="galactic">Galactic (l, b)</option>
                                 </select>
                             </div>
                             <div class="form-group">
                                 <label>Beam-Crossing Time T (local)</label>
-                                <input type="time" id="obsDriftTime" onchange="updateDriftDerived()">
+                                <input autocomplete="off" type="time" id="obsDriftTime" onchange="updateDriftDerived()">
                             </div>
                             <div class="form-group">
                                 <label>Window &plusmn; (minutes)</label>
-                                <input type="number" id="obsDriftWindow" min="1" max="720" value="30" onchange="updateDriftDerived()">
+                                <input autocomplete="off" type="number" id="obsDriftWindow" min="1" max="720" value="30" onchange="updateDriftDerived()">
                             </div>
                         </div>
                         <div style="display:flex; gap:10px; margin-top:8px; align-items:center; flex-wrap:wrap;">
@@ -2312,22 +2312,22 @@ HTML_TEMPLATE = '''
                         <div class="form-group">
                             <label id="coord1Label">Altitude</label>
                             <div class="coord-row">
-                                <input type="number" id="coord1Deg" min="-90" max="360" value="45" onchange="onCoordChange()">
+                                <input autocomplete="off" type="number" id="coord1Deg" min="-90" max="360" value="45" onchange="onCoordChange()">
                                 <span id="coord1Unit1">deg</span>
-                                <input type="number" id="coord1Min" min="0" max="59" value="0" onchange="onCoordChange()">
+                                <input autocomplete="off" type="number" id="coord1Min" min="0" max="59" value="0" onchange="onCoordChange()">
                                 <span>min</span>
-                                <input type="number" id="coord1Sec" min="0" max="59.99" step="0.01" value="0" onchange="onCoordChange()">
+                                <input autocomplete="off" type="number" id="coord1Sec" min="0" max="59.99" step="0.01" value="0" onchange="onCoordChange()">
                                 <span>sec</span>
                             </div>
                         </div>
                         <div class="form-group">
                             <label id="coord2Label">Azimuth</label>
                             <div class="coord-row">
-                                <input type="number" id="coord2Deg" min="-90" max="360" value="180" onchange="onCoordChange()">
+                                <input autocomplete="off" type="number" id="coord2Deg" min="-90" max="360" value="180" onchange="onCoordChange()">
                                 <span>deg</span>
-                                <input type="number" id="coord2Min" min="0" max="59" value="0" onchange="onCoordChange()">
+                                <input autocomplete="off" type="number" id="coord2Min" min="0" max="59" value="0" onchange="onCoordChange()">
                                 <span>min</span>
-                                <input type="number" id="coord2Sec" min="0" max="59.99" step="0.01" value="0" onchange="onCoordChange()">
+                                <input autocomplete="off" type="number" id="coord2Sec" min="0" max="59.99" step="0.01" value="0" onchange="onCoordChange()">
                                 <span>sec</span>
                             </div>
                         </div>
@@ -2338,19 +2338,19 @@ HTML_TEMPLATE = '''
                 <div class="form-grid">
                     <div class="form-group">
                         <label>Center Frequency (MHz)</label>
-                        <input type="number" id="obsCenterFreq" step="any" required value="1420.405752">
+                        <input autocomplete="off" type="number" id="obsCenterFreq" step="any" required value="1420.405752">
                     </div>
                     <div class="form-group">
                         <label>Bandwidth (MHz)</label>
-                        <input type="number" id="obsBandwidth" step="0.1" required value="2.4">
+                        <input autocomplete="off" type="number" id="obsBandwidth" step="0.1" required value="2.4">
                     </div>
                     <div class="form-group">
                         <label>Gain (dB)</label>
-                        <input type="number" id="obsGain" min="0" max="80" required value="40">
+                        <input autocomplete="off" type="number" id="obsGain" min="0" max="80" required value="40">
                     </div>
                     <div class="form-group">
                         <label>Channels (FFT)</label>
-                        <select id="obsChannels">
+                        <select autocomplete="off" id="obsChannels">
                             <option value="1024">1024</option>
                             <option value="2048">2048</option>
                             <option value="4096" selected>4096</option>
@@ -2360,11 +2360,11 @@ HTML_TEMPLATE = '''
                     </div>
                     <div class="form-group">
                         <label>Integration Time (s)</label>
-                        <input type="number" id="obsIntegration" step="0.1" min="0.1" required value="3.0">
+                        <input autocomplete="off" type="number" id="obsIntegration" step="0.1" min="0.1" required value="3.0">
                     </div>
                     <div class="form-group">
                         <label>SDR Type</label>
-                        <select id="obsSdrType">
+                        <select autocomplete="off" id="obsSdrType">
                             <option value="b210">Ettus B210</option>
                             <option value="rtlsdr">RTL-SDR</option>
                             <option value="demo">Demo (Simulated)</option>
@@ -2372,14 +2372,14 @@ HTML_TEMPLATE = '''
                     </div>
                     <div class="form-group">
                         <label>Calibrator (Noise Source)</label>
-                        <select id="obsCalibrator">
+                        <select autocomplete="off" id="obsCalibrator">
                             <option value="off">Off</option>
                             <option value="on">On</option>
                         </select>
                     </div>
                     <div class="form-group">
                         <label>When Done</label>
-                        <select id="obsEndAction">
+                        <select autocomplete="off" id="obsEndAction">
                             <option value="none">Stay</option>
                             <option value="home">Go Home (Alt 0, Az 0)</option>
                             <option value="stow">Stow (Alt 90, Az 180)</option>
@@ -2391,7 +2391,7 @@ HTML_TEMPLATE = '''
                 <div class="form-grid">
                     <div class="form-group wide">
                         <label>Filename (leave empty for auto)</label>
-                        <input type="text" id="obsFilename" placeholder="auto-generated if empty">
+                        <input autocomplete="off" type="text" id="obsFilename" placeholder="auto-generated if empty">
                     </div>
                 </div>
 
@@ -2726,7 +2726,7 @@ HTML_TEMPLATE = '''
             }
             list.innerHTML = schedule.map((obs, i) => `
                 <div class="schedule-item ${obs.enabled ? '' : 'disabled'} ${currentObs?.name === obs.name ? 'current-obs' : ''}">
-                    <input type="checkbox" class="checkbox" ${obs.enabled ? 'checked' : ''} onchange="toggleEnabled(${i})">
+                    <input autocomplete="off" type="checkbox" class="checkbox" ${obs.enabled ? 'checked' : ''} onchange="toggleEnabled(${i})">
                     <div class="schedule-info">
                         <div class="field"><div class="field-label">Name</div><div class="field-value">${obs.name}</div></div>
                         <div class="field"><div class="field-label">Start</div><div class="field-value">${obs.start_date || 'Today'} ${obs.start_time}</div></div>
