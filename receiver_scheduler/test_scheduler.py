@@ -1743,7 +1743,7 @@ class TestScheduledHorizonScan:
         obs = dict(sched.DEFAULT_OBSERVATION,
                    name="Horizon", coord_system="horizon",
                    horizon_az_step=10.0, horizon_alt_step=1.5,
-                   integration_time_s=0.4, duration_minutes=180)
+                   horizon_integration_s=0.4, duration_minutes=180)
         saved, saved_end = sched.current_observation, sched.observation_end_time
         started = []
         try:
@@ -1859,3 +1859,63 @@ class TestHorizonBandwidth:
             sched.observation_end_time = saved_end
             sched.horizon_state["running"] = False
             sched.horizon_cancel.clear()
+
+
+class TestHorizonDefaultsMatchTheStripScan:
+    """The scan pattern and the numbers it is given must not drift apart.
+
+    When the cut scan was retired its 1 degree altitude step and 0.5 s
+    integration survived in the observation template, the scheduled-scan
+    starter and both forms. A scheduled horizon scan would have run the strip
+    pattern with the old numbers - eleven times more altitude steps than
+    intended, at a quarter of the integration - and nothing would have said so.
+    """
+
+    def test_the_observation_template_matches_the_module_defaults(self):
+        import horizon_scan as hs
+        template = sched.DEFAULT_OBSERVATION
+        assert template["horizon_az_step"] == hs.DEFAULT_STRIP_AZ_STEP
+        assert template["horizon_alt_step"] == hs.DEFAULT_STRIP_ALT_STEP
+        assert template["horizon_alt_start"] == hs.DEFAULT_STRIP_ALT_START
+        assert template["horizon_alt_max"] == hs.DEFAULT_STRIP_ALT_MAX
+        assert template["horizon_settle_s"] == hs.DEFAULT_SETTLE_S
+        assert template["horizon_integration_s"] == hs.DEFAULT_STRIP_INTEGRATION_S
+        # not the sun scan's, which shares the observation record
+        assert template["integration_time_s"] != template["horizon_integration_s"]
+
+    def test_a_scheduled_scan_is_started_with_the_strip_parameters(self):
+        import horizon_scan as hs
+        obs = dict(sched.DEFAULT_OBSERVATION, name="H", coord_system="horizon")
+        started = []
+        saved, saved_end = sched.current_observation, sched.observation_end_time
+        try:
+            with patch.object(sched, '_run_horizon_scan',
+                              side_effect=lambda p: started.append(p)), \
+                 patch.object(sched, 'stop_booted_receiver'), \
+                 patch.object(sched, 'current_process', None):
+                assert sched.start_observation(obs) is True
+                for _ in range(50):
+                    if started:
+                        break
+                    time.sleep(0.02)
+            params = started[0]
+            assert params["alt_step"] == hs.DEFAULT_STRIP_ALT_STEP
+            assert params["alt_start"] == hs.DEFAULT_STRIP_ALT_START
+            assert params["alt_max"] == hs.DEFAULT_STRIP_ALT_MAX
+            assert params["settle_s"] == hs.DEFAULT_SETTLE_S
+            assert params["integration_time_s"] == hs.DEFAULT_STRIP_INTEGRATION_S
+        finally:
+            sched.current_observation = saved
+            sched.observation_end_time = saved_end
+            sched.horizon_state["running"] = False
+            sched.horizon_cancel.clear()
+
+    def test_the_page_offers_the_strip_parameters(self):
+        """A field the scan needs but the form omits is a silent default."""
+        page = sched.HTML_TEMPLATE
+        for field in ("hzAzStep", "hzAltStep", "hzAltStart", "hzAltMax",
+                      "hzSettle", "hzIntegration", "hzHomeEvery"):
+            assert 'id="%s"' % field in page, field
+        # and none of the cut scan's fields linger
+        for gone in ("hzWindow", "hzClearanceFraction"):
+            assert 'id="%s"' % gone not in page

@@ -72,9 +72,7 @@ _HORIZON_PROFILE_FILE = os.path.join(_SCRIPT_DIR, "horizon_profile.json")
 # version-1 sun scans are residuals against a model that is no longer knowable
 # and cannot be refitted. If the clearance fraction changes, or the fit
 # improves, raw cuts can be reprocessed without another night on the dish.
-_HORIZON_RECORD_VERSION = 1
 
-DEFAULT_AZ_STEP = 5.0
 DEFAULT_BEAM_FWHM_DEG = 5.8       # as measured by the Sun scans
 
 

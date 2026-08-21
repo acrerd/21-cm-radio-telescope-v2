@@ -1089,7 +1089,15 @@ DEFAULT_OBSERVATION = {
     "horizon_az_start": 5.0,
     "horizon_az_end": 350.0,
     "horizon_az_step": 5.0,
-    "horizon_alt_step": 1.0,
+    "horizon_alt_step": 5.0,
+    "horizon_alt_start": 5.0,
+    "horizon_alt_max": 60.0,
+    "horizon_settle_s": 2.0,
+    # Its own field rather than sharing integration_time_s with the sun scan:
+    # a raster point wants seconds against a bright source, a horizon point
+    # wants a couple against a step of order the system temperature, and one
+    # field serving both means whichever was set last silently wins.
+    "horizon_integration_s": 2.0,
     "enabled": True,
 }
 
@@ -1497,8 +1505,11 @@ def _start_horizon_observation(obs: dict, duration_override: int = None) -> bool
         "az_start": float(obs.get("horizon_az_start", 5.0)),
         "az_end": float(obs.get("horizon_az_end", 350.0)),
         "az_step": float(obs.get("horizon_az_step", 5.0)),
-        "alt_step": float(obs.get("horizon_alt_step", 1.0)),
-        "integration_time_s": float(obs.get("integration_time_s", 0.5)),
+        "alt_step": float(obs.get("horizon_alt_step", 5.0)),
+        "alt_start": float(obs.get("horizon_alt_start", 5.0)),
+        "alt_max": float(obs.get("horizon_alt_max", 60.0)),
+        "settle_s": float(obs.get("horizon_settle_s", 2.0)),
+        "integration_time_s": float(obs.get("horizon_integration_s", 2.0)),
         "center_freq_mhz": float(obs.get("center_freq_mhz", 1420.405752)),
         "bandwidth_mhz": float(obs.get("bandwidth_mhz", 2.4)),
         "gain_db": float(obs.get("gain_db", 40)),
@@ -1924,11 +1935,27 @@ HTML_TEMPLATE = '''
                     </div>
                     <div class="form-group">
                         <label>Altitude Step (degrees)</label>
-                        <input type="number" id="hzAltStep" min="0.5" max="5" step="0.5" value="1">
+                        <input type="number" id="hzAltStep" min="1" max="15" step="1" value="5">
+                    </div>
+                    <div class="form-group">
+                        <label>Altitude Start (degrees)</label>
+                        <input type="number" id="hzAltStart" min="1" max="30" step="1" value="5">
+                    </div>
+                    <div class="form-group">
+                        <label>Altitude Ceiling (degrees)</label>
+                        <input type="number" id="hzAltMax" min="10" max="85" step="5" value="60">
+                    </div>
+                    <div class="form-group">
+                        <label>Settle after Slew (s)</label>
+                        <input type="number" id="hzSettle" min="0" max="10" step="0.5" value="2">
                     </div>
                     <div class="form-group">
                         <label>Integration per Point (s)</label>
-                        <input type="number" id="hzIntegration" min="0.05" max="10" step="0.05" value="0.5">
+                        <input type="number" id="hzIntegration" min="0.1" max="10" step="0.1" value="2">
+                    </div>
+                    <div class="form-group">
+                        <label>Re-home every N strips</label>
+                        <input type="number" id="hzHomeEvery" min="0" max="10" step="1" value="2">
                     </div>
                     <div class="form-group">
                         <label>SDR</label>
@@ -2240,7 +2267,7 @@ HTML_TEMPLATE = '''
                             </div>
                             <div class="form-group">
                                 <label>Altitude Step (degrees)</label>
-                                <input type="number" id="obsHorizonAltStep" min="0.5" max="5" step="0.5" value="1">
+                                <input type="number" id="obsHorizonAltStep" min="1" max="15" step="1" value="5">
                             </div>
                             <div class="form-group">
                                 <label>Azimuth Start (degrees)</label>
@@ -2784,7 +2811,7 @@ HTML_TEMPLATE = '''
             document.getElementById('obsCalSpacing').value = obs.cal_spacing_deg || 1.5;
             document.getElementById('obsCalInterval').value = obs.cal_interval_min || 30;
             document.getElementById('obsHorizonAzStep').value = obs.horizon_az_step || 5;
-            document.getElementById('obsHorizonAltStep').value = obs.horizon_alt_step || 1;
+            document.getElementById('obsHorizonAltStep').value = obs.horizon_alt_step || 5;
             document.getElementById('obsHorizonAzStart').value = obs.horizon_az_start ?? 5;
             document.getElementById('obsHorizonAzEnd').value = obs.horizon_az_end ?? 350;
             document.getElementById('obsDriftFrame').value = obs.drift_frame || DEFAULTS.drift_frame;
@@ -2867,7 +2894,7 @@ HTML_TEMPLATE = '''
                 cal_spacing_deg: parseFloat(document.getElementById('obsCalSpacing').value) || 1.5,
                 cal_interval_min: parseInt(document.getElementById('obsCalInterval').value) || 30,
                 horizon_az_step: parseFloat(document.getElementById('obsHorizonAzStep').value) || 5,
-                horizon_alt_step: parseFloat(document.getElementById('obsHorizonAltStep').value) || 1,
+                horizon_alt_step: parseFloat(document.getElementById('obsHorizonAltStep').value) || 5,
                 horizon_az_start: parseFloat(document.getElementById('obsHorizonAzStart').value) || 5,
                 horizon_az_end: parseFloat(document.getElementById('obsHorizonAzEnd').value) || 350,
                 drift_frame: document.getElementById('obsDriftFrame').value,
@@ -3239,8 +3266,12 @@ HTML_TEMPLATE = '''
         function startHorizon() {
             const params = {
                 az_step: parseFloat(document.getElementById('hzAzStep').value) || 5,
-                alt_step: parseFloat(document.getElementById('hzAltStep').value) || 1,
-                integration_time_s: parseFloat(document.getElementById('hzIntegration').value) || 0.5,
+                alt_step: parseFloat(document.getElementById('hzAltStep').value) || 5,
+                alt_start: parseFloat(document.getElementById('hzAltStart').value) || 5,
+                alt_max: parseFloat(document.getElementById('hzAltMax').value) || 60,
+                settle_s: parseFloat(document.getElementById('hzSettle').value),
+                integration_time_s: parseFloat(document.getElementById('hzIntegration').value) || 2,
+                home_every_strips: parseInt(document.getElementById('hzHomeEvery').value, 10),
                 sdr_type: document.getElementById('hzSdrType').value,
             };
             fetch('/api/horizon/start', {
