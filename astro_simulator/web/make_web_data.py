@@ -43,6 +43,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                 ".."))
 from hi4pi_compress import load_compact          # noqa: E402
 from continuum_compress import load_continuum    # noqa: E402
+from instrument import DISH_M, beam_fwhm_deg     # noqa: E402
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 DATA = os.path.join(HERE, "data")
@@ -148,8 +149,12 @@ def main():
         "c_light": 299792458.0,
         "site": {"name": "Glasgow", "lat": 55.87, "lon": -4.29,
                  "height": 50.0},
-        "defaults": {"bw_mhz": 2.0, "dish_m": 3.0, "eta": 0.7,
-                     "tsys": 200.0, "tint": 60.0, "npol": 1},
+        # fwhm is the measured beam, shipped so the browser never has to fall
+        # back on a formula for it; see instrument.py for why it is not
+        # 1.22 lambda/D.
+        "defaults": {"bw_mhz": 2.0, "dish_m": DISH_M, "eta": 0.7,
+                     "tsys": 200.0, "tint": 60.0, "npol": 1,
+                     "fwhm": round(beam_fwhm_deg(DISH_M), 3)},
         # No controller address: the web build cannot command the telescope
         # (see README - mixed content, no CORS, and the controller is on a
         # private link). astro_simulator.py --controller does that instead.

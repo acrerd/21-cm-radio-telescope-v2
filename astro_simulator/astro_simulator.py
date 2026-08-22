@@ -43,6 +43,7 @@ from astropy.wcs import WCS
 from continuum_compress import CONTINUUM_DEFAULT, load_continuum
 from hi4pi_compress import COMPACT_DEFAULT, load_compact
 from hi4pi_data import ensure_file
+from instrument import beam_fwhm_deg
 
 # the cursor moving outside the Mollweide ellipse makes matplotlib's
 # inverse projection hit arcsin(|x| > 1); harmless, so keep it quiet
@@ -200,7 +201,7 @@ class DishSimulator:
             self.cmap = load_continuum(continuum_path)
             print(f"Continuum sky: {continuum_path} (Stockert/"
                   f"Villa-Elisa 1420 MHz; strong sources analytic).")
-        natural = np.degrees(1.22 * (C_LIGHT / F_HI) / dish_m)
+        natural = beam_fwhm_deg(dish_m)
         if compact_path:
             self._load_compact(compact_path)
             if natural < self.min_fwhm and os.path.exists(self.full_path):

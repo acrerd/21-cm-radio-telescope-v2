@@ -7,6 +7,12 @@ import { D2R, sepDeg, galToEq, eqToGal } from "./coordinates.js";
 export const C_LIGHT = 299792458.0;
 export const F_HI = 1420405751.768;
 const K_B = 1.380649e-23;
+// Beam FWHM as a multiple of lambda/D, measured on the 3 m dish: see
+// ../../instrument.py, which is the source of meta.defaults.fwhm and carries
+// the reasoning. Emphatically not 1.22, the Airy first-null radius of a
+// uniformly illuminated aperture, which this used to be. Only reached if a
+// meta.json predating that fix is served.
+const BEAM_FWHM_COEFF = 1.28;
 
 // ---- bundle parsing -------------------------------------------------
 const DTYPES = { int16: Int16Array, uint16: Uint16Array,
@@ -135,7 +141,7 @@ export class SkyData {
     this.sources = [];                    // set via setSources()
     this.rng = makeRng((Math.random() * 2 ** 32) >>> 0);
     this.setBeam(meta.defaults.fwhm ??
-        (1.22 * (C_LIGHT / F_HI) / meta.defaults.dish_m) / D2R);
+        (BEAM_FWHM_COEFF * (C_LIGHT / F_HI) / meta.defaults.dish_m) / D2R);
     this.setBand(meta.defaults.bw_mhz * 1e6, F_HI);
   }
 
