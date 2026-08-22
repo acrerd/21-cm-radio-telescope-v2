@@ -1265,6 +1265,12 @@ _AZSCALE_MIN_AZ_COVERAGE_DEG = 90.0
 # range and is then indistinguishable from the azimuth index IA. A calibration
 # day spans about 31 deg of altitude, so this only excludes badly truncated days.
 _CA_MIN_ALT_COVERAGE_DEG = 20.0
+# Outlier rejection against the fitted model. 3 sigma on a robust scale: with
+# ~36 scans that is well under one false cut per calibration day.
+_OUTLIER_SIGMA = 3.0
+_OUTLIER_MAX_ITERATIONS = 5
+_OUTLIER_MAX_FRACTION = 0.2
+_OUTLIER_MIN_SCANS = 8
 
 _POINTING_DATA_FILE = os.path.join(_SCRIPT_DIR, "pointing_data.json")
 _POINTING_MODEL_FILE = os.path.join(_SCRIPT_DIR, "pointing_model.json")
@@ -1605,6 +1611,21 @@ def fit_pointing_model(data: list | None = None,
     az_unc = np.array([
         scan_uncertainty(d, "az_error_uncertainty_deg") for d in good
     ])
+    # The centroid uncertainties alone, without the encoder-grid term: the floor
+    # under the outlier threshold is how well a scan located the Sun, not how
+    # coarsely the mount reports where it was.
+    def centroid_unc(key: str) -> np.ndarray:
+        values = []
+        for entry in good:
+            try:
+                value = float(entry.get(key, 0.03))
+            except (TypeError, ValueError):
+                value = 0.03
+            values.append(value if math.isfinite(value) and value > 0 else 0.03)
+        return np.array(values)
+
+    alt_centroid_unc = centroid_unc("alt_error_uncertainty_deg")
+    az_centroid_unc = centroid_unc("az_error_uncertainty_deg")
     uncertainties = np.concatenate([alt_unc, az_unc])
     if not np.all(np.isfinite(uncertainties)):
         uncertainties = np.ones(2 * n)
@@ -1629,22 +1650,110 @@ def fit_pointing_model(data: list | None = None,
 
     # Weighted least-squares fit: higher-quality individual Gaussian fits carry
     # more information without allowing tiny uncertainties to become infinite.
-    result = np.linalg.lstsq(A_weighted, b_weighted, rcond=None)
-    x = result[0]  # [ΔAlt₀, ΔAz₀, AN, AE]
+    #
+    # Iterated with outlier rejection. A scan that fitted a clean Gaussian can
+    # still be far from the model - on 2026-08-22 three scans sat ~0.5 deg off
+    # in azimuth with altitude clean to 0.01 deg, each returning to the trend on
+    # the very next scan. Nothing upstream can catch those: the per-scan quality
+    # checks look at the raster alone, and a whole-raster displacement leaves a
+    # normal FWHM and a normal R squared. Only the model can see them.
+    #
+    # The scale is robust (MAD, not RMS) because the outliers are in the sample
+    # whose spread sets the threshold: with three 0.5 deg scans in 36, the RMS
+    # is inflated enough that a 3-sigma cut on it clears them all. MAD is
+    # unmoved by a minority of large values, so they are measured against the
+    # scatter of the scans that agree.
+    #
+    # Cut per axis, not on the combined distance: these outliers are azimuth-only
+    # and a combined statistic dilutes them against a clean altitude residual.
+    #
+    # Deliberately bounded. Rejection is a last resort against a bad scan, not a
+    # way to make a bad *model* look good, and an under-parameterised model
+    # produces coherent residuals that a sigma cut will happily eat from the ends
+    # of the arc - where the geometry is most constraining. So it stops at
+    # _OUTLIER_MAX_FRACTION and reports what it removed rather than removing
+    # quietly; a fit that wants to cut that many is telling you about the model.
+    keep = np.ones(n, dtype=bool)
+
+    def robust_sigma(values: np.ndarray) -> float:
+        """MAD-based sigma, falling back to the standard deviation."""
+        if values.size == 0:
+            return 0.0
+        mad = float(np.median(np.abs(values - np.median(values))))
+        sigma = 1.4826 * mad
+        if sigma <= 0.0:                    # identical residuals, or too few
+            sigma = float(np.std(values))
+        return sigma
+
+    # The threshold is set once, from the fit to every scan, and held fixed.
+    # Recomputing it each pass ratchets: every cut shrinks the MAD, which lowers
+    # the threshold, which cuts more. Left to iterate on this data it took 5
+    # scans instead of 3, moved CA by a factor of two, and drove the azimuth RMS
+    # to 0.016 deg - below the per-scan measurement error, i.e. fitting a set
+    # selected for agreeing with the model.
+    #
+    # Floored at the median stated centroid uncertainty for the same reason in
+    # the other direction: a scan sitting inside its own error bar is not an
+    # outlier however tight the others happen to be.
+    x = np.linalg.lstsq(A_weighted, b_weighted, rcond=None)[0]
+    predicted = A @ x
+    sigma_alt = max(robust_sigma(d_alt - predicted[:n]),
+                    float(np.median(alt_centroid_unc)))
+    sigma_az = max(robust_sigma(d_az - predicted[n:]),
+                   float(np.median(az_centroid_unc)))
+
+    max_cut = int(math.floor(n * _OUTLIER_MAX_FRACTION))
+    for _ in range(_OUTLIER_MAX_ITERATIONS):
+        rows = np.concatenate([keep, keep])
+        x = np.linalg.lstsq(A_weighted[rows], b_weighted[rows], rcond=None)[0]
+        predicted = A @ x
+        res_alt = d_alt - predicted[:n]
+        res_az = d_az - predicted[n:]
+        if sigma_alt <= 0.0 or sigma_az <= 0.0:
+            break
+        flagged = keep & ((np.abs(res_alt) > _OUTLIER_SIGMA * sigma_alt) |
+                          (np.abs(res_az) > _OUTLIER_SIGMA * sigma_az))
+        if not flagged.any():
+            break
+        if (n - keep.sum()) + int(flagged.sum()) > max_cut or \
+                keep.sum() - int(flagged.sum()) < _OUTLIER_MIN_SCANS:
+            log.warning("Outlier rejection stopped at %d of %d scans: cutting the "
+                        "%d further scan(s) flagged would exceed the %.0f%% cap. "
+                        "Coherent residuals are a model problem, not bad scans.",
+                        n - keep.sum(), n, int(flagged.sum()),
+                        100 * _OUTLIER_MAX_FRACTION)
+            break
+        keep &= ~flagged
+
+    outlier_mask = ~keep
+    n_outliers = int(outlier_mask.sum())
+    if n_outliers:
+        log.info("Rejected %d scan(s) more than %.1f sigma from the model "
+                 "(robust scatter alt %.3f deg, az %.3f deg)",
+                 n_outliers, _OUTLIER_SIGMA,
+                 robust_sigma(res_alt[keep]), robust_sigma(res_az[keep]))
+        for i in np.flatnonzero(outlier_mask):
+            log.info("  cut: %s  alt=%.2f az=%.2f  residual alt %+0.3f az %+0.3f",
+                     good[i].get("timestamp", "?"), alt_sun[i], az_sun[i],
+                     res_alt[i], res_az[i])
+
+    # From here on the fit is the kept scans only; the cut ones are carried
+    # through for the plot so a reader sees what was removed and can judge it.
+    kept_rows = np.concatenate([keep, keep])
+    A_weighted = A_weighted[kept_rows]
+    b_weighted = b_weighted[kept_rows]
+    n_fit = int(keep.sum())
 
     alt_offset = float(x[0])
     az_offset = float(x[1])
     tilt_north = float(x[2])  # AN ≈ δlat
     tilt_east = float(x[3])   # AE ≈ δlon·cos(lat)
 
-    # Residuals
-    predicted = A @ x
-    res_alt = d_alt - predicted[:n]
-    res_az = d_az - predicted[n:]
-    rms_alt = float(np.sqrt(np.mean(res_alt ** 2)))
-    rms_az = float(np.sqrt(np.mean(res_az ** 2)))
-    weighted_residual = (b - predicted) / uncertainties
-    dof = max(2 * n - A.shape[1], 1)
+    # Residuals, over the fitted scans
+    rms_alt = float(np.sqrt(np.mean(res_alt[keep] ** 2)))
+    rms_az = float(np.sqrt(np.mean(res_az[keep] ** 2)))
+    weighted_residual = ((b - predicted) / uncertainties)[kept_rows]
+    dof = max(2 * n_fit - A.shape[1], 1)
     reduced_chi_squared = float(np.sum(weighted_residual ** 2) / dof)
     # Floor the chi-squared scale at 1: mount-quantisation error is partly
     # systematic, so mutually consistent scans give chi2_red << 1, and
@@ -1675,7 +1784,8 @@ def fit_pointing_model(data: list | None = None,
         "tilt_east_deg": tilt_east,
         "rms_alt_deg": rms_alt,
         "rms_az_deg": rms_az,
-        "n_scans": n,
+        # The scans the model was actually fitted to, outliers already removed.
+        "n_scans": n_fit,
         "n_rejected": rejected,
         "n_superseded": superseded,
         "n_obstructed": obstructed,
@@ -1711,12 +1821,24 @@ def fit_pointing_model(data: list | None = None,
                     float(parameter_errors[extra_index["CA"]])),
             } if fit_ca else None
         ),
-        "residuals_alt": res_alt.tolist(),
-        "residuals_az": res_az.tolist(),
-        "scan_azimuths": az_sun.tolist(),
-        "scan_altitudes": alt_sun.tolist(),
-        "measured_alt_errors": d_alt.tolist(),
-        "measured_az_errors": d_az.tolist(),
+        # The fitted scans. The rejected ones are alongside rather than mixed in,
+        # so a caller cannot plot them as though they had informed the model.
+        "n_outliers": n_outliers,
+        "outlier_sigma": _OUTLIER_SIGMA,
+        "outlier_azimuths": az_sun[outlier_mask].tolist(),
+        "outlier_altitudes": alt_sun[outlier_mask].tolist(),
+        "outlier_alt_errors": d_alt[outlier_mask].tolist(),
+        "outlier_az_errors": d_az[outlier_mask].tolist(),
+        "outlier_residuals_alt": res_alt[outlier_mask].tolist(),
+        "outlier_residuals_az": res_az[outlier_mask].tolist(),
+        "outlier_timestamps": [good[i].get("timestamp")
+                               for i in np.flatnonzero(outlier_mask)],
+        "residuals_alt": res_alt[keep].tolist(),
+        "residuals_az": res_az[keep].tolist(),
+        "scan_azimuths": az_sun[keep].tolist(),
+        "scan_altitudes": alt_sun[keep].tolist(),
+        "measured_alt_errors": d_alt[keep].tolist(),
+        "measured_az_errors": d_az[keep].tolist(),
         "success": True,
     }
 
@@ -1855,6 +1977,20 @@ def generate_calibration_plot(model: dict, output_path: str = "calibration_day.p
     res_alt = np.array(model["residuals_alt"])
     res_az = np.array(model["residuals_az"])
 
+    # Scans the fit rejected. Drawn, because a cut you cannot see is a cut you
+    # cannot argue with: five points removed silently look like five scans that
+    # were never taken, and the shape of what was removed is the evidence for
+    # whether it was a bad scan or a bad model. .get keeps older model dicts,
+    # written before rejection existed, plotting unchanged.
+    out_az = np.array(model.get("outlier_azimuths", []))
+    out_d_alt = np.array(model.get("outlier_alt_errors", []))
+    out_d_az = np.array(model.get("outlier_az_errors", []))
+    out_res_alt = np.array(model.get("outlier_residuals_alt", []))
+    out_res_az = np.array(model.get("outlier_residuals_az", []))
+    n_out = int(model.get("n_outliers", 0))
+    cut_style = dict(marker="x", linestyle="none", color="#ff4444",
+                     markersize=9, markeredgewidth=2)
+
     # Compute model predictions
     d_alt_model = d_alt_meas - res_alt
     d_az_model = d_az_meas - res_az
@@ -1873,6 +2009,8 @@ def generate_calibration_plot(model: dict, output_path: str = "calibration_day.p
     pred_fine = A_fine @ x
     ax.plot(az_fine, pred_fine[:len(az_fine)], "-", color="#ff6b6b",
             label="Model", linewidth=2)
+    if n_out:
+        ax.plot(out_az, out_d_alt, label="Rejected", **cut_style)
     ax.set_xlabel("Sun azimuth (°)")
     ax.set_ylabel("Altitude error (°)")
     ax.set_title("Altitude pointing error")
@@ -1885,6 +2023,8 @@ def generate_calibration_plot(model: dict, output_path: str = "calibration_day.p
     # For azimuth model curve, need varying altitude too — use scatter style
     ax.plot(az, d_az_model, "s", color="#ff6b6b", label="Model", markersize=5,
             markerfacecolor="none", markeredgewidth=1.5)
+    if n_out:
+        ax.plot(out_az, out_d_az, label="Rejected", **cut_style)
     ax.set_xlabel("Sun azimuth (°)")
     ax.set_ylabel("Azimuth error (°)")
     ax.set_title("Azimuth pointing error")
@@ -1895,6 +2035,10 @@ def generate_calibration_plot(model: dict, output_path: str = "calibration_day.p
     ax = axes[1, 0]
     ax.plot(az, res_alt, "o", color="#00ff88", label="Alt residual", markersize=5)
     ax.plot(az, res_az, "s", color="#ffaa00", label="Az residual", markersize=5)
+    if n_out:
+        # Both axes of a rejected scan, so the reader can see which one failed.
+        ax.plot(out_az, out_res_alt, label="Rejected", **cut_style)
+        ax.plot(out_az, out_res_az, **cut_style)
     ax.axhline(0, color="#666", linewidth=0.5)
     ax.set_xlabel("Sun azimuth (°)")
     ax.set_ylabel("Residual (°)")
@@ -1915,6 +2059,9 @@ def generate_calibration_plot(model: dict, output_path: str = "calibration_day.p
     # like a day that failed, unless it says why they are not there.
     if model.get("n_obstructed"):
         lines.append(f"Behind obstruction: {model['n_obstructed']} (not fitted)")
+    if n_out:
+        lines.append(f"Rejected outliers: {n_out} "
+                     f"(>{model.get('outlier_sigma', 3.0):.0f}σ)")
     lines += [
         "",
         f"Alt zero offset:  {model['alt_offset_deg']:+.3f}°",
