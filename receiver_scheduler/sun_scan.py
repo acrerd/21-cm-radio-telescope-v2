@@ -45,6 +45,7 @@ except ImportError:
 try:
     import matplotlib
     matplotlib.use("Agg")
+    import matplotlib.patheffects as pe
     import matplotlib.pyplot as plt
     from matplotlib.colors import Normalize
     MATPLOTLIB_AVAILABLE = True
@@ -787,9 +788,24 @@ def generate_image(alt_offsets_grid: np.ndarray, az_offsets_grid: np.ndarray,
     fit_az_sky = fit_result.get("az_error_sky_deg", fit_result["az_error_deg"])
     peak_alt = fit_result["alt_error_deg"]
     peak_az = fit_az_sky
+    # Name the origin. It is the Sun's true position, and saying so is what
+    # makes the picture self-contained: without it the reader has a mark, a
+    # crosshair and a number in the title, and nothing stating that the number
+    # is the distance between the two.
+    ax.annotate("Sun", xy=(0.0, 0.0), xytext=(-5, -6),
+                textcoords="offset points", ha="right", va="top",
+                fontsize=8, color="white", zorder=4,
+                path_effects=[pe.withStroke(linewidth=2.5, foreground="black")])
     if fit_result["success"]:
-        ax.plot(peak_az, peak_alt,
-                "cx", markersize=12, markeredgewidth=2, label="Fitted peak")
+        # Draw the displacement rather than leaving it to be inferred from two
+        # marks several degrees apart on an axis the eye has to read off.
+        ax.annotate("", xy=(peak_az, peak_alt), xytext=(0.0, 0.0),
+                    arrowprops=dict(arrowstyle="-|>", color="cyan", lw=1.4,
+                                    shrinkA=0, shrinkB=0), zorder=3)
+        ax.plot(peak_az, peak_alt, "cx", markersize=12, markeredgewidth=2,
+                zorder=4,
+                label=(f"Beam centre: {peak_alt:+.2f}° alt, "
+                       f"{peak_az:+.2f}° xel from the Sun"))
         # Only artist with a label, so a failed fit leaves nothing to legend.
         ax.legend(loc="upper right", fontsize=8)
 
@@ -832,8 +848,12 @@ def generate_image(alt_offsets_grid: np.ndarray, az_offsets_grid: np.ndarray,
     title_parts = [f"Sun Scan — {stamp.strftime('%Y-%m-%d %H:%M UTC')}"]
     if sun_alt is not None and sun_az is not None:
         title_parts.append(f"Sun at Alt={sun_alt:.1f}° Az={sun_az:.1f}°")
+    # Say which way round the error is: it is where the mount had to be driven
+    # to put the Sun in the beam, minus where the Sun truly was. The sign is
+    # not guessable from the number, and getting it backwards inverts the
+    # correction.
     title_parts.append(
-        f"Pointing error: dAlt={fit_result['alt_error_deg']:+.2f}°  "
+        f"Pointing error (drive − true): dAlt={fit_result['alt_error_deg']:+.2f}°  "
         f"dAz={fit_result['az_error_deg']:+.2f}°  "
         f"(FWHM={fit_result['beam_fwhm_deg']:.1f}°)"
     )
