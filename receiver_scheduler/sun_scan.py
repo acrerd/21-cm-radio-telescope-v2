@@ -1261,6 +1261,10 @@ _ENCODER_QUANTISATION_SIGMA_DEG = _ENCODER_PULSE_DEG / math.sqrt(12.0)
 # The azimuth scale error trades against the constant azimuth offset IA unless
 # the scans span a decent arc, so it is only fitted when they do.
 _AZSCALE_MIN_AZ_COVERAGE_DEG = 90.0
+# CA enters as sec(alt), which flattens to a constant over a narrow altitude
+# range and is then indistinguishable from the azimuth index IA. A calibration
+# day spans about 31 deg of altitude, so this only excludes badly truncated days.
+_CA_MIN_ALT_COVERAGE_DEG = 20.0
 
 _POINTING_DATA_FILE = os.path.join(_SCRIPT_DIR, "pointing_data.json")
 _POINTING_MODEL_FILE = os.path.join(_SCRIPT_DIR, "pointing_model.json")
@@ -1523,11 +1527,49 @@ def fit_pointing_model(data: list | None = None,
     # a scale error from something drifting with the clock. What settles it is
     # that the scaling is a property of the drive, testable mechanically
     # against the encoder, and reproducible across days at different seasons.
+    #
+    # Collimation (CA), the beam not being perpendicular to the elevation axis,
+    # enters azimuth as CA/cos(alt). It was added on 2026-08-22 because the
+    # four-term model left a coherent azimuth residual of +-0.10 deg that
+    # repeated on two separate calibration days against a scan-to-scan scatter
+    # of 0.036 deg: an F-test over 33 scans gives F=36.5 at p=1e-7, so a term
+    # is unambiguously missing, with no assumption about the error scale.
+    #
+    # What the fit cannot do is choose it. Over one solar arc sec(alt),
+    # tan(alt) (NPAE) and cos(az) (azimuth encoder eccentricity) are near
+    # parallel, and they score F=36.5, 34.5 and 34.3 - statistically
+    # indistinguishable. CA is adopted on hardware grounds: eccentricity needs
+    # a rotary encoder decentred on its axis and this mount counts reed-switch
+    # pulses, and the fitted -0.74 deg corresponds to about 19 mm of feed
+    # lateral offset at f/D 0.4, which is what a hand-mounted feed gives.
+    # If a future fit distinguishes them, the controller already applies NPAE.
+    #
+    # Gated on altitude spread, not azimuth: sec(alt) tends to a constant as
+    # the altitude range shrinks, and is then degenerate with IA.
+    #
+    # Over both days it flattens the azimuth residual from +-0.10 deg to
+    # +-0.018 and takes the RMS from 0.098 to 0.073 deg. Two costs come with
+    # it: the condition number roughly doubles, 1732 to 4091, and IA moves by
+    # far more than its own sigma because sec(alt) is nearly constant over one
+    # day's altitude range and trades against the azimuth index. Their sum is
+    # well determined where the Sun goes; each alone is much less so, which
+    # matters when pointing outside the calibrated arc.
+    alt_coverage = float(np.max(alt_sun) - np.min(alt_sun))
+    extra_terms = []       # appended after the four base parameters, in order
     fit_azscale = az_coverage >= _AZSCALE_MIN_AZ_COVERAGE_DEG
     if fit_azscale:
         azscale_column = np.zeros(2 * n)
         azscale_column[n:] = np.mod(az_sun, 360.0)
-        A = np.column_stack([A, azscale_column])
+        extra_terms.append(("AZSCALE", azscale_column))
+    fit_ca = alt_coverage >= _CA_MIN_ALT_COVERAGE_DEG
+    if fit_ca:
+        ca_column = np.zeros(2 * n)
+        ca_column[n:] = 1.0 / np.cos(np.radians(alt_sun))
+        extra_terms.append(("CA", ca_column))
+    if extra_terms:
+        A = np.column_stack([A] + [column for _, column in extra_terms])
+    # Index by name: both terms are conditional, so positions are not fixed.
+    extra_index = {name: 4 + i for i, (name, _) in enumerate(extra_terms)}
 
 
     def scan_uncertainty(entry: dict, key: str) -> float:
@@ -1649,14 +1691,25 @@ def fit_pointing_model(data: list | None = None,
         "parameter_significance": {k: float(v) for k, v in significances.items()},
         "min_tilt_significance": float(min(significances["tilt_north"],
                                            significances["tilt_east"])),
+        "alt_coverage_deg": alt_coverage,
         "az_scale": (
             {
-                "deg_per_deg": float(x[4]),
-                "sigma": float(parameter_errors[4]),
-                "significance": significance(float(x[4]),
-                                             float(parameter_errors[4])),
-                "deg_over_full_range": float(x[4]) * 355.0,
+                "deg_per_deg": float(x[extra_index["AZSCALE"]]),
+                "sigma": float(parameter_errors[extra_index["AZSCALE"]]),
+                "significance": significance(
+                    float(x[extra_index["AZSCALE"]]),
+                    float(parameter_errors[extra_index["AZSCALE"]])),
+                "deg_over_full_range": float(x[extra_index["AZSCALE"]]) * 355.0,
             } if fit_azscale else None
+        ),
+        "collimation": (
+            {
+                "deg": float(x[extra_index["CA"]]),
+                "sigma": float(parameter_errors[extra_index["CA"]]),
+                "significance": significance(
+                    float(x[extra_index["CA"]]),
+                    float(parameter_errors[extra_index["CA"]])),
+            } if fit_ca else None
         ),
         "residuals_alt": res_alt.tolist(),
         "residuals_az": res_az.tolist(),
@@ -1667,23 +1720,25 @@ def fit_pointing_model(data: list | None = None,
         "success": True,
     }
 
-    # The terms as the controller names them. Same four numbers as above, under
-    # the names used by PointingModel in pointing.h, so the wire format and the
-    # fit cannot drift apart. CA, NPAE and TF are not fitted from Sun-only data
-    # and are simply absent; the controller defaults every unlisted term to zero.
+    # The terms as the controller names them, under the names used by
+    # PointingModel in pointing.h, so the wire format and the fit cannot drift
+    # apart. NPAE and TF are not fitted and are simply absent; the controller
+    # defaults every unlisted term to zero.
     model["terms"] = {
         "IE": alt_offset,
         "IA": az_offset,
         "AN": tilt_north,
         "AE": tilt_east,
     }
-    # AZSCALE goes with them: it is a property of the mount, not of this
-    # session, so the controller applies it like any other term. Omitted rather
-    # than sent as zero when the scans could not constrain it, because the
+    # AZSCALE and CA go with them: both are properties of the mount, not of this
+    # session, so the controller applies them like any other term. Omitted rather
+    # than sent as zero when the scans could not constrain them, because the
     # controller defaults an unlisted term to zero and a fitted zero would be a
     # claim this data cannot make.
     if fit_azscale:
-        model["terms"]["AZSCALE"] = float(x[4])
+        model["terms"]["AZSCALE"] = float(x[extra_index["AZSCALE"]])
+    if fit_ca:
+        model["terms"]["CA"] = float(x[extra_index["CA"]])
     if true_lat is not None:
         model["site_lat"] = float(true_lat)
     if true_lon is not None:
