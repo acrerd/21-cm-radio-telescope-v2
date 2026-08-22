@@ -758,15 +758,25 @@ def generate_image(alt_offsets_grid: np.ndarray, az_offsets_grid: np.ndarray,
 
     fig, axes = plt.subplots(1, 2, figsize=(14, 6))
 
+    # Scale both panels to the brightest measured point. The raw numbers are
+    # an uncalibrated linear power in the SDR's own units, so their absolute
+    # value says nothing; what is readable is the contrast between the Sun and
+    # the sky, and that is what the colour bar should show. The model panel is
+    # divided by the same peak, or the two would be on different scales.
+    peak = float(np.nanmax(power_grid)) if np.any(np.isfinite(power_grid)) else 0.0
+    if not (peak > 0.0):
+        peak = 1.0
+    norm_grid = power_grid / peak
+
     # --- Left panel: measured data ---
     ax = axes[0]
-    im = ax.pcolormesh(az_offsets_grid, alt_offsets_grid, power_grid,
+    im = ax.pcolormesh(az_offsets_grid, alt_offsets_grid, norm_grid,
                        shading="auto", cmap="inferno")
     ax.set_xlabel("Azimuth offset (°, cross-elevation)")
     ax.set_ylabel("Altitude offset (°)")
     ax.set_title("Measured broadband power")
     ax.set_aspect("equal")
-    fig.colorbar(im, ax=ax, label="Power (linear)")
+    fig.colorbar(im, ax=ax, label="Power (normalised to peak)")
     # The origin is the Sun's true position by construction, so it needs a
     # reference rather than a marker: the whole plot is the displacement of the
     # beam away from it, and the eye cannot find (0, 0) in a 2-D field from the
@@ -794,13 +804,13 @@ def generate_image(alt_offsets_grid: np.ndarray, az_offsets_grid: np.ndarray,
                          peak_alt,
                          peak_az,
                          fit_result["sigma_deg"],
-                         fit_result["offset"]).reshape(n_fine, n_fine)
+                         fit_result["offset"]).reshape(n_fine, n_fine) / peak
 
     im2 = ax2.pcolormesh(AZ_F, ALT_F, model, shading="auto", cmap="inferno",
                          # nan-aware: a single NaN sample would otherwise make
                          # both limits NaN and silently ruin the whole image.
-                         norm=Normalize(vmin=np.nanmin(power_grid),
-                                        vmax=np.nanmax(power_grid)))
+                         norm=Normalize(vmin=np.nanmin(norm_grid),
+                                        vmax=np.nanmax(norm_grid)))
     ax2.set_xlabel("Azimuth offset (°, cross-elevation)")
     ax2.set_ylabel("Altitude offset (°)")
     ax2.set_title("Gaussian fit")
@@ -810,7 +820,7 @@ def generate_image(alt_offsets_grid: np.ndarray, az_offsets_grid: np.ndarray,
     # displacement of the beam from the origin cannot be compared between them.
     ax2.set_xlim(ax.get_xlim())
     ax2.set_ylim(ax.get_ylim())
-    fig.colorbar(im2, ax=ax2, label="Power (linear)")
+    fig.colorbar(im2, ax=ax2, label="Power (normalised to peak)")
     for axis in (ax2.axhline, ax2.axvline):
         axis(0.0, color="white", linewidth=0.6, alpha=0.35, zorder=2)
     if fit_result["success"]:
