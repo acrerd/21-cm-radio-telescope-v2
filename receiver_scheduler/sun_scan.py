@@ -1256,7 +1256,28 @@ _SCAN_RECORD_VERSION = 2
 # reported drive position is a count of those pulses, so the beam axis is
 # somewhere inside a 0.5 deg cell rather than exactly on the grid point named.
 _ENCODER_PULSE_DEG = 0.5
-_ENCODER_QUANTISATION_SIGMA_DEG = _ENCODER_PULSE_DEG / math.sqrt(12.0)
+# Quantisation of one reported position: the dish is somewhere inside the
+# half-degree cell the encoder reports, uniformly, so pulse/sqrt(12) = 0.144 deg.
+#
+# That is the error on ONE raster point, and a scan reports a centroid fitted to
+# a whole raster. The offset is realised independently at each point - each is a
+# separate stop, at a separate place inside its cell - so it enters the centroid
+# diluted, like any abscissa error. Charging the full single-point figure to the
+# centroid made it 4x the fitted centroid uncertainty and dominated the entire
+# budget: reduced chi-squared came out at 0.02, the fit declared itself healthy
+# while showing plainly coherent residuals, and the quoted uncertainty on IA was
+# +-0.50 deg against a cross-validated pointing error of 0.021 deg.
+#
+# Diluted by the points that actually carry centroid information - those within
+# the beam's half-power width, about 9 of the 81 on a 9x9 raster at 1.5 deg
+# spacing with a 5.16 deg beam - not by all 81. Deliberately the conservative
+# choice: any systematic part of the offset, from the mount consistently
+# stopping just past a pulse edge on a raster that always approaches from the
+# same side, is common-mode and does not average down at all. Dividing by 3
+# rather than 9 leaves room for that.
+_ENCODER_QUANTISATION_POINTS = 9.0
+_ENCODER_QUANTISATION_SIGMA_DEG = (_ENCODER_PULSE_DEG / math.sqrt(12.0)
+                                   / math.sqrt(_ENCODER_QUANTISATION_POINTS))
 
 # The azimuth scale error trades against the constant azimuth offset IA unless
 # the scans span a decent arc, so it is only fitted when they do.
@@ -1764,6 +1785,34 @@ def fit_pointing_model(data: list | None = None,
                   max(reduced_chi_squared, 1.0))
     parameter_errors = np.sqrt(np.maximum(np.diag(covariance), 0.0))
 
+    # How well the model locates the beam, which is the only uncertainty an
+    # operator can act on. Not the same thing as the per-parameter errors, and
+    # far smaller than the worst of them: IA and CA come out ~-0.9 correlated,
+    # so each is individually loose while the combination they enter as is
+    # tight. Quoting sigma(IA) as "pointing uncertainty" reported +-0.50 deg for
+    # a model whose cross-validated error is 0.021 deg.
+    #
+    # Propagated through the full covariance, including the cross-terms that do
+    # the cancelling, at each scan position - where the model is actually
+    # supported. Converted to the sky by cos(alt), since an azimuth correction
+    # near the zenith moves the beam by almost nothing.
+    def pointing_sigma() -> tuple:
+        alt_sigma, sky_sigma = [], []
+        for i in range(n):
+            if not keep[i]:
+                continue
+            row_alt = A[i]
+            row_az = A[n + i]
+            alt_sigma.append(math.sqrt(max(row_alt @ covariance @ row_alt, 0.0)))
+            sky_sigma.append(math.sqrt(max(row_az @ covariance @ row_az, 0.0))
+                             * math.cos(math.radians(alt_sun[i])))
+        if not alt_sigma:
+            return 0.0, 0.0
+        return (float(np.sqrt(np.mean(np.square(alt_sigma)))),
+                float(np.sqrt(np.mean(np.square(sky_sigma)))))
+
+    pointing_sigma_alt, pointing_sigma_xel = pointing_sigma()
+
     def significance(value: float, error: float) -> float:
         """How many sigma a fitted parameter is from zero."""
         if not math.isfinite(error) or error <= 0.0:
@@ -1798,6 +1847,10 @@ def fit_pointing_model(data: list | None = None,
             "tilt_north": float(parameter_errors[2]),
             "tilt_east": float(parameter_errors[3]),
         },
+        # What the model's uncertainty costs in beam position. The per-parameter
+        # errors below are diagnostics; this is the number to show an operator.
+        "pointing_sigma_alt_deg": pointing_sigma_alt,
+        "pointing_sigma_xel_deg": pointing_sigma_xel,
         "parameter_significance": {k: float(v) for k, v in significances.items()},
         "min_tilt_significance": float(min(significances["tilt_north"],
                                            significances["tilt_east"])),

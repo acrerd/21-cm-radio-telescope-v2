@@ -3669,8 +3669,17 @@ HTML_TEMPLATE = '''
                     html += '<tr><td style="color:#888; padding:4px 8px;">RMS residual</td><td>alt ' + m.rms_alt_deg.toFixed(3) + '&deg;, az ' + m.rms_az_deg.toFixed(3) + '&deg;</td></tr>';
                     html += '<tr><td style="color:#888; padding:4px 8px;">Sun azimuth coverage</td><td>' + m.az_coverage_deg.toFixed(1) + '&deg;</td></tr>';
                     html += '<tr><td style="color:#888; padding:4px 8px;">Fit condition</td><td>' + m.condition_number.toFixed(1) + '</td></tr>';
-                    if (m.parameter_errors_deg) {
-                        html += '<tr><td style="color:#888; padding:4px 8px;">Offset uncertainty</td><td>&plusmn;' + m.parameter_errors_deg.alt_offset.toFixed(3) + '&deg; alt, &plusmn;' + m.parameter_errors_deg.az_offset.toFixed(3) + '&deg; az</td></tr>';
+                    // How well the model places the beam, not the uncertainty on
+                    // any one term. Those are ~-0.9 correlated with each other,
+                    // so each is individually loose while the combination is
+                    // tight: showing sigma(IA) here read as +-0.50 deg for a
+                    // model whose cross-validated pointing error was 0.021 deg.
+                    // The per-term errors stay in the API for diagnostics.
+                    if (m.pointing_sigma_alt_deg !== undefined && m.pointing_sigma_alt_deg !== null) {
+                        html += '<tr><td style="color:#888; padding:4px 8px;">Pointing uncertainty</td><td>&plusmn;' + m.pointing_sigma_alt_deg.toFixed(3) + '&deg; alt, &plusmn;' + m.pointing_sigma_xel_deg.toFixed(3) + '&deg; cross-el</td></tr>';
+                    }
+                    if (m.n_outliers) {
+                        html += '<tr><td style="color:#888; padding:4px 8px;">Outliers rejected</td><td style="color:#ffa502;">' + m.n_outliers + ' (more than ' + m.outlier_sigma.toFixed(0) + '&sigma; from the model)</td></tr>';
                     }
                     if (m.n_superseded) {
                         html += '<tr><td style="color:#888; padding:4px 8px;">Older scans skipped</td><td style="color:#ffa502;">' + m.n_superseded + ' (recorded before the resident pointing model)</td></tr>';

@@ -578,6 +578,14 @@ def test_scan_uncertainty_includes_the_encoder_grid():
 
     Without it the 2026-08-20 calibration day fitted at reduced chi-squared 28
     and could not be applied; with it, 1.05.
+
+    The floor is per raster point diluted by the points that carry centroid
+    information, not the raw per-point figure: charging 0.1443 deg to a centroid
+    fitted to a whole raster made chi-squared 0.02, so the fit called itself
+    healthy while showing coherent residuals, and quoted +-0.50 deg on IA for a
+    model whose cross-validated pointing error was 0.021 deg. What this test
+    protects is the floor existing at all, which is why it checks the derivation
+    rather than a bare number.
     """
     data, _ = _synthetic_pointing_data([80, 105, 135, 165, 195, 225])
     for entry in data:
@@ -589,7 +597,10 @@ def test_scan_uncertainty_includes_the_encoder_grid():
     assert model["success"] is True
     # A vanishing stated sigma must not buy a vanishing parameter error.
     assert model["parameter_errors_deg"]["tilt_north"] > 0.01
-    assert sun_scan._ENCODER_QUANTISATION_SIGMA_DEG == pytest.approx(0.1443, abs=1e-4)
+    expected = (sun_scan._ENCODER_PULSE_DEG / math.sqrt(12.0)
+                / math.sqrt(sun_scan._ENCODER_QUANTISATION_POINTS))
+    assert sun_scan._ENCODER_QUANTISATION_SIGMA_DEG == pytest.approx(expected)
+    assert sun_scan._ENCODER_QUANTISATION_SIGMA_DEG == pytest.approx(0.0481, abs=1e-4)
 
 
 def test_azimuth_scale_is_fitted_and_exported():
