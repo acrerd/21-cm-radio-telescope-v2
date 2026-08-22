@@ -713,7 +713,8 @@ def fit_pointing_error(alt_offsets: np.ndarray, az_offsets: np.ndarray,
 def generate_image(alt_offsets_grid: np.ndarray, az_offsets_grid: np.ndarray,
                    power_grid: np.ndarray, fit_result: dict,
                    output_path: str = "sun_scan.png",
-                   sun_alt: float | None = None, sun_az: float | None = None) -> str:
+                   sun_alt: float | None = None, sun_az: float | None = None,
+                   scan_utc: datetime | None = None) -> str:
     """Create a publication-quality image of the sun scan.
 
     Parameters
@@ -724,6 +725,31 @@ def generate_image(alt_offsets_grid: np.ndarray, az_offsets_grid: np.ndarray,
     fit_result       : dict from fit_pointing_error()
     output_path      : where to save the image
     sun_alt, sun_az  : assumed sun position (for annotation)
+    scan_utc         : mid-scan time, the epoch sun_alt/sun_az are quoted at.
+                       Defaults to now, which is only ever right for an image
+                       written the moment its scan ended - not for one redrawn
+                       from stored data.
+
+    The offset grids must be the *reached* positions the Gaussian was fitted
+    against - drive minus true - and not the commanded raster. Both are to
+    hand in ``scan_sun`` and they are not the same frame: they differ by the
+    whole pointing correction in force during the scan, 0.6 deg in altitude
+    and 0.7 deg in cross-elevation on 2026-08-22. Drawing the pixels on the
+    commanded grid while marking the fitted centre from ``fit_result`` mixes
+    the two, which put the marker a degree off the peak of the very data it
+    was fitted to and made a working model look like a pointing error.
+
+    Plotted this way the origin is the Sun's true position, so the offset of
+    the beam from the origin *is* the pointing error the title quotes, and the
+    marker lands on the data by construction.
+
+    The reached positions are not a regular lattice, so the mesh is mildly
+    irregular and pcolormesh is left to derive the cell corners. That is the
+    sampling as it really was: the raster tracks the Sun point by point, so a
+    column spans several degrees of drive azimuth, and the half-degree encoder
+    pulses quantise it. Measured on that scan the departure from a lattice is
+    0.12 deg in altitude - the Sun drifting through one row - and 0.30 deg in
+    cross-elevation, both below one cell.
 
     Returns the path to the saved image.
     """
@@ -741,14 +767,21 @@ def generate_image(alt_offsets_grid: np.ndarray, az_offsets_grid: np.ndarray,
     ax.set_title("Measured broadband power")
     ax.set_aspect("equal")
     fig.colorbar(im, ax=ax, label="Power (linear)")
-    # Mark assumed centre
-    ax.plot(0, 0, "w+", markersize=12, markeredgewidth=2, label="Assumed position")
+    # The origin is the Sun's true position by construction, so it needs a
+    # reference rather than a marker: the whole plot is the displacement of the
+    # beam away from it, and the eye cannot find (0, 0) in a 2-D field from the
+    # tick labels alone. Crosshairs register it without a legend entry.
+    for axis in (ax.axhline, ax.axvline):
+        axis(0.0, color="white", linewidth=0.6, alpha=0.35, zorder=2)
     # Mark fitted peak
     fit_az_sky = fit_result.get("az_error_sky_deg", fit_result["az_error_deg"])
+    peak_alt = fit_result["alt_error_deg"]
+    peak_az = fit_az_sky
     if fit_result["success"]:
-        ax.plot(fit_az_sky, fit_result["alt_error_deg"],
+        ax.plot(peak_az, peak_alt,
                 "cx", markersize=12, markeredgewidth=2, label="Fitted peak")
-    ax.legend(loc="upper right", fontsize=8)
+        # Only artist with a label, so a failed fit leaves nothing to legend.
+        ax.legend(loc="upper right", fontsize=8)
 
     # --- Right panel: fitted model ---
     ax2 = axes[1]
@@ -758,8 +791,8 @@ def generate_image(alt_offsets_grid: np.ndarray, az_offsets_grid: np.ndarray,
     AZ_F, ALT_F = np.meshgrid(az_fine, alt_fine)
     model = _gaussian_2d((ALT_F.ravel(), AZ_F.ravel()),
                          fit_result["amplitude"],
-                         fit_result["alt_error_deg"],
-                         fit_az_sky,
+                         peak_alt,
+                         peak_az,
                          fit_result["sigma_deg"],
                          fit_result["offset"]).reshape(n_fine, n_fine)
 
@@ -772,14 +805,21 @@ def generate_image(alt_offsets_grid: np.ndarray, az_offsets_grid: np.ndarray,
     ax2.set_ylabel("Altitude offset (°)")
     ax2.set_title("Gaussian fit")
     ax2.set_aspect("equal")
+    # Same limits as the data panel: the mesh is irregular, so left to
+    # themselves the two panels end up on visibly different scales and the
+    # displacement of the beam from the origin cannot be compared between them.
+    ax2.set_xlim(ax.get_xlim())
+    ax2.set_ylim(ax.get_ylim())
     fig.colorbar(im2, ax=ax2, label="Power (linear)")
-    ax2.plot(0, 0, "w+", markersize=12, markeredgewidth=2)
+    for axis in (ax2.axhline, ax2.axvline):
+        axis(0.0, color="white", linewidth=0.6, alpha=0.35, zorder=2)
     if fit_result["success"]:
-        ax2.plot(fit_az_sky, fit_result["alt_error_deg"],
+        ax2.plot(peak_az, peak_alt,
                  "cx", markersize=12, markeredgewidth=2)
 
     # Title with results
-    title_parts = [f"Sun Scan — {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}"]
+    stamp = scan_utc or datetime.now(timezone.utc)
+    title_parts = [f"Sun Scan — {stamp.strftime('%Y-%m-%d %H:%M UTC')}"]
     if sun_alt is not None and sun_az is not None:
         title_parts.append(f"Sun at Alt={sun_alt:.1f}° Az={sun_az:.1f}°")
     title_parts.append(
@@ -918,6 +958,11 @@ def sun_scan(
     alt_off_flat = []
     az_off_flat = []
     power_flat = []
+    # The reached offsets in grid layout, for the image. Seeded with the
+    # commanded raster so a point that is never measured still has finite mesh
+    # coordinates; its power stays NaN either way, so the cell is not drawn.
+    alt_off_grid = ALT_OFF.astype(float).copy()
+    az_off_grid = AZ_OFF.astype(float).copy()
 
     b210_meter = None
     if sdr_type == "b210":
@@ -1066,6 +1111,8 @@ def sun_scan(
             power_grid[row, col] = pwr
             alt_off_flat.append(actual_dalt)
             az_off_flat.append(actual_daz_sky)
+            alt_off_grid[row, col] = actual_dalt
+            az_off_grid[row, col] = actual_daz_sky
             power_flat.append(pwr)
 
             log.info("  Power = %.4f", pwr)
@@ -1118,9 +1165,12 @@ def sun_scan(
     # --- Generate image ---
     image_path = None
     if output_image and MATPLOTLIB_AVAILABLE:
-        image_path = generate_image(ALT_OFF, AZ_OFF, power_grid, fit,
+        # The reached grid, not ALT_OFF/AZ_OFF: see generate_image for why the
+        # commanded raster is the wrong frame to draw the fitted centre on.
+        image_path = generate_image(alt_off_grid, az_off_grid, power_grid, fit,
                                     output_path=output_image,
-                                    sun_alt=mid_sun_alt, sun_az=mid_sun_az)
+                                    sun_alt=mid_sun_alt, sun_az=mid_sun_az,
+                                    scan_utc=mid_scan_utc)
 
     return {
         "alt_error_deg": fit["alt_error_deg"],
