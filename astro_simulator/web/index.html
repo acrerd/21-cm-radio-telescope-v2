@@ -29,6 +29,9 @@
   #btn-map { background: #f4ede8; }
   #btn-frame { background: #f0ede4; }
   #btn-home, #btn-save { background: #f0f0f2; }
+  /* The one button that moves a real telescope, coloured like the desktop's. */
+  #btn-realise { background: #e2ecf8; }
+  #btn-realise:hover:enabled { background: #cfe0f2; }
   #left-col label { font-size: 13px; color: #666; margin-top: 6px; }
   #left-col input {
     width: 100%; padding: 5px; font-size: 14px; text-align: center;
@@ -90,6 +93,9 @@
       <button id="btn-frame">Frame: LSR</button>
       <label>scan (min)</label>
       <input id="p-sd" value="240">
+      <!-- Shown only when this page is served by the scheduler, which is the
+           only context where it can reach the telescope. See main.js. -->
+      <button id="btn-realise" hidden title="point the telescope at this">Realise</button>
       <button id="btn-home" title="reset parameters">Home</button>
       <button id="btn-save" title="save spectrum (s)">Save</button>
       <label>site name</label>

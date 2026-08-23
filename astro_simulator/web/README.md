@@ -50,23 +50,45 @@ Known divergences from the desktop app, all deliberate:
 - Moon position is Meeus + topocentric parallax (~0.3°) and the
   topocentric velocity frame is good to ~40 m/s (~1/30 channel),
   versus astropy on the desktop;
-- **no Realise button — this version cannot command the telescope.**
-  Use `astro_simulator.py --controller ...` for that; it makes
-  server-side requests with no browser in the way. Three things stood
-  between a hosted page and the controller, and the address was the
-  least of them: the published copy is served over **HTTPS** while the
-  controller speaks plain HTTP, which browsers block as mixed content;
-  the controller sends **no `Access-Control-Allow-Origin` header** and
-  404s the preflight, so a cross-origin page could not read a reply
-  even if it arrived; and the controller now lives on a **private link**
-  that only the observatory host can reach at all. The middle one is
-  also a protection worth keeping: same-origin policy is what stops any
-  page visited on the observatory host from driving an unauthenticated
-  telescope API, and `Access-Control-Allow-Origin: *` would remove it.
-  There was a sharp edge here too — through an ssh tunnel to
+- **Realise works only when the scheduler is serving this page**, which
+  in practice means the Simulator tab of the scheduler UI on the
+  observatory host. Opened any other way — the published copy below, a
+  static file host, `file://` — the button is not shown at all, because
+  the page asks `/api/telescope` at startup and only reveals it if a
+  scheduler answers. There is nothing to configure and nothing that can
+  half-work.
+
+  The reason it is arranged that way is worth keeping in view, because
+  the obvious alternative is the wrong one. Three things stood between
+  a *hosted* page and the controller, and the address was the least of
+  them: the published copy is served over **HTTPS** while the controller
+  speaks plain HTTP, which browsers block as mixed content; the
+  controller sends **no `Access-Control-Allow-Origin` header** and 404s
+  the preflight, so a cross-origin page could not read a reply even if
+  it arrived; and the controller lives on a **private link** that only
+  the observatory host can reach at all. The middle one is a protection
+  rather than a gap: same-origin policy is what stops any page visited
+  on the observatory host from driving an unauthenticated telescope API,
+  and `Access-Control-Allow-Origin: *` would remove it for every page at
+  once. There is a sharp edge behind it too — through an ssh tunnel to
   `http://localhost`, the GET is a simple request, so the browser sends
   it and the dish moves, then blocks the response and reports a network
   error. The button appeared to fail while commanding the telescope.
+
+  Serving the page from the scheduler removes the cross-origin request
+  instead of permitting it: no preflight, no CORS header, no mixed
+  content, and the controller stays unreachable from anywhere but the
+  host. The page never talks to the controller — it POSTs `l`, `b`, the
+  map mode and the scan length to `/api/simulator/realise`, and the
+  scheduler makes the request. That endpoint exposes the two commands
+  Realise means and validates their arguments; it is deliberately not a
+  general proxy, which would hand this page the whole controller API.
+  The drift-scan geometry is computed there as well, so where the dish
+  parks depends on the configured observatory position and not on the
+  site boxes in this page, which are free text and settable from the URL.
+
+  `astro_simulator.py --controller ...` still has the desktop button,
+  which makes the request server-side with no browser in the way.
 
 ## Published copy (GitHub Pages)
 

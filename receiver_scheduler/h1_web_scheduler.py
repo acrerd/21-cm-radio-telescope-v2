@@ -75,6 +75,8 @@ _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 SCHEDULE_FILE = os.path.join(_SCRIPT_DIR, "h1_schedule.json")
 CONFIG_FILE = os.path.join(_SCRIPT_DIR, "scheduler_config.json")
 RECEIVER_SCRIPT = os.path.join(_SCRIPT_DIR, "b210_h1_receiver.py")
+# The web simulator, served from this app so the two share an origin.
+SIMULATOR_DIR = os.path.join(os.path.dirname(_SCRIPT_DIR), "astro_simulator", "web")
 
 # Default configuration - overridden by scheduler_config.json if present
 _DEFAULT_CONFIG = {
@@ -1331,6 +1333,39 @@ def start_observation(obs: dict, duration_override: int = None) -> bool:
             starting_observation_name = ''
 
 
+# The observation that most recently finished, so its file can still be found
+# after current_observation has been cleared. One slot, in memory: it is a
+# convenience for the Observe tab, and the files themselves remain the record.
+last_observation: Optional[dict] = None
+last_observation_lock = threading.Lock()
+
+
+def _record_finished_observation(obs: Optional[dict]):
+    """Remember where a finished observation put its data, and what shape it is."""
+    global last_observation
+    if not obs or not obs.get('output_file'):
+        return
+    # Calibration days and horizon scans write their own products and have no
+    # spectra to plot; they end through their own paths anyway.
+    if obs.get('coord_system') in ('calibration', 'horizon'):
+        return
+    drift = obs.get('coord_system') == 'drift'
+    duration = obs.get('duration_minutes', 30)
+    with last_observation_lock:
+        last_observation = {
+            'name': obs.get('name', ''),
+            'output_file': obs['output_file'],
+            'coord_system': obs.get('coord_system', ''),
+            'mode': 'drift' if drift else 'spectrum',
+            # The scan is laid out so the source crosses beam centre at the
+            # mid-point; the plot marks it there.
+            'transit_minutes': (duration / 2.0) if drift else None,
+            'started_at': obs.get('started_at'),
+            'ended_at': datetime.now().isoformat(timespec='seconds'),
+        }
+    log.info("Observation data left in %s", obs['output_file'])
+
+
 def stop_observation() -> bool:
     """Stop current observation."""
     global current_process, current_observation, observation_end_time
@@ -1403,6 +1438,7 @@ def stop_observation() -> bool:
                 srt_go_position("stow", 90, 180)
 
         log.info("Stopped: %s", name)
+        _record_finished_observation(current_observation)
         current_process = None
         current_observation = None
         observation_end_time = None
@@ -1806,6 +1842,8 @@ HTML_TEMPLATE = '''
             <div class="tab" onclick="switchTab('sunscan')">Sun Scan</div>
             <div class="tab" onclick="switchTab('horizon')">Horizon</div>
             <div class="tab" onclick="switchTab('camera')">Camera</div>
+            <div class="tab" onclick="switchTab('simulator')">Simulator</div>
+            <div class="tab" onclick="switchTab('observe')">Observe</div>
             <div class="tab" onclick="switchTab('config')">Configuration</div>
             <div class="tab" onclick="switchTab('log')">Log</div>
         </div>
@@ -2032,6 +2070,125 @@ HTML_TEMPLATE = '''
                     again immediately. Auto-refresh stops on its own whenever this tab
                     is not the one on screen, so a forgotten browser tab cannot leave
                     the camera running overnight.
+                </p>
+            </div>
+        </div>
+
+        <div class="tab-content" id="tab-simulator">
+            <div id="simHost" style="height:calc(100vh - 190px); min-height:520px;
+                                     border:1px solid #333; border-radius:8px;
+                                     overflow:hidden; background:#fbfcfd;">
+                <div style="color:#888; padding:15px;">Loading the simulator&hellip;</div>
+            </div>
+            <p style="color:#888; font-size:12px; margin-top:10px;">
+                The sky simulator, served from this scheduler so the two are one
+                origin. Its <strong>Realise</strong> button hands the simulated
+                observation to the telescope &mdash; tracking the galactic
+                coordinate on the H&nbsp;I map, or parking for a drift scan on the
+                continuum map. It loads about 33&nbsp;MB of sky data the first time
+                this tab is opened, and stays loaded afterwards.
+            </p>
+        </div>
+
+        <div class="tab-content" id="tab-observe">
+            <div class="config-form">
+                <div class="section-title">Observation</div>
+                <div id="obvSource" style="color:#888; font-size:12px; margin-bottom:12px;">
+                    Set the fields here, or press <strong>Realise</strong> in the
+                    Simulator tab to copy them from what you are simulating.
+                </div>
+                <div class="form-grid">
+                    <div class="form-group">
+                        <label>Type</label>
+                        <select autocomplete="off" id="obvMode" onchange="onObserveModeChange()">
+                            <option value="spectrum">Spectrum (tracked)</option>
+                            <option value="drift">Drift scan</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>Galactic l <span class="unit">(deg)</span></label>
+                        <input autocomplete="off" type="number" id="obvL" step="any" value="132">
+                    </div>
+                    <div class="form-group">
+                        <label>Galactic b <span class="unit">(deg)</span></label>
+                        <input autocomplete="off" type="number" id="obvB" step="any" value="-1">
+                    </div>
+                    <div class="form-group">
+                        <label id="obvDurationLabel">Duration <span class="unit">(min)</span></label>
+                        <input autocomplete="off" type="number" id="obvDuration" min="1" max="1435" step="1" value="30">
+                    </div>
+                </div>
+                <div class="section-title">Receiver Settings</div>
+                <div class="form-grid">
+                    <div class="form-group">
+                        <label>Center Frequency <span class="unit">(MHz)</span></label>
+                        <input autocomplete="off" type="number" id="obvCenterFreq" step="any" value="1420.405752">
+                    </div>
+                    <div class="form-group">
+                        <label>Bandwidth <span class="unit">(MHz)</span></label>
+                        <input autocomplete="off" type="number" id="obvBandwidth" step="0.1" value="2.4">
+                    </div>
+                    <div class="form-group">
+                        <label>Gain <span class="unit">(dB)</span></label>
+                        <input autocomplete="off" type="number" id="obvGain" min="0" max="80" value="40">
+                    </div>
+                    <div class="form-group">
+                        <label>Channels</label>
+                        <input autocomplete="off" type="number" id="obvChannels" min="2" max="65536" step="1" value="4096">
+                    </div>
+                    <div class="form-group">
+                        <label>Integration Time <span class="unit">(s)</span></label>
+                        <input autocomplete="off" type="number" id="obvIntegration" min="0.1" step="0.1" value="3.0">
+                    </div>
+                    <div class="form-group">
+                        <label>SDR</label>
+                        <select autocomplete="off" id="obvSdr">
+                            <option value="b210">B210</option>
+                            <option value="rtlsdr">RTL-SDR</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="section-title">Output</div>
+                <div class="form-grid">
+                    <div class="form-group">
+                        <label>Name</label>
+                        <input autocomplete="off" type="text" id="obvName" value="Simulator target">
+                    </div>
+                    <div class="form-group">
+                        <label>Filename <span class="unit">(blank = automatic)</span></label>
+                        <input autocomplete="off" type="text" id="obvFilename" placeholder="h1_....h5">
+                    </div>
+                    <div class="form-group">
+                        <label>When Finished</label>
+                        <select autocomplete="off" id="obvEndAction">
+                            <option value="stow">Stow</option>
+                            <option value="home">Home</option>
+                            <option value="none">Leave pointing</option>
+                        </select>
+                    </div>
+                </div>
+                <div style="display:flex; gap:10px; align-items:center; margin-top:15px; flex-wrap:wrap;">
+                    <button class="btn btn-success" id="obvStartBtn" onclick="observeStartNow()">Start Now</button>
+                    <button class="btn btn-secondary" onclick="observeToScheduler()">Send to Scheduler&hellip;</button>
+                    <button class="btn btn-secondary" onclick="loadObserveParams(true)">Copy from Simulator</button>
+                    <span id="obvStatus" style="color:#888; font-size:12px;"></span>
+                </div>
+                <div class="section-title" style="margin-top:20px;">Last Observation</div>
+                <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
+                    <button class="btn btn-secondary" onclick="showObservePlot()">Plot Result</button>
+                    <span id="obvLastInfo" style="color:#888; font-size:12px;">
+                        Nothing has finished yet this session.
+                    </span>
+                </div>
+                <div id="obvPlot" style="margin-top:12px;"></div>
+                <p style="color:#888; font-size:12px; margin-top:12px;">
+                    <strong>Start Now</strong> points the telescope and starts the
+                    receiver immediately; it is not owned by a schedule slot, so a
+                    scheduled observation will preempt it.
+                    <strong>Send to Scheduler</strong> opens the Add Observation form
+                    with these values filled in, to be booked for a time.
+                    A drift scan parks the dish and leaves tracking off &mdash; the
+                    source crosses the beam centre half a duration from the start.
                 </p>
             </div>
         </div>
@@ -3312,8 +3469,187 @@ HTML_TEMPLATE = '''
             // Leaving the tab stops the loop; scheduleCameraRefresh cancels
             // itself whenever the camera tab is not the one on screen.
             if (name === 'horizon') pollHorizon();
+            if (name === 'simulator') showSimulator();
+            if (name === 'observe') { loadObserveParams(false); loadObserveLast(); }
             if (name === 'camera' && !camObjectUrl) refreshCamera();
             else scheduleCameraRefresh();
+        }
+
+        // ---- Simulator ----
+        // Built on first visit and then left alone. It fetches ~33 MB of sky
+        // data and decodes it to a ~80 MB cube, so rebuilding the frame on
+        // every tab switch would repeat the whole load; hiding it costs
+        // nothing, since .tab-content already toggles display.
+        //
+        // Built here rather than in the markup for a second reason: a canvas
+        // laid out inside a display:none parent sizes to zero. switchTab adds
+        // .active before calling this, so by now the host is on screen.
+        let simFrame = null;
+
+        function showSimulator() {
+            if (simFrame) return;
+            const host = document.getElementById('simHost');
+            host.innerHTML = '';
+            simFrame = document.createElement('iframe');
+            simFrame.src = '/simulator/';
+            simFrame.style.cssText = 'width:100%; height:100%; border:0; display:block;';
+            simFrame.title = 'Sky simulator';
+            host.appendChild(simFrame);
+        }
+
+        // ---- Observe ----
+        // Stamp of the hand-off already on the form, so opening the tab picks up
+        // a Realise that happened since it was last looked at, and does not
+        // overwrite edits made here in the meantime.
+        let obvAppliedStamp = null;
+
+        function onObserveModeChange() {
+            const drift = document.getElementById('obvMode').value === 'drift';
+            // In drift mode the duration IS the scan length, and the source
+            // transits at its mid-point; saying so beats a tooltip.
+            document.getElementById('obvDurationLabel').innerHTML =
+                drift ? 'Scan length <span class="unit">(min)</span> &mdash; transit at mid-point'
+                      : 'Duration <span class="unit">(min)</span> &mdash; the simulator&rsquo;s &tau;';
+        }
+
+        function loadObserveParams(force) {
+            fetch('/api/observe/params').then(r => r.json()).then(d => {
+                const info = document.getElementById('obvSource');
+                if (!d.available) {
+                    if (force) setObserveStatus('Nothing handed over yet - press Realise in the Simulator tab.', '#ffa502');
+                    return;
+                }
+                const p = d.params;
+                if (!force && p.source_utc === obvAppliedStamp) return;
+                obvAppliedStamp = p.source_utc;
+                document.getElementById('obvMode').value = p.mode;
+                document.getElementById('obvL').value = p.l;
+                document.getElementById('obvB').value = p.b;
+                document.getElementById('obvCenterFreq').value = p.center_freq_mhz;
+                document.getElementById('obvBandwidth').value = p.bandwidth_mhz;
+                document.getElementById('obvChannels').value = p.channels;
+                document.getElementById('obvDuration').value = p.duration_minutes;
+                // Null for a tracked spectrum: there tau is the length of the
+                // observation, which has gone into the duration, and how finely
+                // the run is chopped into saved spectra is ours to choose. In
+                // drift mode tau is the time per sample and does belong here.
+                if (p.integration_time_s) {
+                    document.getElementById('obvIntegration').value = p.integration_time_s;
+                }
+                onObserveModeChange();
+                const when = new Date(p.source_utc);
+                info.innerHTML = 'Copied from the simulator at <strong>' +
+                    when.toLocaleTimeString() + '</strong> &mdash; ' +
+                    (p.mode === 'drift' ? 'drift scan' : 'tracked spectrum') +
+                    ' of l=' + p.l.toFixed(2) + '&deg;, b=' + p.b.toFixed(2) + '&deg;. ' +
+                    'Edit anything below before starting.';
+            }).catch(e => setObserveStatus('Could not read the simulator hand-off: ' + e, '#ff4757'));
+        }
+
+        function setObserveStatus(text, colour) {
+            const el = document.getElementById('obvStatus');
+            el.textContent = text;
+            el.style.color = colour || '#888';
+        }
+
+        // Build the schedule-entry shape the rest of the app already speaks, so
+        // Start Now and Send to Scheduler hand over exactly the same document.
+        function observeToObs() {
+            const drift = document.getElementById('obvMode').value === 'drift';
+            const num = (id, dflt) => {
+                const v = parseFloat(document.getElementById(id).value);
+                return Number.isFinite(v) ? v : dflt;
+            };
+            const l = num('obvL', 0), b = num('obvB', 0);
+            const obs = Object.assign({}, DEFAULTS, {
+                name: document.getElementById('obvName').value.trim() || 'Simulator target',
+                coord_system: drift ? 'drift' : 'galactic',
+                drift_frame: 'galactic',
+                // Decimal degrees in the degrees field, which dms_to_decimal
+                // sums as given; the minutes and seconds boxes are for the
+                // schedule form's benefit, not this one's.
+                coord1_deg: l, coord1_min: 0, coord1_sec: 0,
+                coord2_deg: b, coord2_min: 0, coord2_sec: 0,
+                duration_minutes: Math.round(num('obvDuration', 30)),
+                center_freq_mhz: num('obvCenterFreq', 1420.405752),
+                bandwidth_mhz: num('obvBandwidth', 2.4),
+                gain_db: num('obvGain', 40),
+                channels: Math.round(num('obvChannels', 4096)),
+                integration_time_s: num('obvIntegration', 3.0),
+                sdr_type: document.getElementById('obvSdr').value,
+                filename: document.getElementById('obvFilename').value.trim(),
+                end_action: document.getElementById('obvEndAction').value,
+                calibrator: false,
+                enabled: true,
+                // No date or time: for a Run Now start the scheduler reads the
+                // drift beam-crossing time as now + half the duration, which is
+                // what a drift scan started this moment means.
+                start_date: '', start_time: '',
+            });
+            return obs;
+        }
+
+        function observeStartNow() {
+            const obs = observeToObs();
+            const btn = document.getElementById('obvStartBtn');
+            btn.disabled = true;
+            setObserveStatus('Pointing and starting the receiver...', '#00d4ff');
+            fetch('/api/start', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify(obs)
+            }).then(r => r.json()).then(d => {
+                if (d.success) {
+                    setObserveStatus('Observation started.', '#2ed573');
+                    updateStatus();
+                } else {
+                    setObserveStatus('Failed: ' + (d.error || 'unknown') + ' - see the Log tab.', '#ff4757');
+                }
+            }).catch(e => setObserveStatus('Failed: ' + e, '#ff4757'))
+              .finally(() => { btn.disabled = false; });
+        }
+
+        function loadObserveLast() {
+            fetch('/api/observe/last').then(r => r.json()).then(d => {
+                const el = document.getElementById('obvLastInfo');
+                if (!d.available) {
+                    el.textContent = 'Nothing has finished yet this session.';
+                    return;
+                }
+                const kind = d.mode === 'drift' ? 'Drift scan' : 'Spectrum';
+                const size = d.size_bytes ? ' &mdash; ' + (d.size_bytes / 1e6).toFixed(1) + ' MB' : '';
+                el.innerHTML = kind + ' &ldquo;' + d.name + '&rdquo;, ended ' +
+                    new Date(d.ended_at).toLocaleTimeString() +
+                    ' &mdash; <code>' + d.filename + '</code>' + size +
+                    (d.exists ? '' : ' <span style="color:#ff4757;">(file missing)</span>');
+            }).catch(() => {});
+        }
+
+        function showObservePlot() {
+            const host = document.getElementById('obvPlot');
+            host.innerHTML = '<span style="color:#888; font-size:12px;">Drawing&hellip;</span>';
+            // Fetched rather than dropped straight into an img src: a refusal
+            // comes back as JSON with a reason - still recording, no spectra -
+            // and a broken image icon would throw that away.
+            fetch('/api/observe/plot?' + Date.now()).then(r => {
+                if (!r.ok) return r.json().then(d => { throw new Error(d.error || ('HTTP ' + r.status)); });
+                return r.blob();
+            }).then(b => {
+                const url = URL.createObjectURL(b);
+                host.innerHTML = '<img src="' + url + '" style="max-width:100%; border-radius:8px; border:1px solid #333;">';
+            }).catch(e => {
+                host.innerHTML = '<span style="color:#ffa502; font-size:12px;">' + e.message + '</span>';
+            });
+        }
+
+        function observeToScheduler() {
+            // Reuse the Add Observation form rather than duplicating date, time
+            // and clash handling here: it is the one place that knows how a
+            // drift slot is laid out around its transit.
+            document.getElementById('modalTitle').textContent = 'Add Observation';
+            document.getElementById('obsIndex').value = -1;
+            fillForm(observeToObs());
+            document.getElementById('obsModal').classList.add('active');
         }
 
         // ---- Horizon scan ----
@@ -4294,6 +4630,280 @@ def index():
     return render_template_string(HTML_TEMPLATE,
         banner_name=cfg.get('banner_name', _DEFAULT_CONFIG['banner_name']),
         banner_subtitle=cfg.get('banner_subtitle', _DEFAULT_CONFIG['banner_subtitle']))
+
+
+@app.route('/simulator/')
+@app.route('/simulator/<path:path>')
+def simulator(path='index.html'):
+    """Serve astro_simulator/web as static files.
+
+    The page is a plain ES-module app that needs nothing but a file host, and
+    serving it from here rather than beside it is the whole point: it is then
+    same origin with this API, so the Realise button can command the telescope
+    through /api/simulator/realise with no cross-origin request anywhere.
+
+    send_from_directory contains the path itself (safe_join), so a traversal
+    out of the simulator directory 404s rather than being served.
+    """
+    resp = send_from_directory(SIMULATOR_DIR, path)
+    # The page gunzips the sky bundles itself, with DecompressionStream("gzip")
+    # in js/main.js. Flask infers Content-Encoding: gzip from the .gz suffix,
+    # which makes the browser decode them in transit - the page's own
+    # decompression then fails on already-plain bytes, and the loading progress
+    # counts a Content-Length that no longer describes what arrives. They have
+    # to go out as opaque bytes.
+    if path.endswith('.gz'):
+        resp.headers.pop('Content-Encoding', None)
+    return resp
+
+
+# The last observation the simulator handed over, for the Observe tab to pick
+# up. Held here rather than posted between browser frames so it survives a
+# reload of either page and works whether the simulator is in the tab's iframe
+# or open in a window of its own. One slot: it is the latest hand-off, not a
+# queue. Written by the Realise endpoint, read by /api/observe/params.
+observe_params = None
+observe_params_lock = threading.Lock()
+
+# What Realise is allowed to carry into an observation, with the bounds the
+# receiver and the schedule form already impose. Anything outside them is
+# clamped rather than rejected: the hand-off is a starting point the operator
+# reviews on the Observe tab, and refusing the whole thing because one box was
+# odd would be worse than handing over a sane value.
+_OBSERVE_PARAM_LIMITS = {
+    'center_freq_mhz': (1000.0, 2000.0),
+    'bandwidth_mhz': (0.02, 8.0),
+    'integration_time_s': (0.1, 3600.0),
+    'channels': (2, 65536),
+    'duration_minutes': (1.0, 1435.0),
+}
+
+
+def _clamped(name, value, default):
+    lo, hi = _OBSERVE_PARAM_LIMITS[name]
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        return default
+    if not math.isfinite(v):
+        return default
+    v = max(lo, min(hi, v))
+    return int(round(v)) if isinstance(default, int) else v
+
+
+def _record_observe_params(body, glon, glat, mode):
+    """Store what the simulator was simulating, in observation terms."""
+    global observe_params
+    tau = _clamped('integration_time_s', body.get('integration_time_s'), 3.0)
+    # Wrapped and clamped here as well as at the caller. What this stores is
+    # what the Observe tab will hand to /api/start, so it has to be a valid
+    # pointing on its own terms rather than because one caller happened to
+    # normalise first.
+    glon = glon % 360.0
+    glat = max(-90.0, min(90.0, glat))
+    params = {
+        'mode': 'drift' if mode == 'cont' else 'spectrum',
+        'l': round(glon, 4),
+        'b': round(glat, 4),
+        'center_freq_mhz': _clamped('center_freq_mhz',
+                                    body.get('center_freq_mhz'), 1420.405752),
+        'bandwidth_mhz': _clamped('bandwidth_mhz', body.get('bandwidth_mhz'), 2.4),
+        'channels': _clamped('channels', body.get('channels'), 4096),
+        # tau means two different things in the simulator, and each maps to a
+        # different field here.
+        #
+        #   spectrum  sigma = (T_sys + T) / sqrt(npol . df . tau): the
+        #             radiometer equation over the whole spectrum, so tau is
+        #             the length of the observation. It sets the DURATION, and
+        #             the receiver's per-spectrum integration is left to the
+        #             tab - that is a recording granularity the simulation says
+        #             nothing about. Averaging the run's spectra gives an
+        #             effective integration of the duration either way, which
+        #             is what reproduces the simulated noise.
+        #
+        #   drift     n = duration / tau: tau is the time per sample and the
+        #             scan-length box is the duration. Both map straight
+        #             across.
+        'integration_time_s': tau if mode == 'cont' else None,
+        'duration_minutes': (_clamped('duration_minutes',
+                                      body.get('scan_minutes'), 240.0)
+                             if mode == 'cont'
+                             # Floored at a minute by _clamped: the scheduler
+                             # will not take a slot with under 60 s left, and a
+                             # shorter run integrates longer than the
+                             # simulation did rather than less, so the noise
+                             # can only come out better than shown.
+                             else _clamped('duration_minutes', tau / 60.0, 1.0)),
+        'source_utc': datetime.now(timezone.utc).isoformat(timespec='seconds'),
+    }
+    with observe_params_lock:
+        observe_params = params
+    log.info("Realise: handed %s parameters to the Observe tab "
+             "(f_c %.4f MHz, BW %.3f MHz, %d ch, %.1f min%s)",
+             params['mode'], params['center_freq_mhz'],
+             params['bandwidth_mhz'], params['channels'],
+             params['duration_minutes'],
+             f", tau {params['integration_time_s']:.2f} s"
+             if params['integration_time_s'] else "")
+
+
+@app.route('/api/observe/params', methods=['GET'])
+def api_observe_params():
+    """The observation parameters last handed over by the simulator's Realise.
+
+    Returns {'available': False} until Realise has been pressed at least once
+    since the scheduler started.
+    """
+    with observe_params_lock:
+        if observe_params is None:
+            return jsonify({'available': False})
+        return jsonify({'available': True, 'params': dict(observe_params)})
+
+
+@app.route('/api/observe/last', methods=['GET'])
+def api_observe_last():
+    """Metadata for the observation that most recently finished."""
+    with last_observation_lock:
+        if last_observation is None:
+            return jsonify({'available': False})
+        info = dict(last_observation)
+    info['available'] = True
+    info['exists'] = os.path.exists(info['output_file'])
+    info['filename'] = os.path.basename(info['output_file'])
+    if info['exists']:
+        try:
+            info['size_bytes'] = os.path.getsize(info['output_file'])
+        except OSError:
+            info['size_bytes'] = None
+    return jsonify(info)
+
+
+@app.route('/api/observe/plot', methods=['GET'])
+def api_observe_plot():
+    """Render the last finished observation to a PNG.
+
+    Drawn on demand rather than when the observation ends: the run may finish
+    with nobody watching, and a plot nobody asked for is one more thing to keep
+    in step with the file.
+    """
+    import observation_plot
+    with last_observation_lock:
+        if last_observation is None:
+            return jsonify({'success': False,
+                            'error': 'No observation has finished yet'}), 404
+        info = dict(last_observation)
+    out = os.path.join(_SCRIPT_DIR, 'data', 'last_observation.png')
+    os.makedirs(os.path.dirname(out), exist_ok=True)
+    try:
+        observation_plot.plot_observation(
+            info['output_file'], out, name=info.get('name', ''),
+            mode=info.get('mode', 'spectrum'),
+            transit_minutes=info.get('transit_minutes'))
+    except FileNotFoundError as exc:
+        return jsonify({'success': False, 'error': str(exc)}), 404
+    except (RuntimeError, ValueError) as exc:
+        # Still recording, no spectra, or no h5py/matplotlib - all things the
+        # operator can act on, so the reason goes back rather than a 500.
+        return jsonify({'success': False, 'error': str(exc)}), 409
+    except Exception as exc:
+        log.error("Observation plot failed: %s", exc, exc_info=True)
+        return jsonify({'success': False, 'error': str(exc)}), 500
+    from flask import send_file
+    return send_file(out, mimetype='image/png')
+
+
+@app.route('/api/simulator/realise', methods=['POST'])
+def api_simulator_realise():
+    """Point the telescope at what the simulator is simulating.
+
+    Deliberately a narrow endpoint rather than a general /api/controller/<path>
+    proxy. Serving the simulator from this origin already hands that page the
+    scheduler's authority; forwarding arbitrary paths would hand it the whole
+    unauthenticated controller API as well, including the drive and
+    configuration endpoints. This exposes the two commands Realise means, with
+    their arguments validated here.
+
+    Both come from astro_simulator.py's Realise button, which keeps this
+    capability on the desktop:
+      H I map     - track the galactic coordinate.
+      continuum   - a drift scan: tracking off, parked where the source will be
+                    half a scan from now, so it crosses beam centre at the
+                    middle of the scan.
+    """
+    body = request.json or {}
+    try:
+        glon = float(body.get('l'))
+        glat = float(body.get('b'))
+    except (TypeError, ValueError):
+        return jsonify({'success': False, 'error': 'l and b must be numbers'}), 400
+    if not (math.isfinite(glon) and math.isfinite(glat)):
+        return jsonify({'success': False, 'error': 'l and b must be finite'}), 400
+
+    mode = body.get('mode', 'hi')
+    if mode not in ('hi', 'cont'):
+        return jsonify({'success': False, 'error': f'unknown mode {mode!r}'}), 400
+
+    glon = glon % 360.0
+    glat = max(-90.0, min(90.0, glat))
+
+    # Hand the receiver settings to the Observe tab whichever branch runs, and
+    # before either commands anything: the point of Realise is that the real
+    # observation is set up like the simulated one, and that should not depend
+    # on the telescope having been reachable at that moment. A target that is
+    # below the horizon right now is the clearest case - the pointing is
+    # refused, and the settings are exactly what is wanted on the Observe tab
+    # to book it for a time when it is up. Every reply from here on says the
+    # copy happened, so the page reports it rather than inferring it.
+    _record_observe_params(body, glon, glat, mode)
+
+    if mode == 'hi':
+        log.info("Realise: tracking galactic l=%.3f deg b=%.3f deg", glon, glat)
+        result = srt_api_call('/track/galactic',
+                              {'l': round(glon, 3), 'b': round(glat, 3)})
+        if result is None:
+            return jsonify({'params_copied': True, 'success': False,
+                            'error': 'SRT controller not reachable'}), 502
+        return jsonify({'params_copied': True, 'success': True, 'action': 'track',
+                        'l': glon, 'b': glat, 'controller': result})
+
+    if not EPHEM_AVAILABLE:
+        return jsonify({'params_copied': True, 'success': False,
+                        'error': 'PyEphem is unavailable, so the drift-scan '
+                                 'pointing cannot be computed'}), 501
+    try:
+        minutes = float(body.get('scan_minutes', 240.0))
+    except (TypeError, ValueError):
+        minutes = 240.0
+    if not math.isfinite(minutes):
+        minutes = 240.0
+    minutes = max(2.0, min(1435.0, minutes))
+
+    transit = datetime.now() + timedelta(minutes=minutes / 2.0)
+    pointing = compute_drift_pointing('galactic', glon, glat, transit)
+    if pointing is None:
+        return jsonify({'params_copied': True, 'success': False,
+                        'error': 'drift pointing could not be computed'}), 500
+    alt, az = pointing
+    # The controller enforces its own observing horizon and mount limits and
+    # says why it refused; this only rejects what is unambiguously pointless,
+    # so that "below the horizon in half a scan" reads as that rather than as a
+    # controller error.
+    if alt <= 0.0:
+        return jsonify({'params_copied': True, 'success': False,
+                        'error': f'the drift-scan start is below the horizon '
+                                 f'(alt {alt:.1f} deg) - not sent'}), 400
+
+    log.info("Realise: drift scan of galactic l=%.3f deg b=%.3f deg - parking "
+             "at alt %.2f deg az %.2f deg, transit in %.0f min",
+             glon, glat, alt, az, minutes / 2.0)
+    srt_api_call('/tracking/enable', {'enable': 0})
+    result = srt_api_call('/direct', {'alt': round(alt, 2), 'az': round(az, 2)})
+    if result is None:
+        return jsonify({'params_copied': True, 'success': False,
+                        'error': 'SRT controller not reachable'}), 502
+    return jsonify({'params_copied': True, 'success': True, 'action': 'drift',
+                    'l': glon, 'b': glat, 'alt': alt, 'az': az,
+                    'transit_minutes': minutes / 2.0, 'controller': result})
 
 
 @app.route('/api/schedule', methods=['GET'])

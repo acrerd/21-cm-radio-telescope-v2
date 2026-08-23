@@ -178,17 +178,27 @@ Frame / Realise / scan-length. Behaviour parity checklist:
 - Home button resets parameters and view (no matplotlib toolbar; a
   small custom button set: home, save).
 - live RA/Dec + Alt/Az pointing readout, 1 s tick.
-- ~~**Realise**~~: **dropped, 2026-08-21.** A hosted page cannot command
-  the controller: the published copy is HTTPS against a plain-HTTP
+- **Realise**: dropped 2026-08-21, **restored 2026-08-23** by the route
+  this note called for. A *hosted* page still cannot command the
+  controller: the published copy is HTTPS against a plain-HTTP
   controller (mixed content), the controller sends no
-  `Access-Control-Allow-Origin` and 404s the preflight, and it now sits
-  on a private link only the observatory host can reach. The CORS header
-  this plan called for is not a gap to close but a protection to keep —
-  same-origin policy is what stops any page visited on that host from
-  driving an unauthenticated telescope API. `astro_simulator.py
-  --controller` keeps the capability. See README. (Serving
-  this page *from the scheduler* Flask app is a later option that
-  sidesteps CORS entirely; the page stays static either way.)
+  `Access-Control-Allow-Origin` and 404s the preflight, and it sits on a
+  private link only the observatory host can reach. The CORS header the
+  original plan called for remains a protection to keep rather than a
+  gap to close — same-origin policy is what stops any page visited on
+  that host from driving an unauthenticated telescope API.
+
+  What changed is where the page is served from. The scheduler Flask app
+  now serves this folder at `/simulator/`, so the page is same origin
+  with the scheduler's API and no cross-origin request happens anywhere;
+  CORS stops being part of the picture rather than being configured. The
+  page stays static and stays publishable: it POSTs to
+  `/api/simulator/realise`, and shows the button only if a scheduler
+  answers `/api/telescope` at startup, so the published copy is
+  unchanged in behaviour. The scheduler owns the drift-scan geometry, so
+  where the dish parks comes from the configured observatory position
+  rather than this page's site boxes. `astro_simulator.py --controller`
+  keeps the desktop button. See README.
 - site: Glasgow defaults from `meta.json`; `?lat=&lon=&height=&site=`
   URL parameters replace the CLI flags.
 

@@ -415,6 +415,69 @@ export function setupUI(cfg) {
     if (e.key === "s" && state.last) save();
   });
 
+  // ---- realise: hand the simulated observation to the telescope -----
+  // Only reachable when this page is served by the scheduler, which is what
+  // makes it same origin with the API; main.js unhides the button after
+  // confirming that. The scheduler owns the astronomy for the drift case: the
+  // parking position depends on the real site, and the site boxes here are
+  // free text and settable from the URL, so a page parameter must not be what
+  // decides where a telescope points.
+  async function realise() {
+    const p = applyParams();
+    if (!p) return;
+    const drift = state.mode === "cont";
+    const scan = parseFloat(boxes.sd.value);
+    els.realiseBtn.disabled = true;
+    message(drift
+      ? `Realise: parking for a drift scan of l=${p.glon.toFixed(2)}°, ` +
+        `b=${p.glat.toFixed(2)}°...`
+      : `Realise: asking the SRT to track l=${p.glon.toFixed(2)}°, ` +
+        `b=${p.glat.toFixed(2)}°...`);
+    try {
+      const resp = await fetch("/api/simulator/realise", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          l: p.glon, b: p.glat, mode: drift ? "cont" : "hi",
+          scan_minutes: Number.isFinite(scan) ? scan : 240,
+          // The receiver settings the simulation is using, for the Observe
+          // tab. Read from sky rather than from the boxes: applyParams has
+          // just clamped, snapped f_c to the rest frequency where the display
+          // precision says it should, and resolved an empty channels box to
+          // the band's native count, so these are the numbers the spectrum on
+          // screen was actually computed with.
+          center_freq_mhz: sky.fc / 1e6,
+          bandwidth_mhz: sky.bwHz / 1e6,
+          channels: sky.nchan ?? nativeChannels(),
+          integration_time_s: sky.tint,
+        }),
+      });
+      const d = await resp.json().catch(() => ({}));
+      if (!resp.ok || !d.success) {
+        message(`Realise failed: ${d.error || "HTTP " + resp.status}`);
+      } else if (d.action === "drift") {
+        message(`  parked at alt ${d.alt.toFixed(1)}°, az ${d.az.toFixed(1)}°; ` +
+                `transit in ${d.transit_minutes.toFixed(0)} min`);
+      } else {
+        message(`  tracking l=${d.l.toFixed(2)}°, b=${d.b.toFixed(2)}°`);
+      }
+      // Reported from the server's own flag, not from whether the pointing
+      // succeeded: a target below the horizon right now is refused, and its
+      // settings are still exactly what the Observe tab wants in order to book
+      // it for a time when it is up.
+      if (d.params_copied) {
+        message("  receiver settings copied to the scheduler's Observe tab");
+      }
+    } catch (e) {
+      message(`Realise failed: ${e}`);
+    } finally {
+      els.realiseBtn.disabled = false;
+    }
+  }
+  // Guarded because a deployment is free to drop the button from its own copy
+  // of index.html; that should lose Realise, not the whole UI.
+  if (els.realiseBtn) els.realiseBtn.addEventListener("click", realise);
+
   // pointing readout
   function updateInfo() {
     const lv = parseFloat(boxes.l.value), bv = parseFloat(boxes.b.value);
