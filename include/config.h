@@ -49,9 +49,15 @@
 // DEFAULT VALUES - These are loaded into config struct at startup
 // =============================================================================
 
-// Hardware limits (degrees) - physical limit switches
+// Hardware limits (degrees). Three of these four are backed by a physical limit
+// switch. ALT_HW_MAX is NOT - there is no switch at the zenith, so it bounds
+// only where the firmware believes the dish is, and between the altitude home
+// switch and the top of travel there is no absolute reference of any kind. Lose
+// encoder counts and nothing in software or in hardware stops the dish going
+// past 90 deg; that happened on 2026-08-21 and was found radiometrically hours
+// later. See issue #16.
 #define DEFAULT_ALT_HW_MIN      0.0     // Altitude lower hardware limit (limit switch)
-#define DEFAULT_ALT_HW_MAX      90.0    // Altitude upper hardware limit (zenith)
+#define DEFAULT_ALT_HW_MAX      90.0    // Altitude upper limit (encoder count only - no switch)
 #define DEFAULT_AZ_HW_MIN       0.0     // Azimuth lower hardware limit (limit switch)
 #define DEFAULT_AZ_HW_MAX       355.0   // Azimuth upper hardware limit (limit switch)
 

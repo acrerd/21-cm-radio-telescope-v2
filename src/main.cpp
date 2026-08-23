@@ -827,15 +827,24 @@ void runSafetyChecks() {
 // =============================================================================
 
 // Two-tier limit system:
-// 1. Hardware limits - absolute physical stops, never exceeded
+// 1. Hardware limits - the ends of travel, rejected outright here
 // 2. Software limits - operational limits, can be exceeded by up to TOLERANCE
+//
+// "Hardware" is only half true, and the half that is false is altHwMax. Every
+// limit here is a comparison against positionAlt/positionAz, i.e. against the
+// encoder count, so all of them constrain where the firmware BELIEVES the dish
+// is. For altHwMin, azHwMin and azHwMax a physical switch backs that belief up.
+// For altHwMax there is no switch: it is not a physical stop and it HAS been
+// exceeded (2026-08-21, after the altitude axis lost counts). Treat a target
+// inside these limits as validated against the count, never as safe by
+// construction. See issue #16.
 //
 // Normal operation stays within software limits.
 // Exceeding software limits by up to TOLERANCE triggers a warning but is allowed.
 // Exceeding software limits by more than TOLERANCE, or any hardware limit, is rejected.
 
 bool isValidTarget(float altDeg, float azDeg) {
-    // Check HARDWARE limits first (absolute - never exceed)
+    // Check HARDWARE limits first (the ends of travel - reject, never clamp)
     if (altDeg < cfg.altHwMin || altDeg > cfg.altHwMax) {
         printAll("ERROR: Altitude ");
         printAllFloat(altDeg, 1);
