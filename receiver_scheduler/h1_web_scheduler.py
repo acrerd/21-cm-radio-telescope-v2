@@ -3257,7 +3257,7 @@ HTML_TEMPLATE = '''
             document.getElementById('tab-' + name).classList.add('active');
             if (name === 'config') loadConfig();
             if (name === 'log') loadLog();
-            if (name === 'sunscan') { pollSunScan(); loadCalModel(); }
+            if (name === 'sunscan') { pollSunScan(); pollCalDay(); loadCalModel(); }
             // Leaving the tab stops the loop; scheduleCameraRefresh cancels
             // itself whenever the camera tab is not the one on screen.
             if (name === 'horizon') pollHorizon();
@@ -3502,7 +3502,7 @@ HTML_TEMPLATE = '''
                     document.getElementById('ssProgress').style.display = 'block';
                     document.getElementById('ssStatus').innerHTML = '<span style="color:#00d4ff;">Starting sun scan...</span>';
                     document.getElementById('ssImageContainer').innerHTML = '';
-                    ssPollTimer = setInterval(pollSunScan, 2000);
+                    if (!ssPollTimer) ssPollTimer = setInterval(pollSunScan, 2000);
                 } else {
                     document.getElementById('ssStatus').innerHTML = '<span style="color:#ff4757;">Error: ' + (data.error || 'Unknown') + '</span>';
                 }
@@ -3518,6 +3518,11 @@ HTML_TEMPLATE = '''
         function pollSunScan() {
             fetch('/api/sunscan/status').then(r => r.json()).then(data => {
                 if (data.running) {
+                    // The scan may have been started by the schedule, by the
+                    // calibration day, or before this page was loaded, so the
+                    // poll starts its own timer rather than relying on the
+                    // Start button having done it.
+                    if (!ssPollTimer) ssPollTimer = setInterval(pollSunScan, 2000);
                     document.getElementById('ssStartBtn').style.display = 'none';
                     document.getElementById('ssStopBtn').style.display = 'inline-block';
                     document.getElementById('ssProgress').style.display = 'block';
@@ -3573,6 +3578,12 @@ HTML_TEMPLATE = '''
 
         // ---- Calibration Day ----
         let cdPollTimer = null;
+        // Number of scans on file, from /api/calday/data. Held here rather
+        // than written straight into cdStatus: loadCalModel() and pollCalDay()
+        // are both in flight when the tab opens, and whichever landed last
+        // used to win — which is how a running calibration day could be
+        // reported as "Idle".
+        let cdArchiveCount = null;
 
         function startCalDay() {
             const params = {
@@ -3613,6 +3624,11 @@ HTML_TEMPLATE = '''
         function pollCalDay() {
             fetch('/api/calday/status').then(r => r.json()).then(data => {
                 if (data.running) {
+                    // A calibration day outlives this page — it can be started
+                    // by the schedule, and it runs for a whole day across any
+                    // number of browser reloads. Start the timer from here so
+                    // the display follows the run rather than the button press.
+                    if (!cdPollTimer) cdPollTimer = setInterval(pollCalDay, 3000);
                     document.getElementById('cdStartBtn').style.display = 'none';
                     document.getElementById('cdStopBtn').style.display = 'inline-block';
                     let info = '<span style="color:#00d4ff;">Running</span> &mdash; ';
@@ -3644,7 +3660,9 @@ HTML_TEMPLATE = '''
                     document.getElementById('cdStopBtn').style.display = 'none';
                     if (cdPollTimer) { clearInterval(cdPollTimer); cdPollTimer = null; }
                     let info = '<span style="color:#888;">Idle</span>';
-                    if (data.scans_completed > 0) {
+                    if (cdArchiveCount) {
+                        info += ' &mdash; ' + cdArchiveCount + ' scans on file';
+                    } else if (data.scans_completed > 0) {
                         info += ' &mdash; ' + data.scans_completed + ' scans collected';
                     }
                     if (data.error) {
@@ -3716,6 +3734,7 @@ HTML_TEMPLATE = '''
                 document.getElementById('cdModel').innerHTML = '<span style="color:#888;">No model fitted yet.</span>';
                 document.getElementById('cdApplyBtn').style.display = 'none';
                 document.getElementById('cdPlotContainer').innerHTML = '';
+                cdArchiveCount = 0;
                 document.getElementById('cdStatus').innerHTML = '<span style="color:#888;">Data cleared.</span>';
             }).catch(e => {
                 document.getElementById('cdStatus').innerHTML = '<span style="color:#ff4757;">Clear request failed: ' + e + '</span>';
@@ -3746,8 +3765,12 @@ HTML_TEMPLATE = '''
                 }
             });
             fetch('/api/calday/data').then(r => r.json()).then(d => {
-                if (d.data && d.data.length > 0) {
-                    document.getElementById('cdStatus').innerHTML = '<span style="color:#888;">Idle &mdash; ' + d.data.length + ' scans collected</span>';
+                if (d.data) {
+                    cdArchiveCount = d.data.length;
+                    // Re-render through pollCalDay, which knows whether a
+                    // calibration day is running; writing "Idle" from here is
+                    // what made a live run look stopped.
+                    pollCalDay();
                 }
             });
         }
