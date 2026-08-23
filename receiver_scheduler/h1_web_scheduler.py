@@ -1701,6 +1701,11 @@ HTML_TEMPLATE = '''
         .form-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 15px; }
         .form-group { display: flex; flex-direction: column; }
         .form-group label { font-size: 11px; color: #888; margin-bottom: 5px; text-transform: uppercase; }
+        /* Unit symbols are case-sensitive: MHz, dB and s are not MHZ, DB and S,
+           and the uppercasing above would rewrite them into something that
+           means milli/decibel-nothing. Wrap the unit, not the whole label, so
+           the caps styling on the wording itself stays. */
+        .form-group label .unit { text-transform: none; }
         .form-group input, .form-group select { padding: 8px; border: 1px solid #333; border-radius: 5px; background: #0f0f23; color: #fff; font-size: 14px; }
         .form-group input:focus, .form-group select:focus { outline: none; border-color: #00d4ff; }
         .form-group.wide { grid-column: span 2; }
@@ -1832,19 +1837,19 @@ HTML_TEMPLATE = '''
                     </div>
                     <div class="section-title">Receiver Settings</div>
                     <div class="form-group">
-                        <label>Integration Time per Point (s)</label>
+                        <label>Integration Time per Point <span class="unit">(s)</span></label>
                         <input autocomplete="off" type="number" id="ssIntegration" min="0.1" max="60" step="0.1" value="3.0">
                     </div>
                     <div class="form-group">
-                        <label>Center Frequency (MHz)</label>
+                        <label>Center Frequency <span class="unit">(MHz)</span></label>
                         <input autocomplete="off" type="number" id="ssCenterFreq" step="any" value="1420.405752">
                     </div>
                     <div class="form-group">
-                        <label>Bandwidth (MHz)</label>
+                        <label>Bandwidth <span class="unit">(MHz)</span></label>
                         <input autocomplete="off" type="number" id="ssBandwidth" step="0.1" value="2.4">
                     </div>
                     <div class="form-group">
-                        <label>Gain (dB)</label>
+                        <label>Gain <span class="unit">(dB)</span></label>
                         <input autocomplete="off" type="number" id="ssGain" min="0" max="80" value="40">
                     </div>
                     <div class="form-group">
@@ -1946,11 +1951,11 @@ HTML_TEMPLATE = '''
                         <input autocomplete="off" type="number" id="hzAltMax" min="10" max="85" step="5" value="60">
                     </div>
                     <div class="form-group">
-                        <label>Settle after Slew (s)</label>
+                        <label>Settle after Slew <span class="unit">(s)</span></label>
                         <input autocomplete="off" type="number" id="hzSettle" min="0" max="10" step="0.5" value="2">
                     </div>
                     <div class="form-group">
-                        <label>Integration per Point (s)</label>
+                        <label>Integration per Point <span class="unit">(s)</span></label>
                         <input autocomplete="off" type="number" id="hzIntegration" min="0.1" max="10" step="0.1" value="2">
                     </div>
                     <div class="form-group">
@@ -2337,15 +2342,15 @@ HTML_TEMPLATE = '''
                 <div class="section-title">Receiver Settings</div>
                 <div class="form-grid">
                     <div class="form-group">
-                        <label>Center Frequency (MHz)</label>
+                        <label>Center Frequency <span class="unit">(MHz)</span></label>
                         <input autocomplete="off" type="number" id="obsCenterFreq" step="any" required value="1420.405752">
                     </div>
                     <div class="form-group">
-                        <label>Bandwidth (MHz)</label>
+                        <label>Bandwidth <span class="unit">(MHz)</span></label>
                         <input autocomplete="off" type="number" id="obsBandwidth" step="0.1" required value="2.4">
                     </div>
                     <div class="form-group">
-                        <label>Gain (dB)</label>
+                        <label>Gain <span class="unit">(dB)</span></label>
                         <input autocomplete="off" type="number" id="obsGain" min="0" max="80" required value="40">
                     </div>
                     <div class="form-group">
@@ -2359,7 +2364,7 @@ HTML_TEMPLATE = '''
                         </select>
                     </div>
                     <div class="form-group">
-                        <label>Integration Time (s)</label>
+                        <label>Integration Time <span class="unit">(s)</span></label>
                         <input autocomplete="off" type="number" id="obsIntegration" step="0.1" min="0.1" required value="3.0">
                     </div>
                     <div class="form-group">
