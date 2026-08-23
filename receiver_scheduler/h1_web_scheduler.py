@@ -1715,6 +1715,15 @@ HTML_TEMPLATE = '''
         .schedule-list { margin-top: 20px; }
         .schedule-item { background: #0f0f23; border: 1px solid #333; border-radius: 8px; padding: 15px; margin-bottom: 10px; display: grid; grid-template-columns: auto 1fr auto; gap: 15px; align-items: center; }
         .schedule-item.disabled { opacity: 0.5; }
+        /* scheduler_thread() will never pick this slot up - see
+           neverRunsReason(). Deliberately not styled the same as .disabled: an
+           operator has to be able to tell "I switched this off" from "its time
+           has gone", and both can be true of the same row at once. */
+        .schedule-item.wont-run { opacity: 0.55; border-style: dashed; border-color: #2b2b3d; }
+        .schedule-item.wont-run .field-value { color: #8b8b9c; }
+        .tag-wont-run { display: inline-block; margin-left: 8px; padding: 1px 6px; border-radius: 4px;
+                        background: #2b2b3d; color: #9a9aad; font-size: 10px; letter-spacing: 0.5px;
+                        text-transform: uppercase; vertical-align: middle; }
         .schedule-item .checkbox { width: 20px; height: 20px; cursor: pointer; }
         .schedule-info { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 8px; }
         .schedule-info .field { font-size: 12px; }
@@ -2723,17 +2732,60 @@ HTML_TEMPLATE = '''
             return obs.duration_minutes + ' min';
         }
 
+        // End of an entry's one and only slot, or null if it does not have one.
+        //
+        // This mirrors scheduler_thread() rather than reading the End column,
+        // so what the list greys out is exactly what the background thread
+        // would refuse to start. Two details have to be copied:
+        //
+        //   - the window is start_time + duration_minutes. end_date/end_time
+        //     are display fields; the scheduler never reads them, and nothing
+        //     keeps the two in step if someone edits one.
+        //   - a dateless entry is not a past entry. The scheduler fills in
+        //     today's date on every pass, so it comes round again every day
+        //     and must never be greyed out. (find_clashes() makes the same
+        //     distinction, for the same reason.)
+        function obsSlotEnd(obs) {
+            if (!obs.start_date || !obs.start_time) return null;
+            const start = new Date(`${obs.start_date}T${obs.start_time}`);
+            if (isNaN(start)) return null;
+            return new Date(start.getTime() + (obs.duration_minutes || 0) * 60000);
+        }
+
+        function isExpired(obs) {
+            const end = obsSlotEnd(obs);
+            // The 60 s is scheduler_thread()'s own cutoff: it needs more than a
+            // minute left in the window before it will take a slot, so the last
+            // minute is already dead time and is shown as such.
+            return end !== null && end.getTime() - Date.now() <= 60000;
+        }
+
+        // Why this entry can never run, or null if it still can. Expiry is the
+        // ordinary case. The other two are only reachable through a hand-edited
+        // or imported schedule.json - the Add form requires a start time - and
+        // there they are invisible faults: scheduler_thread() skips the entry
+        // outright while it sits in the list looking perfectly normal. Named
+        // rather than lumped in with "Expired", because "its time has passed"
+        // and "this entry is malformed" want different fixes.
+        function neverRunsReason(obs) {
+            if (!obs.start_time) return 'No start time';
+            if (obs.start_date && obsSlotEnd(obs) === null) return 'Bad date';
+            return isExpired(obs) ? 'Expired' : null;
+        }
+
         function renderSchedule() {
             const list = document.getElementById('scheduleList');
             if (schedule.length === 0) {
                 list.innerHTML = '<div class="empty-state">No observations scheduled.</div>';
                 return;
             }
-            list.innerHTML = schedule.map((obs, i) => `
-                <div class="schedule-item ${obs.enabled ? '' : 'disabled'} ${currentObs?.name === obs.name ? 'current-obs' : ''}">
+            list.innerHTML = schedule.map((obs, i) => {
+              const dead = neverRunsReason(obs);
+              return `
+                <div class="schedule-item ${obs.enabled ? '' : 'disabled'} ${dead ? 'wont-run' : ''} ${currentObs?.name === obs.name ? 'current-obs' : ''}">
                     <input autocomplete="off" type="checkbox" class="checkbox" ${obs.enabled ? 'checked' : ''} onchange="toggleEnabled(${i})">
                     <div class="schedule-info">
-                        <div class="field"><div class="field-label">Name</div><div class="field-value">${obs.name}</div></div>
+                        <div class="field"><div class="field-label">Name</div><div class="field-value">${obs.name}${dead ? '<span class="tag-wont-run">' + dead + '</span>' : ''}</div></div>
                         <div class="field"><div class="field-label">Start</div><div class="field-value">${obs.start_date || 'Today'} ${obs.start_time}</div></div>
                         <div class="field"><div class="field-label">End</div><div class="field-value">${formatEndTime(obs)}</div></div>
                         <div class="field"><div class="field-label">Coordinates</div><div class="field-value">${formatCoordDisplay(obs)}</div></div>
@@ -2750,7 +2802,8 @@ HTML_TEMPLATE = '''
                         <button class="btn btn-danger btn-icon" onclick="deleteObs(${i})" title="Delete">✕</button>
                     </div>
                 </div>
-            `).join('');
+              `;
+            }).join('');
         }
 
         function openAddModal() {
@@ -3113,15 +3166,13 @@ HTML_TEMPLATE = '''
         }
 
         function clearPast() {
-            const now = new Date();
             const before = schedule.length;
-            schedule = schedule.filter(obs => {
-                const date = obs.start_date || localDateStr(now);
-                const dur = obs.duration_minutes || 0;
-                const start = new Date(`${date}T${obs.start_time || '00:00'}`);
-                const end = new Date(start.getTime() + dur * 60000);
-                return end > now;
-            });
+            // Removes exactly the rows badged "Expired" - past entries only,
+            // not the malformed ones neverRunsReason() also greys out, since
+            // those want fixing rather than silently deleting. It used to
+            // substitute today's date for a dateless entry, which deleted
+            // recurring entries that were still going to run tomorrow.
+            schedule = schedule.filter(obs => !isExpired(obs));
             const removed = before - schedule.length;
             if (removed > 0) {
                 renderSchedule();
