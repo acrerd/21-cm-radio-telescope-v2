@@ -1177,6 +1177,7 @@ def start_observation(obs: dict, duration_override: int = None) -> bool:
     For all others: commands telescope + starts SDR receiver.
     """
     global current_process, current_observation, observation_end_time
+    global current_receiver_log
     global observation_starting, starting_observation_name
 
     # Calibration day: runs as a background thread, not a subprocess
@@ -1299,17 +1300,43 @@ def start_observation(obs: dict, duration_override: int = None) -> bool:
             '--sample-rate', str(obs.get('bandwidth_mhz', 2.4) * 1e6),
         ]
 
+        # Give the receiver its own log file rather than letting it inherit the
+        # scheduler's stdout. Inherited, its output lands wherever the
+        # scheduler was launched from - which on 2026-08-23 meant a Qt
+        # "could not connect to display" failure went to a file nobody opens,
+        # while scheduler.log and the Log tab showed a clean start and no hint
+        # that the receiver had died a second later.
+        receiver_log_path = os.path.splitext(output_file)[0] + '.receiver.log'
+        try:
+            receiver_log = open(receiver_log_path, 'ab', buffering=0)
+        except OSError as exc:
+            log.warning("Cannot write the receiver log %s (%s); its output "
+                        "will be lost", receiver_log_path, exc)
+            receiver_log = None
+
         with process_lock:
             if start_abort.is_set():
                 log.info("Observation start aborted")
+                if receiver_log is not None:
+                    receiver_log.close()
                 return False
             try:
                 current_process = subprocess.Popen(
                     cmd, env=env,
+                    stdout=receiver_log or None,
+                    stderr=subprocess.STDOUT if receiver_log else None,
                     cwd=os.path.abspath(os.path.join(_SCRIPT_DIR, "..")))
+                current_receiver_log = receiver_log_path if receiver_log else None
             except Exception as e:
                 log.error("Error starting observation: %s", e)
+                if receiver_log is not None:
+                    receiver_log.close()
                 return False
+            finally:
+                # The child holds its own descriptor; ours is not needed and
+                # would keep the file open across the whole observation.
+                if receiver_log is not None:
+                    receiver_log.close()
             now = datetime.now()
             duration = duration_override or obs.get('duration_minutes', 30)
             observation_end_time = now + timedelta(minutes=duration)
@@ -1340,6 +1367,37 @@ last_observation: Optional[dict] = None
 last_observation_lock = threading.Lock()
 
 
+# Where the running receiver's output is going, so its last words can be put
+# into the operational record when it dies.
+current_receiver_log: Optional[str] = None
+_RECEIVER_LOG_TAIL_LINES = 12
+
+
+def _log_receiver_output():
+    """Copy the tail of the receiver's own log into scheduler.log.
+
+    Only on an unexpected exit. The receiver is chatty in normal running and
+    the whole point of giving it a file of its own was to keep that out of the
+    operational record; what belongs there is why it stopped.
+    """
+    path = current_receiver_log
+    if not path or not os.path.exists(path):
+        return
+    try:
+        with open(path, 'r', errors='replace') as fh:
+            lines = fh.read().splitlines()
+    except OSError as exc:
+        log.warning("Could not read the receiver log %s: %s", path, exc)
+        return
+    tail = [ln for ln in lines if ln.strip()][-_RECEIVER_LOG_TAIL_LINES:]
+    if not tail:
+        log.error("The receiver wrote nothing to %s before exiting", path)
+        return
+    log.error("Last words from the receiver (%s):", path)
+    for line in tail:
+        log.error("    %s", line)
+
+
 def _record_finished_observation(obs: Optional[dict]):
     """Remember where a finished observation put its data, and what shape it is."""
     global last_observation
@@ -1363,12 +1421,20 @@ def _record_finished_observation(obs: Optional[dict]):
             'started_at': obs.get('started_at'),
             'ended_at': datetime.now().isoformat(timespec='seconds'),
         }
-    log.info("Observation data left in %s", obs['output_file'])
+    # A receiver that died before opening its file leaves nothing behind, and
+    # saying otherwise sends whoever reads this looking for a file that was
+    # never written.
+    if os.path.exists(obs['output_file']):
+        log.info("Observation data left in %s", obs['output_file'])
+    else:
+        log.warning("No data file was written: %s does not exist",
+                    obs['output_file'])
 
 
 def stop_observation() -> bool:
     """Stop current observation."""
     global current_process, current_observation, observation_end_time
+    global current_receiver_log
 
     # Abort any in-flight start (pointing/slew wait runs outside the lock);
     # the starter notices within one poll cycle and abandons the launch.
@@ -1441,6 +1507,7 @@ def stop_observation() -> bool:
         _record_finished_observation(current_observation)
         current_process = None
         current_observation = None
+        current_receiver_log = None
         observation_end_time = None
         return True
 
@@ -1623,6 +1690,44 @@ def scheduler_thread():
             if observation_end_time and now >= observation_end_time:
                 stop_observation()
 
+            # A receiver that exits by itself ends the observation, whether or
+            # not a schedule slot is still due.
+            #
+            # There is a branch further down that handles this, but only while
+            # due_obs is set, so it never sees a Run Now observation - the kind
+            # the Observe tab starts. On 2026-08-23 one of those died on
+            # startup (no DISPLAY, so QApplication could not initialise) and
+            # nothing reaped it: no stop, no end_action, no record for the
+            # Observe tab, and the mount went on tracking a target for an
+            # observation that had stopped existing. /api/status reported
+            # "not running" over the top of all of it.
+            #
+            # Read the process under the lock and act outside it, because
+            # stop_observation takes the same lock.
+            with process_lock:
+                proc = current_process
+                starting = observation_starting
+                dead_obs = dict(current_observation) if current_observation else None
+            if proc is not None and not starting:
+                returncode = proc.poll()
+                if returncode is not None:
+                    log.error("Receiver for '%s' exited on its own (return "
+                              "code %s) - ending the observation",
+                              (dead_obs or {}).get('name', '?'), returncode)
+                    _log_receiver_output()
+                    # Count it against the slot before clearing the state.
+                    # Reaping here means the branch below no longer sees the
+                    # dead process, so without this a scheduled observation
+                    # whose receiver crashes on startup would be restarted
+                    # every 5 s for the rest of its slot, slewing the telescope
+                    # each time. _record_start_failure keys on
+                    # (name, start_date, start_time), which a Run Now entry
+                    # also has - blank date and time - and nothing consults for
+                    # it, so counting is harmless there.
+                    if dead_obs is not None:
+                        _record_start_failure(dead_obs, "receiver exited early")
+                    stop_observation()
+
             # Find which observation should be active right now
             due_obs = None
             due_scheduled = None
@@ -1679,15 +1784,12 @@ def scheduler_thread():
                     if not start_observation(due_obs, duration_override=due_remaining):
                         _record_start_failure(due_obs, "failed to start")
                 else:
-                    # A dead process while this slot is still due means the
-                    # receiver exited early. Count it and clean up, so a
-                    # crash-looping receiver is not respawned every 5 s
-                    # (hammering the telescope with slews) for the rest of
-                    # the slot.
-                    if (current_observation is not None
-                            and current_observation.get('name', '') == due_obs.get('name', '')):
-                        _record_start_failure(due_obs, "receiver exited early")
-                        stop_observation()
+                    # A receiver that exited early has already been counted and
+                    # cleaned up by the reaping above, which does it for every
+                    # observation rather than only for one whose slot is still
+                    # due. The backoff below is what stops a crash-looping
+                    # receiver being respawned every 5 s (hammering the
+                    # telescope with slews) for the rest of the slot.
                     if not _too_many_start_failures(due_obs):
                         diff = (now - due_scheduled).total_seconds()
                         if diff < 60:
