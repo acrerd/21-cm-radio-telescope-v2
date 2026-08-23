@@ -11,15 +11,55 @@ and waterfall, and writes integrated data to HDF5.
 import argparse
 import numpy as np
 import h5py
+import signal
+import threading
 import time
 import os
+import sys
 from datetime import datetime, timezone
 from collections import deque
 
 from gnuradio import gr, fft, blocks, analog
 from gnuradio.fft import window
-from PyQt5 import QtWidgets, QtCore
-import pyqtgraph as pg
+
+# Qt is for the console display only. --headless runs the whole acquisition
+# and recording path without it, so an observation over ssh neither needs a
+# display nor needs PyQt installed at all.
+#
+# The flag is read from argv here, before the import, rather than left to
+# argparse in main(). Importing PyQt5 and pyqtgraph is not free even when
+# nothing is drawn - it maps the Qt5 core, gui and widget libraries into every
+# observation - and an import cannot be undone once main() has started. Crude,
+# but the alternative is splitting the GUI into its own module, and this keeps
+# the receiver one file.
+_WANT_GUI = '--headless' not in sys.argv
+try:
+    if not _WANT_GUI:
+        raise ImportError("--headless: Qt deliberately not imported")
+    from PyQt5 import QtWidgets, QtCore
+    import pyqtgraph as pg
+    QT_AVAILABLE = True
+except ImportError as _qt_import_error:            # pragma: no cover
+    QT_AVAILABLE = False
+    _QT_IMPORT_ERROR = _qt_import_error
+    # The GUI classes below subclass Qt types, so give them something to
+    # subclass. Any attempt to instantiate one fails loudly; --headless never
+    # touches them.
+    class _QtMissing:
+        def __init__(self, *args, **kwargs):
+            raise RuntimeError(
+                "PyQt5/pyqtgraph are not available, so the receiver GUI cannot "
+                f"run ({_QT_IMPORT_ERROR}). Use --headless to record without "
+                "it.")
+
+    class _QtNamespace:
+        QMainWindow = _QtMissing
+        AxisItem = _QtMissing
+
+        def __getattr__(self, name):
+            return _QtMissing
+
+    QtWidgets = QtCore = pg = _QtNamespace()
 
 # Configuration (can be overridden via environment variables)
 CENTER_FREQ = float(os.environ.get('H1_CENTER_FREQ', 1420.405752e6))
@@ -208,6 +248,168 @@ class GNURadioFlowgraph(gr.top_block):
     def get_spectrum(self):
         """Get current integrated spectrum from probe."""
         return np.array(self.probe.level())
+
+
+def init_hdf5(filename, freq_axis_hz, fft_size, sdr_type, center_freq,
+              sample_rate, gain):
+    """Create the observation file and its datasets.
+
+    Module level and Qt-free so the window and the headless recorder write
+    byte-identical files - the layout, the attributes and the scheduler
+    metadata are the thing downstream code reads, and two copies of it would
+    drift apart.
+    """
+    hf = h5py.File(filename, 'w')
+
+    hf.create_dataset('frequency_hz', data=freq_axis_hz)
+
+    hf.create_dataset('spectra_linear',
+                      shape=(0, fft_size),
+                      maxshape=(None, fft_size),
+                      dtype='float32',
+                      chunks=(1, fft_size),
+                      compression='gzip',
+                      compression_opts=4)
+
+    hf.create_dataset('timestamps',
+                      shape=(0,),
+                      maxshape=(None,),
+                      dtype='float64')
+
+    hf.create_dataset('integration_times',
+                      shape=(0,),
+                      maxshape=(None,),
+                      dtype='float32')
+
+    hf.attrs['sdr_type'] = sdr_type
+    hf.attrs['center_freq_hz'] = center_freq
+    hf.attrs['sample_rate_hz'] = sample_rate
+    hf.attrs['fft_size'] = fft_size
+    hf.attrs['gain_db'] = gain
+    hf.attrs['nominal_integration_time'] = INTEGRATION_TIME
+    hf.attrs['created'] = datetime.now(timezone.utc).isoformat()
+
+    # Observation metadata from scheduler
+    import json as _json
+    obs_meta = os.environ.get('H1_OBS_METADATA', '')
+    if obs_meta:
+        try:
+            meta = _json.loads(obs_meta)
+            for key, val in meta.items():
+                if isinstance(val, bool):
+                    hf.attrs[key] = int(val)
+                elif val is not None and val != '':
+                    hf.attrs[key] = val
+        except Exception:
+            pass
+
+    return hf
+
+
+def append_spectrum(hf, avg_linear, timestamp, integration_time, fft_size):
+    """Append one integrated spectrum, flushing so a reader sees it promptly."""
+    n = hf['spectra_linear'].shape[0]
+    hf['spectra_linear'].resize((n + 1, fft_size))
+    hf['timestamps'].resize((n + 1,))
+    hf['integration_times'].resize((n + 1,))
+    hf['spectra_linear'][n, :] = avg_linear.astype(np.float32)
+    hf['timestamps'][n] = timestamp
+    hf['integration_times'][n] = integration_time
+    hf.flush()
+    return n + 1
+
+
+class HeadlessRecorder:
+    """Acquire and record with no Qt at all.
+
+    The observing path must not depend on a display or on PyQt being
+    importable: the observatory is worked over ssh, and an unattended
+    observation that needs a desktop session is one that fails at 03:00. This
+    runs the same GNURadioFlowgraph the window runs - that class has never had
+    any Qt in it - and replaces only what the window was providing around it:
+    a 10 Hz tick to accumulate spectra, an integration-period tick to write
+    one, and the HDF5 file. Both front ends go through init_hdf5 and
+    append_spectrum, so the files are identical.
+
+    Running the GUI offscreen (QT_QPA_PLATFORM=offscreen) also worked and was
+    the stopgap, but it kept Qt as a hard dependency of every observation and
+    spent the whole run rebuilding a waterfall image for nobody to look at.
+    """
+
+    TICK_S = 0.1                      # 10 Hz, matching the GUI's accumulation
+
+    def __init__(self, sdr_type='b210', sample_rate=None, gain=None,
+                 output_file=None):
+        defaults = SDR_DEFAULTS.get(sdr_type, SDR_DEFAULTS['demo'])
+        self.sample_rate = sample_rate if sample_rate else defaults['sample_rate']
+        self.gain = gain if gain else defaults['gain']
+        self.center_freq = CENTER_FREQ
+        self.fft_size = FFT_SIZE
+        self.integration_time = INTEGRATION_TIME
+        self.output_file = output_file or OUTPUT_FILE
+
+        self.flowgraph = GNURadioFlowgraph(
+            sdr_type, self.sample_rate, self.center_freq, self.gain,
+            self.fft_size)
+        self.sdr_type = self.flowgraph.sdr_type
+        self.sample_rate = self.flowgraph.sample_rate
+
+        freq_offset = np.fft.fftshift(
+            np.fft.fftfreq(self.fft_size, 1.0 / self.sample_rate))
+        self.freq_axis_hz = self.center_freq + freq_offset
+
+        self.hf = init_hdf5(self.output_file, self.freq_axis_hz, self.fft_size,
+                            sdr_type=self.sdr_type,
+                            center_freq=self.center_freq,
+                            sample_rate=self.sample_rate, gain=self.gain)
+        self.spectrum_count = 0
+        self._stop = threading.Event()
+
+    def request_stop(self, *_args):
+        """Signal handler and API: finish the current tick and shut down."""
+        self._stop.set()
+
+    def run(self):
+        """Acquire until stopped, writing one spectrum per integration time."""
+        print(f"Recording to {self.output_file}", flush=True)
+        print(f"  {self.sdr_type}, {self.sample_rate/1e6:.3f} Msps, "
+              f"{self.center_freq/1e6:.6f} MHz, gain {self.gain}, "
+              f"{self.fft_size} channels, tau {self.integration_time}s",
+              flush=True)
+        self.flowgraph.start()
+        accumulator = None
+        count = 0
+        period_start = time.time()
+        try:
+            while not self._stop.is_set():
+                self._stop.wait(self.TICK_S)
+                try:
+                    spectrum_db = self.flowgraph.get_spectrum()
+                except Exception as exc:
+                    print(f"Error reading the flowgraph: {exc}", flush=True)
+                    break
+                if len(spectrum_db) == self.fft_size:
+                    # The probe reports dB; averaging has to happen in linear
+                    # power or the mean is wrong, which is what the GUI does
+                    # too.
+                    linear = 10 ** (np.asarray(spectrum_db) / 10)
+                    accumulator = linear.copy() if accumulator is None \
+                        else accumulator + linear
+                    count += 1
+
+                now = time.time()
+                if now - period_start >= self.integration_time and count:
+                    avg = accumulator / count
+                    self.spectrum_count = append_spectrum(
+                        self.hf, avg, now, now - period_start, self.fft_size)
+                    accumulator, count = None, 0
+                    period_start = now
+        finally:
+            self.flowgraph.stop()
+            self.flowgraph.wait()
+            self.hf.close()
+            print(f"Total spectra saved: {self.spectrum_count}", flush=True)
+            print(f"Data written to: {self.output_file}", flush=True)
 
 
 class VelocityAxisItem(pg.AxisItem):
@@ -1137,51 +1339,9 @@ class H1ReceiverWindow(QtWidgets.QMainWindow):
 
     def _init_hdf5(self, filename):
         """Initialize HDF5 file."""
-        hf = h5py.File(filename, 'w')
-
-        hf.create_dataset('frequency_hz', data=self.freq_axis_hz)
-
-        hf.create_dataset('spectra_linear',
-                          shape=(0, self.fft_size),
-                          maxshape=(None, self.fft_size),
-                          dtype='float32',
-                          chunks=(1, self.fft_size),
-                          compression='gzip',
-                          compression_opts=4)
-
-        hf.create_dataset('timestamps',
-                          shape=(0,),
-                          maxshape=(None,),
-                          dtype='float64')
-
-        hf.create_dataset('integration_times',
-                          shape=(0,),
-                          maxshape=(None,),
-                          dtype='float32')
-
-        hf.attrs['sdr_type'] = self.sdr_type
-        hf.attrs['center_freq_hz'] = self.center_freq
-        hf.attrs['sample_rate_hz'] = self.sample_rate
-        hf.attrs['fft_size'] = self.fft_size
-        hf.attrs['gain_db'] = self.gain
-        hf.attrs['nominal_integration_time'] = INTEGRATION_TIME
-        hf.attrs['created'] = datetime.now(timezone.utc).isoformat()
-
-        # Observation metadata from scheduler
-        import json as _json
-        obs_meta = os.environ.get('H1_OBS_METADATA', '')
-        if obs_meta:
-            try:
-                meta = _json.loads(obs_meta)
-                for key, val in meta.items():
-                    if isinstance(val, bool):
-                        hf.attrs[key] = int(val)
-                    elif val is not None and val != '':
-                        hf.attrs[key] = val
-            except Exception:
-                pass
-
-        return hf
+        return init_hdf5(filename, self.freq_axis_hz, self.fft_size,
+                         sdr_type=self.sdr_type, center_freq=self.center_freq,
+                         sample_rate=self.sample_rate, gain=self.gain)
 
     def _next_hdf5_filename(self, reason):
         """Create a unique segment filename for changed spectral geometry."""
@@ -1238,15 +1398,8 @@ class H1ReceiverWindow(QtWidgets.QMainWindow):
             if self.recording:
                 # Save to HDF5 in linear power (radiometric accuracy)
                 self._ensure_hdf5_geometry()
-                n = self.hf['spectra_linear'].shape[0]
-                self.hf['spectra_linear'].resize((n + 1, self.fft_size))
-                self.hf['timestamps'].resize((n + 1,))
-                self.hf['integration_times'].resize((n + 1,))
-
-                self.hf['spectra_linear'][n, :] = avg_linear.astype(np.float32)
-                self.hf['timestamps'][n] = timestamp
-                self.hf['integration_times'][n] = integration_time
-                self.hf.flush()
+                append_spectrum(self.hf, avg_linear, timestamp,
+                                integration_time, self.fft_size)
 
             # Add to waterfall (one row per integration, in dB for display)
             spectrum_db = 10 * np.log10(avg_linear)
@@ -1330,8 +1483,31 @@ Examples:
         default=None,
         help='Sample rate in Hz (default: 2.4e6 for B210, 2.048e6 for RTL-SDR)'
     )
+    parser.add_argument(
+        '--headless',
+        action='store_true',
+        help='Record without any GUI: no Qt, no display needed. This is how '
+             'scheduled and Observe-tab observations run.'
+    )
 
     args = parser.parse_args()
+
+    if args.headless:
+        # No QApplication, no widgets, no event loop. Ends on SIGTERM, which
+        # is what stop_observation sends, or on Ctrl-C.
+        recorder = HeadlessRecorder(sdr_type=args.sdr,
+                                    sample_rate=args.sample_rate,
+                                    gain=args.gain)
+        signal.signal(signal.SIGTERM, recorder.request_stop)
+        signal.signal(signal.SIGINT, recorder.request_stop)
+        recorder.run()
+        return
+
+    if not QT_AVAILABLE:
+        print("The receiver GUI needs PyQt5 and pyqtgraph, which are not "
+              f"importable here ({_QT_IMPORT_ERROR}).\n"
+              "Use --headless to record without a display.", file=sys.stderr)
+        raise SystemExit(1)
 
     # Create Qt application
     app = QtWidgets.QApplication([])

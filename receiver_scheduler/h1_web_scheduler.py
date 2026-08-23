@@ -1261,23 +1261,6 @@ def start_observation(obs: dict, duration_override: int = None) -> bool:
 
         output_file = generate_filename(obs)
         env = os.environ.copy()
-        # An observation must not need a display. The receiver builds a
-        # QApplication whatever it is doing, so without this it inherits the
-        # scheduler's environment and dies at startup wherever there is no X
-        # server - over ssh, from a service, from any headless launch - taking
-        # every unattended overnight observation with it. That is how a
-        # scheduled run failed on 2026-08-23: "could not connect to display",
-        # a second after starting, with the mount left tracking.
-        #
-        # Qt's offscreen platform runs the whole application with its windows
-        # rendered to a surface nobody sees. Measured: identical data, no
-        # warnings, DISPLAY unset entirely. Only the manual receiver boot
-        # (/api/receiver/start) is a graphical thing, and it is left alone -
-        # its entire purpose is the window.
-        #
-        # setdefault, not assignment: an operator who exports QT_QPA_PLATFORM
-        # deliberately, to watch a scheduled run at the console, keeps it.
-        env.setdefault('QT_QPA_PLATFORM', 'offscreen')
         env['H1_OUTPUT_FILE'] = output_file
         env['H1_CENTER_FREQ'] = str(obs.get('center_freq_mhz', 1420.405752) * 1e6)
         env['H1_FFT_SIZE'] = str(obs.get('channels', 4096))
@@ -1312,6 +1295,12 @@ def start_observation(obs: dict, duration_override: int = None) -> bool:
         cmd = [
             python_exe,
             RECEIVER_SCRIPT,
+            # No GUI, and no Qt imported at all: an observation must not depend
+            # on a display or on a desktop session, because the host is worked
+            # over ssh and an unattended run at 03:00 has neither. The manual
+            # receiver boot (/api/receiver/start) keeps the window - that is
+            # what it is for.
+            '--headless',
             '--sdr', obs.get('sdr_type', 'b210'),
             '--gain', str(obs.get('gain_db', 40)),
             '--sample-rate', str(obs.get('bandwidth_mhz', 2.4) * 1e6),
