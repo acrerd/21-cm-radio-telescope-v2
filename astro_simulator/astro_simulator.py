@@ -43,7 +43,8 @@ from astropy.wcs import WCS
 from continuum_compress import CONTINUUM_DEFAULT, load_continuum
 from hi4pi_compress import COMPACT_DEFAULT, load_compact
 from hi4pi_data import ensure_file
-from instrument import beam_fwhm_deg
+from instrument import (SITE_HEIGHT_M, SITE_LAT_DEG, SITE_LON_DEG,
+                        SITE_NAME as SITE_NAME_DEFAULT, beam_fwhm_deg)
 
 # the cursor moving outside the Mollweide ellipse makes matplotlib's
 # inverse projection hit arcsin(|x| > 1); harmless, so keep it quiet
@@ -55,10 +56,10 @@ warnings.filterwarnings("ignore",
 # ---- observer site: edit these defaults, or override at runtime with
 # ---- --site/--lat/--lon/--height (visibility loops, live horizon and
 # ---- the topocentric frame all follow automatically)
-SITE_NAME = "Glasgow"
-SITE_LAT = 55.87        # deg, +N
-SITE_LON = -4.29        # deg, +E
-SITE_HEIGHT = 50.0      # m
+SITE_NAME = SITE_NAME_DEFAULT
+SITE_LAT = SITE_LAT_DEG      # deg, +N
+SITE_LON = SITE_LON_DEG      # deg, +E
+SITE_HEIGHT = SITE_HEIGHT_M  # m
 SITE_LOC = EarthLocation(lat=SITE_LAT * u.deg, lon=SITE_LON * u.deg,
                          height=SITE_HEIGHT * u.m)
 

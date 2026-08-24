@@ -30,6 +30,9 @@ import urllib.request
 import urllib.error
 import urllib.parse
 
+# The observatory's surveyed position, written down in exactly one place.
+from observatory import SITE_HEIGHT_M, SITE_LAT_DEG, SITE_LON_DEG
+
 try:
     import ephem
     EPHEM_AVAILABLE = True
@@ -104,8 +107,8 @@ _DEFAULT_CONFIG = {
     "receiver_python_path": "/home/astro/radioconda/bin/python",
     # The true site, identical to OBSERVER_LAT/OBSERVER_LON in
     # esp32_controller_arduino/src/config.h and to sun_scan.py.
-    "observer_lat": 55.902426,
-    "observer_lon": -4.307865,
+    "observer_lat": SITE_LAT_DEG,
+    "observer_lon": SITE_LON_DEG,
     "observer_elevation": 50,
     "min_elevation": 10.0,
     # The obstructed horizon, as [az_min, az_max, min_sun_alt] sectors. The Sun
@@ -5598,8 +5601,8 @@ def _run_rf_calibration(job, params):
                           "chosen_by": "operator"}
                 alt, az = rf_calibration._sky_position(
                     target["glon"], target["glat"], datetime.now(timezone.utc),
-                    float(cfg.get("observer_lat", 55.902426)),
-                    float(cfg.get("observer_lon", -4.307865)),
+                    float(cfg.get("observer_lat", SITE_LAT_DEG)),
+                    float(cfg.get("observer_lon", SITE_LON_DEG)),
                     float(cfg.get("observer_elevation", 50)))
                 target["alt_deg"] = float(alt[0])
                 target["az_deg"] = float(az[0])
@@ -5610,8 +5613,8 @@ def _run_rf_calibration(job, params):
             else:
                 rf_state["stage"] = "choosing a pointing"
                 target = rf_calibration.calibration_target_now(
-                    lat=float(cfg.get("observer_lat", 55.902426)),
-                    lon=float(cfg.get("observer_lon", -4.307865)),
+                    lat=float(cfg.get("observer_lat", SITE_LAT_DEG)),
+                    lon=float(cfg.get("observer_lon", SITE_LON_DEG)),
                     elevation_m=float(cfg.get("observer_elevation", 50)),
                     obstruction_sectors=cfg.get("obstruction_sectors"))
                 if not target:
@@ -5704,8 +5707,8 @@ def api_rf_target():
     cfg = load_config()
     try:
         targets = rf_calibration.calibration_candidates_now(
-            lat=float(cfg.get("observer_lat", 55.902426)),
-            lon=float(cfg.get("observer_lon", -4.307865)),
+            lat=float(cfg.get("observer_lat", SITE_LAT_DEG)),
+            lon=float(cfg.get("observer_lon", SITE_LON_DEG)),
             elevation_m=float(cfg.get("observer_elevation", 50)),
             obstruction_sectors=cfg.get("obstruction_sectors"))
     except Exception as exc:                              # noqa: BLE001

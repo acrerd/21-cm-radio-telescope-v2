@@ -38,6 +38,8 @@ from datetime import datetime, timezone
 import numpy as np
 
 import bandpass
+from observatory import (SITE_HEIGHT_M, SITE_LAT_DEG, SITE_LON_DEG,
+                         SITE_NAME)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 CALIBRATION_FILE = os.path.join(HERE, "gain_calibration.json")
@@ -162,8 +164,8 @@ def _in_obstructed_sector(az, alt, sectors):
     return False
 
 
-def calibration_target_now(when=None, lat=55.902426, lon=-4.307865,
-                           elevation_m=50.0, min_alt_deg=MIN_TARGET_ALT_DEG,
+def calibration_target_now(when=None, lat=SITE_LAT_DEG, lon=SITE_LON_DEG,
+                           elevation_m=SITE_HEIGHT_M, min_alt_deg=MIN_TARGET_ALT_DEG,
                            obstruction_sectors=None, lon_step_deg=6.0,
                            lat_step_deg=6.0, max_abs_glat=MAX_ABS_GLAT_DEG,
                            sim=None, fallback_floors=FALLBACK_ALT_FLOORS_DEG):
@@ -250,8 +252,8 @@ def compass_point(az_deg):
     return COMPASS[int((float(az_deg) % 360.0) / 22.5 + 0.5) % 16]
 
 
-def calibration_candidates_now(when=None, lat=55.902426, lon=-4.307865,
-                               elevation_m=50.0,
+def calibration_candidates_now(when=None, lat=SITE_LAT_DEG, lon=SITE_LON_DEG,
+                               elevation_m=SITE_HEIGHT_M,
                                min_alt_deg=MIN_TARGET_ALT_DEG,
                                obstruction_sectors=None, lon_step_deg=4.0,
                                lat_step_deg=4.0,
@@ -328,11 +330,11 @@ def load_simulator(bandwidth_hz=2.0e6, dish_m=3.0, nchan=None, compact=None,
         sys.path.insert(0, SIMULATOR_DIR)
     import astro_simulator as A
 
-    # The simulator ships with a nearby default site (55.87, -4.29); this is the
-    # observatory's surveyed position. It moves the barycentric correction by
-    # only a few m/s at 3.6 km, but the velocity frame is not the place to leave
-    # a known position approximate.
-    A.set_site("Acre Road", 55.902426, -4.307865, 50.0)
+    # Same surveyed position the rest of the scheduler uses. The simulator's
+    # own default now comes from the same constant, so this is belt and braces
+    # rather than a correction - but it keeps the frame explicit at the point
+    # where a velocity correction is about to be computed.
+    A.set_site(SITE_NAME, SITE_LAT_DEG, SITE_LON_DEG, SITE_HEIGHT_M)
 
     sim = A.DishSimulator(
         cube_path=None, bw_hz=bandwidth_hz, dish_m=dish_m, eta=eta,

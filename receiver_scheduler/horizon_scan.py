@@ -50,6 +50,8 @@ from datetime import datetime, timezone
 
 import numpy as np
 
+from observatory import SITE_LAT_DEG, SITE_LON_DEG
+
 from sun_scan import (MATPLOTLIB_AVAILABLE, ScanCancelled, _cancellable_sleep,
                       _check_cancelled, _load_scheduler_config, _slew_to,
                       _srt_api, _style_dark, measure_power)
@@ -284,8 +286,8 @@ minimal_brightness = 0.12
 
 [location]
 planet = Earth
-latitude = {profile.get('site_lat', 55.902426):+.6f}
-longitude = {profile.get('site_lon', -4.307865):+.6f}
+latitude = {profile.get('site_lat', SITE_LAT_DEG):+.6f}
+longitude = {profile.get('site_lon', SITE_LON_DEG):+.6f}
 altitude = 50
 timezone = Europe/London
 """)

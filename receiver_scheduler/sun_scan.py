@@ -32,6 +32,8 @@ from pathlib import Path
 
 import numpy as np
 
+from observatory import SITE_LAT_DEG, SITE_LON_DEG
+
 try:
     import ephem
 except ImportError:
@@ -140,8 +142,8 @@ def _load_scheduler_config() -> dict:
         # esp32_controller_arduino/src/config.h: two candidate "true"
         # positions two metres apart is exactly the ambiguity that let a
         # deliberately fictitious one sit here unnoticed.
-        "observer_lat": 55.902426,
-        "observer_lon": -4.307865,
+        "observer_lat": SITE_LAT_DEG,
+        "observer_lon": SITE_LON_DEG,
         "observer_elevation": 50,
         "slew_timeout": 300,
         "obstruction_sectors": _DEFAULT_OBSTRUCTION_SECTORS,

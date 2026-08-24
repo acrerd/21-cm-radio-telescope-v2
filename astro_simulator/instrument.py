@@ -48,6 +48,21 @@ BEAM_FWHM_REF_DISH_M = 3.0
 
 DISH_M = 3.0
 
+# Where the telescope is. This is the one place it is written down; everything
+# else imports it, because a position appearing in several files is a position
+# that will eventually differ between them. It had reached nine literals across
+# six files, one of which - the simulator's own default of 55.87, -4.29 - was
+# 3.6 km out and quietly wrong.
+#
+# This is the *true* surveyed site. The pointing model's tilt terms belong in
+# the pointing model: the observer position must never be nudged to make the
+# pointing fit, which turns a surveyed constant into a free parameter of a fit
+# that has enough of them already.
+SITE_NAME = "Acre Road"
+SITE_LAT_DEG = 55.902426
+SITE_LON_DEG = -4.307865
+SITE_HEIGHT_M = 50.0
+
 
 def beam_fwhm_deg(dish_m=DISH_M):
     """Beam FWHM in degrees at the HI line for a dish of ``dish_m`` diameter."""

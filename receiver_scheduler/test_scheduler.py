@@ -443,6 +443,11 @@ class TestConfig:
             cfg = sched.load_config()
             assert cfg["srt_controller_url"] == "http://192.168.50.120"
             # The true site, same value as the firmware's OBSERVER_LAT.
+            # Written out rather than imported, deliberately. Everything else
+            # takes the position from instrument.py; this is the one
+            # independent statement of what it should be, so an accidental
+            # edit there fails here instead of propagating silently. If you are
+            # changing the site on purpose, change it in both.
             assert cfg["observer_lat"] == pytest.approx(55.902426)
             assert cfg["observer_lon"] == pytest.approx(-4.307865)
             assert cfg["sound_enabled"] is True
@@ -2096,3 +2101,64 @@ def test_sky_separation():
     # and shrinks with the cosine of declination
     assert sched._sky_separation_deg(0.0, 60.0, 1.0, 60.0) == pytest.approx(7.5, abs=0.05)
     assert sched._sky_separation_deg(0.0, 10.0, 0.0, -10.0) == pytest.approx(20.0, abs=1e-6)
+
+
+class TestOneSitePosition:
+    """The telescope's position is written down once and read everywhere.
+
+    It had reached nine literals across six files, one of them - the
+    simulator's own default - 3.6 km wrong and used for the barycentric
+    velocity correction.
+    """
+
+    def test_every_consumer_agrees_with_instrument_py(self):
+        import observatory
+        import rf_calibration
+        import sun_scan
+        import h1_web_scheduler as sched
+        import astro_simulator as A
+
+        lat, lon = observatory.SITE_LAT_DEG, observatory.SITE_LON_DEG
+        assert A.SITE_LAT == pytest.approx(lat)
+        assert A.SITE_LON == pytest.approx(lon)
+        assert sched._DEFAULT_CONFIG["observer_lat"] == pytest.approx(lat)
+        assert sched._DEFAULT_CONFIG["observer_lon"] == pytest.approx(lon)
+        assert rf_calibration.SITE_LAT_DEG == pytest.approx(lat)
+        assert sun_scan.SITE_LAT_DEG == pytest.approx(lat)
+        assert sun_scan.SITE_LON_DEG == pytest.approx(lon)
+
+    def test_the_controller_firmware_agrees(self):
+        """The one copy that cannot import this: config.h, in C++.
+
+        Two ecosystems means the position genuinely has to be written twice, so
+        the protection is a test that reads the other one rather than a comment
+        asking people to remember. sun_scan already carried that comment, and a
+        comment is not a check.
+        """
+        import os
+        import re
+        import observatory
+        header = os.path.join(os.path.dirname(os.path.dirname(
+            os.path.abspath(__file__))), "esp32_controller_arduino", "src",
+            "config.h")
+        if not os.path.exists(header):
+            pytest.skip("controller firmware not present")
+        with open(header) as fh:
+            text = fh.read()
+        lat = re.search(r"#define\s+OBSERVER_LAT\s+(-?[0-9.]+)", text)
+        lon = re.search(r"#define\s+OBSERVER_LON\s+(-?[0-9.]+)", text)
+        assert lat and lon, "config.h no longer defines OBSERVER_LAT/LON"
+        assert float(lat.group(1)) == pytest.approx(observatory.SITE_LAT_DEG, abs=1e-6)
+        assert float(lon.group(1)) == pytest.approx(observatory.SITE_LON_DEG, abs=1e-6)
+
+    def test_observatory_module_holds_no_numbers_of_its_own(self):
+        """It is plumbing. If numbers appear in it, there are two places again."""
+        import os
+        import re
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            "observatory.py")
+        with open(path) as fh:
+            body = "".join(l for l in fh if not l.strip().startswith("#"))
+        body = re.sub(r'"""[\s\S]*?"""', "", body)
+        assert not re.search(r"\b5[0-9]\.[0-9]{4}", body), \
+            "observatory.py must import the position, not restate it"

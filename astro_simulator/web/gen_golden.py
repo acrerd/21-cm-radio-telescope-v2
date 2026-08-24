@@ -30,7 +30,12 @@ from astropy.time import Time                  # noqa: E402
 HERE = os.path.dirname(os.path.abspath(__file__))
 T0 = Time("2026-08-09T12:00:00", scale="utc")
 
-SITE = {"name": "Glasgow", "lat": 55.87, "lon": -4.29, "height": 50.0}
+import os as _os, sys as _sys
+_sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+import instrument
+
+SITE = {"name": instrument.SITE_NAME, "lat": instrument.SITE_LAT_DEG,
+        "lon": instrument.SITE_LON_DEG, "height": instrument.SITE_HEIGHT_M}
 
 
 def fixed_sources():

@@ -43,6 +43,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                 ".."))
 from hi4pi_compress import load_compact          # noqa: E402
 from continuum_compress import load_continuum    # noqa: E402
+import instrument                                 # noqa: E402
 from instrument import DISH_M, beam_fwhm_deg     # noqa: E402
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -147,7 +148,8 @@ def main():
     meta = {
         "f_hi": 1420405751.768,
         "c_light": 299792458.0,
-        "site": {"name": "Glasgow", "lat": 55.87, "lon": -4.29,
+        "site": {"name": instrument.SITE_NAME, "lat": instrument.SITE_LAT_DEG,
+                 "lon": instrument.SITE_LON_DEG,
                  "height": 50.0},
         # fwhm is the measured beam, shipped so the browser never has to fall
         # back on a formula for it; see instrument.py for why it is not
