@@ -3912,7 +3912,7 @@ HTML_TEMPLATE = '''
             // transits at its mid-point; saying so beats a tooltip.
             document.getElementById('obvDurationLabel').innerHTML =
                 drift ? 'Scan length <span class="unit">(min)</span> &mdash; transit at mid-point'
-                      : 'Total integration time <span class="unit">(min)</span> &mdash; the simulator&rsquo;s &tau;';
+                      : 'Total integration time <span class="unit">(min)</span>';
         }
 
         function loadObserveParams(force) {
