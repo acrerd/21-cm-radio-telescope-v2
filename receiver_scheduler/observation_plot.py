@@ -552,11 +552,31 @@ def plot_gain_check(calibration, output_path, figsize=(16.0, 9.0), dpi=120):
     ax_scat = fig.add_subplot(gs[1, 0])
     ax_res = fig.add_subplot(gs[1, 1])
 
+    # What the radiometer equation says this observation's noise should be.
+    # sigma = (T_sys + T_A) / sqrt(n_pol * dnu * tau), one polarisation, on the
+    # binned channels the fit actually used - binning down from 0.49 kHz to the
+    # model's 6.1 kHz averages the noise down with it, so the fine-channel figure
+    # would be four times too big. The signal term matters: a channel on the line
+    # is hotter and therefore noisier, which is why this is a curve and not a
+    # number.
+    dnu = float(np.abs(np.median(np.diff(freq))))
+    tau = float(red.get("tau_total_s") or 0.0)
+    sigma_k = ((t_sys + np.maximum(model_k, 0.0)) / np.sqrt(dnu * tau)
+               if dnu > 0 and tau > 0 else None)
+
     mhz = freq / 1e6
+    # Staircase, not point-to-point: these are binned channels, each with a
+    # width, and a line joining bin centres draws a slope across a channel that
+    # was never measured at a slope.
+    step = dict(drawstyle="steps-mid")
     ax_spec.plot(mhz, measured_k, color=_ACCENT, lw=1.1,
-                 label="measured, calibrated to kelvin")
+                 label="measured, calibrated to kelvin", **step)
     ax_spec.plot(mhz, model_k, color=_MARK, lw=1.8, alpha=0.9,
-                 label="HI4PI through this beam (simulated)")
+                 label="HI4PI through this beam (simulated)", **step)
+    if sigma_k is not None:
+        ax_spec.fill_between(mhz, model_k - sigma_k, model_k + sigma_k,
+                             color=_MARK, alpha=0.20, lw=0, step="mid",
+                             label="expected noise, $\\pm1\\sigma$")
     ax_spec.axvline(H1_REST_FREQ_HZ / 1e6, color=_PLOT_GRID, lw=1.0, ls="--")
     ax_spec.set_ylabel("Antenna temperature (K)")
     ax_spec.set_xlabel("Frequency (MHz)")
@@ -567,19 +587,48 @@ def plot_gain_check(calibration, output_path, figsize=(16.0, 9.0), dpi=120):
     ax_scat.plot([lo, lim], [lo, lim], color=_MARK, lw=1.5,
                  label="1:1 (perfect calibration)")
     ax_scat.scatter(model_k, measured_k, s=6, color=_ACCENT, alpha=0.55, lw=0)
+    if sigma_k is not None:
+        # A band of the width the thermal noise alone would give, so points
+        # falling outside it are visibly not just noise.
+        sig = float(np.nanmedian(sigma_k))
+        ax_scat.fill_between([lo, lim], [lo - sig, lim - sig],
+                             [lo + sig, lim + sig], color=_MARK, alpha=0.18,
+                             lw=0, label="expected noise, $\\pm$%.2f K" % sig)
     ax_scat.set_xlabel("Model antenna temperature (K)")
     ax_scat.set_ylabel("Measured (K)")
     ax_scat.legend(loc="upper left", fontsize=9)
 
-    ax_res.plot(mhz, resid_k, color=_ACCENT, lw=0.9)
+    # The residual against a drawn realisation of the noise it should have. If
+    # the two look alike, the fit is noise-limited and there is nothing further
+    # to find; if the real one is visibly rougher or more structured, the excess
+    # is systematic and worth chasing. That comparison is far easier to make by
+    # eye than from two numbers, which is the point of drawing it.
+    line_free = np.abs(freq - H1_REST_FREQ_HZ) > 400e3
+    rms = float(np.nanstd(resid_k[line_free])) if line_free.any() \
+        else float(np.nanstd(resid_k))
+    if sigma_k is not None:
+        drawn = np.random.default_rng(20260824).standard_normal(sigma_k.size) * sigma_k
+        ax_res.plot(mhz, drawn, color=_PLOT_FG, lw=0.8, alpha=0.55,
+                    label="simulated noise at the expected level", **step)
+    ax_res.plot(mhz, resid_k, color=_ACCENT, lw=0.9, label="measured - model",
+                **step)
     ax_res.axhline(0.0, color=_MARK, lw=1.2)
-    rms = float(np.nanstd(resid_k))
     for sign in (1, -1):
         ax_res.axhline(sign * rms, color=_PLOT_GRID, lw=1.0, ls="--")
     ax_res.set_xlabel("Frequency (MHz)")
     ax_res.set_ylabel("Measured - model (K)")
-    ax_res.text(0.02, 0.05, "rms %.2f K" % rms, transform=ax_res.transAxes,
-                fontsize=10, color=_PLOT_FG, alpha=0.85)
+    ax_res.legend(loc="upper right", fontsize=8)
+    if sigma_k is not None:
+        expected = float(np.nanmedian(sigma_k))
+        ax_res.text(0.02, 0.05,
+                    "measured %.2f K rms off the line, expected %.2f K "
+                    "(%.1f\u00d7)" % (rms, expected,
+                                      rms / expected if expected else float("nan")),
+                    transform=ax_res.transAxes, fontsize=9, color=_PLOT_FG,
+                    alpha=0.9)
+    else:
+        ax_res.text(0.02, 0.05, "rms %.2f K" % rms, transform=ax_res.transAxes,
+                    fontsize=10, color=_PLOT_FG, alpha=0.85)
 
     # Say plainly when the fit is not to be trusted. A calibration that sat on
     # its floor, or one with no lever arm, must not look like a measurement

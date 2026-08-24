@@ -280,3 +280,38 @@ def test_the_search_is_bounded_and_says_when_it_hits_the_edge():
     out, _ = R.fit_gain_with_shift(f, 3.0e-5 * (120.0 + data_k), f, model)
     assert abs(out["velocity_shift_km_s"]) <= R.MAX_SHIFT_KM_S + 1e-6
     assert out["shift_at_search_limit"]
+
+
+def test_the_reduction_reports_the_total_integration():
+    """The radiometer equation needs it, and the sum is not the nominal.
+
+    A run stopped early, or one whose records ran long, must not be credited
+    with noise it never averaged down.
+    """
+    import glob
+    import os
+    files = sorted(glob.glob(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                          "data", "rf_gain_calibration_*.h5")))
+    if not files:
+        pytest.skip("no calibration observation on disk")
+    red = R.reduce_for_fit(files[0], 36.0, 40.0)
+    assert red["tau_total_s"] > 0
+    # Binned onto the model's grid, so the channel width is the model's.
+    dnu = float(np.abs(np.median(np.diff(red["sim_freq_hz"]))))
+    assert 4e3 < dnu < 9e3, "expected the model's ~6.1 kHz channels, got %.0f Hz" % dnu
+    # And the resulting sigma must be sane for a few minutes on a ~350 K system.
+    sigma = 350.0 / np.sqrt(dnu * red["tau_total_s"])
+    assert 0.05 < sigma < 2.0, sigma
+
+
+def test_noise_scales_as_the_radiometer_equation_says():
+    """Binning down to the model grid averages the noise down with it.
+
+    Quoting the fine-channel figure against binned data would overstate the
+    expected noise fourfold, and make a noise-limited fit look systematic.
+    """
+    fine, binned, tau = 488.3, 6100.0, 175.0
+    s_fine = 350.0 / np.sqrt(fine * tau)
+    s_binned = 350.0 / np.sqrt(binned * tau)
+    assert s_fine / s_binned == pytest.approx(np.sqrt(binned / fine), rel=1e-9)
+    assert s_binned == pytest.approx(0.34, abs=0.02)

@@ -499,7 +499,7 @@ def reduce_for_fit(path, glon, glat, sim=None, bandwidth_hz=None):
     """
     from observation_plot import read_observation
 
-    freq_hz, spectra, stamps, _taus, header = read_observation(path)
+    freq_hz, spectra, stamps, taus, header = read_observation(path)
     corrected, note = bandpass.apply_bandpass(freq_hz, spectra, header)
     if "not bandpass corrected" in note:
         raise ValueError("cannot calibrate an uncorrected spectrum: " + note)
@@ -539,6 +539,13 @@ def reduce_for_fit(path, glon, glat, sim=None, bandwidth_hz=None):
         "dc_artefact_freq_hz": (float(artefact) if artefact is not None else None),
         "obstime": obstime, "header": header, "bandpass_note": note,
         "bandwidth_hz": bandwidth_hz,
+        # Total integration, for the radiometer equation. The sum of the
+        # per-record times, not the record count times the nominal: a run that
+        # was stopped early or whose records ran long must not be credited with
+        # noise it never averaged down.
+        "tau_total_s": (float(np.nansum(taus)) if taus is not None and taus.size
+                        else float(spectra.shape[0])
+                        * float(header.get("nominal_integration_time", 0.0))),
     }
 
 
