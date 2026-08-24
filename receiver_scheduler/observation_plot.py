@@ -529,8 +529,16 @@ def plot_gain_check(calibration, output_path, figsize=(16.0, 9.0), dpi=120):
                                         calibration["glat"])
     use = red["usable"]
     freq = red["sim_freq_hz"][use]
-    model_k = red["sim_ta_k"][use]
     counts = red["binned_counts"][use]
+    # Draw the model the fit actually used, shifted by the frequency-scale error
+    # it fitted. Showing the unshifted model beside a spectrum fitted to the
+    # shifted one would put a visible offset on the plot that is not in the fit.
+    shift = calibration.get("velocity_shift_km_s") or 0.0
+    if shift:
+        scaled = red["sim_freq_hz"] * (1.0 - shift / (C_KM_S))
+        model_k = np.interp(freq, scaled, red["sim_ta_k"])
+    else:
+        model_k = red["sim_ta_k"][use]
 
     gain = calibration["gain_counts_per_k"]
     t_sys = calibration["t_sys_k"]
@@ -592,10 +600,13 @@ def plot_gain_check(calibration, output_path, figsize=(16.0, 9.0), dpi=120):
 
     when = (calibration.get("observed_utc") or "")[:19].replace("T", " ")
     fig.suptitle("Gain calibration \u2014 l=%.0f b=%+.0f, %s UTC\n"
-                 "T_sys %.1f K, gain %.4g counts/K, r=%.3f, residual %.2f K"
+                 "T_sys %.1f K, gain %.4g counts/K, r=%.3f, residual %.2f K%s"
                  % (calibration["glon"], calibration["glat"], when,
                     t_sys, gain, calibration.get("correlation") or float("nan"),
-                    calibration.get("residual_rms_k") or rms),
+                    calibration.get("residual_rms_k") or rms,
+                    ("  |  clock %+.2f ppm (%+.2f km/s)"
+                     % (calibration["implied_ppm"], shift))
+                    if calibration.get("implied_ppm") else ""),
                  color=_PLOT_FG, fontsize=12)
     _style_dark(fig)
     fig.subplots_adjust(top=0.89, left=0.055, right=0.985, bottom=0.075)

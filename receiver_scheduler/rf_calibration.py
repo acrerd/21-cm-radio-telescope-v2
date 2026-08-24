@@ -162,7 +162,7 @@ MAIN_BEAM_EFFICIENCY = 1.0
 # efficiency as one; a version 1 fit plotted against it disagreed by tenths of
 # a kelvin everywhere, which looks exactly like a calibration error. Version 3
 # adds the diffuse continuum map, which shifts the intercept.
-REDUCTION_VERSION = 3
+REDUCTION_VERSION = 4
 
 CALIBRATION_VERSION = 1
 
@@ -560,14 +560,104 @@ def reduce_for_fit(path, glon, glat, sim=None, bandwidth_hz=None):
     }
 
 
+# How far to search for a frequency-scale error, as a velocity. Wide enough to
+# find a badly-out crystal, narrow enough that it cannot slide onto a different
+# velocity component of the line and call that a fit.
+MAX_SHIFT_KM_S = 12.0
+
+
+def fit_gain_with_shift(freq_hz, counts, model_freq_hz, model_k,
+                        min_t_sys_k=MIN_T_SYS_K, max_shift_km_s=MAX_SHIFT_KM_S):
+    """Fit gain, system temperature and a frequency-scale error together.
+
+    The B210 runs from its own TCXO, and an error in it scales the whole
+    frequency axis. Across the 2 MHz that matters here that scaling is a pure
+    shift - the differential from one end of the band to the other is 13 Hz -
+    so it appears as a constant velocity offset, which is exactly what was
+    measured: +1.8 to +2.2 km/s against HI4PI, consistent across three fields at
+    three times. That is 5.9 to 7.2 ppm, outside the +-2 ppm the part is
+    specified at but ordinary for one untrimmed or warm.
+
+    Fitted per observation rather than assumed, because the evidence that it is
+    the crystal is that the answer comes out the same everywhere. A shift that
+    varied field to field would be astrophysics being absorbed, and would say so.
+
+    The search is bounded: given room, a shift will happily slide onto a
+    neighbouring velocity component and report a superb fit to the wrong line.
+    """
+    freq_hz = np.asarray(freq_hz, float)
+    counts = np.asarray(counts, float)
+    model_freq_hz = np.asarray(model_freq_hz, float)
+    model_k = np.asarray(model_k, float)
+
+    # np.interp needs an increasing x and gives no warning when it does not get
+    # one - it simply returns nonsense, which here looked like a fit that always
+    # ran to its search limit. Sort once rather than trusting the caller.
+    order = np.argsort(model_freq_hz)
+    model_freq_hz, model_k = model_freq_hz[order], model_k[order]
+
+    def at(shift_km_s):
+        # Radio convention: a positive velocity shift moves the model down in
+        # frequency. Interpolated onto the data's own grid, never the reverse.
+        scaled = model_freq_hz * (1.0 - shift_km_s / (C_M_S / 1e3))
+        return np.interp(freq_hz, scaled, model_k)
+
+    def score(shift):
+        """Residual in counts, which is the only frame that can be compared.
+
+        Not the kelvin residual. That is (counts - predicted)/slope, so a shift
+        that flattens the model inflates the slope and shrinks the kelvin
+        residual while making the fit worse - and the search duly ran to its
+        limit on data with no shift in it at all. Counts are what was measured
+        and do not move when the fitted parameters do.
+        """
+        model = at(shift)
+        try:
+            out = fit_gain(counts, model, min_t_sys_k)
+        except ValueError:
+            return None, np.inf
+        predicted = out["gain_counts_per_k"] * (out["t_sys_k"] + model)
+        ok = np.isfinite(predicted) & np.isfinite(counts)
+        if ok.sum() < 8:
+            return None, np.inf
+        return out, float(np.std(counts[ok] - predicted[ok]))
+
+    best, best_cost = None, np.inf
+    coarse = np.linspace(-max_shift_km_s, max_shift_km_s, 97)
+    for shift in coarse:
+        out, cost = score(shift)
+        if out is not None and cost < best_cost:
+            best, best_cost = (shift, out), cost
+    if best is None:
+        raise ValueError("no usable fit at any frequency shift")
+
+    # Refine around the coarse minimum; the grid step is 0.25 km/s and a line
+    # centroid is determined far better than that.
+    step = coarse[1] - coarse[0]
+    lo = max(best[0] - step, -max_shift_km_s)
+    hi = min(best[0] + step, max_shift_km_s)
+    for shift in np.linspace(lo, hi, 41):
+        out, cost = score(shift)
+        if out is not None and cost < best_cost:
+            best, best_cost = (shift, out), cost
+
+    shift, out = best
+    out["velocity_shift_km_s"] = float(shift)
+    out["implied_ppm"] = float(shift / (C_M_S / 1e3) * 1e6)
+    out["shift_search_limit_km_s"] = float(max_shift_km_s)
+    out["shift_at_search_limit"] = bool(abs(shift) > 0.95 * max_shift_km_s)
+    return out, at(shift)
+
+
 def calibrate_observation(path, glon, glat, sim=None, min_t_sys_k=MIN_T_SYS_K,
                           bandwidth_hz=None):
     """Fit gain and T_sys from a recorded observation of the plane."""
     red = reduce_for_fit(path, glon, glat, sim, bandwidth_hz)
     usable = red["usable"]
     obstime, header, note = red["obstime"], red["header"], red["bandpass_note"]
-    result = fit_gain(red["binned_counts"][usable], red["sim_ta_k"][usable],
-                      min_t_sys_k)
+    result, _model_used = fit_gain_with_shift(
+        red["sim_freq_hz"][usable], red["binned_counts"][usable],
+        red["sim_freq_hz"], red["sim_ta_k"], min_t_sys_k)
     result.update({
         "version": CALIBRATION_VERSION,
         "created_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),

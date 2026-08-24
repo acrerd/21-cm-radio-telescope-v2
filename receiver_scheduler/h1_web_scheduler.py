@@ -4328,6 +4328,12 @@ HTML_TEMPLATE = '''
                         + ', ' + rfAge(d.gain.observed_utc)
                         + ' &nbsp; r=' + d.gain.correlation.toFixed(3)
                         + ' &nbsp; residual ' + d.gain.residual_rms_k.toFixed(2) + ' K</div>'
+                        + (d.gain.implied_ppm
+                           ? '<div style="color:#888;">receiver clock '
+                             + d.gain.implied_ppm.toFixed(2) + ' ppm ('
+                             + d.gain.velocity_shift_km_s.toFixed(2)
+                             + ' km/s), fitted with the gain</div>'
+                           : '')
                         + (d.gain.implied_loss_db
                            ? '<div style="color:#888;">equivalent to '
                              + d.gain.implied_loss_db.toFixed(2)
@@ -5692,6 +5698,8 @@ def api_rf_status():
             "t_sys_bound_active": cal.get("t_sys_bound_active"),
             "t_sys_implausible": cal.get("t_sys_implausible"),
             "implied_loss_db": cal.get("implied_loss_db"),
+            "implied_ppm": cal.get("implied_ppm"),
+            "velocity_shift_km_s": cal.get("velocity_shift_km_s"),
             "correlation": cal.get("correlation"),
             "residual_rms_k": cal.get("residual_rms_k"),
             "glon": cal.get("glon"), "glat": cal.get("glat"),

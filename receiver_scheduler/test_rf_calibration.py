@@ -234,3 +234,49 @@ def test_no_polarisation_factor_is_applied_to_the_temperature_scale():
     # come back at survey brightness, not half of it.
     peak = float(max(sim.spectrum(80.0, 0.0)[1]))
     assert peak > 50.0, "the plane should peak near 100 K, not near 50"
+
+
+def _shifted(v_kms, peak_k=100.0, n=400):
+    """A line whose model sits at a different velocity from the data."""
+    import numpy as np
+    H1, C = R.H1_REST_FREQ_HZ, R.C_M_S / 1e3
+    # Ascending in frequency, which is how the pipeline delivers it and what
+    # np.interp requires; built descending, the first version of this test made
+    # the fitter look broken when it was the fixture that was.
+    f = H1 * (1 - np.linspace(150.0, -150.0, n) / C)
+    v = -(f - H1) / H1 * C
+    model = peak_k * np.exp(-0.5 * ((v - 0.0) / 20.0) ** 2) + 0.3
+    data_k = peak_k * np.exp(-0.5 * ((v - v_kms) / 20.0) ** 2) + 0.3
+    return f, model, data_k
+
+
+def test_a_frequency_scale_error_is_recovered():
+    """The B210's crystal scales the axis; over 2 MHz that is a pure shift."""
+    f, model, data_k = _shifted(2.0)
+    counts = 3.0e-5 * (120.0 + data_k)
+    out, _ = R.fit_gain_with_shift(f, counts, f, model)
+    assert out["velocity_shift_km_s"] == pytest.approx(2.0, abs=0.15)
+    assert out["gain_counts_per_k"] == pytest.approx(3.0e-5, rel=0.05)
+    assert out["t_sys_k"] == pytest.approx(120.0, rel=0.05)
+
+
+def test_ppm_and_velocity_are_the_same_statement():
+    f, model, data_k = _shifted(2.0)
+    out, _ = R.fit_gain_with_shift(f, 3.0e-5 * (120.0 + data_k), f, model)
+    assert out["implied_ppm"] == pytest.approx(
+        out["velocity_shift_km_s"] / (R.C_M_S / 1e3) * 1e6, rel=1e-9)
+
+
+def test_an_aligned_spectrum_fits_no_shift():
+    """It must not invent one, or every fit gets a free parameter of slack."""
+    f, model, data_k = _shifted(0.0)
+    out, _ = R.fit_gain_with_shift(f, 3.0e-5 * (120.0 + data_k), f, model)
+    assert abs(out["velocity_shift_km_s"]) < 0.2
+
+
+def test_the_search_is_bounded_and_says_when_it_hits_the_edge():
+    """Unbounded, a shift slides onto a neighbouring component and fits it."""
+    f, model, data_k = _shifted(40.0)          # far outside the search
+    out, _ = R.fit_gain_with_shift(f, 3.0e-5 * (120.0 + data_k), f, model)
+    assert abs(out["velocity_shift_km_s"]) <= R.MAX_SHIFT_KM_S + 1e-6
+    assert out["shift_at_search_limit"]
