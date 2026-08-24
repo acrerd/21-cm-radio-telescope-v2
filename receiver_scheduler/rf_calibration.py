@@ -121,8 +121,9 @@ MAIN_BEAM_EFFICIENCY = 1.0
 # calibration stored by older code is not silently redrawn against a newer
 # reduction. Version 2 excludes the LO artefact and takes the main-beam
 # efficiency as one; a version 1 fit plotted against it disagreed by tenths of
-# a kelvin everywhere, which looks exactly like a calibration error.
-REDUCTION_VERSION = 2
+# a kelvin everywhere, which looks exactly like a calibration error. Version 3
+# adds the diffuse continuum map, which shifts the intercept.
+REDUCTION_VERSION = 3
 
 CALIBRATION_VERSION = 1
 
@@ -336,11 +337,21 @@ def load_simulator(bandwidth_hz=2.0e6, dish_m=3.0, nchan=None, compact=None,
     # where a velocity correction is about to be computed.
     A.set_site(SITE_NAME, SITE_LAT_DEG, SITE_LON_DEG, SITE_HEIGHT_M)
 
+    # The diffuse 1420 MHz continuum, not just the handful of bright sources.
+    # It enters the model as a flat offset, so it never touches the slope and
+    # the counts-per-kelvin gain is the same with or without it - but the offset
+    # is exactly what the intercept measures, so leaving it out puts the whole
+    # of it into the fitted system temperature. Measured on 2026-08-24: 0.12 K
+    # toward the Lockman Hole, 0.66 K at l=36 b=40, and 6.13 K on the plane at
+    # l=80 - largest precisely where a gain calibration is meant to be made.
+    # The bright discrete sources were always included; only the map was missing.
     sim = A.DishSimulator(
         cube_path=None, bw_hz=bandwidth_hz, dish_m=dish_m, eta=eta,
         nchan=nchan, tsys=None, tint=60.0,
         compact_path=compact or os.path.join(SIMULATOR_DIR,
-                                             "hi4pi_compact.npz.xz"))
+                                             "hi4pi_compact.npz.xz"),
+        continuum_path=os.path.join(SIMULATOR_DIR,
+                                    "continuum_1420_compact.npz.xz"))
     _SIM_CACHE[key] = sim
     return sim
 

@@ -160,3 +160,32 @@ def test_the_lo_artefact_is_kept_out_of_the_fit():
     assert dirty["residual_rms_k"] > clean["residual_rms_k"]
     # And the constant that governs how much band is excluded is generous.
     assert R.DC_EXCLUSION_HZ >= 20e3
+
+
+def test_a_flat_offset_moves_the_intercept_but_not_the_slope():
+    """Why the continuum belongs in the model, and where it goes if it is not.
+
+    The continuum enters as a flat offset, so it cannot change the
+    counts-per-kelvin gain - but the intercept is exactly what it does change,
+    and the intercept is the system temperature. Left out, all of it is
+    reported as receiver noise: 0.12 K toward the Lockman Hole, but 6.13 K on
+    the plane at l=80, where a calibration is meant to be made.
+    """
+    _, ta = _fake_plane()
+    gain, t_sys, continuum = 3.0e-5, 120.0, 6.0
+    counts = gain * (t_sys + continuum + ta)
+    without = R.fit_gain(counts, ta)                 # model omits the continuum
+    with_it = R.fit_gain(counts, ta + continuum)     # model includes it
+    assert without["gain_counts_per_k"] == pytest.approx(
+        with_it["gain_counts_per_k"], rel=1e-9)
+    assert without["t_sys_k"] == pytest.approx(t_sys + continuum, rel=1e-6)
+    assert with_it["t_sys_k"] == pytest.approx(t_sys, rel=1e-6)
+
+
+def test_the_diffuse_continuum_map_is_actually_loaded():
+    """Discrete sources were always in; the map was silently absent."""
+    sim = R.load_simulator()
+    assert sim.cmap is not None, "the 1420 MHz continuum map is not loaded"
+    assert len(sim.sources) > 0, "the bright discrete sources are missing"
+    # And it must contribute where the plane calibration will happen.
+    assert sim.continuum(80.0, 0.0) > 1.0
