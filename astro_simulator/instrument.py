@@ -58,6 +58,28 @@ DISH_M = 3.0
 # the pointing model: the observer position must never be nudged to make the
 # pointing fit, which turns a surveyed constant into a free parameter of a fit
 # that has enough of them already.
+# Main-beam efficiency, and the reason it is one.
+#
+# The beam is measured, and a measured beam already determines everything this
+# would otherwise be asked to supply. For extended emission the antenna
+# temperature is the beam-weighted brightness temperature; for a point source the
+# effective area follows from the antenna theorem, A_e * Omega_A = lambda^2, with
+# Omega_A the solid angle of that same beam. One measurement, both answers, no
+# free parameter - so putting an efficiency in front of either is adding back a
+# quantity the beam has already fixed, and doing it to one and not the other is
+# how the calibration tab and the simulator came to disagree by 1/0.7 about the
+# same patch of sky on 2026-08-24.
+#
+# What a value below one really encodes is power in sidelobes that have not been
+# measured. The solar scans constrain the main lobe and say nothing about the
+# rest, so the pattern is taken to be the measured beam and nothing else. The
+# honest consequence is not that the extended sky needs scaling down - sidelobes
+# see sky of much the same brightness, so extended predictions are barely
+# affected either way - but that *point source* predictions become upper limits,
+# since real sidelobes would reduce the effective area. Say so when it matters
+# rather than discounting the whole sky to hide it.
+MAIN_BEAM_EFFICIENCY = 1.0
+
 SITE_NAME = "Acre Road"
 SITE_LAT_DEG = 55.902426
 SITE_LON_DEG = -4.307865

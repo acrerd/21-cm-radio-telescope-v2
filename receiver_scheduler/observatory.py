@@ -29,6 +29,7 @@ if SIMULATOR_DIR not in sys.path:
 from instrument import (  # noqa: E402  - the path has to be set up first
     BEAM_FWHM_REF_DEG,
     DISH_M,
+    MAIN_BEAM_EFFICIENCY,
     SITE_HEIGHT_M,
     SITE_LAT_DEG,
     SITE_LON_DEG,
@@ -36,5 +37,5 @@ from instrument import (  # noqa: E402  - the path has to be set up first
     beam_fwhm_deg,
 )
 
-__all__ = ["SITE_NAME", "SITE_LAT_DEG", "SITE_LON_DEG", "SITE_HEIGHT_M",
+__all__ = ["MAIN_BEAM_EFFICIENCY", "SITE_NAME", "SITE_LAT_DEG", "SITE_LON_DEG", "SITE_HEIGHT_M",
            "DISH_M", "BEAM_FWHM_REF_DEG", "beam_fwhm_deg"]

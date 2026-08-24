@@ -154,7 +154,8 @@ def main():
         # fwhm is the measured beam, shipped so the browser never has to fall
         # back on a formula for it; see instrument.py for why it is not
         # 1.22 lambda/D.
-        "defaults": {"bw_mhz": 2.0, "dish_m": DISH_M, "eta": 0.7,
+        "defaults": {"bw_mhz": 2.0, "dish_m": DISH_M,
+                     "eta": instrument.MAIN_BEAM_EFFICIENCY,
                      "tsys": 200.0, "tint": 60.0, "npol": 1,
                      "fwhm": round(beam_fwhm_deg(DISH_M), 3)},
         # No controller address: the web build cannot command the telescope

@@ -132,29 +132,11 @@ MIN_USEFUL_PEAK_K = 15.0
 # here to lose, so there is nothing to trade against being careful.
 DC_EXCLUSION_HZ = 40e3
 
-# Main-beam efficiency applied to the model. One, deliberately.
-#
-# The simulator multiplies its antenna temperature by this, and it is the
-# fraction of the total pattern power inside the main beam - so applying it
-# asserts that the sidelobes see *nothing*. For galactic H I that is plainly
-# false: the sidelobes see sky of comparable brightness a few degrees away, so
-# the dilution it models largely does not happen, and the line is not weakened
-# in proportion to it. What the sidelobes do see that the main beam does not is
-# the ground, and that is a constant - it belongs in T_sys, additively, which is
-# exactly where the fit already puts it.
-#
-# The other half of the argument is that the beam here is measured rather than
-# assumed: 18 solar scans on 2026-08-22 gave 5.173 +/- 0.020 deg, 5.164 after
-# deconvolving the solar disk (astro_simulator/instrument.py). The
-# beam-weighting is therefore the real instrument's, not a model of it, and
-# putting an efficiency in front of it discounts a measurement twice.
-#
-# This was briefly set to the simulator's CLI default of 0.7, which lowered a
-# fitted system temperature from 372 K to 260 K - a comfortable-looking number
-# obtained by scaling the data until it looked right. The 372 K is the honest
-# figure and it should be explained rather than absorbed: see the note in
-# calibrate_observation about separating spillover from receiver noise.
-MAIN_BEAM_EFFICIENCY = 1.0
+# Main-beam efficiency: taken from instrument.py, where the reasoning lives
+# beside the measured beam that makes it one. Not restated here - it was in two
+# places with two values once already, and the two tabs duly disagreed by 1/0.7
+# about the same patch of sky.
+from observatory import MAIN_BEAM_EFFICIENCY
 
 # Bumped whenever the reduction changes in a way that alters the fit, so a
 # calibration stored by older code is not silently redrawn against a newer

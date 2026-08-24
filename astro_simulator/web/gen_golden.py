@@ -99,7 +99,7 @@ def frame_vectors():
 def build_sim(sources):
     sim = A.DishSimulator(
         os.path.join(HERE, "..", "hi4pi_allsky_gal_CAR.fits"),
-        2.0e6, 3.0, 0.7, None, None, 60.0, 1,
+        2.0e6, 3.0, instrument.MAIN_BEAM_EFFICIENCY, None, None, 60.0, 1,
         compact_path=os.path.join(HERE, "..", "hi4pi_compact.npz.xz"),
         continuum_path=os.path.join(HERE, "..",
                                     "continuum_1420_compact.npz.xz"))
@@ -173,7 +173,7 @@ def main():
         "t0_jd": float(T0.jd),
         "t0_decimalyear": float(T0.decimalyear),
         "site": SITE,
-        "eta": 0.7, "npol": 1,
+        "eta": instrument.MAIN_BEAM_EFFICIENCY, "npol": 1,
         "sources": [{"name": n, "l": l, "b": b, "jy": f}
                     for n, l, b, f in sources],
         "coords": coordinate_vectors(),

@@ -2151,6 +2151,36 @@ class TestOneSitePosition:
         assert float(lat.group(1)) == pytest.approx(observatory.SITE_LAT_DEG, abs=1e-6)
         assert float(lon.group(1)) == pytest.approx(observatory.SITE_LON_DEG, abs=1e-6)
 
+    def test_one_main_beam_efficiency_too(self):
+        """The tabs disagreed by 1/0.7 about the same patch of sky.
+
+        A measured beam already fixes both answers - the beam-weighted
+        brightness temperature for extended emission, and the effective area
+        through A_e*Omega_A = lambda^2 for a point source - so an efficiency in
+        front of either adds back a quantity the beam has determined.
+        """
+        import observatory
+        import rf_calibration
+        import instrument
+        import astro_simulator as A
+        assert instrument.MAIN_BEAM_EFFICIENCY == pytest.approx(1.0)
+        assert rf_calibration.MAIN_BEAM_EFFICIENCY == pytest.approx(
+            instrument.MAIN_BEAM_EFFICIENCY)
+        assert observatory.MAIN_BEAM_EFFICIENCY == pytest.approx(
+            instrument.MAIN_BEAM_EFFICIENCY)
+        # And the two tools must predict the same sky.
+        sim = rf_calibration.load_simulator()
+        direct = A.DishSimulator(
+            cube_path=None, bw_hz=2.0e6, dish_m=3.0,
+            eta=instrument.MAIN_BEAM_EFFICIENCY, nchan=None, tsys=None,
+            tint=60.0,
+            compact_path=os.path.join(observatory.SIMULATOR_DIR,
+                                      "hi4pi_compact.npz.xz"))
+        import numpy as np
+        a = float(np.nanmax(sim.spectrum(124.0, 36.0)[1]))
+        b = float(np.nanmax(direct.spectrum(124.0, 36.0)[1]))
+        assert a == pytest.approx(b, rel=0.05)
+
     def test_observatory_module_holds_no_numbers_of_its_own(self):
         """It is plumbing. If numbers appear in it, there are two places again."""
         import os

@@ -43,8 +43,9 @@ from astropy.wcs import WCS
 from continuum_compress import CONTINUUM_DEFAULT, load_continuum
 from hi4pi_compress import COMPACT_DEFAULT, load_compact
 from hi4pi_data import ensure_file
-from instrument import (SITE_HEIGHT_M, SITE_LAT_DEG, SITE_LON_DEG,
-                        SITE_NAME as SITE_NAME_DEFAULT, beam_fwhm_deg)
+from instrument import (MAIN_BEAM_EFFICIENCY, SITE_HEIGHT_M, SITE_LAT_DEG,
+                        SITE_LON_DEG, SITE_NAME as SITE_NAME_DEFAULT,
+                        beam_fwhm_deg)
 
 # the cursor moving outside the Mollweide ellipse makes matplotlib's
 # inverse projection hit arcsin(|x| > 1); harmless, so keep it quiet
@@ -617,7 +618,9 @@ def main():
                         "point sources; blank to disable)")
     p.add_argument("--bw", type=float, default=2.0, help="Bandwidth (MHz)")
     p.add_argument("--dish", type=float, default=3.0, help="Dish (m)")
-    p.add_argument("--eta", type=float, default=0.7, help="Main-beam eff.")
+    p.add_argument("--eta", type=float, default=MAIN_BEAM_EFFICIENCY,
+                   help="Main-beam eff. (1.0: the measured beam is taken as the "
+                        "whole pattern, so point sources are upper limits)")
     p.add_argument("--nchan", type=int, help="Spectrometer channels")
     p.add_argument("--tsys", type=float, default=200.0,
                    help="Tsys (K) for the noise (default 200; 0 = ideal "
