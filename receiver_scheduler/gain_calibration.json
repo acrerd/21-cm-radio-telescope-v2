@@ -1,0 +1,39 @@
+{
+  "gain_counts_per_k": 1.3320518134453017e-05,
+  "t_sys_k": 350.7510652354447,
+  "t_sys_bound_active": false,
+  "t_sys_implausible": true,
+  "implausible_above_k": 300.0,
+  "min_t_sys_k": 50.0,
+  "assumed_main_beam_efficiency": 1.0,
+  "implied_loss_db": 2.638639099033304,
+  "reduction_version": 4,
+  "n_bins": 314,
+  "model_peak_k": 19.533729377685095,
+  "model_span_k": 19.14778415487586,
+  "residual_rms_k": 0.8100915269864131,
+  "correlation": 0.9417991567633309,
+  "velocity_shift_km_s": -0.8,
+  "implied_ppm": -2.668512761585217,
+  "shift_search_limit_km_s": 12.0,
+  "shift_at_search_limit": false,
+  "version": 1,
+  "created_utc": "2026-08-24T17:07:18+00:00",
+  "observed_utc": "2026-08-24T17:04:23+00:00",
+  "source_file": "rf_gain_calibration_20260824_180418.h5",
+  "glon": 36.53,
+  "glat": 56.9,
+  "bandpass_note": "bandpass corrected (order 9, measured 2026-08-24 on l=150 b=+53), 1623 channels outside the measured band dropped",
+  "config": {
+    "lo_hz": 1421205752.0,
+    "sample_rate_hz": 4500000.0,
+    "gain_db": 40.0
+  },
+  "target": {
+    "glon": 36.53,
+    "glat": 56.9,
+    "chosen_by": "operator",
+    "alt_deg": 58.126399914004146,
+    "az_deg": 170.82126670654068
+  }
+}
