@@ -516,6 +516,15 @@ def plot_gain_check(calibration, output_path, figsize=(16.0, 9.0), dpi=120):
         raise RuntimeError("the observation this calibration came from is no "
                            "longer in the data folder")
 
+    stored = calibration.get("reduction_version")
+    if stored != rf_calibration.REDUCTION_VERSION:
+        raise RuntimeError(
+            "this calibration was fitted by an older reduction (version %s, now "
+            "%d), so drawing it against the current one would show a difference "
+            "that is the code changing rather than the telescope. Run the gain "
+            "calibration again."
+            % (stored, rf_calibration.REDUCTION_VERSION))
+
     red = rf_calibration.reduce_for_fit(src, calibration["glon"],
                                         calibration["glat"])
     use = red["usable"]

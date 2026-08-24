@@ -115,6 +115,13 @@ DC_EXCLUSION_HZ = 40e3
 # calibrate_observation about separating spillover from receiver noise.
 MAIN_BEAM_EFFICIENCY = 1.0
 
+# Bumped whenever the reduction changes in a way that alters the fit, so a
+# calibration stored by older code is not silently redrawn against a newer
+# reduction. Version 2 excludes the LO artefact and takes the main-beam
+# efficiency as one; a version 1 fit plotted against it disagreed by tenths of
+# a kelvin everywhere, which looks exactly like a calibration error.
+REDUCTION_VERSION = 2
+
 CALIBRATION_VERSION = 1
 
 
@@ -321,6 +328,12 @@ def load_simulator(bandwidth_hz=2.0e6, dish_m=3.0, nchan=None, compact=None,
         sys.path.insert(0, SIMULATOR_DIR)
     import astro_simulator as A
 
+    # The simulator ships with a nearby default site (55.87, -4.29); this is the
+    # observatory's surveyed position. It moves the barycentric correction by
+    # only a few m/s at 3.6 km, but the velocity frame is not the place to leave
+    # a known position approximate.
+    A.set_site("Acre Road", 55.902426, -4.307865, 50.0)
+
     sim = A.DishSimulator(
         cube_path=None, bw_hz=bandwidth_hz, dish_m=dish_m, eta=eta,
         nchan=nchan, tsys=None, tint=60.0,
@@ -407,6 +420,7 @@ def fit_gain(observed_counts, model_k, min_t_sys_k=MIN_T_SYS_K):
         "implausible_above_k": float(IMPLAUSIBLE_T_SYS_K),
         "min_t_sys_k": float(min_t_sys_k),
         "assumed_main_beam_efficiency": float(MAIN_BEAM_EFFICIENCY),
+        "reduction_version": REDUCTION_VERSION,
         "n_bins": int(ok.sum()),
         "model_peak_k": float(np.nanmax(ta)),
         "model_span_k": float(np.nanmax(ta) - np.nanmin(ta)),
