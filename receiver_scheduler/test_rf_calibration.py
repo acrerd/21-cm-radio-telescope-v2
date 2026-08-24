@@ -217,3 +217,20 @@ def test_a_loss_predicts_how_the_system_temperature_tracks_ambient():
     cold = (L - 1) * (R.AMBIENT_T_K - 0) + L * R.RECEIVER_T_RX_K
     assert (warm - cold) / 15 == pytest.approx(L - 1, rel=1e-6)
     assert warm - cold > 10          # a 15 C swing is plainly measurable
+
+
+def test_no_polarisation_factor_is_applied_to_the_temperature_scale():
+    """One polarisation, and no half belongs in the temperature scale.
+
+    For a single-polarisation antenna on unpolarised sky the antenna
+    temperature is the beam-weighted brightness temperature - the half-power
+    split is already inside the definition. The simulator's npol affects only
+    the radiometer noise, and this path generates none.
+    """
+    sim = R.load_simulator()
+    assert sim.npol == 1
+    assert sim.tsys is None, "no simulated noise, so npol cannot enter"
+    # The model must not be scaled by a half: a known-bright direction has to
+    # come back at survey brightness, not half of it.
+    peak = float(max(sim.spectrum(80.0, 0.0)[1]))
+    assert peak > 50.0, "the plane should peak near 100 K, not near 50"

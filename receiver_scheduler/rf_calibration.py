@@ -92,6 +92,22 @@ IMPLAUSIBLE_T_SYS_K = 300.0
 # genuinely lossy front end makes the system temperature track the air
 # temperature, at nearly a kelvin per kelvin here. Neither spillover nor
 # receiver noise does that.
+# One polarisation - the B210 is opened with channels=[0] - and no factor of a
+# half belongs anywhere in the temperature scale because of it. For a
+# single-polarisation antenna looking at unpolarised sky the antenna temperature
+# *is* the beam-weighted brightness temperature: the half-power split is already
+# inside the definition, and inside the antenna theorem the simulator uses, where
+# a source of flux density S gives T_A = S*A_e/(2k). The factor to insert is
+# already there. Adding another would halve every calibrated spectrum.
+#
+# Where the single polarisation does belong is the radiometer equation, and the
+# simulator's npol defaults to 1 and enters only the noise expression, never the
+# antenna temperature. This calibration passes tsys=None, so no simulated noise
+# is generated at all and npol is unused here.
+#
+# Confirmed from the data rather than the wiring, on the 2026-08-24 run: measured
+# per-record channel noise 2.394%, against 2.574% predicted for one polarisation
+# and 1.820% for two.
 RECEIVER_T_RX_K = 59.0        # SAWbird+ H1 datasheet, typical
 AMBIENT_T_K = 290.0
 
