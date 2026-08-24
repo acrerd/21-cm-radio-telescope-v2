@@ -22,6 +22,9 @@ from collections import deque
 from gnuradio import gr, fft, blocks, analog
 from gnuradio.fft import window
 
+from tuning import (ANALOG_BW_FACTOR as DEFAULT_ANALOG_BW_FACTOR,
+                    DEFAULT_LO_OFFSET_HZ, describe_tuning, plan_tuning)
+
 # Qt is for the console display only. --headless runs the whole acquisition
 # and recording path without it, so an observation over ssh neither needs a
 # display nor needs PyQt installed at all.
@@ -63,6 +66,12 @@ except ImportError as _qt_import_error:            # pragma: no cover
 
 # Configuration (can be overridden via environment variables)
 CENTER_FREQ = float(os.environ.get('H1_CENTER_FREQ', 1420.405752e6))
+ANALOG_BW_FACTOR = float(os.environ.get('H1_ANALOG_BW_FACTOR',
+                                        DEFAULT_ANALOG_BW_FACTOR))
+# How far the LO sits above the line, so the DC artefact misses it. Set to 0
+# to tune straight at the line, which is what every observation did before
+# 2026-08-24 and is only useful for reproducing those.
+LO_OFFSET_HZ = float(os.environ.get('H1_LO_OFFSET', DEFAULT_LO_OFFSET_HZ))
 FFT_SIZE = int(os.environ.get('H1_FFT_SIZE', 4096))
 INTEGRATION_TIME = float(os.environ.get('H1_INTEGRATION_TIME', 3.0))
 OUTPUT_FILE = os.environ.get('H1_OUTPUT_FILE', "h1_data.h5")
@@ -129,7 +138,7 @@ def create_sdr_source(sdr_type, sample_rate, center_freq, gain):
             ),
         )
         source.set_samp_rate(sample_rate)
-        source.set_bandwidth(sample_rate, 0)
+        source.set_bandwidth(sample_rate * ANALOG_BW_FACTOR, 0)
         source.set_center_freq(center_freq, 0)
         source.set_gain(gain, 0)
         source.set_antenna("RX2", 0)
@@ -251,7 +260,7 @@ class GNURadioFlowgraph(gr.top_block):
 
 
 def init_hdf5(filename, freq_axis_hz, fft_size, sdr_type, center_freq,
-              sample_rate, gain):
+              sample_rate, gain, tuning_plan=None):
     """Create the observation file and its datasets.
 
     Module level and Qt-free so the window and the headless recorder write
@@ -287,6 +296,14 @@ def init_hdf5(filename, freq_axis_hz, fft_size, sdr_type, center_freq,
     hf.attrs['fft_size'] = fft_size
     hf.attrs['gain_db'] = gain
     hf.attrs['nominal_integration_time'] = INTEGRATION_TIME
+    # frequency_hz already holds true sky frequency, so nothing downstream has
+    # to know the LO was offset. These say where the DC artefact went, which is
+    # the one thing a spectrum cannot show for itself.
+    if tuning_plan:
+        hf.attrs['lo_offset_hz'] = tuning_plan['lo_offset_hz']
+        hf.attrs['sky_center_freq_hz'] = tuning_plan['sky_center_freq_hz']
+        hf.attrs['dc_artefact_freq_hz'] = tuning_plan['tuned_center_freq_hz']
+        hf.attrs['sample_rate_requested_hz'] = tuning_plan['requested_sample_rate_hz']
     hf.attrs['created'] = datetime.now(timezone.utc).isoformat()
 
     # Observation metadata from scheduler
@@ -341,12 +358,21 @@ class HeadlessRecorder:
     def __init__(self, sdr_type='b210', sample_rate=None, gain=None,
                  output_file=None):
         defaults = SDR_DEFAULTS.get(sdr_type, SDR_DEFAULTS['demo'])
-        self.sample_rate = sample_rate if sample_rate else defaults['sample_rate']
+        requested_rate = sample_rate if sample_rate else defaults['sample_rate']
         self.gain = gain if gain else defaults['gain']
-        self.center_freq = CENTER_FREQ
-        self.fft_size = FFT_SIZE
         self.integration_time = INTEGRATION_TIME
         self.output_file = output_file or OUTPUT_FILE
+
+        # Put the line away from DC. The hardware is tuned above it, the
+        # spectra are still recorded against true sky frequency, and the
+        # sample rate rises if it must to keep the line in the flat band.
+        self.tuning = plan_tuning(CENTER_FREQ, requested_rate, FFT_SIZE,
+                                  LO_OFFSET_HZ)
+        self.sky_center_freq = self.tuning['sky_center_freq_hz']
+        self.center_freq = self.tuning['tuned_center_freq_hz']
+        self.sample_rate = self.tuning['sample_rate_hz']
+        self.fft_size = self.tuning['channels']
+        print("  " + describe_tuning(self.tuning))
 
         self.flowgraph = GNURadioFlowgraph(
             sdr_type, self.sample_rate, self.center_freq, self.gain,
@@ -361,7 +387,8 @@ class HeadlessRecorder:
         self.hf = init_hdf5(self.output_file, self.freq_axis_hz, self.fft_size,
                             sdr_type=self.sdr_type,
                             center_freq=self.center_freq,
-                            sample_rate=self.sample_rate, gain=self.gain)
+                            sample_rate=self.sample_rate, gain=self.gain,
+                            tuning_plan=self.tuning)
         self.spectrum_count = 0
         self._stop = threading.Event()
 
@@ -456,15 +483,23 @@ class H1ReceiverWindow(QtWidgets.QMainWindow):
         super().__init__()
 
         self.sdr_type = sdr_type
-        self.center_freq = CENTER_FREQ
-        self.fft_size = FFT_SIZE
         self.integration_time = INTEGRATION_TIME
         self.show_controls = show_controls
 
         # Get defaults
         defaults = SDR_DEFAULTS.get(sdr_type, SDR_DEFAULTS['demo'])
-        self.sample_rate = sample_rate if sample_rate else defaults['sample_rate']
+        requested_rate = sample_rate if sample_rate else defaults['sample_rate']
         self.gain = gain if gain else defaults['gain']
+
+        # Same tuning plan as the headless recorder, so the window shows what
+        # an observation would actually record.
+        self.tuning = plan_tuning(CENTER_FREQ, requested_rate, FFT_SIZE,
+                                  LO_OFFSET_HZ)
+        self.sky_center_freq = self.tuning['sky_center_freq_hz']
+        self.center_freq = self.tuning['tuned_center_freq_hz']
+        self.sample_rate = self.tuning['sample_rate_hz']
+        self.fft_size = self.tuning['channels']
+        print("  " + describe_tuning(self.tuning))
 
         # Display settings
         self.waterfall_min = -70
@@ -1341,7 +1376,8 @@ class H1ReceiverWindow(QtWidgets.QMainWindow):
         """Initialize HDF5 file."""
         return init_hdf5(filename, self.freq_axis_hz, self.fft_size,
                          sdr_type=self.sdr_type, center_freq=self.center_freq,
-                         sample_rate=self.sample_rate, gain=self.gain)
+                         sample_rate=self.sample_rate, gain=self.gain,
+                         tuning_plan=getattr(self, 'tuning', None))
 
     def _next_hdf5_filename(self, reason):
         """Create a unique segment filename for changed spectral geometry."""

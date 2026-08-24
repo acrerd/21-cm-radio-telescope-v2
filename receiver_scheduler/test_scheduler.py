@@ -1935,3 +1935,27 @@ def test_form_fields_are_not_restorable_by_the_browser():
     for tag in ("<input ", "<select ", "<textarea "):
         for match in re.finditer(re.escape(tag) + r'[^>]*>', page):
             assert 'autocomplete="off"' in match.group(0), match.group(0)[:90]
+
+
+class TestTuningEndpoint:
+    """/api/tuning has no state, so it needs no isolated files."""
+
+    @pytest.fixture
+    def client(self):
+        sched.app.config['TESTING'] = True
+        with sched.app.test_client() as c:
+            yield c
+
+    def test_the_page_is_told_what_the_receiver_will_do(self, client):
+        resp = client.get('/api/tuning?center_freq_mhz=1420.405752'
+                          '&bandwidth_mhz=2.0&channels=327')
+        assert resp.status_code == 200
+        p = resp.get_json()
+        assert p['success'] is True
+        assert p['tuned_center_freq_hz'] == pytest.approx(1421.205752e6)
+        assert p['sample_rate_raised'] is True
+        assert 'raised' in p['description']
+
+    def test_a_malformed_request_is_refused_not_guessed(self, client):
+        resp = client.get('/api/tuning?bandwidth_mhz=wide')
+        assert resp.status_code == 400

@@ -52,3 +52,6 @@ coverage.xml
 # OS files
 .DS_Store
 Thumbs.db
+
+# Which observation finished last: runtime state, absolute paths, per-host.
+receiver_scheduler/last_observation.json

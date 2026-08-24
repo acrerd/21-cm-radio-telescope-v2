@@ -1372,6 +1372,40 @@ def start_observation(obs: dict, duration_override: int = None) -> bool:
 last_observation: Optional[dict] = None
 last_observation_lock = threading.Lock()
 
+# Where the last finished observation is remembered across restarts. The plot
+# is drawn on demand from this, so holding it only in memory meant every
+# scheduler restart lost the ability to plot the run that had just finished -
+# and restarts happen for unrelated reasons, in the middle of an observing
+# session. It is a pointer to a file that is already on disk, so persisting it
+# costs nothing and keeps the Observe tab useful across one.
+LAST_OBSERVATION_FILE = os.path.join(_SCRIPT_DIR, 'last_observation.json')
+
+
+def _save_last_observation(info: dict):
+    try:
+        with open(LAST_OBSERVATION_FILE, 'w') as f:
+            json.dump(info, f, indent=2)
+    except OSError as exc:
+        log.warning("Could not remember the last observation: %s", exc)
+
+
+def _load_last_observation():
+    """Recover the pointer, if the file it names is still there."""
+    global last_observation
+    try:
+        with open(LAST_OBSERVATION_FILE) as f:
+            info = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return
+    if not isinstance(info, dict) or not info.get('output_file'):
+        return
+    if not os.path.exists(info['output_file']):
+        log.info("The last observation's file has gone: %s", info['output_file'])
+        return
+    with last_observation_lock:
+        last_observation = info
+    log.info("Last observation recovered: %s", info.get('name') or info['output_file'])
+
 
 # Where the running receiver's output is going, so its last words can be put
 # into the operational record when it dies.
@@ -1427,6 +1461,7 @@ def _record_finished_observation(obs: Optional[dict]):
             'started_at': obs.get('started_at'),
             'ended_at': datetime.now().isoformat(timespec='seconds'),
         }
+        _save_last_observation(last_observation)
     # A receiver that died before opening its file leaves nothing behind, and
     # saying otherwise sends whoever reads this looking for a file that was
     # never written.
@@ -1671,6 +1706,9 @@ def scheduler_thread():
     global scheduler_running
 
     log.info("Background scheduler started")
+    # Recover the pointer to the last finished observation, so a restart does
+    # not cost the Observe tab its plot.
+    _load_last_observation()
     last_debug = 0
 
     while scheduler_running:
@@ -2222,7 +2260,7 @@ HTML_TEMPLATE = '''
                         <input autocomplete="off" type="number" id="obvB" step="any" value="-1">
                     </div>
                     <div class="form-group">
-                        <label id="obvDurationLabel">Duration <span class="unit">(min)</span></label>
+                        <label id="obvDurationLabel">Total integration time <span class="unit">(min)</span></label>
                         <input autocomplete="off" type="number" id="obvDuration" min="1" max="1435" step="1" value="30">
                     </div>
                 </div>
@@ -2230,11 +2268,11 @@ HTML_TEMPLATE = '''
                 <div class="form-grid">
                     <div class="form-group">
                         <label>Center Frequency <span class="unit">(MHz)</span></label>
-                        <input autocomplete="off" type="number" id="obvCenterFreq" step="any" value="1420.405752">
+                        <input autocomplete="off" type="number" id="obvCenterFreq" oninput="scheduleObserveTuning()" step="any" value="1420.405752">
                     </div>
                     <div class="form-group">
                         <label>Bandwidth <span class="unit">(MHz)</span></label>
-                        <input autocomplete="off" type="number" id="obvBandwidth" step="0.1" value="2.4">
+                        <input autocomplete="off" type="number" id="obvBandwidth" oninput="scheduleObserveTuning()" step="0.1" value="2.4">
                     </div>
                     <div class="form-group">
                         <label>Gain <span class="unit">(dB)</span></label>
@@ -2242,10 +2280,10 @@ HTML_TEMPLATE = '''
                     </div>
                     <div class="form-group">
                         <label>Channels</label>
-                        <input autocomplete="off" type="number" id="obvChannels" min="2" max="65536" step="1" value="4096">
+                        <input autocomplete="off" type="number" id="obvChannels" oninput="scheduleObserveTuning()" min="2" max="65536" step="1" value="4096">
                     </div>
                     <div class="form-group">
-                        <label>Integration Time <span class="unit">(s)</span></label>
+                        <label>Integration per record <span class="unit">(s)</span></label>
                         <input autocomplete="off" type="number" id="obvIntegration" min="0.1" step="0.1" value="3.0">
                     </div>
                     <div class="form-group">
@@ -2256,6 +2294,10 @@ HTML_TEMPLATE = '''
                         </select>
                     </div>
                 </div>
+                <div id="obvTuning" style="margin-top:10px; padding:10px 12px; background:#0f0f23; border:1px solid #333; border-radius:6px; color:#888; font-size:12px;">
+                    Working out the tuning&hellip;
+                </div>
+
                 <div class="section-title">Output</div>
                 <div class="form-grid">
                     <div class="form-group">
@@ -3577,6 +3619,7 @@ HTML_TEMPLATE = '''
             // Leaving the tab stops the loop; scheduleCameraRefresh cancels
             // itself whenever the camera tab is not the one on screen.
             if (name === 'horizon') pollHorizon();
+            if (name === 'observe') refreshObserveTuning();
             if (name === 'simulator') showSimulator();
             if (name === 'observe') { loadObserveParams(false); loadObserveLast(); }
             if (name === 'camera' && !camObjectUrl) refreshCamera();
@@ -3617,7 +3660,7 @@ HTML_TEMPLATE = '''
             // transits at its mid-point; saying so beats a tooltip.
             document.getElementById('obvDurationLabel').innerHTML =
                 drift ? 'Scan length <span class="unit">(min)</span> &mdash; transit at mid-point'
-                      : 'Duration <span class="unit">(min)</span> &mdash; the simulator&rsquo;s &tau;';
+                      : 'Total integration time <span class="unit">(min)</span> &mdash; the simulator&rsquo;s &tau;';
         }
 
         function loadObserveParams(force) {
@@ -3893,6 +3936,51 @@ HTML_TEMPLATE = '''
                 document.getElementById('hzPlotContainer').innerHTML =
                     '<img src="/api/horizon/plot?' + Date.now() + '" style="max-width:100%; border-radius:8px; border:1px solid #333;">';
             }).catch(() => {});
+        }
+
+
+        // ---- what the receiver will actually be tuned to ----
+        // The B210 is a direct-conversion receiver, so the tuned frequency
+        // lands on the FFT's DC bin and UHD's automatic offset correction
+        // subtracts whatever is there - including the line. The LO is
+        // therefore offset, and the sample rate raised if it must be to keep
+        // the line in the flat part of the band. Saying so here means the
+        // numbers typed above are never silently replaced.
+        let obvTuningTimer = null;
+
+        function refreshObserveTuning() {
+            const params = new URLSearchParams({
+                center_freq_mhz: document.getElementById('obvCenterFreq').value || 1420.405752,
+                bandwidth_mhz: document.getElementById('obvBandwidth').value || 2.4,
+                channels: document.getElementById('obvChannels').value || 4096,
+            });
+            fetch('/api/tuning?' + params).then(r => r.json()).then(p => {
+                const box = document.getElementById('obvTuning');
+                if (!p.success) { box.textContent = p.error || 'Tuning unavailable'; return; }
+                const mhz = v => (v / 1e6).toFixed(6);
+                let html = '<div style="color:#00d4ff; margin-bottom:4px;">The receiver will be tuned to '
+                         + mhz(p.tuned_center_freq_hz) + ' MHz</div>';
+                html += '<div>' + (p.lo_offset_hz / 1e6).toFixed(2) + ' MHz above '
+                     + mhz(p.sky_center_freq_hz) + ' MHz, so the DC artefact lands clear of the line '
+                     + 'instead of on top of it.</div>';
+                if (p.sample_rate_raised) {
+                    html += '<div style="color:#ffa502; margin-top:4px;">Bandwidth raised '
+                         + (p.requested_sample_rate_hz / 1e6).toFixed(2) + ' &rarr; '
+                         + (p.sample_rate_hz / 1e6).toFixed(2) + ' MHz to keep the line in the flat '
+                         + 'part of the band';
+                    if (p.channels !== p.requested_channels) {
+                        html += ', and channels ' + p.requested_channels + ' &rarr; ' + p.channels
+                             + ' to hold ' + (p.channel_width_hz / 1e3).toFixed(2) + ' kHz resolution';
+                    }
+                    html += '.</div>';
+                }
+                box.innerHTML = html;
+            }).catch(() => {});
+        }
+
+        function scheduleObserveTuning() {
+            if (obvTuningTimer) clearTimeout(obvTuningTimer);
+            obvTuningTimer = setTimeout(refreshObserveTuning, 250);
         }
 
         // ---- Safety camera ----
@@ -5660,6 +5748,26 @@ def api_calday_model():
 # =============================================================================
 # Horizon scan
 # =============================================================================
+
+@app.route('/api/tuning', methods=['GET'])
+def api_tuning():
+    """What the receiver will actually be tuned to, for a requested setup.
+
+    The page asks rather than working it out, so there is one implementation of
+    the rule and the number shown is the number used.
+    """
+    from tuning import describe_tuning, plan_tuning
+    try:
+        centre = float(request.args.get('center_freq_mhz', 1420.405752)) * 1e6
+        bandwidth = float(request.args.get('bandwidth_mhz', 2.4)) * 1e6
+        channels = int(float(request.args.get('channels', 4096)))
+    except (TypeError, ValueError):
+        return jsonify({'success': False, 'error': 'bad tuning request'}), 400
+    plan = plan_tuning(centre, bandwidth, channels)
+    plan['description'] = describe_tuning(plan)
+    plan['success'] = True
+    return jsonify(plan)
+
 
 @app.route('/api/horizon/start', methods=['POST'])
 def api_horizon_start():
