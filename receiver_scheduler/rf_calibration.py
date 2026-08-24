@@ -144,7 +144,7 @@ from observatory import MAIN_BEAM_EFFICIENCY
 # efficiency as one; a version 1 fit plotted against it disagreed by tenths of
 # a kelvin everywhere, which looks exactly like a calibration error. Version 3
 # adds the diffuse continuum map, which shifts the intercept.
-REDUCTION_VERSION = 4
+REDUCTION_VERSION = 5
 
 CALIBRATION_VERSION = 1
 
@@ -400,6 +400,94 @@ def simulated_spectrum(glon, glat, obstime, sim=None, bandwidth_hz=2.0e6):
     return freq[order], ta[order]
 
 
+# Width of the running median that narrow interference is judged against, and
+# the cut applied to it. Both are set by the two scales involved: the filter has
+# to be much *narrower* than an H I line so it follows the line rather than
+# treating its peak as an outlier, and much *wider* than interference so the
+# interference stands clear of it. At 0.49 kHz channels a line spans some 250
+# channels and the interference two or three, so 81 channels sits comfortably
+# between them - and this is done before binning for exactly that reason, since
+# on the model's 6.1 kHz grid no such gap exists.
+RFI_MEDIAN_CHANNELS = 21
+RFI_SIGMA = 8.0
+
+# And a hard ceiling on how wide a feature may be and still be called
+# interference. This is the criterion that actually keeps the line safe, because
+# a filter width alone cannot: interference is *unresolved*, one to three
+# channels, while the narrowest hydrogen there is runs a kilometre a second -
+# thermal broadening of even 20 K gas - which is nine channels at 0.49 kHz.
+# Anything broader than this is the sky, however sharp it looks.
+#
+# Measured on 2026-08-24: at a filter width of 81 channels the line's own tip
+# was flagged at 9 sigma and would have been deleted; at 21 it is followed
+# exactly and only the interference at 1420.2790 MHz stands out, at 31 sigma.
+RFI_MAX_CHANNELS = 4
+
+# How far the excursion must fall in the channel either side of the group. This
+# is what finally separates interference from a bright line, because neither the
+# filter width nor the channel count can: with a high enough signal to noise the
+# curvature at a line's own peak exceeds any threshold measured against the
+# noise, and a 40-channel line duly had its tip flagged at 9 sigma in testing.
+#
+# The physical difference is that interference is discontinuous at its edges -
+# the channel beside it is at the baseline - while a spectral line is smooth,
+# and the channel beside its peak is within a percent of the peak. Requiring the
+# excursion to collapse by this factor immediately outside the group asks for
+# exactly that, and asks it in a way that does not care how bright the line is.
+RFI_EDGE_DROP = 0.3
+
+
+def flag_narrow_rfi(freq_hz, values, width=RFI_MEDIAN_CHANNELS, sigma=RFI_SIGMA,
+                    max_channels=RFI_MAX_CHANNELS, edge_drop=RFI_EDGE_DROP):
+    """(mask, found) - channels that stand out as narrow interference.
+
+    Only positive excursions: interference adds power. A narrow *deficit* is
+    the LO artefact or a dead channel, which are handled by name elsewhere, and
+    treating them here would let this quietly delete real absorption.
+
+    Known example, and the one this was written for: 1420.2790 MHz, 126.8 kHz
+    below the line at +26.8 km/s, seen at 36 and 20 sigma in two of six runs on
+    2026-08-24 and absent from the rest - fixed in sky frequency and
+    intermittent, which is interference and not the sky.
+    """
+    from scipy.ndimage import median_filter
+
+    values = np.asarray(values, float)
+    finite = np.isfinite(values)
+    if finite.sum() < width * 2:
+        return np.zeros(values.shape, bool), []
+
+    filled = np.where(finite, values, np.nanmedian(values[finite]))
+    base = median_filter(filled, size=width, mode="nearest")
+    resid = filled - base
+    scatter = float(np.median(np.abs(resid - np.median(resid))) * 1.4826)
+    if scatter <= 0:
+        return np.zeros(values.shape, bool), []
+
+    above = finite & (resid > sigma * scatter)
+    mask = np.zeros(values.shape, bool)
+    found = []
+    idx = np.flatnonzero(above)
+    if idx.size:
+        for group in np.split(idx, np.flatnonzero(np.diff(idx) > 3) + 1):
+            if not group.size or group.size > max_channels:
+                continue          # resolved, so it is the sky
+            peak = group[int(np.argmax(resid[group]))]
+            # Must fall away sharply either side, or it is the top of something
+            # real. Guard the array edges, where there is no outside to check.
+            lo, hi = group[0] - 1, group[-1] + 1
+            if lo < 0 or hi >= resid.size:
+                continue
+            shoulder = max(resid[lo], resid[hi])
+            if shoulder > edge_drop * resid[peak]:
+                continue
+            mask[group] = True
+            found.append({"freq_hz": float(freq_hz[peak]),
+                          "sigma": float(resid[peak] / scatter),
+                          "channels": int(group.size)})
+    return mask, found
+
+
 def _bin_to(freq_edges, freq_hz, values):
     """Average `values` into bins, ignoring empty ones."""
     idx = np.digitize(freq_hz, freq_edges) - 1
@@ -521,6 +609,13 @@ def reduce_for_fit(path, glon, glat, sim=None, bandwidth_hz=None):
         keep_ch = np.isfinite(corrected).any(axis=0)
     mean_counts = np.full(freq_hz.shape, np.nan)
     mean_counts[keep_ch] = np.nanmean(corrected[:, keep_ch], axis=0)
+    # Narrow interference, removed on the fine grid before binning - a single
+    # 36-sigma channel is a lever on a least squares out of all proportion to
+    # the one bin it occupies.
+    rfi_mask, rfi_found = flag_narrow_rfi(freq_hz, mean_counts)
+    if rfi_mask.any():
+        mean_counts = np.where(rfi_mask, np.nan, mean_counts)
+
     binned, count = _bin_to(edges, freq_hz, mean_counts)
     usable = count > 0
 
@@ -538,6 +633,7 @@ def reduce_for_fit(path, glon, glat, sim=None, bandwidth_hz=None):
         "binned_counts": binned, "usable": usable,
         "dc_artefact_freq_hz": (float(artefact) if artefact is not None else None),
         "obstime": obstime, "header": header, "bandpass_note": note,
+        "rfi_channels": int(rfi_mask.sum()), "rfi_found": rfi_found,
         "bandwidth_hz": bandwidth_hz,
         # Total integration, for the radiometer equation. The sum of the
         # per-record times, not the record count times the nominal: a run that
@@ -658,6 +754,8 @@ def calibrate_observation(path, glon, glat, sim=None, min_t_sys_k=MIN_T_SYS_K,
         red["sim_freq_hz"][usable], red["binned_counts"][usable],
         red["sim_freq_hz"], red["sim_ta_k"], min_t_sys_k)
     result.update({
+        "rfi_channels_flagged": red.get("rfi_channels", 0),
+        "rfi_found": red.get("rfi_found", []),
         "version": CALIBRATION_VERSION,
         "created_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "observed_utc": obstime.isoformat(timespec="seconds"),

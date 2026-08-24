@@ -315,3 +315,100 @@ def test_noise_scales_as_the_radiometer_equation_says():
     s_binned = 350.0 / np.sqrt(binned * tau)
     assert s_fine / s_binned == pytest.approx(np.sqrt(binned / fine), rel=1e-9)
     assert s_binned == pytest.approx(0.34, abs=0.02)
+
+
+def _spectrum_with(line_channels=0, spike_channels=0, n=2000, seed=3):
+    """A flat band, optionally with a resolved line and/or a narrow spike."""
+    H1 = R.H1_REST_FREQ_HZ
+    dnu = 488.3
+    f = H1 + (np.arange(n) - n // 2) * dnu
+    y = np.ones(n)
+    if line_channels:
+        y += 0.2 * np.exp(-0.5 * ((np.arange(n) - n // 2) / (line_channels / 2.355)) ** 2)
+    if spike_channels:
+        c = n // 2 - 260              # well away from the line
+        y[c:c + spike_channels] += 0.15
+    y = y * (1 + 0.001 * np.random.default_rng(seed).standard_normal(n))
+    return f, y
+
+
+def test_narrow_interference_is_found():
+    f, y = _spectrum_with(spike_channels=3)
+    mask, found = R.flag_narrow_rfi(f, y)
+    assert len(found) == 1
+    assert found[0]["channels"] <= R.RFI_MAX_CHANNELS
+    assert mask.sum() == 3
+
+
+def test_a_narrow_line_is_not_mistaken_for_interference():
+    """The width ceiling is what protects it, not the filter width.
+
+    Even cold hydrogen runs about a kilometre a second, nine channels here, and
+    at a filter width of 81 the line's own tip was flagged at 9 sigma on
+    2026-08-24 and would have been deleted.
+    """
+    f, y = _spectrum_with(line_channels=10)
+    mask, found = R.flag_narrow_rfi(f, y)
+    assert not mask.any(), "a 10-channel line is the sky, however sharp"
+
+
+def test_a_broad_line_is_not_touched():
+    f, y = _spectrum_with(line_channels=200)
+    mask, _ = R.flag_narrow_rfi(f, y)
+    assert not mask.any()
+
+
+def test_a_line_and_a_spike_together_leave_the_line_alone():
+    f, y = _spectrum_with(line_channels=40, spike_channels=3)
+    mask, found = R.flag_narrow_rfi(f, y)
+    assert len(found) == 1
+    # nothing flagged within the line
+    assert not mask[len(f) // 2 - 30:len(f) // 2 + 30].any()
+
+
+def test_only_positive_excursions_are_flagged():
+    """A narrow deficit is the LO artefact or a dead channel, handled by name.
+
+    Flagging them here would let this quietly delete real absorption.
+    """
+    f, y = _spectrum_with()
+    y[900:903] -= 0.15
+    mask, found = R.flag_narrow_rfi(f, y)
+    assert not mask.any()
+
+
+def test_the_known_interference_line_is_rejected_from_a_real_run():
+    import os
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data",
+                        "rf_gain_calibration_20260824_180418.h5")
+    if not os.path.exists(path):
+        pytest.skip("the 2026-08-24 run is not on disk")
+    red = R.reduce_for_fit(path, 36.53, 56.9)
+    hits = [x for x in red["rfi_found"] if abs(x["freq_hz"] - 1420.2790e6) < 5e3]
+    assert hits, "the 1420.2790 MHz interference was not caught"
+    assert hits[0]["sigma"] > 10
+
+
+def test_a_bright_line_keeps_its_peak_however_high_the_signal_to_noise():
+    """Curvature at a line's peak beats any noise-relative threshold.
+
+    A 40-channel line at a thousand to one had its tip flagged at 9 sigma
+    before the edge-drop criterion existed. Neither the filter width nor the
+    channel count catches this; only the shape does.
+    """
+    for line_channels in (12, 20, 40, 120):
+        f, y = _spectrum_with(line_channels=line_channels, seed=11)
+        mask, found = R.flag_narrow_rfi(f, y)
+        assert not mask.any(), \
+            "clipped the peak of a %d-channel line" % line_channels
+
+
+def test_the_edge_drop_is_what_does_it():
+    """A spike keeps its neighbours at the baseline; a line does not."""
+    f, y = _spectrum_with(spike_channels=2)
+    assert R.flag_narrow_rfi(f, y)[0].any()
+    # Relax the criterion to accept anything, and the line is caught again -
+    # which is the point: this is the criterion carrying the weight.
+    f2, y2 = _spectrum_with(line_channels=40, seed=11)
+    assert not R.flag_narrow_rfi(f2, y2)[0].any()
+    assert R.flag_narrow_rfi(f2, y2, edge_drop=1.5)[0].any()
