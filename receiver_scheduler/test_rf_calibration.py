@@ -189,3 +189,31 @@ def test_the_diffuse_continuum_map_is_actually_loaded():
     assert len(sim.sources) > 0, "the bright discrete sources are missing"
     # And it must contribute where the plane calibration will happen.
     assert sim.continuum(80.0, 0.0) > 1.0
+
+
+def test_the_system_temperature_inverts_to_a_loss():
+    """371.5 K is opaque; 2.8 dB of loss ahead of the LNA is actionable.
+
+    A lossy element of factor L at ambient gives T_sys = (L-1)T_amb + L*T_rx
+    referred to the sky, so the measured value inverts. It assumes the whole
+    excess is loss, making it an upper bound rather than a measurement.
+    """
+    assert R._implied_loss_db(R.RECEIVER_T_RX_K) is None      # needs no loss
+    assert R._implied_loss_db(371.5) == pytest.approx(2.78, abs=0.02)
+    assert R._implied_loss_db(150.0) == pytest.approx(1.01, abs=0.02)
+    # and it must be monotonic, or it is not an inversion of anything
+    vals = [R._implied_loss_db(t) for t in (100, 200, 300, 400)]
+    assert vals == sorted(vals)
+
+
+def test_a_loss_predicts_how_the_system_temperature_tracks_ambient():
+    """The test that needs no dismantling: dT_sys/dT_amb = L - 1.
+
+    Neither spillover nor receiver noise tracks air temperature; a lossy front
+    end does, at nearly a kelvin per kelvin here.
+    """
+    L = 10 ** (2.78 / 10)
+    warm = (L - 1) * (R.AMBIENT_T_K + 15) + L * R.RECEIVER_T_RX_K
+    cold = (L - 1) * (R.AMBIENT_T_K - 0) + L * R.RECEIVER_T_RX_K
+    assert (warm - cold) / 15 == pytest.approx(L - 1, rel=1e-6)
+    assert warm - cold > 10          # a 15 C swing is plainly measurable

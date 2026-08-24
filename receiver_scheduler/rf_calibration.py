@@ -72,6 +72,29 @@ MIN_TARGET_ALT_DEG = 25.0
 # seeing, not clamping.
 IMPLAUSIBLE_T_SYS_K = 300.0
 
+# For turning a system temperature into something that can be acted on. A lossy
+# element of factor L at physical temperature T_amb ahead of the LNA gives,
+# referred to the sky:
+#
+#     T_sys = (L - 1) * T_amb + L * T_rx
+#
+# so a measured T_sys inverts to a loss. It is the honest reading of an excess
+# that has survived the alternatives: ground spillover was excluded by
+# measurement (baseline power at altitude 34 and 78.5 agreed to 3.6%, and
+# spillover grows towards the horizon), the beam efficiency by argument (the
+# beam is measured and the sidelobes see sky), and the missing continuum by
+# arithmetic (0.7 K here). A corroded probe or connector is a constant loss,
+# which is exactly the elevation-independent excess that was left.
+#
+# The inversion assumes the whole excess is loss at ambient, so it is an upper
+# bound on the loss rather than a measurement of it. What makes it testable
+# without dismantling anything is the ambient term: dT_sys/dT_amb = L - 1, so a
+# genuinely lossy front end makes the system temperature track the air
+# temperature, at nearly a kelvin per kelvin here. Neither spillover nor
+# receiver noise does that.
+RECEIVER_T_RX_K = 59.0        # SAWbird+ H1 datasheet, typical
+AMBIENT_T_K = 290.0
+
 # Floors to fall back through when nothing clears the preferred one. Each step
 # down is reported, so a compromised calibration announces itself.
 FALLBACK_ALT_FLOORS_DEG = (20.0, 15.0, 12.0)
@@ -397,6 +420,18 @@ def _bin_to(freq_edges, freq_hz, values):
 # the fit
 
 
+def _implied_loss_db(t_sys_k):
+    """Loss ahead of the LNA that would account for this system temperature.
+
+    None when the fit is quieter than the receiver alone, which needs no loss to
+    explain and usually means the fit has gone wrong in the other direction.
+    """
+    if not np.isfinite(t_sys_k) or t_sys_k <= RECEIVER_T_RX_K:
+        return None
+    loss = (t_sys_k + AMBIENT_T_K) / (RECEIVER_T_RX_K + AMBIENT_T_K)
+    return float(10.0 * np.log10(loss))
+
+
 def fit_gain(observed_counts, model_k, min_t_sys_k=MIN_T_SYS_K):
     """Least squares for (G, T_sys) in counts = G * (T_sys + T_A).
 
@@ -433,6 +468,7 @@ def fit_gain(observed_counts, model_k, min_t_sys_k=MIN_T_SYS_K):
         "implausible_above_k": float(IMPLAUSIBLE_T_SYS_K),
         "min_t_sys_k": float(min_t_sys_k),
         "assumed_main_beam_efficiency": float(MAIN_BEAM_EFFICIENCY),
+        "implied_loss_db": _implied_loss_db(t_sys),
         "reduction_version": REDUCTION_VERSION,
         "n_bins": int(ok.sum()),
         "model_peak_k": float(np.nanmax(ta)),

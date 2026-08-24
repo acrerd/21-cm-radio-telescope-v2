@@ -4328,6 +4328,11 @@ HTML_TEMPLATE = '''
                         + ', ' + rfAge(d.gain.observed_utc)
                         + ' &nbsp; r=' + d.gain.correlation.toFixed(3)
                         + ' &nbsp; residual ' + d.gain.residual_rms_k.toFixed(2) + ' K</div>'
+                        + (d.gain.implied_loss_db
+                           ? '<div style="color:#888;">equivalent to '
+                             + d.gain.implied_loss_db.toFixed(2)
+                             + ' dB of loss ahead of the LNA, if that is what it is</div>'
+                           : '')'
                         + warn + hot + weak;
                 }
 
@@ -5686,6 +5691,7 @@ def api_rf_status():
             "t_sys_k": cal.get("t_sys_k"),
             "t_sys_bound_active": cal.get("t_sys_bound_active"),
             "t_sys_implausible": cal.get("t_sys_implausible"),
+            "implied_loss_db": cal.get("implied_loss_db"),
             "correlation": cal.get("correlation"),
             "residual_rms_k": cal.get("residual_rms_k"),
             "glon": cal.get("glon"), "glat": cal.get("glat"),
