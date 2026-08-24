@@ -322,7 +322,7 @@ def plot_observation(path, output_path, name="", mode="spectrum",
         for spine in secax.spines.values():
             spine.set_color(_PLOT_GRID)
     fig.tight_layout()
-    fig.savefig(output_path, dpi=110, facecolor=fig.get_facecolor())
+    fig.savefig(output_path, facecolor=fig.get_facecolor())
     plt.close(fig)
     log.info("Observation plot written to %s (%s, %d spectra)",
              output_path, mode, n)
