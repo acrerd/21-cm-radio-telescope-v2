@@ -1,0 +1,33 @@
+{
+  "version": 1,
+  "created_utc": "2026-08-24T12:11:30+00:00",
+  "source_name": "Lockman Hole",
+  "source_file": "h1_lockman_lo_offset_test.h5",
+  "degree": 9,
+  "coefficients": [
+    0.11403871692941638,
+    0.015028917306622985,
+    -0.21393146667311155,
+    -0.057521335553537924,
+    0.07329691195920339,
+    0.16882002852327435,
+    0.08276702106255532,
+    -0.32969756041786763,
+    0.00589210834127374,
+    1.069027804362033
+  ],
+  "u_scale_hz": 1854000.0,
+  "band_fraction": 0.412,
+  "config": {
+    "lo_hz": 1421205752.0,
+    "sample_rate_hz": 4500000.0,
+    "sky_center_freq_hz": 1420405752.0,
+    "lo_offset_hz": 800000.0,
+    "gain_db": 40.0
+  },
+  "n_records": 41,
+  "n_channels_fitted": 6446,
+  "line_mask_hz": 250000.0,
+  "dc_mask_hz": 30000.0,
+  "fit_residual_rms": 0.004011659691387758
+}

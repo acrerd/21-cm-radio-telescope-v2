@@ -33,6 +33,8 @@ from datetime import datetime, timezone
 
 import numpy as np
 
+import bandpass
+
 log = logging.getLogger("scheduler")
 
 try:
@@ -125,9 +127,104 @@ def read_observation(path):
         freq_hz = np.asarray(hf["frequency_hz"][:], dtype=float)
         spectra = np.asarray(hf["spectra_linear"][:], dtype=float)
         stamps = np.asarray(hf["timestamps"][:], dtype=float)
+        # How long each record integrated for. Their sum is the total
+        # integration, which is what the averaged spectrum's noise corresponds
+        # to - the per-record value is only a recording granularity.
+        if "integration_times" in hf:
+            taus = np.asarray(hf["integration_times"][:], dtype=float)
+        else:
+            taus = np.array([], dtype=float)
+        header = dict(hf.attrs)
     if spectra.ndim != 2 or spectra.shape[0] == 0:
         raise ValueError("The observation file holds no spectra")
-    return freq_hz, spectra, stamps
+    return freq_hz, spectra, stamps, taus, header
+
+
+def requested_band(header):
+    """The band that was asked for, which is what should be drawn.
+
+    The receiver tunes the LO off the line and widens the sample rate to suit,
+    so the recorded band is wider than the requested one and is centred
+    somewhere else entirely. None of that is the observer's business: they
+    asked for a bandwidth around a frequency, the simulator that set the
+    observation up drew exactly that, and the plot should match it. Trimming
+    also drops the LO artefact and the filter roll-off, so the vertical scale
+    belongs to the part of the spectrum that matters.
+
+    Returns (low_hz, high_hz), or None for a file that predates the offset.
+    """
+    centre = header.get("sky_center_freq_hz")
+    width = header.get("sample_rate_requested_hz")
+    if centre is None or width is None:
+        return None
+    centre, width = float(centre), float(width)
+    if not (np.isfinite(centre) and np.isfinite(width)) or width <= 0:
+        return None
+    return centre - width / 2.0, centre + width / 2.0
+
+
+def patch_dc_artefact(freq_hz, spectra, header, half_window=48):
+    """Interpolate across the LO's DC artefact, for display only.
+
+    The receiver tunes the LO away from the line, so the artefact lands in a
+    part of the band carrying nothing but smooth bandpass - and interpolating
+    across a few channels of that invents nothing. Doing the same thing while
+    tuned at the line would have been inventing the measurement, which is why
+    the offset had to come first.
+
+    The recorded spectra are never modified. This returns a copy for drawing,
+    and the count of channels patched so the plot can say so: a patched
+    spectrum that does not announce itself is worse than a visible defect.
+
+    The width is found rather than assumed. It depends on the channel width -
+    the same defect spanned three channels at 6.1 kHz and far fewer at 0.5 kHz -
+    so a fixed channel count would be wrong at every resolution but one.
+    """
+    where = header.get("dc_artefact_freq_hz")
+    if where is None or spectra.size == 0:
+        return spectra, 0, None
+    where = float(where)
+    if not (freq_hz[0] <= where <= freq_hz[-1]):
+        return spectra, 0, None            # outside the drawn band already
+
+    mean = spectra.mean(axis=0)
+    k = int(np.argmin(np.abs(freq_hz - where)))
+    lo = max(0, k - half_window)
+    hi = min(len(mean), k + half_window + 1)
+    # A baseline from the window's outer thirds, which the artefact does not
+    # reach, and a scatter to judge the inner channels against.
+    edge = np.concatenate([mean[lo:k - 6], mean[k + 7:hi]])
+    if edge.size < 8:
+        return spectra, 0, None
+    baseline = float(np.median(edge))
+    scatter = float(np.median(np.abs(edge - baseline))) * 1.4826
+    if scatter <= 0:
+        return spectra, 0, None
+
+    bad = np.zeros(len(mean), dtype=bool)
+    for i in range(max(lo, k - 12), min(hi, k + 13)):
+        if abs(mean[i] - baseline) > 6.0 * scatter:
+            bad[i] = True
+    if not bad.any():
+        return spectra, 0, None
+    # Take the contiguous run containing the artefact, so an unrelated spike
+    # elsewhere in the window is left alone to be seen.
+    left = right = k
+    while left - 1 >= 0 and bad[left - 1]:
+        left -= 1
+    while right + 1 < len(mean) and bad[right + 1]:
+        right += 1
+    if not bad[k]:
+        return spectra, 0, None
+
+    patched = spectra.copy()
+    good = np.array([left - 1, right + 1])
+    if good[0] < 0 or good[1] >= len(mean):
+        return spectra, 0, None
+    for row in range(patched.shape[0]):
+        patched[row, left:right + 1] = np.interp(
+            freq_hz[left:right + 1], freq_hz[good], patched[row, good])
+    return patched, right - left + 1, where
 
 
 def plot_observation(path, output_path, name="", mode="spectrum",
@@ -135,14 +232,49 @@ def plot_observation(path, output_path, name="", mode="spectrum",
     """Render a finished observation to a PNG. Returns the output path."""
     if not MATPLOTLIB_AVAILABLE:
         raise RuntimeError("matplotlib is not installed, so no plot can be drawn")
-    freq_hz, spectra, stamps = read_observation(path)
+    freq_hz, spectra, stamps, taus, header = read_observation(path)
+
+    band = requested_band(header)
+    if band is not None:
+        keep = (freq_hz >= band[0]) & (freq_hz <= band[1])
+        # Only trim if the request actually lies inside what was recorded; a
+        # mismatch means the header is not describing this file and the honest
+        # thing is to draw all of it.
+        if keep.sum() >= 16:
+            freq_hz = freq_hz[keep]
+            spectra = spectra[:, keep]
+    # Divide out the measured instrument response before anything else looks at
+    # the shape. Done here rather than in the receiver so the recorded files stay
+    # raw and can be re-reduced against a better template later; done after the
+    # trim so the polynomial is never asked to extrapolate past the band it was
+    # fitted over. Refuses itself if the tuning does not match - see bandpass.py.
+    spectra, bandpass_note = bandpass.apply_bandpass(freq_hz, spectra, header)
+    spectra, n_patched, patched_at = patch_dc_artefact(freq_hz, spectra, header)
     n = spectra.shape[0]
     started = (datetime.fromtimestamp(stamps[0], tz=timezone.utc)
                if stamps.size else None)
     title = name or os.path.basename(path)
-    subtitle = f"{n} integration{'s' if n != 1 else ''}"
+    # The plotted spectrum is the average of every record, so the integration
+    # its noise corresponds to is the total, not the per-record granularity.
+    # Quote the total and let the record count explain where it came from.
+    total_s = float(np.nansum(taus)) if taus is not None and taus.size else None
+    if total_s:
+        if total_s >= 60:
+            total_text = "%.1f min total integration" % (total_s / 60.0)
+        else:
+            total_text = "%.0f s total integration" % total_s
+        subtitle = "%s (%d record%s)" % (total_text, n, 's' if n != 1 else '')
+    else:
+        subtitle = f"{n} record{'s' if n != 1 else ''}"
     if started is not None:
         subtitle += f", from {started:%Y-%m-%d %H:%M:%S} UTC"
+    if n_patched:
+        subtitle += ("\n%d channel%s interpolated across the LO artefact at %.4f MHz"
+                     % (n_patched, "s" if n_patched != 1 else "", patched_at / 1e6))
+    # Always say whether the response was divided out, including when it was
+    # not: a flat-looking spectrum that has silently been through a template is
+    # indistinguishable from one that has not, and the difference matters.
+    subtitle += "\n" + bandpass_note
 
     fig, ax = plt.subplots(figsize=(9, 4.5))
     secax = None
