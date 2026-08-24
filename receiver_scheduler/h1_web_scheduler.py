@@ -2019,6 +2019,7 @@ HTML_TEMPLATE = '''
             .rf-wide { width: calc(100vw - 40px); max-width: calc(100vw - 40px);
                        margin-left: calc(-50vw + 700px); }
         }
+        .rf-wide img { display: block; }
         .status-bar { background: #16213e; padding: 15px; border-radius: 8px; margin-bottom: 20px; display: flex; justify-content: space-between; align-items: center; gap: 18px; flex-wrap: wrap; }
         .status-indicator { display: flex; align-items: center; gap: 10px; }
         .status-group { display: flex; align-items: center; gap: 26px; flex-wrap: wrap; }
@@ -2577,7 +2578,7 @@ HTML_TEMPLATE = '''
                         Nothing has finished yet this session.
                     </span>
                 </div>
-                <div id="obvPlot" style="margin-top:12px;"></div>
+                <div id="obvPlot" class="rf-wide" style="margin-top:12px;"></div>
                 <p style="color:#888; font-size:12px; margin-top:12px;">
                     <strong>Start Now</strong> points the telescope and starts the
                     receiver immediately; it is not owned by a schedule slot, so a
@@ -4038,7 +4039,8 @@ HTML_TEMPLATE = '''
                 return r.blob();
             }).then(b => {
                 const url = URL.createObjectURL(b);
-                host.innerHTML = '<img src="' + url + '" style="max-width:100%; border-radius:8px; border:1px solid #333;">';
+                host.innerHTML = '<img src="' + url + '" style="width:100%; height:auto; '
+                               + 'border-radius:8px; border:1px solid #333;">';
             }).catch(e => {
                 host.innerHTML = '<span style="color:#ffa502; font-size:12px;">' + e.message + '</span>';
             });

@@ -228,7 +228,7 @@ def patch_dc_artefact(freq_hz, spectra, header, half_window=48):
 
 
 def plot_observation(path, output_path, name="", mode="spectrum",
-                     transit_minutes=None):
+                     transit_minutes=None, figsize=(16.0, 9.0), dpi=120):
     """Render a finished observation to a PNG. Returns the output path."""
     if not MATPLOTLIB_AVAILABLE:
         raise RuntimeError("matplotlib is not installed, so no plot can be drawn")
@@ -250,6 +250,16 @@ def plot_observation(path, output_path, name="", mode="spectrum",
     # fitted over. Refuses itself if the tuning does not match - see bandpass.py.
     spectra, bandpass_note = bandpass.apply_bandpass(freq_hz, spectra, header)
     spectra, n_patched, patched_at = patch_dc_artefact(freq_hz, spectra, header)
+
+    # If a gain calibration applies to this tuning, put the spectrum in kelvin.
+    # Same rule as the bandpass: it belongs to a tuning and a receiver gain, and
+    # using it on another would be worse than leaving counts alone, because
+    # counts are honestly unlabelled and wrong kelvin are not.
+    import rf_calibration
+    cal = rf_calibration.load_calibration()
+    cal_ok, cal_why = rf_calibration.calibration_applies_to(cal, header)
+    if cal_ok:
+        spectra = spectra / cal["gain_counts_per_k"] - cal["t_sys_k"]
     n = spectra.shape[0]
     started = (datetime.fromtimestamp(stamps[0], tz=timezone.utc)
                if stamps.size else None)
@@ -275,13 +285,25 @@ def plot_observation(path, output_path, name="", mode="spectrum",
     # not: a flat-looking spectrum that has silently been through a template is
     # indistinguishable from one that has not, and the difference matters.
     subtitle += "\n" + bandpass_note
+    if cal_ok:
+        subtitle += ("\ncalibrated to kelvin: T_sys %.0f K, gain measured %s UTC"
+                     % (cal["t_sys_k"],
+                        (cal.get("observed_utc") or "")[:16].replace("T", " ")))
+    elif "no gain calibration" not in cal_why:
+        subtitle += "\nin counts, not kelvin - " + cal_why
 
-    fig, ax = plt.subplots(figsize=(9, 4.5))
+    # 1920x1080, matching the calibration plots. Read on the observatory
+    # console and never on a phone, and the whole point of a spectrum is fine
+    # structure across the band - at 900 px a 0.49 kHz channel is a fifth of a
+    # pixel and the line profile is whatever the resampling decided.
+    fig, ax = plt.subplots(figsize=figsize, dpi=dpi)
     secax = None
     if mode == "drift":
         _plot_drift(ax, spectra, stamps, transit_minutes)
     else:
         secax = _plot_spectrum(ax, freq_hz, spectra)
+        if cal_ok:
+            ax.set_ylabel("Antenna temperature (K)")
     # The spectrum's velocity axis lives along the top of the frame, and
     # tight_layout does not count it when placing the title, so the two land on
     # top of each other. Reserve the room explicitly.

@@ -693,6 +693,34 @@ def load_calibration(path=CALIBRATION_FILE):
     return cal
 
 
+def calibration_applies_to(cal, header, tolerance_hz=1e3):
+    """(ok, why) - whether a stored gain applies to this observation.
+
+    Same reasoning as the bandpass template: the counts-per-kelvin scale belongs
+    to a tuning and a receiver gain setting, and using it on another is worse
+    than leaving the spectrum in counts, because counts are honestly unlabelled
+    while wrong kelvin are not.
+    """
+    if not cal or not cal.get("gain_counts_per_k"):
+        return False, "no gain calibration has been made"
+    cfg = cal.get("config") or {}
+    lo, rate = header.get("center_freq_hz"), header.get("sample_rate_hz")
+    if lo is None or rate is None:
+        return False, "observation does not record its tuning"
+    if abs(float(cfg.get("lo_hz", 0)) - float(lo)) > tolerance_hz:
+        return False, ("calibration is for LO %.6f MHz, this is %.6f MHz"
+                       % (float(cfg.get("lo_hz", 0)) / 1e6, float(lo) / 1e6))
+    if abs(float(cfg.get("sample_rate_hz", 0)) - float(rate)) > 1.0:
+        return False, ("calibration is for %.3f Msps, this is %.3f Msps"
+                       % (float(cfg.get("sample_rate_hz", 0)) / 1e6,
+                          float(rate) / 1e6))
+    want, have = cfg.get("gain_db"), header.get("gain_db")
+    if want is not None and have is not None and abs(float(want) - float(have)) > 0.01:
+        return False, ("calibration is for %.1f dB of receiver gain, this is %.1f"
+                       % (float(want), float(have)))
+    return True, ""
+
+
 def counts_to_kelvin(counts, cal):
     """Antenna temperature from corrected counts, minus the system term."""
     if not cal or not cal.get("gain_counts_per_k"):
