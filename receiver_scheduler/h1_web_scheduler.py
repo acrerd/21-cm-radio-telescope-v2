@@ -449,47 +449,109 @@ def srt_point_telescope(obs: dict) -> bool:
         return False
 
 
+# The mount quantises to half a degree (two encoder pulses per degree), so
+# arrival cannot be judged more tightly than that. 0.6 leaves a little margin
+# over one quantum without being loose enough to accept the wrong target.
+SRT_ARRIVAL_TOLERANCE_DEG = 0.6
+
+# Nothing is accepted as "arrived" until this long after the command. The
+# controller does not begin moving the instant it answers, and its reported
+# target lags the command as well, so an immediate check sees the mount sitting
+# still on the *previous* target and calls that success. See the docstring.
+SRT_SLEW_START_GRACE_S = 5.0
+
+
+def _az_difference(a: float, b: float) -> float:
+    """Smallest angle between two azimuths, across the 0/360 join."""
+    return abs((float(a) - float(b) + 180.0) % 360.0 - 180.0)
+
+
 def srt_wait_for_slew(timeout: Optional[int] = None,
                       cancel_event: Optional[threading.Event] = None) -> bool:
-    """Wait for telescope to finish slewing.
+    """Wait until the telescope has actually reached what it was told to.
 
-    Polls /status until is_slewing is false, or timeout is reached.
-    The is_slewing field is set by the mount when status contains 'Slewing'
-    or a ' -> ' target indicator.
+    Polls /status until the reported drive position matches the drive target the
+    controller is holding, and it is no longer slewing, for two consecutive
+    polls.
 
-    Returns True if slew complete, False if timeout, error, or the
-    cancel_event was set.
+    Checking the position matters, and this function used not to. It returned as
+    soon as `is_slewing` was false, which is false for the first couple of
+    seconds after any command because the mount has not started moving yet. On
+    2026-08-24 a calibration commanded to l=36 b=40 - alt 33, azimuth 108 -
+    reported "slew complete in 2.0s" with the mount still parked at alt 75,
+    azimuth 286 from the previous target, and the recording then ran while the
+    dish swept fifty degrees across the sky. Every scheduled observation went
+    through the same check, so this was never only a calibration problem.
+
+    Judged drive against drive: /status reports the mount's drive position and
+    the drive target it is holding, and comparing a drive reading against a sky
+    target would be out by the whole pointing model, so the slew would never be
+    seen to finish. For a tracking target the reported target moves with the sky,
+    which is correct - "arrived" then means keeping up with it.
+
+    Returns True on arrival, False on timeout, error, or cancellation. A
+    controller too old to report its target falls back to the flag alone, and
+    says so, because refusing to observe at all would be worse.
     """
     if not SRT_CONTROLLER_URL:
         return True
 
     timeout = timeout or SRT_SLEW_TIMEOUT
     start_time = time.time()
-
     log.info("SRT waiting for slew to complete...")
 
-    # Brief delay to allow slew to begin before we start polling
-    time.sleep(2)
-
+    settled = 0
+    warned_no_target = False
     while time.time() - start_time < timeout:
         if cancel_event is not None and cancel_event.is_set():
             log.info("SRT slew wait aborted")
             return False
+
         status = srt_get_status()
         if status:
-            is_slewing = status.get('is_slewing', False)
-            current_alt = status.get('alt', 0)
-            current_az = status.get('az', 0)
+            elapsed = time.time() - start_time
+            is_slewing = bool(status.get('is_slewing', False))
+            alt = status.get('alt')
+            az = status.get('az')
+            target_alt = status.get('target_alt')
+            target_az = status.get('target_az')
 
-            if not is_slewing:
-                elapsed = time.time() - start_time
-                log.info("SRT slew complete in %.1fs - at drive Alt=%.2f° Az=%.2f°",
-                         elapsed, current_alt, current_az)
-                return True
+            if target_alt is None or target_az is None:
+                if not warned_no_target:
+                    log.warning("SRT controller does not report its target, so "
+                                "arrival cannot be verified - falling back to "
+                                "the slewing flag alone")
+                    warned_no_target = True
+                arrived = not is_slewing
+                d_alt = d_az = float('nan')
+            else:
+                try:
+                    d_alt = abs(float(alt) - float(target_alt))
+                    d_az = _az_difference(az, target_az)
+                except (TypeError, ValueError):
+                    d_alt = d_az = float('inf')
+                arrived = (not is_slewing
+                           and d_alt <= SRT_ARRIVAL_TOLERANCE_DEG
+                           and d_az <= SRT_ARRIVAL_TOLERANCE_DEG)
 
-        time.sleep(2)  # Poll every 2 seconds
+            # The grace period is the whole point: without it the very first
+            # poll sees a mount that has not started moving and calls it done.
+            if arrived and elapsed >= SRT_SLEW_START_GRACE_S:
+                settled += 1
+                if settled >= 2:
+                    log.info("SRT arrived in %.1fs - drive Alt=%.2f Az=%.2f "
+                             "(%.2f, %.2f from target)",
+                             elapsed, float(alt or 0), float(az or 0), d_alt, d_az)
+                    return True
+            else:
+                settled = 0
 
-    log.warning("SRT timeout waiting for slew to complete")
+        time.sleep(1.0)
+
+    status = srt_get_status() or {}
+    log.warning("SRT timeout waiting for slew: at Alt=%s Az=%s, target Alt=%s Az=%s",
+                status.get('alt'), status.get('az'),
+                status.get('target_alt'), status.get('target_az'))
     return False
 
 
@@ -4183,6 +4245,13 @@ HTML_TEMPLATE = '''
                         ? '<div style="color:#ff4757;">T_sys hit its 50 K floor &mdash; the fit '
                         + 'is against the bound, not a measurement. Check the bandpass template '
                         + 'and that the slew arrived.</div>' : '';
+                    // The floor at 50 K only catches errors of one sign. A run
+                    // that recorded while the mount was still slewing fitted
+                    // 467 K and said nothing about it.
+                    const hot = d.gain.t_sys_implausible
+                        ? '<div style="color:#ff4757;">T_sys is far hotter than any working '
+                        + 'system &mdash; suspect a recording that began before the mount '
+                        + 'arrived, a stale bandpass template, or ground in the beam.</div>' : '';
                     const weak = (d.gain.correlation < 0.8)
                         ? '<div style="color:#ffa502;">Weak correlation: little lever arm in '
                         + 'this pointing, so T_sys is poorly determined.</div>' : '';
@@ -4194,7 +4263,7 @@ HTML_TEMPLATE = '''
                         + ', ' + rfAge(d.gain.observed_utc)
                         + ' &nbsp; r=' + d.gain.correlation.toFixed(3)
                         + ' &nbsp; residual ' + d.gain.residual_rms_k.toFixed(2) + ' K</div>'
-                        + warn + weak;
+                        + warn + hot + weak;
                 }
 
                 const st = d.state || {};
@@ -5535,6 +5604,7 @@ def api_rf_status():
             "gain_counts_per_k": cal.get("gain_counts_per_k"),
             "t_sys_k": cal.get("t_sys_k"),
             "t_sys_bound_active": cal.get("t_sys_bound_active"),
+            "t_sys_implausible": cal.get("t_sys_implausible"),
             "correlation": cal.get("correlation"),
             "residual_rms_k": cal.get("residual_rms_k"),
             "glon": cal.get("glon"), "glat": cal.get("glat"),

@@ -118,3 +118,24 @@ def test_calibration_round_trip(tmp_path):
 
 def test_missing_calibration_is_not_an_error():
     assert R.load_calibration("/nonexistent/cal.json") is None
+
+
+def test_an_implausibly_hot_system_is_flagged():
+    """The 50 K floor only catches errors of one sign.
+
+    A run that recorded while the mount was still slewing fitted 467 K on
+    2026-08-24 and nothing in the result said so.
+    """
+    _, ta = _fake_plane()
+    counts = 3.0e-5 * (467.0 + ta)
+    out = R.fit_gain(counts, ta)
+    assert out["t_sys_k"] == pytest.approx(467.0, rel=1e-6)
+    assert out["t_sys_implausible"]
+    assert not out["t_sys_bound_active"]
+
+
+def test_a_normal_system_temperature_is_not_flagged():
+    _, ta = _fake_plane()
+    out = R.fit_gain(3.0e-5 * (130.0 + ta), ta)
+    assert not out["t_sys_implausible"]
+    assert not out["t_sys_bound_active"]

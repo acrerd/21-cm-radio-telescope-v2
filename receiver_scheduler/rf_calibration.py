@@ -60,6 +60,16 @@ MIN_T_SYS_K = 50.0
 # saying what it is.
 MIN_TARGET_ALT_DEG = 25.0
 
+# Above this, a fit is reporting something no working system does. The SAWbird
+# is 59 K and spillover, sky and ground on a dish this size bring the total to
+# order 100-150 K; 250 K would be a badly illuminated dish and 400 K is not a
+# system temperature at all. Measured 2026-08-24: a run that recorded while the
+# mount was still slewing across fifty degrees of sky fitted 467 K, and nothing
+# in the result said so - the floor at 50 K only catches errors of the opposite
+# sign. This is a flag rather than a bound: a genuinely hot system is worth
+# seeing, not clamping.
+IMPLAUSIBLE_T_SYS_K = 300.0
+
 # Floors to fall back through when nothing clears the preferred one. Each step
 # down is reported, so a compromised calibration announces itself.
 FALLBACK_ALT_FLOORS_DEG = (20.0, 15.0, 12.0)
@@ -362,6 +372,9 @@ def fit_gain(observed_counts, model_k, min_t_sys_k=MIN_T_SYS_K):
         "gain_counts_per_k": float(slope),
         "t_sys_k": float(t_sys),
         "t_sys_bound_active": bool(constrained),
+        "t_sys_implausible": bool(np.isfinite(t_sys)
+                                  and t_sys > IMPLAUSIBLE_T_SYS_K),
+        "implausible_above_k": float(IMPLAUSIBLE_T_SYS_K),
         "min_t_sys_k": float(min_t_sys_k),
         "n_bins": int(ok.sum()),
         "model_peak_k": float(np.nanmax(ta)),

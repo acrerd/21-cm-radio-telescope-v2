@@ -1959,3 +1959,89 @@ class TestTuningEndpoint:
     def test_a_malformed_request_is_refused_not_guessed(self, client):
         resp = client.get('/api/tuning?bandwidth_mhz=wide')
         assert resp.status_code == 400
+
+
+class TestSlewArrival:
+    """The mount must be where it was sent before anything records.
+
+    The bug these pin: srt_wait_for_slew returned as soon as `is_slewing` was
+    false, which it is for the first seconds after any command because the mount
+    has not started moving. On 2026-08-24 a calibration commanded to alt 33
+    azimuth 108 was told the slew was complete with the dish still at alt 75
+    azimuth 286, and recorded while it swept across the sky.
+    """
+
+    def _run(self, statuses, monkeypatch, timeout=30):
+        import h1_web_scheduler as sched
+        seq = list(statuses)
+        seen = []
+
+        def fake_status():
+            seen.append(len(seen))
+            return seq[min(len(seen) - 1, len(seq) - 1)]
+
+        monkeypatch.setattr(sched, "srt_get_status", fake_status)
+        monkeypatch.setattr(sched, "SRT_CONTROLLER_URL", "http://x")
+        monkeypatch.setattr(sched.time, "sleep", lambda *_: None)
+        # Advance the clock fast enough that the start grace passes.
+        clock = {"t": 0.0}
+
+        def fake_time():
+            clock["t"] += 1.0
+            return clock["t"]
+
+        monkeypatch.setattr(sched.time, "time", fake_time)
+        return sched.srt_wait_for_slew(timeout=timeout)
+
+    def test_not_slewing_but_far_from_target_is_not_arrival(self, monkeypatch):
+        """The exact 2026-08-24 failure: parked on the previous target."""
+        stuck = {"is_slewing": False, "alt": 75.0, "az": 286.5,
+                 "target_alt": 33.0, "target_az": 107.0}
+        assert self._run([stuck], monkeypatch, timeout=20) is False
+
+    def test_arrival_is_accepted_once_the_position_matches(self, monkeypatch):
+        moving = {"is_slewing": True, "alt": 75.0, "az": 286.5,
+                  "target_alt": 33.0, "target_az": 107.0}
+        there = {"is_slewing": False, "alt": 33.0, "az": 107.2,
+                 "target_alt": 33.0, "target_az": 107.0}
+        assert self._run([moving, moving, moving, there, there, there],
+                         monkeypatch) is True
+
+    def test_half_a_degree_of_quantisation_still_counts_as_arrived(self, monkeypatch):
+        """The drive rounds to 0.5 deg, so arrival cannot be tighter than that."""
+        there = {"is_slewing": False, "alt": 33.5, "az": 107.5,
+                 "target_alt": 33.0, "target_az": 107.0}
+        assert self._run([there] * 8, monkeypatch) is True
+
+    def test_azimuth_wrap_is_not_a_huge_error(self, monkeypatch):
+        """359.8 and 0.1 are adjacent, not 359 degrees apart."""
+        there = {"is_slewing": False, "alt": 40.0, "az": 359.8,
+                 "target_alt": 40.0, "target_az": 0.1}
+        assert self._run([there] * 8, monkeypatch) is True
+
+    def test_a_controller_with_no_target_falls_back_rather_than_hanging(self, monkeypatch):
+        old = {"is_slewing": False, "alt": 40.0, "az": 100.0}
+        assert self._run([old] * 8, monkeypatch) is True
+
+    def test_it_gives_up_rather_than_waiting_for_ever(self, monkeypatch):
+        never = {"is_slewing": True, "alt": 75.0, "az": 286.5,
+                 "target_alt": 33.0, "target_az": 107.0}
+        assert self._run([never], monkeypatch, timeout=15) is False
+
+    def test_cancel_is_honoured_while_waiting(self, monkeypatch):
+        import threading
+        import h1_web_scheduler as sched
+        monkeypatch.setattr(sched, "SRT_CONTROLLER_URL", "http://x")
+        monkeypatch.setattr(sched, "srt_get_status",
+                            lambda: {"is_slewing": True, "alt": 1.0, "az": 1.0,
+                                     "target_alt": 50.0, "target_az": 50.0})
+        ev = threading.Event()
+        ev.set()
+        assert sched.srt_wait_for_slew(timeout=30, cancel_event=ev) is False
+
+
+def test_azimuth_difference_wraps():
+    import h1_web_scheduler as sched
+    assert sched._az_difference(359.8, 0.1) == pytest.approx(0.3, abs=1e-6)
+    assert sched._az_difference(10.0, 350.0) == pytest.approx(20.0, abs=1e-6)
+    assert sched._az_difference(90.0, 270.0) == pytest.approx(180.0, abs=1e-6)
