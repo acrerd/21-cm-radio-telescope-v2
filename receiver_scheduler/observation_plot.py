@@ -365,7 +365,12 @@ def _robust_ylim(ax, y):
 def _plot_spectrum(ax, freq_hz, spectra):
     mean = spectra.mean(axis=0)
     freq_mhz = freq_hz / 1e6
-    ax.plot(freq_mhz, mean, color=_ACCENT, lw=1.0)
+    # Staircase, as on the calibration plots. Each point is a channel with a
+    # width, and a line between channel centres draws a slope across a channel
+    # that was never measured at a slope. It matters most where it is easiest to
+    # miss: a two-channel interference spike drawn as a line becomes a triangle
+    # spanning four channels, which reads as something resolved.
+    ax.plot(freq_mhz, mean, color=_ACCENT, lw=1.0, drawstyle="steps-mid")
     _robust_ylim(ax, mean)
     ax.set_xlabel("Frequency (MHz)")
     ax.set_ylabel("Mean power (linear, arb.)")
@@ -396,7 +401,9 @@ def _plot_drift(ax, spectra, stamps, transit_minutes):
         minutes = (stamps - stamps[0]) / 60.0
     else:
         minutes = np.arange(spectra.shape[0], dtype=float)
-    ax.plot(minutes, power, color=_ACCENT, lw=1.2)
+    # Likewise: each point is a record, integrated over its own few seconds,
+    # not a sample of a continuous curve.
+    ax.plot(minutes, power, color=_ACCENT, lw=1.2, drawstyle="steps-mid")
     _robust_ylim(ax, power)
     ax.set_xlabel("Time since start (min)")
     ax.set_ylabel("Band power (linear, arb.)")
