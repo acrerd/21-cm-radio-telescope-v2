@@ -2278,9 +2278,17 @@ HTML_TEMPLATE = '''
                     Everything from the feed to the spectrum shapes the band &mdash; the
                     SAWbird&rsquo;s filter, the amplifier after it, the AD9361&rsquo;s decimation
                     chain and the FPGA&rsquo;s down-converter. Measuring the whole product at
-                    once means pointing at sky with no hydrogen in it: the Lockman Hole,
-                    where the line peaks at 1.3 K. The line itself is masked and the fit
-                    bridges it, so &ldquo;empty&rdquo; is only assumed where it is true.
+                    once means pointing at sky with no hydrogen in it &mdash; the Lockman
+                    Hole, l=150 b=+53, peaks at only 1.3 K. The line itself is masked and
+                    the fit bridges it, so &ldquo;empty&rdquo; is only assumed where it is true.
+                    <br><br>
+                    <strong>It measures wherever the dish is already pointing, and does not
+                    slew.</strong> A template has to match the elevation and the hour of
+                    whatever it will reduce &mdash; two taken 4.7 hours apart differed by 2%
+                    &mdash; so moving to a fixed field would guarantee the wrong one. A
+                    direction carrying more than 1.5&nbsp;K of hydrogen outside the masked
+                    window is refused: that is emission a template would fit as instrument
+                    response and then subtract from every observation.
                 </div>
                 <div id="rfBandpassStatus" class="mono" style="padding:10px 12px; background:#0f0f23; border:1px solid #333; border-radius:6px; color:#888; font-size:12px;">
                     Loading&hellip;
@@ -2289,7 +2297,7 @@ HTML_TEMPLATE = '''
                     <button class="btn" onclick="rfRun('bandpass')">Measure bandpass</button>
                     <button class="btn" onclick="rfLoadBandpassPlot()">Refresh plot</button>
                     <span style="color:#666; font-size:12px; margin-left:10px;">
-                        ~2 min on the Lockman Hole
+                        ~2 min, where the dish is pointing now
                     </span>
                 </div>
                 <div id="rfBandpassPlot" class="rf-wide" style="margin-top:14px; text-align:center; color:#666; font-size:12px;">
@@ -4294,7 +4302,7 @@ HTML_TEMPLATE = '''
                         + ' over &plusmn;' + d.bandpass.band_mhz.toFixed(3) + ' MHz, residual '
                         + d.bandpass.residual_pct.toFixed(3) + '%</div>'
                         + '<div>measured ' + rfAge(d.bandpass.created_utc)
-                        + (d.bandpass.source_name ? ' on ' + d.bandpass.source_name : '')
+                        + (d.bandpass.source_name ? ' at ' + d.bandpass.source_name : '')
                         + ', at LO ' + d.bandpass.lo_mhz.toFixed(6) + ' MHz, '
                         + d.bandpass.sample_rate_mhz.toFixed(3) + ' Msps</div>'
                         + '<div style="color:#666;">Only applies to observations at that '
@@ -5495,14 +5503,49 @@ def api_observe_last():
 
 RF_LOCKMAN_L, RF_LOCKMAN_B = 150.0, 53.0     # the H I minimum: an empty band
 
+# How much hydrogen may lie *outside* the template's masked window before the
+# direction is unfit to measure a bandpass in. Inside the window the line is
+# masked and interpolated across, so it does no harm; outside it, the polynomial
+# fits emission as instrument response and then subtracts it from every
+# observation the template is ever applied to. The Lockman Hole runs 1.3 K at
+# its peak and essentially nothing beyond the mask; the plane runs a hundred.
+RF_BANDPASS_MAX_LINE_K = 1.5
+
+
+def _rf_emission_outside_mask(glon, glat):
+    """Model H I beyond the window the bandpass fit masks out.
+
+    The number that matters is not the line peak - that is masked - but what
+    survives past the mask edges, because that is what a template would absorb.
+    """
+    import numpy as np
+
+    import bandpass
+    import rf_calibration
+
+    sim = rf_calibration.load_simulator()
+    v_ms, t_a = sim.spectrum(float(glon), float(glat))[:2]
+    freq = rf_calibration.H1_REST_FREQ_HZ * (1.0 - np.asarray(v_ms, float)
+                                             / rf_calibration.C_M_S)
+    outside = np.abs(freq - rf_calibration.H1_REST_FREQ_HZ) > bandpass.DEFAULT_LINE_MASK_HZ
+    t_a = np.asarray(t_a, float)
+    return {"peak_k": float(np.nanmax(t_a)),
+            "outside_mask_k": float(np.nanmax(t_a[outside])) if outside.any() else 0.0}
+
 
 def _rf_observe(name, glon, glat, duration_s, sdr_type="b210",
-                integration_s=3.0, channels=4096, bandwidth_mhz=2.0):
-    """Point at a galactic direction, record for a while, return the file.
+                integration_s=3.0, channels=4096, bandwidth_mhz=2.0, slew=True):
+    """Record for a while and return the file, optionally pointing first.
 
     Uses the ordinary receiver path, headless, so the file carries the same
     tuning header any observation does - which is what lets the bandpass
     template match itself to the data later.
+
+    With slew=False the dish is left exactly where it is. That is how the
+    bandpass is measured: a template must be taken close in time *and* elevation
+    to whatever it will reduce, and slewing to a fixed field guarantees the
+    wrong elevation. The caller is then responsible for knowing where the dish
+    points and whether that is somewhere a bandpass can honestly be measured.
     """
     obs = {
         "name": name,
@@ -5518,13 +5561,17 @@ def _rf_observe(name, glon, glat, duration_s, sdr_type="b210",
         "duration_minutes": max(1, int(round(duration_s / 60.0))),
     }
 
-    rf_state["stage"] = "slewing to l=%.0f b=%.0f" % (glon, glat)
-    if not srt_point_telescope(obs):
-        raise RuntimeError("the telescope would not accept the pointing")
-    if not srt_wait_for_slew(cancel_event=rf_cancel):
-        if rf_cancel.is_set():
-            raise RuntimeError("cancelled during the slew")
-        log.warning("RF calibration: slew timed out, recording anyway")
+    if slew:
+        rf_state["stage"] = "slewing to l=%.0f b=%.0f" % (glon, glat)
+        if not srt_point_telescope(obs):
+            raise RuntimeError("the telescope would not accept the pointing")
+        if not srt_wait_for_slew(cancel_event=rf_cancel):
+            if rf_cancel.is_set():
+                raise RuntimeError("cancelled during the slew")
+            log.warning("RF calibration: slew timed out, recording anyway")
+    else:
+        log.info("RF calibration: recording where the dish already points, "
+                 "l=%.2f b=%.2f", glon, glat)
 
     out = os.path.join(_SCRIPT_DIR, "data",
                        "rf_%s_%s.h5" % (name.lower().replace(" ", "_"),
@@ -5593,13 +5640,32 @@ def _run_rf_calibration(job, params):
         sdr_type = params.get("sdr_type", "b210")
 
         if job == "bandpass":
-            target = {"glon": RF_LOCKMAN_L, "glat": RF_LOCKMAN_B,
-                      "why": "the H I minimum, so the band is the instrument"}
+            status = srt_get_status() or {}
+            glon, glat = status.get("gal_l"), status.get("gal_b")
+            if glon is None or glat is None:
+                raise RuntimeError("the controller did not report where the "
+                                   "dish is pointing, so the bandpass cannot be "
+                                   "attributed to a direction")
+            emission = _rf_emission_outside_mask(float(glon), float(glat))
+            target = {"glon": float(glon), "glat": float(glat),
+                      "alt_deg": status.get("alt"), "az_deg": status.get("az"),
+                      "expected_peak_k": emission["peak_k"],
+                      "outside_mask_k": emission["outside_mask_k"],
+                      "why": "wherever the dish is: a template must match the "
+                             "elevation and the hour of what it will reduce"}
             rf_state["target"] = target
-            path = _rf_observe("Bandpass template", RF_LOCKMAN_L, RF_LOCKMAN_B,
-                               duration_s, sdr_type)
+            if emission["outside_mask_k"] > RF_BANDPASS_MAX_LINE_K:
+                raise RuntimeError(
+                    "l=%.1f b=%.1f has %.1f K of H I outside the masked window, "
+                    "which the template would fit as instrument response and "
+                    "then subtract from every observation. Point somewhere "
+                    "emptier - the Lockman Hole, l=150 b=53, runs 1.3 K."
+                    % (glon, glat, emission["outside_mask_k"]))
+            path = _rf_observe("Bandpass template", float(glon), float(glat),
+                               duration_s, sdr_type, slew=False)
             rf_state["stage"] = "fitting the response"
-            template, out = bandpass.fit_from_observation(path, "Lockman Hole")
+            template, out = bandpass.fit_from_observation(
+                path, "l=%.0f b=%+.0f" % (glon, glat))
             rf_state["result"] = {
                 "kind": "bandpass",
                 "degree": template["degree"],
@@ -5608,6 +5674,8 @@ def _run_rf_calibration(job, params):
                 "channels": template["n_channels_fitted"],
                 "file": os.path.basename(path),
                 "stored": os.path.basename(out),
+                "glon": float(glon), "glat": float(glat),
+                "alt_deg": status.get("alt"),
             }
             log.info("RF calibration: bandpass template refitted, residual %.3f%%",
                      100 * template["fit_residual_rms"])
