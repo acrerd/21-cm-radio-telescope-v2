@@ -91,28 +91,29 @@ MIN_USEFUL_PEAK_K = 15.0
 # here to lose, so there is nothing to trade against being careful.
 DC_EXCLUSION_HZ = 40e3
 
-# Main-beam efficiency assumed for the model. This is not a detail: the
-# simulator multiplies its antenna temperature by it, so it sets the scale the
-# fit is measured against, and it is degenerate with the gain.
+# Main-beam efficiency applied to the model. One, deliberately.
 #
-#     measured = G*T_sys + (G * eta_true/eta_model) * model_K
+# The simulator multiplies its antenna temperature by this, and it is the
+# fraction of the total pattern power inside the main beam - so applying it
+# asserts that the sidelobes see *nothing*. For galactic H I that is plainly
+# false: the sidelobes see sky of comparable brightness a few degrees away, so
+# the dilution it models largely does not happen, and the line is not weakened
+# in proportion to it. What the sidelobes do see that the main beam does not is
+# the ground, and that is a constant - it belongs in T_sys, additively, which is
+# exactly where the fit already puts it.
 #
-# so the fitted slope is G*eta_true/eta_model and the fitted system temperature
-# is T_sys_true * eta_model/eta_true. Only if the assumed efficiency equals the
-# real one is the reported T_sys the receiver's own. A single sky measurement
-# cannot separate them - one equation, two unknowns - and breaking the
-# degeneracy needs an independent temperature reference: a hot/cold load, a
-# tipping curve, or the SAWbird's 59 K plus a modelled spillover.
+# The other half of the argument is that the beam here is measured rather than
+# assumed: 18 solar scans on 2026-08-22 gave 5.173 +/- 0.020 deg, 5.164 after
+# deconvolving the solar disk (astro_simulator/instrument.py). The
+# beam-weighting is therefore the real instrument's, not a model of it, and
+# putting an efficiency in front of it discounts a measurement twice.
 #
-# What is *not* degenerate, and is what most of this exists for, is the
-# conversion of counts to kelvin on the model's own scale. That slope is right
-# whatever eta is, so calibrated spectra are correct even while the reported
-# T_sys is only T_sys_true scaled by an efficiency ratio.
-#
-# 0.7 is the simulator's own default. Measured here on 2026-08-24 with eta
-# assumed 1.0, a well-fitted run (r=0.86) gave 372 K, which at a plausible true
-# T_sys near 130 K implies a real efficiency around 0.35.
-MAIN_BEAM_EFFICIENCY = 0.7
+# This was briefly set to the simulator's CLI default of 0.7, which lowered a
+# fitted system temperature from 372 K to 260 K - a comfortable-looking number
+# obtained by scaling the data until it looked right. The 372 K is the honest
+# figure and it should be explained rather than absorbed: see the note in
+# calibrate_observation about separating spillover from receiver noise.
+MAIN_BEAM_EFFICIENCY = 1.0
 
 CALIBRATION_VERSION = 1
 
