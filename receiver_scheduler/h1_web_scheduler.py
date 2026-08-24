@@ -4338,7 +4338,7 @@ HTML_TEMPLATE = '''
                            ? '<div style="color:#888;">equivalent to '
                              + d.gain.implied_loss_db.toFixed(2)
                              + ' dB of loss ahead of the LNA, if that is what it is</div>'
-                           : '')'
+                           : '')
                         + warn + hot + weak;
                 }
 
