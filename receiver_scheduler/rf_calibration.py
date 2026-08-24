@@ -567,9 +567,19 @@ def fit_gain_with_shift(freq_hz, counts, model_freq_hz, model_k,
     three times. That is 5.9 to 7.2 ppm, outside the +-2 ppm the part is
     specified at but ordinary for one untrimmed or warm.
 
-    Fitted per observation rather than assumed, because the evidence that it is
-    the crystal is that the answer comes out the same everywhere. A shift that
-    varied field to field would be astrophysics being absorbed, and would say so.
+    Fitted per observation rather than assumed, and that turns out to be
+    necessary rather than merely careful. Three fields between 15:21 and 16:31 on
+    2026-08-24 agreed at -5.92, -6.55 and -6.88 ppm; a fourth at 17:04 fitted
+    -2.67. The later value is not poorly determined - its residual minimum is
+    sharp, and 16% worse at the earlier figure - so the clock really moved by
+    3.7 ppm in an hour and a half. Nor is it the barycentric term, which shifts
+    by a tenth of a km/s over that span, ten times too little.
+    
+    So this is not a constant to measure once and store. It has to be fitted
+    alongside every calibration, and an archived observation with no strong line
+    in it cannot have its velocity axis recovered at all. Consistency across
+    fields at one time is still what shows the shift is instrumental rather than
+    astrophysical; consistency across hours is what it does not have.
 
     The search is bounded: given room, a shift will happily slide onto a
     neighbouring velocity component and report a superb fit to the wrong line.
