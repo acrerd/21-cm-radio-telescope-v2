@@ -2166,14 +2166,37 @@ HTML_TEMPLATE = '''
                 <div class="section-title">Gain and system temperature</div>
                 <div style="color:#888; font-size:13px; margin-bottom:12px; max-width:70ch;">
                     With the band flat, counts still are not kelvin. The simulator gives
-                    the antenna temperature the galactic plane should show through this
-                    beam, so a straight line through counts against kelvin gives the gain
-                    as its slope and the system temperature from its intercept. The
-                    pointing is chosen <strong>now</strong>, not named: the gain drifts, and a
-                    fixed source is below the horizon for most of the day.
+                    the antenna temperature any direction should show through this beam,
+                    so a straight line through counts against kelvin gives the gain as its
+                    slope and the system temperature from its intercept. The pointing is
+                    chosen <strong>now</strong>, not named: the gain drifts, and a fixed source is
+                    below the horizon for most of the day. It searches the sky rather than
+                    the plane alone &mdash; hydrogen does not stop at b&nbsp;=&nbsp;0, and when
+                    the plane has set there is usually still a 70 K peak a few degrees off
+                    it, higher in the sky than the plane ever was.
                 </div>
-                <div id="rfPlaneTarget" class="mono" style="padding:8px 12px; margin-bottom:10px; background:#0f0f23; border:1px solid #333; border-radius:6px; color:#888; font-size:12px;">
-                    Finding a plane pointing&hellip;
+                <div style="color:#888; font-size:12px; margin-bottom:6px;">
+                    Suggestions for right now, brightest first and spread at least 25&deg;
+                    apart. <strong>Check the direction against the skyline</strong> &mdash; the
+                    software knows the eastern treeline and nothing else, so it cannot
+                    see the dome towers.
+                </div>
+                <div id="rfTargets" style="margin-bottom:12px; overflow-x:auto;">
+                    Finding candidates&hellip;
+                </div>
+                <div class="form-grid" style="max-width:520px;">
+                    <div class="form-group">
+                        <label>Galactic longitude <span class="unit">l (&deg;)</span></label>
+                        <input autocomplete="off" type="number" id="rfGlon" step="0.1" value="">
+                    </div>
+                    <div class="form-group">
+                        <label>Galactic latitude <span class="unit">b (&deg;)</span></label>
+                        <input autocomplete="off" type="number" id="rfGlat" step="0.1" value="">
+                    </div>
+                </div>
+                <div id="rfChosen" class="mono" style="padding:8px 12px; margin:8px 0 10px; background:#0f0f23; border:1px solid #333; border-radius:6px; color:#888; font-size:12px;">
+                    Pick a suggestion, or type a direction. Left blank, one is chosen
+                    automatically &mdash; which is what walked into a tower.
                 </div>
                 <div id="rfGainStatus" class="mono" style="padding:10px 12px; background:#0f0f23; border:1px solid #333; border-radius:6px; color:#888; font-size:12px;">
                     Loading&hellip;
@@ -3697,7 +3720,7 @@ HTML_TEMPLATE = '''
             // itself whenever the camera tab is not the one on screen.
             if (name === 'horizon') pollHorizon();
             if (name === 'observe') refreshObserveTuning();
-            if (name === 'rf') { rfRefresh(); rfRefreshTarget(); }
+            if (name === 'rf') { rfRefresh(); rfRefreshTarget(); rfShowChosen(); }
             if (name === 'simulator') showSimulator();
             if (name === 'observe') { loadObserveParams(false); loadObserveLast(); }
             if (name === 'camera' && !camObjectUrl) refreshCamera();
@@ -4187,27 +4210,70 @@ HTML_TEMPLATE = '''
         }
 
         function rfRefreshTarget() {
-            fetch('/api/rf/plane-target').then(r => r.json()).then(d => {
-                const box = document.getElementById('rfPlaneTarget');
+            fetch('/api/rf/target').then(r => r.json()).then(d => {
+                const box = document.getElementById('rfTargets');
                 if (!d.success) { box.textContent = d.error || 'unavailable'; return; }
-                if (!d.target) {
-                    box.innerHTML = '<span style="color:#ffa502;">No part of the plane is '
-                                  + 'high enough right now.</span>';
+                const list = d.targets || [];
+                if (!list.length) {
+                    box.innerHTML = '<span style="color:#ff4757;">Nothing is high enough '
+                                  + 'right now, in any direction.</span>';
                     return;
                 }
-                const t = d.target;
-                box.innerHTML = 'Would point at <span style="color:#00d4ff;">l='
-                    + Math.round(t.glon) + ' b=' + Math.round(t.glat) + '</span>, alt '
-                    + t.alt_deg.toFixed(1) + ' az ' + t.az_deg.toFixed(1)
-                    + ' &mdash; expected line peak ' + t.expected_peak_k.toFixed(0) + ' K';
+                let h = '<table style="width:100%; border-collapse:collapse; font-size:12px;">'
+                      + '<tr style="color:#666; text-align:left;">'
+                      + '<th style="padding:4px 8px;">l, b</th>'
+                      + '<th style="padding:4px 8px;">alt</th>'
+                      + '<th style="padding:4px 8px;">az</th>'
+                      + '<th style="padding:4px 8px;">looking</th>'
+                      + '<th style="padding:4px 8px;">expected peak</th>'
+                      + '<th></th></tr>';
+                list.forEach(function (t) {
+                    const b = (t.glat >= 0 ? '+' : '') + Math.round(t.glat);
+                    h += '<tr style="border-top:1px solid #262640;">'
+                       + '<td class="mono" style="padding:5px 8px; color:#00d4ff;">l='
+                       + Math.round(t.glon) + ' b=' + b + '</td>'
+                       + '<td class="mono" style="padding:5px 8px;">' + t.alt_deg.toFixed(1) + '&deg;</td>'
+                       + '<td class="mono" style="padding:5px 8px;">' + t.az_deg.toFixed(1) + '&deg;</td>'
+                       + '<td style="padding:5px 8px; color:#ffa502;">' + t.compass + '</td>'
+                       + '<td class="mono" style="padding:5px 8px;">' + t.expected_peak_k.toFixed(0) + ' K</td>'
+                       + '<td style="padding:3px 8px;"><button class="btn" style="padding:3px 10px; font-size:11px;"'
+                       + ' onclick="rfUse(' + t.glon + ',' + t.glat + ')">Use</button></td>'
+                       + '</tr>';
+                });
+                box.innerHTML = h + '</table>';
             }).catch(() => {});
+        }
+
+        function rfUse(l, b) {
+            document.getElementById('rfGlon').value = l;
+            document.getElementById('rfGlat').value = b;
+            rfShowChosen();
+        }
+
+        function rfShowChosen() {
+            const l = document.getElementById('rfGlon').value;
+            const b = document.getElementById('rfGlat').value;
+            const box = document.getElementById('rfChosen');
+            if (l === '' || b === '') {
+                box.innerHTML = 'Nothing chosen &mdash; a direction will be picked '
+                              + 'automatically, which is what walked into a tower.';
+            } else {
+                box.innerHTML = 'Will calibrate on <span style="color:#00d4ff;">l=' + l
+                              + ' b=' + b + '</span>.';
+            }
         }
 
         function rfRun(job) {
             const secs = job === 'gain' ? 180 : 120;
+            const body = {job: job, duration_s: secs};
+            if (job === 'gain') {
+                const l = document.getElementById('rfGlon').value;
+                const b = document.getElementById('rfGlat').value;
+                if (l !== '' && b !== '') { body.glon = parseFloat(l); body.glat = parseFloat(b); }
+            }
             fetch('/api/rf/run', {
                 method: 'POST', headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({job: job, duration_s: secs})
+                body: JSON.stringify(body)
             }).then(r => r.json()).then(d => {
                 if (!d.success) { alert(d.error || 'could not start'); return; }
                 rfRefresh();
@@ -5338,15 +5404,37 @@ def _run_rf_calibration(job, params):
 
         elif job == "gain":
             cfg = load_config()
-            rf_state["stage"] = "choosing a plane pointing"
-            target = rf_calibration.plane_target_now(
-                lat=float(cfg.get("observer_lat", 55.902426)),
-                lon=float(cfg.get("observer_lon", -4.307865)),
-                elevation_m=float(cfg.get("observer_elevation", 50)),
-                obstruction_sectors=cfg.get("obstruction_sectors"))
-            if not target:
-                raise RuntimeError("no part of the galactic plane is high enough "
-                                   "right now to calibrate against")
+            if params.get("glon") is not None:
+                # Chosen by the operator, and taken as given even if it is low
+                # or faint: they can see the skyline, and this cannot. The
+                # obstruction sectors know only about the eastern treeline, so
+                # an automatic choice once landed straight on a dome tower.
+                target = {"glon": params["glon"], "glat": params["glat"],
+                          "chosen_by": "operator"}
+                alt, az = rf_calibration._sky_position(
+                    target["glon"], target["glat"], datetime.now(timezone.utc),
+                    float(cfg.get("observer_lat", 55.902426)),
+                    float(cfg.get("observer_lon", -4.307865)),
+                    float(cfg.get("observer_elevation", 50)))
+                target["alt_deg"] = float(alt[0])
+                target["az_deg"] = float(az[0])
+                if target["alt_deg"] < 5.0:
+                    raise RuntimeError(
+                        "l=%.0f b=%.0f is at altitude %.1f - below the horizon"
+                        % (target["glon"], target["glat"], target["alt_deg"]))
+            else:
+                rf_state["stage"] = "choosing a pointing"
+                target = rf_calibration.calibration_target_now(
+                    lat=float(cfg.get("observer_lat", 55.902426)),
+                    lon=float(cfg.get("observer_lon", -4.307865)),
+                    elevation_m=float(cfg.get("observer_elevation", 50)),
+                    obstruction_sectors=cfg.get("obstruction_sectors"))
+                if not target:
+                    raise RuntimeError("nothing is above the lowest usable "
+                                       "altitude right now, in any direction")
+                if target.get("notes"):
+                    log.warning("RF calibration target is compromised: %s",
+                                "; ".join(target["notes"]))
             rf_state["target"] = target
             path = _rf_observe("Gain calibration", target["glon"], target["glat"],
                                duration_s, sdr_type)
@@ -5416,20 +5504,27 @@ def api_rf_status():
     })
 
 
-@app.route('/api/rf/plane-target', methods=['GET'])
-def api_rf_plane_target():
-    """Where the gain calibration would point if started now."""
+@app.route('/api/rf/target', methods=['GET'])
+def api_rf_target():
+    """Directions worth calibrating against right now.
+
+    A list rather than a choice. The software does not know the skyline - the
+    obstruction sectors describe the eastern treeline and nothing else, and the
+    dome towers are not in them - so on 2026-08-24 the best-scoring direction
+    came out at azimuth 15, straight into a tower. The operator knows what is
+    there; this only knows what is bright and how high it is.
+    """
     import rf_calibration
     cfg = load_config()
     try:
-        t = rf_calibration.plane_target_now(
+        targets = rf_calibration.calibration_candidates_now(
             lat=float(cfg.get("observer_lat", 55.902426)),
             lon=float(cfg.get("observer_lon", -4.307865)),
             elevation_m=float(cfg.get("observer_elevation", 50)),
             obstruction_sectors=cfg.get("obstruction_sectors"))
     except Exception as exc:                              # noqa: BLE001
         return jsonify({"success": False, "error": str(exc)}), 500
-    return jsonify({"success": True, "target": t})
+    return jsonify({"success": True, "targets": targets})
 
 
 @app.route('/api/rf/run', methods=['POST'])
@@ -5455,6 +5550,16 @@ def api_rf_run():
 
     params = {"duration_s": float(data.get("duration_s", 120)),
               "sdr_type": data.get("sdr_type", "b210")}
+    if data.get("glon") is not None and data.get("glat") is not None:
+        try:
+            params["glon"] = float(data["glon"])
+            params["glat"] = float(data["glat"])
+        except (TypeError, ValueError):
+            return jsonify({"success": False,
+                            "error": "l and b must be numbers"}), 400
+        if not -90.0 <= params["glat"] <= 90.0:
+            return jsonify({"success": False,
+                            "error": "b must be between -90 and +90"}), 400
     rf_cancel.clear()
     rf_thread = threading.Thread(target=_run_rf_calibration,
                                  args=(job, params), daemon=True)

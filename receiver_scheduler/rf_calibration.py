@@ -50,9 +50,31 @@ C_M_S = 299792458.0
 # nothing below this is physical once spillover, sky and ground are added.
 MIN_T_SYS_K = 50.0
 
-# Don't calibrate against a patch of plane low down: ground spillover and airmass
-# both grow there, and both land in T_sys rather than in the line.
-MIN_TARGET_ALT_DEG = 30.0
+# Preferred floor on target altitude. Lower is worse but not fatal, and the
+# reason matters: ground spillover is *additive*, so it lands in T_sys and leaves
+# the slope - the counts-per-kelvin gain, which is what most of this is for -
+# largely alone. What a low target really costs is atmospheric attenuation
+# multiplying the sky, and at 1420 MHz that is about 3% at airmass 3. So a low
+# calibration is a good G with an elevation-specific T_sys, not a bad
+# calibration, and refusing to produce one is worse than producing one and
+# saying what it is.
+MIN_TARGET_ALT_DEG = 25.0
+
+# Floors to fall back through when nothing clears the preferred one. Each step
+# down is reported, so a compromised calibration announces itself.
+FALLBACK_ALT_FLOORS_DEG = (20.0, 15.0, 12.0)
+
+# How far off the plane to look. H I does not stop at b=0 - measured on
+# 2026-08-24, when the whole plane had sunk below 30 degrees, l=108 b=+8 was 5
+# degrees higher than the best plane longitude and still showed a 70.8 K peak
+# against the Lockman Hole's 1.3 K. Insisting on the plane is what made the
+# first version refuse to calibrate at all.
+MAX_ABS_GLAT_DEG = 40.0
+
+# A calibration wants dynamic range. Below this the fit is too poorly determined
+# to be worth the mount wear, and the caller is told so rather than handed a
+# number with an invisible error bar.
+MIN_USEFUL_PEAK_K = 15.0
 
 CALIBRATION_VERSION = 1
 
@@ -94,57 +116,178 @@ def _in_obstructed_sector(az, alt, sectors):
     return False
 
 
-def plane_target_now(when=None, lat=55.902426, lon=-4.307865, elevation_m=50.0,
-                     min_alt_deg=MIN_TARGET_ALT_DEG, obstruction_sectors=None,
-                     step_deg=3.0, sim=None, glat=0.0):
-    """The best bit of galactic plane available at this moment.
+def calibration_target_now(when=None, lat=55.902426, lon=-4.307865,
+                           elevation_m=50.0, min_alt_deg=MIN_TARGET_ALT_DEG,
+                           obstruction_sectors=None, lon_step_deg=6.0,
+                           lat_step_deg=6.0, max_abs_glat=MAX_ABS_GLAT_DEG,
+                           sim=None, fallback_floors=FALLBACK_ALT_FLOORS_DEG):
+    """The best direction available for a gain calibration at this moment.
 
-    Scored as the simulated line peak weighted by sin(altitude). The brightness
-    sets the lever arm the fit gets; the altitude term stands in for everything
-    that gets worse towards the horizon - airmass, ground in the sidelobes, and
-    the spillover that a small dish has plenty of. It is a heuristic and is meant
-    to be: the point is to avoid calibrating on a bright patch lying in the
-    trees, not to optimise anything to the last percent.
+    Searches galactic longitude and latitude rather than the plane alone, because
+    the plane spends much of the day too low and the emission either side of it is
+    ample: a 70 K peak at b=+8 is a fine calibrator when b=0 has set.
 
-    Returns None if the plane is entirely unavailable, which happens.
+    Scored as the simulated line peak weighted by sin(altitude). Brightness sets
+    the lever arm the fit gets; the altitude term stands in for airmass and for
+    the ground the sidelobes of a small dish always see.
+
+    Falls through progressively lower altitude floors rather than refusing, and
+    says in the result which floor it had to use and whether the peak is weak.
+    One needs a calibration even when conditions are poor - what one must not
+    have is a poor calibration that looks like a good one.
     """
     when = when or datetime.now(timezone.utc)
     sim = sim or load_simulator()
-    lons = np.arange(0.0, 360.0, step_deg)
-    alt, az = _sky_position(lons, np.full_like(lons, glat), when,
-                            lat, lon, elevation_m)
 
-    best = None
-    for l, a, z in zip(lons, alt, az):
+    lons = np.arange(0.0, 360.0, lon_step_deg)
+    lats = np.arange(-max_abs_glat, max_abs_glat + 1e-9, lat_step_deg)
+    grid_l, grid_b = np.meshgrid(lons, lats)
+    grid_l, grid_b = grid_l.ravel(), grid_b.ravel()
+    # One vectorised transform for the whole grid; the simulator is only asked
+    # about directions that survive the altitude and obstruction cuts.
+    alt, az = _sky_position(grid_l, grid_b, when, lat, lon, elevation_m)
+
+    floors = [float(min_alt_deg)] + [float(f) for f in (fallback_floors or ())
+                                     if float(f) < float(min_alt_deg)]
+    for attempt, floor in enumerate(floors):
+        best = None
+        for l, b, a, z in zip(grid_l, grid_b, alt, az):
+            if a < floor:
+                continue
+            if _in_obstructed_sector(z, a, obstruction_sectors):
+                continue
+            peak = float(np.nanmax(sim.spectrum(float(l), float(b))[1]))
+            score = peak * math.sin(math.radians(a))
+            if best is None or score > best["score"]:
+                best = {"glon": float(l), "glat": float(b),
+                        "alt_deg": float(a), "az_deg": float(z),
+                        "expected_peak_k": peak, "score": float(score)}
+        if best is None:
+            continue
+        notes = []
+        if attempt:
+            notes.append("nothing was above %.0f deg, so the floor was lowered "
+                         "to %.0f deg" % (min_alt_deg, floor))
+        if best["expected_peak_k"] < MIN_USEFUL_PEAK_K:
+            notes.append("the brightest direction available peaks at only "
+                         "%.0f K, so the gain will be poorly determined"
+                         % best["expected_peak_k"])
+        best["alt_floor_used_deg"] = floor
+        best["compromised"] = bool(notes)
+        best["notes"] = notes
+        return best
+    return None
+
+
+def plane_target_now(*args, **kwargs):
+    """Deprecated: the plane alone is too often below the horizon."""
+    kwargs.setdefault("max_abs_glat", 0.0)
+    kwargs.setdefault("lat_step_deg", 1.0)
+    return calibration_target_now(*args, **kwargs)
+
+
+def _sky_separation_deg(l1, b1, l2, b2):
+    """Great-circle angle between two galactic directions."""
+    p1, p2 = math.radians(b1), math.radians(b2)
+    dl = math.radians(l1 - l2)
+    return math.degrees(math.acos(max(-1.0, min(1.0,
+        math.sin(p1) * math.sin(p2)
+        + math.cos(p1) * math.cos(p2) * math.cos(dl)))))
+
+
+COMPASS = ("N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE",
+           "S", "SSW", "SW", "WSW", "W", "WNW", "NW", "NNW")
+
+
+def compass_point(az_deg):
+    """'NNE' and so on, because an operator recognises a skyline by direction."""
+    return COMPASS[int((float(az_deg) % 360.0) / 22.5 + 0.5) % 16]
+
+
+def calibration_candidates_now(when=None, lat=55.902426, lon=-4.307865,
+                               elevation_m=50.0,
+                               min_alt_deg=MIN_TARGET_ALT_DEG,
+                               obstruction_sectors=None, lon_step_deg=4.0,
+                               lat_step_deg=4.0,
+                               max_abs_glat=MAX_ABS_GLAT_DEG, sim=None,
+                               n=8, min_separation_deg=25.0):
+    """A ranked, spread-out list of directions worth calibrating against.
+
+    A single automatic choice is brittle here, because the software does not
+    know the skyline: the obstruction sectors only describe the eastern
+    treeline, and the observatory's dome towers are not in them at all. On
+    2026-08-24 the best-scoring direction came out at azimuth 15 degrees, which
+    is straight into a tower. So this proposes and a person disposes.
+
+    Suggestions are forced apart by `min_separation_deg`, without which the list
+    is five neighbouring points on the same bright patch pointing the same way -
+    a menu with one item on it. Each carries its compass point, since that is
+    what an operator recognises a skyline by.
+    """
+    when = when or datetime.now(timezone.utc)
+    sim = sim or load_simulator()
+
+    lons = np.arange(0.0, 360.0, lon_step_deg)
+    lats = np.arange(-max_abs_glat, max_abs_glat + 1e-9, lat_step_deg)
+    gl, gb = np.meshgrid(lons, lats)
+    gl, gb = gl.ravel(), gb.ravel()
+    alt, az = _sky_position(gl, gb, when, lat, lon, elevation_m)
+
+    scored = []
+    for l, b, a, z in zip(gl, gb, alt, az):
         if a < min_alt_deg:
             continue
         if _in_obstructed_sector(z, a, obstruction_sectors):
             continue
-        peak = float(np.nanmax(sim.spectrum(float(l), glat)[1]))
-        score = peak * math.sin(math.radians(a))
-        if best is None or score > best["score"]:
-            best = {"glon": float(l), "glat": float(glat),
-                    "alt_deg": float(a), "az_deg": float(z),
-                    "expected_peak_k": peak, "score": float(score)}
-    return best
+        peak = float(np.nanmax(sim.spectrum(float(l), float(b))[1]))
+        scored.append({"glon": float(l), "glat": float(b), "alt_deg": float(a),
+                       "az_deg": float(z), "expected_peak_k": peak,
+                       "compass": compass_point(z),
+                       "score": peak * math.sin(math.radians(a))})
+    scored.sort(key=lambda c: -c["score"])
+
+    picked = []
+    for cand in scored:
+        if any(_sky_separation_deg(cand["glon"], cand["glat"],
+                                   p["glon"], p["glat"]) < min_separation_deg
+               for p in picked):
+            continue
+        picked.append(cand)
+        if len(picked) >= n:
+            break
+    return picked
 
 
 # --------------------------------------------------------------------------
 # what the sky should look like
 
 
+_SIM_CACHE = {}
+
+
 def load_simulator(bandwidth_hz=2.0e6, dish_m=3.0, nchan=None, compact=None):
-    """A DishSimulator on the shipped compact HI4PI cube."""
+    """A DishSimulator on the shipped compact HI4PI cube.
+
+    Cached by configuration: building one unpacks a 23 MB compressed cube and
+    costs 2.7 seconds, against 2.9 ms for a spectrum out of it. A sky search asks
+    for several hundred spectra, so paying the load once rather than per request
+    is the difference between a usable page and one that appears to hang.
+    """
+    key = (bandwidth_hz, dish_m, nchan, compact)
+    if key in _SIM_CACHE:
+        return _SIM_CACHE[key]
     import sys
     if SIMULATOR_DIR not in sys.path:
         sys.path.insert(0, SIMULATOR_DIR)
     import astro_simulator as A
 
-    return A.DishSimulator(
+    sim = A.DishSimulator(
         cube_path=None, bw_hz=bandwidth_hz, dish_m=dish_m, eta=1.0,
         nchan=nchan, tsys=None, tint=60.0,
         compact_path=compact or os.path.join(SIMULATOR_DIR,
                                              "hi4pi_compact.npz.xz"))
+    _SIM_CACHE[key] = sim
+    return sim
 
 
 def simulated_spectrum(glon, glat, obstime, sim=None, bandwidth_hz=2.0e6):
