@@ -466,6 +466,22 @@ def _az_difference(a: float, b: float) -> float:
     return abs((float(a) - float(b) + 180.0) % 360.0 - 180.0)
 
 
+# Sky-frame arrival tolerance. The drive quantises to half a degree, the
+# pointing model contributes a little more, and nothing here needs to resolve
+# better than that.
+SRT_SKY_TOLERANCE_DEG = 1.0
+
+
+def _sky_separation_deg(ra1_h, dec1_deg, ra2_h, dec2_deg) -> float:
+    """Angle between two sky positions. RA in hours, declination in degrees."""
+    ra1 = math.radians(float(ra1_h) * 15.0)
+    ra2 = math.radians(float(ra2_h) * 15.0)
+    d1, d2 = math.radians(float(dec1_deg)), math.radians(float(dec2_deg))
+    cos_sep = (math.sin(d1) * math.sin(d2)
+               + math.cos(d1) * math.cos(d2) * math.cos(ra1 - ra2))
+    return math.degrees(math.acos(max(-1.0, min(1.0, cos_sep))))
+
+
 def srt_wait_for_slew(timeout: Optional[int] = None,
                       cancel_event: Optional[threading.Event] = None) -> bool:
     """Wait until the telescope has actually reached what it was told to.
@@ -516,6 +532,36 @@ def srt_wait_for_slew(timeout: Optional[int] = None,
             target_alt = status.get('target_alt')
             target_az = status.get('target_az')
 
+            # While tracking, the honest question is whether the dish points at
+            # what it has been told to track, and both halves of that are
+            # available live: /status gives the RA/Dec the dish is on, /tracking
+            # gives the RA/Dec it has adopted. Neither lags a command, because
+            # the controller sets its tracking target synchronously inside the
+            # request handler, before answering. The drive-frame target does
+            # lag - it is scraped from the Due's status line - and while the
+            # mount was still following the *previous* target it kept reporting
+            # that one, so a drive-frame comparison agreed with itself and
+            # called a fifty-degree error an arrival.
+            tracking = srt_get_tracking() or {}
+            if tracking.get('enabled') and status.get('ra') is not None:
+                try:
+                    sep = _sky_separation_deg(status['ra'], status['dec'],
+                                              tracking['ra'], tracking['dec'])
+                except (TypeError, ValueError, KeyError):
+                    sep = float('inf')
+                arrived = not is_slewing and sep <= SRT_SKY_TOLERANCE_DEG
+                if arrived and elapsed >= 1.0:
+                    settled += 1
+                    if settled >= 2:
+                        log.info("SRT arrived in %.1fs - %.2f deg from the "
+                                 "tracked target, drive Alt=%.2f Az=%.2f",
+                                 elapsed, sep, float(alt or 0), float(az or 0))
+                        return True
+                else:
+                    settled = 0
+                time.sleep(1.0)
+                continue
+
             if target_alt is None or target_az is None:
                 if not warned_no_target:
                     log.warning("SRT controller does not report its target, so "
@@ -549,9 +595,21 @@ def srt_wait_for_slew(timeout: Optional[int] = None,
         time.sleep(1.0)
 
     status = srt_get_status() or {}
-    log.warning("SRT timeout waiting for slew: at Alt=%s Az=%s, target Alt=%s Az=%s",
-                status.get('alt'), status.get('az'),
-                status.get('target_alt'), status.get('target_az'))
+    tracking = srt_get_tracking() or {}
+    if tracking.get('enabled') and status.get('ra') is not None:
+        try:
+            sep = _sky_separation_deg(status['ra'], status['dec'],
+                                      tracking['ra'], tracking['dec'])
+        except (TypeError, ValueError, KeyError):
+            sep = float('nan')
+        log.warning("SRT timeout waiting for slew: still %.2f deg from %s, at "
+                    "drive Alt=%s Az=%s", sep,
+                    tracking.get('target_name') or 'the tracked target',
+                    status.get('alt'), status.get('az'))
+    else:
+        log.warning("SRT timeout waiting for slew: at Alt=%s Az=%s, target Alt=%s Az=%s",
+                    status.get('alt'), status.get('az'),
+                    status.get('target_alt'), status.get('target_az'))
     return False
 
 

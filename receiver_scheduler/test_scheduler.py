@@ -2045,3 +2045,54 @@ def test_azimuth_difference_wraps():
     assert sched._az_difference(359.8, 0.1) == pytest.approx(0.3, abs=1e-6)
     assert sched._az_difference(10.0, 350.0) == pytest.approx(20.0, abs=1e-6)
     assert sched._az_difference(90.0, 270.0) == pytest.approx(180.0, abs=1e-6)
+
+
+class TestSkyFrameArrival:
+    """While tracking, arrival means the dish points at what it is tracking.
+
+    The drive-frame target is scraped from the Due's status line, so while the
+    mount was still following the previous target it kept reporting that one and
+    a drive-frame comparison agreed with itself. /tracking does not lag: the
+    controller sets it synchronously inside the request handler.
+    """
+
+    def _wait(self, status, tracking, monkeypatch, timeout=20):
+        import h1_web_scheduler as sched
+        monkeypatch.setattr(sched, "SRT_CONTROLLER_URL", "http://x")
+        monkeypatch.setattr(sched, "srt_get_status", lambda: status)
+        monkeypatch.setattr(sched, "srt_get_tracking", lambda: tracking)
+        monkeypatch.setattr(sched.time, "sleep", lambda *_: None)
+        clock = {"t": 0.0}
+        monkeypatch.setattr(sched.time, "time",
+                            lambda: clock.__setitem__("t", clock["t"] + 1.0) or clock["t"])
+        return sched.srt_wait_for_slew(timeout=timeout)
+
+    def test_pointing_at_the_tracked_target_is_arrival(self, monkeypatch):
+        assert self._wait(
+            {"is_slewing": False, "ra": 16.4702, "dec": 19.53, "alt": 35.0, "az": 110.0,
+             "target_alt": 35.0, "target_az": 110.0},
+            {"enabled": True, "ra": 16.4651, "dec": 19.24}, monkeypatch) is True
+
+    def test_pointing_somewhere_else_is_not_arrival(self, monkeypatch):
+        """The 2026-08-24 failure, in the frame that can actually see it."""
+        assert self._wait(
+            {"is_slewing": False, "ra": 16.47, "dec": 19.5, "alt": 75.0, "az": 286.5,
+             # the drive target agrees with the drive position, as it did then
+             "target_alt": 75.0, "target_az": 286.5},
+            {"enabled": True, "ra": 10.8, "dec": 57.2}, monkeypatch, timeout=10) is False
+
+    def test_with_tracking_off_it_falls_back_to_the_drive_frame(self, monkeypatch):
+        assert self._wait(
+            {"is_slewing": False, "alt": 40.0, "az": 100.0,
+             "target_alt": 40.0, "target_az": 100.0},
+            {"enabled": False}, monkeypatch) is True
+
+
+def test_sky_separation():
+    import h1_web_scheduler as sched
+    assert sched._sky_separation_deg(0.0, 0.0, 0.0, 0.0) == pytest.approx(0.0, abs=1e-9)
+    # one hour of RA at the celestial equator is fifteen degrees
+    assert sched._sky_separation_deg(0.0, 0.0, 1.0, 0.0) == pytest.approx(15.0, abs=1e-6)
+    # and shrinks with the cosine of declination
+    assert sched._sky_separation_deg(0.0, 60.0, 1.0, 60.0) == pytest.approx(7.5, abs=0.05)
+    assert sched._sky_separation_deg(0.0, 10.0, 0.0, -10.0) == pytest.approx(20.0, abs=1e-6)
