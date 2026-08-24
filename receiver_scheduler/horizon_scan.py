@@ -612,8 +612,19 @@ def _sky_reference(base_url, sdr_type, integration_time_s, center_freq,
 
 
 def _partial_path(started):
-    """Where a scan in progress writes itself."""
-    return os.path.join(_SCRIPT_DIR, "horizon_partial_%s.json"
+    """Where a scan in progress writes itself.
+
+    Under data/, with the observations, rather than beside the source. A partial
+    is written after every strip and again on any failure, so a demo run or a
+    test leaves one behind too - sixteen of them accumulated in the source tree
+    within an hour of the saving being added.
+    """
+    folder = os.path.join(_SCRIPT_DIR, "data")
+    try:
+        os.makedirs(folder, exist_ok=True)
+    except OSError:
+        folder = _SCRIPT_DIR
+    return os.path.join(folder, "horizon_partial_%s.json"
                         % started.strftime("%Y%m%dT%H%M%SZ"))
 
 

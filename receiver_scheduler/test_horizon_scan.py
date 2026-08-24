@@ -270,7 +270,7 @@ def test_a_scan_that_dies_mid_strip_still_saves_what_it_measured(tmp_path,
         hs.horizon_strip_scan(sdr_type="demo", settle_s=0.0, az_step=45.0,
                               alt_step=15.0, alt_max=35.0)
 
-    saved = list(tmp_path.glob("horizon_partial_*.json"))
+    saved = list((tmp_path / "data").glob("horizon_partial_*.json"))
     assert saved, "the interrupted scan saved nothing"
     profile = json.loads(saved[0].read_text())
     assert profile["complete"] is False
@@ -332,3 +332,18 @@ def test_an_interrupted_first_strip_still_yields_a_saveable_profile():
     out = hs.derive_clearance(profile)
     assert out["entries"][0]["fit"]["estimator"] == "not_enough_data"
     assert out["entries"][0]["fit"]["success"] is False
+
+
+def test_a_scan_does_not_litter_the_source_tree(tmp_path, monkeypatch):
+    """Partials go with the run data, not beside the code.
+
+    One is written after every strip and again on any failure, so a demo run
+    or a test leaves them too - sixteen accumulated in the source tree within
+    an hour of the saving being added.
+    """
+    monkeypatch.setattr(hs, "_SCRIPT_DIR", str(tmp_path))
+    hs.horizon_strip_scan(sdr_type="demo", settle_s=0.0, az_step=90.0,
+                          alt_step=20.0, alt_max=25.0)
+    assert not list(tmp_path.glob("horizon_partial_*.json")), \
+        "a partial was written beside the source"
+    assert list((tmp_path / "data").glob("horizon_partial_*.json"))
