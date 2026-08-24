@@ -139,3 +139,24 @@ def test_a_normal_system_temperature_is_not_flagged():
     out = R.fit_gain(3.0e-5 * (130.0 + ta), ta)
     assert not out["t_sys_implausible"]
     assert not out["t_sys_bound_active"]
+
+
+def test_the_lo_artefact_is_kept_out_of_the_fit():
+    """It is a deep hole where the model has nothing, so it drags the fit.
+
+    Left in, it took the correlation on a real run from 0.86 down to 0.48 and
+    the residual from 1.4 K to 4.3 K - and r < 0.8 is what raises the "weak
+    correlation" warning, so it would have misfired on good calibrations.
+    """
+    _, ta = _fake_plane()
+    gain, t_sys = 3.0e-5, 120.0
+    counts = gain * (t_sys + ta)
+    # One channel driven far negative, as the artefact is.
+    spoiled = counts.copy()
+    spoiled[len(spoiled) // 2] *= 0.3
+    clean = R.fit_gain(counts, ta)
+    dirty = R.fit_gain(spoiled, ta)
+    assert dirty["correlation"] < clean["correlation"]
+    assert dirty["residual_rms_k"] > clean["residual_rms_k"]
+    # And the constant that governs how much band is excluded is generous.
+    assert R.DC_EXCLUSION_HZ >= 20e3

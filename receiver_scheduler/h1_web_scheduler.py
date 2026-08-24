@@ -2335,10 +2335,14 @@ HTML_TEMPLATE = '''
                 </div>
                 <div style="margin-top:12px;">
                     <button class="btn" onclick="rfRun('gain')">Calibrate gain now</button>
+                    <button class="btn" onclick="rfLoadGainPlot()">Refresh plot</button>
                     <button class="btn btn-danger" onclick="rfCancel()">Stop</button>
                     <span style="color:#666; font-size:12px; margin-left:10px;">
                         needs a bandpass template first
                     </span>
+                </div>
+                <div id="rfGainPlot" class="rf-wide" style="margin-top:14px; text-align:center; color:#666; font-size:12px;">
+                    No gain calibration yet.
                 </div>
             </div>
 
@@ -3854,7 +3858,7 @@ HTML_TEMPLATE = '''
             if (name === 'observe') refreshObserveTuning();
             if (name === 'rf') {
                 rfRefresh(); rfRefreshTarget(); rfShowChosen();
-                rfLoadBandpassPlot();
+                rfLoadBandpassPlot(); rfLoadGainPlot();
             }
             if (name === 'simulator') showSimulator();
             if (name === 'observe') { loadObserveParams(false); loadObserveLast(); }
@@ -4351,9 +4355,10 @@ HTML_TEMPLATE = '''
                 if (!st.running) rfStopTicking();
                 // A finished bandpass job means the stored template changed, so
                 // the plot on screen is of the previous one.
-                if (!st.running && st.job === 'bandpass' && st.result && !rfPlotIsCurrent) {
+                if (!st.running && st.result && !rfPlotIsCurrent) {
                     rfPlotIsCurrent = true;
-                    rfLoadBandpassPlot();
+                    if (st.job === 'bandpass') rfLoadBandpassPlot();
+                    if (st.job === 'gain') rfLoadGainPlot();
                 }
                 if (st.running) rfPlotIsCurrent = false;
             }).catch(() => {});
@@ -4406,6 +4411,21 @@ HTML_TEMPLATE = '''
                                + 'border-radius:8px; border:1px solid #333;">';
             }).catch(e => {
                 host.innerHTML = '<span style="color:#ffa502;">' + e.message + '</span>';
+            });
+        }
+
+        function rfLoadGainPlot() {
+            const host = document.getElementById('rfGainPlot');
+            host.textContent = 'Drawing\u2026';
+            fetch('/api/rf/gain/plot?' + Date.now()).then(r => {
+                if (!r.ok) return r.json().then(d => { throw new Error(d.error || ('HTTP ' + r.status)); });
+                return r.blob();
+            }).then(b => {
+                const url = URL.createObjectURL(b);
+                host.innerHTML = '<img src="' + url + '" style="width:100%; height:auto; '
+                               + 'border-radius:8px; border:1px solid #333;">';
+            }).catch(e => {
+                host.innerHTML = '<span style="color:#888;">' + e.message + '</span>';
             });
         }
 
@@ -5723,6 +5743,34 @@ def api_rf_bandpass_plot():
         observation_plot.plot_bandpass_check(src, out, template)
     except Exception as exc:                              # noqa: BLE001
         log.error("Bandpass check plot failed: %s", exc)
+        return jsonify({'success': False, 'error': str(exc)}), 500
+    return send_file(out, mimetype='image/png', max_age=0)
+
+
+@app.route('/api/rf/gain/plot', methods=['GET'])
+def api_rf_gain_plot():
+    """The calibrated spectrum over the model it was calibrated against.
+
+    Redrawn from the same reduction the fit used, so the picture and the number
+    cannot disagree. Three views because they fail differently: the spectrum
+    shows whether the line profile is right, the scatter shows whether the
+    relation is linear - the assumption the whole calibration rests on - and the
+    residual shows *where* it is wrong, which a correlation coefficient cannot.
+    """
+    from flask import send_file
+
+    import observation_plot
+    import rf_calibration
+
+    cal = rf_calibration.load_calibration()
+    if not cal:
+        return jsonify({'success': False,
+                        'error': 'No gain calibration has been made yet'}), 404
+    out = os.path.join(_SCRIPT_DIR, 'data', 'gain_check.png')
+    try:
+        observation_plot.plot_gain_check(cal, out)
+    except Exception as exc:                              # noqa: BLE001
+        log.error("Gain check plot failed: %s", exc)
         return jsonify({'success': False, 'error': str(exc)}), 500
     return send_file(out, mimetype='image/png', max_age=0)
 

@@ -86,6 +86,34 @@ MAX_ABS_GLAT_DEG = 40.0
 # number with an invisible error bar.
 MIN_USEFUL_PEAK_K = 15.0
 
+# How much of the band either side of the LO artefact to keep out of the fit.
+# Generous: the artefact's wings are shallow, and the model has no structure
+# here to lose, so there is nothing to trade against being careful.
+DC_EXCLUSION_HZ = 40e3
+
+# Main-beam efficiency assumed for the model. This is not a detail: the
+# simulator multiplies its antenna temperature by it, so it sets the scale the
+# fit is measured against, and it is degenerate with the gain.
+#
+#     measured = G*T_sys + (G * eta_true/eta_model) * model_K
+#
+# so the fitted slope is G*eta_true/eta_model and the fitted system temperature
+# is T_sys_true * eta_model/eta_true. Only if the assumed efficiency equals the
+# real one is the reported T_sys the receiver's own. A single sky measurement
+# cannot separate them - one equation, two unknowns - and breaking the
+# degeneracy needs an independent temperature reference: a hot/cold load, a
+# tipping curve, or the SAWbird's 59 K plus a modelled spillover.
+#
+# What is *not* degenerate, and is what most of this exists for, is the
+# conversion of counts to kelvin on the model's own scale. That slope is right
+# whatever eta is, so calibrated spectra are correct even while the reported
+# T_sys is only T_sys_true scaled by an efficiency ratio.
+#
+# 0.7 is the simulator's own default. Measured here on 2026-08-24 with eta
+# assumed 1.0, a well-fitted run (r=0.86) gave 372 K, which at a plausible true
+# T_sys near 130 K implies a real efficiency around 0.35.
+MAIN_BEAM_EFFICIENCY = 0.7
+
 CALIBRATION_VERSION = 1
 
 
@@ -275,7 +303,8 @@ def calibration_candidates_now(when=None, lat=55.902426, lon=-4.307865,
 _SIM_CACHE = {}
 
 
-def load_simulator(bandwidth_hz=2.0e6, dish_m=3.0, nchan=None, compact=None):
+def load_simulator(bandwidth_hz=2.0e6, dish_m=3.0, nchan=None, compact=None,
+                   eta=MAIN_BEAM_EFFICIENCY):
     """A DishSimulator on the shipped compact HI4PI cube.
 
     Cached by configuration: building one unpacks a 23 MB compressed cube and
@@ -283,7 +312,7 @@ def load_simulator(bandwidth_hz=2.0e6, dish_m=3.0, nchan=None, compact=None):
     for several hundred spectra, so paying the load once rather than per request
     is the difference between a usable page and one that appears to hang.
     """
-    key = (bandwidth_hz, dish_m, nchan, compact)
+    key = (bandwidth_hz, dish_m, nchan, compact, eta)
     if key in _SIM_CACHE:
         return _SIM_CACHE[key]
     import sys
@@ -292,7 +321,7 @@ def load_simulator(bandwidth_hz=2.0e6, dish_m=3.0, nchan=None, compact=None):
     import astro_simulator as A
 
     sim = A.DishSimulator(
-        cube_path=None, bw_hz=bandwidth_hz, dish_m=dish_m, eta=1.0,
+        cube_path=None, bw_hz=bandwidth_hz, dish_m=dish_m, eta=eta,
         nchan=nchan, tsys=None, tint=60.0,
         compact_path=compact or os.path.join(SIMULATOR_DIR,
                                              "hi4pi_compact.npz.xz"))
@@ -376,6 +405,7 @@ def fit_gain(observed_counts, model_k, min_t_sys_k=MIN_T_SYS_K):
                                   and t_sys > IMPLAUSIBLE_T_SYS_K),
         "implausible_above_k": float(IMPLAUSIBLE_T_SYS_K),
         "min_t_sys_k": float(min_t_sys_k),
+        "assumed_main_beam_efficiency": float(MAIN_BEAM_EFFICIENCY),
         "n_bins": int(ok.sum()),
         "model_peak_k": float(np.nanmax(ta)),
         "model_span_k": float(np.nanmax(ta) - np.nanmin(ta)),
@@ -389,16 +419,21 @@ def fit_gain(observed_counts, model_k, min_t_sys_k=MIN_T_SYS_K):
     }
 
 
-def calibrate_observation(path, glon, glat, sim=None, min_t_sys_k=MIN_T_SYS_K,
-                          bandwidth_hz=None):
-    """Fit gain and T_sys from a recorded observation of the plane.
+def reduce_for_fit(path, glon, glat, sim=None, bandwidth_hz=None):
+    """Everything the fit sees, so a plot of the fit can see exactly the same.
 
-    The spectrum is bandpass corrected first and then binned onto the
-    simulator's own channels. Binning down rather than interpolating up is
-    deliberate: HI4PI's native resolution is 1.29 km/s against 0.10 km/s per
-    recorded channel, so the model simply cannot say anything at our resolution,
-    and regressing fine channels against an interpolated coarse curve would be
-    fitting noise against a smooth line and calling the correlation good.
+    Returns the simulator's frequency grid, its antenna temperature, the
+    observation binned onto that grid, and which bins carry data. Kept apart
+    from the fit itself so the picture and the number can never drift: a plot
+    drawn from a second, slightly different reduction is worse than no plot,
+    because it looks like corroboration.
+
+    The spectrum is bandpass corrected first and then binned *down* onto the
+    simulator's channels. HI4PI's native resolution is 1.29 km/s against 0.10
+    km/s per recorded channel, so the model cannot say anything at our
+    resolution, and regressing fine channels against an interpolated coarse
+    curve would be fitting noise against a smooth line and calling the
+    correlation good.
     """
     from observation_plot import read_observation
 
@@ -414,8 +449,6 @@ def calibrate_observation(path, glon, glat, sim=None, min_t_sys_k=MIN_T_SYS_K,
                              or header.get("sample_rate_hz") or 2.0e6)
 
     sim_f, sim_ta = simulated_spectrum(glon, glat, obstime, sim, bandwidth_hz)
-    # Bin edges from the simulator's own channels, so the model is never
-    # asked for detail it does not have.
     mid = 0.5 * (sim_f[1:] + sim_f[:-1])
     edges = np.concatenate([[sim_f[0] - (mid[0] - sim_f[0])], mid,
                             [sim_f[-1] + (sim_f[-1] - mid[-1])]])
@@ -428,7 +461,33 @@ def calibrate_observation(path, glon, glat, sim=None, min_t_sys_k=MIN_T_SYS_K,
     mean_counts[keep_ch] = np.nanmean(corrected[:, keep_ch], axis=0)
     binned, count = _bin_to(edges, freq_hz, mean_counts)
     usable = count > 0
-    result = fit_gain(binned[usable], sim_ta[usable], min_t_sys_k)
+
+    # Drop the LO artefact. It is a hole tens of percent deep at a known
+    # frequency, and the model puts nothing there, so in the regression it is a
+    # lone point far below the line - which is exactly where a least squares is
+    # most easily led. The bandpass template already keeps it out of its own
+    # fit; it has to be kept out of this one, for the same reason.
+    artefact = header.get("dc_artefact_freq_hz") or header.get("center_freq_hz")
+    if artefact is not None:
+        usable = usable & (np.abs(sim_f - float(artefact)) > DC_EXCLUSION_HZ)
+
+    return {
+        "sim_freq_hz": sim_f, "sim_ta_k": sim_ta,
+        "binned_counts": binned, "usable": usable,
+        "dc_artefact_freq_hz": (float(artefact) if artefact is not None else None),
+        "obstime": obstime, "header": header, "bandpass_note": note,
+        "bandwidth_hz": bandwidth_hz,
+    }
+
+
+def calibrate_observation(path, glon, glat, sim=None, min_t_sys_k=MIN_T_SYS_K,
+                          bandwidth_hz=None):
+    """Fit gain and T_sys from a recorded observation of the plane."""
+    red = reduce_for_fit(path, glon, glat, sim, bandwidth_hz)
+    usable = red["usable"]
+    obstime, header, note = red["obstime"], red["header"], red["bandpass_note"]
+    result = fit_gain(red["binned_counts"][usable], red["sim_ta_k"][usable],
+                      min_t_sys_k)
     result.update({
         "version": CALIBRATION_VERSION,
         "created_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),

@@ -490,3 +490,106 @@ def plot_bandpass_check(observation_path, output_path, template=None,
     fig.savefig(output_path, facecolor=fig.get_facecolor())
     plt.close(fig)
     return output_path
+
+
+def plot_gain_check(calibration, output_path, figsize=(16.0, 9.0), dpi=120):
+    """The measured sky in kelvin, over the model it was calibrated against.
+
+    Drawn from the same reduction the fit used - rf_calibration.reduce_for_fit -
+    rather than a second one built to look similar. A picture produced by a
+    slightly different pipeline is worse than no picture, because disagreement
+    then means nothing and agreement looks like corroboration.
+
+    Three views, because they fail differently. The spectrum says whether the
+    line profile is right; the scatter against the model says whether the
+    relation is linear, which is the assumption the whole calibration rests on;
+    and the residual says where it is wrong, which a correlation coefficient
+    cannot.
+    """
+    if not MATPLOTLIB_AVAILABLE:
+        raise RuntimeError("matplotlib is not installed, so no plot can be drawn")
+    import rf_calibration
+
+    src = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data",
+                       calibration.get("source_file", ""))
+    if not calibration.get("source_file") or not os.path.exists(src):
+        raise RuntimeError("the observation this calibration came from is no "
+                           "longer in the data folder")
+
+    red = rf_calibration.reduce_for_fit(src, calibration["glon"],
+                                        calibration["glat"])
+    use = red["usable"]
+    freq = red["sim_freq_hz"][use]
+    model_k = red["sim_ta_k"][use]
+    counts = red["binned_counts"][use]
+
+    gain = calibration["gain_counts_per_k"]
+    t_sys = calibration["t_sys_k"]
+    measured_k = counts / gain - t_sys
+    resid_k = measured_k - model_k
+
+    fig = plt.figure(figsize=figsize, dpi=dpi)
+    gs = fig.add_gridspec(2, 2, height_ratios=[1.5, 1.0],
+                          hspace=0.26, wspace=0.16)
+    ax_spec = fig.add_subplot(gs[0, :])
+    ax_scat = fig.add_subplot(gs[1, 0])
+    ax_res = fig.add_subplot(gs[1, 1])
+
+    mhz = freq / 1e6
+    ax_spec.plot(mhz, measured_k, color=_ACCENT, lw=1.1,
+                 label="measured, calibrated to kelvin")
+    ax_spec.plot(mhz, model_k, color=_MARK, lw=1.8, alpha=0.9,
+                 label="HI4PI through this beam (simulated)")
+    ax_spec.axvline(H1_REST_FREQ_HZ / 1e6, color=_PLOT_GRID, lw=1.0, ls="--")
+    ax_spec.set_ylabel("Antenna temperature (K)")
+    ax_spec.set_xlabel("Frequency (MHz)")
+    ax_spec.legend(loc="upper right", fontsize=10)
+
+    lim = max(np.nanmax(model_k), np.nanmax(measured_k))
+    lo = min(np.nanmin(model_k), np.nanmin(measured_k), 0.0)
+    ax_scat.plot([lo, lim], [lo, lim], color=_MARK, lw=1.5,
+                 label="1:1 (perfect calibration)")
+    ax_scat.scatter(model_k, measured_k, s=6, color=_ACCENT, alpha=0.55, lw=0)
+    ax_scat.set_xlabel("Model antenna temperature (K)")
+    ax_scat.set_ylabel("Measured (K)")
+    ax_scat.legend(loc="upper left", fontsize=9)
+
+    ax_res.plot(mhz, resid_k, color=_ACCENT, lw=0.9)
+    ax_res.axhline(0.0, color=_MARK, lw=1.2)
+    rms = float(np.nanstd(resid_k))
+    for sign in (1, -1):
+        ax_res.axhline(sign * rms, color=_PLOT_GRID, lw=1.0, ls="--")
+    ax_res.set_xlabel("Frequency (MHz)")
+    ax_res.set_ylabel("Measured - model (K)")
+    ax_res.text(0.02, 0.05, "rms %.2f K" % rms, transform=ax_res.transAxes,
+                fontsize=10, color=_PLOT_FG, alpha=0.85)
+
+    # Say plainly when the fit is not to be trusted. A calibration that sat on
+    # its floor, or one with no lever arm, must not look like a measurement
+    # merely because a plot was drawn of it.
+    flags = []
+    if calibration.get("t_sys_bound_active"):
+        flags.append("T_sys pinned at its %.0f K floor - fitted against the "
+                     "bound, not measured" % calibration.get("min_t_sys_k", 50))
+    if calibration.get("t_sys_implausible"):
+        flags.append("T_sys is far hotter than any working system")
+    if (calibration.get("correlation") or 0) < 0.8:
+        flags.append("weak correlation (r=%.2f): little lever arm, so T_sys is "
+                     "poorly determined" % (calibration.get("correlation") or 0))
+    if flags:
+        ax_spec.text(0.01, 0.97, "\n".join("! " + f for f in flags),
+                     transform=ax_spec.transAxes, fontsize=10, color="#ff6b6b",
+                     va="top")
+
+    when = (calibration.get("observed_utc") or "")[:19].replace("T", " ")
+    fig.suptitle("Gain calibration \u2014 l=%.0f b=%+.0f, %s UTC\n"
+                 "T_sys %.1f K, gain %.4g counts/K, r=%.3f, residual %.2f K"
+                 % (calibration["glon"], calibration["glat"], when,
+                    t_sys, gain, calibration.get("correlation") or float("nan"),
+                    calibration.get("residual_rms_k") or rms),
+                 color=_PLOT_FG, fontsize=12)
+    _style_dark(fig)
+    fig.subplots_adjust(top=0.89, left=0.055, right=0.985, bottom=0.075)
+    fig.savefig(output_path, facecolor=fig.get_facecolor())
+    plt.close(fig)
+    return output_path
