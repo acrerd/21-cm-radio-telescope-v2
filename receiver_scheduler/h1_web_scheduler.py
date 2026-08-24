@@ -1038,6 +1038,23 @@ sun_scan_state: dict = {
 # preempts it, and it is cancellable between points.
 horizon_thread: Optional[threading.Thread] = None
 horizon_cancel = threading.Event()
+
+# RF calibration: measuring the bandpass template and the counts-to-kelvin gain.
+# Both own the SDR and the mount for a few minutes, so they take the same terms
+# as the horizon scan - a scheduled observation preempts them, and they are
+# cancellable. Kept separate from horizon_state because they can be re-run often
+# and their results are small stored artefacts rather than a profile.
+rf_thread: Optional[threading.Thread] = None
+rf_cancel = threading.Event()
+rf_state: dict = {
+    "running": False,
+    "job": None,
+    "stage": "",
+    "target": None,
+    "error": None,
+    "started_utc": None,
+    "result": None,
+}
 horizon_state: dict = {
     "running": False,
     "progress": 0,
@@ -1212,14 +1229,15 @@ def start_observation(obs: dict, duration_override: int = None) -> bool:
         # Cancellation is only polled between grid points, so a slew plus
         # an integration can pass before it takes effect.
         if (sun_scan_state["running"] or cal_day_state["running"]
-                or horizon_state["running"]):
-            log.info("Scheduled observation preempts the running Sun scan/calibration/horizon scan")
+                or horizon_state["running"] or rf_state["running"]):
+            log.info("Scheduled observation preempts the running Sun scan/calibration/horizon scan/RF calibration")
             sun_scan_cancel.set()
             cal_day_cancel.set()
             horizon_cancel.set()
+            rf_cancel.set()
             deadline = time.time() + SUN_SCAN_PREEMPT_TIMEOUT
             while (sun_scan_state["running"] or cal_day_state["running"]
-                   or horizon_state["running"]):
+                   or horizon_state["running"] or rf_state["running"]):
                 if start_abort.is_set():
                     log.info("Observation start aborted while waiting for the Sun scan to stop")
                     return False
@@ -1987,6 +2005,7 @@ HTML_TEMPLATE = '''
             <div class="tab active" onclick="switchTab('scheduler')">Scheduler</div>
             <div class="tab" onclick="switchTab('sunscan')">Sun Scan</div>
             <div class="tab" onclick="switchTab('horizon')">Horizon</div>
+            <div class="tab" onclick="switchTab('rf')">RF calibration</div>
             <div class="tab" onclick="switchTab('camera')">Camera</div>
             <div class="tab" onclick="switchTab('simulator')">Simulator</div>
             <div class="tab" onclick="switchTab('observe')">Observe</div>
@@ -2113,6 +2132,59 @@ HTML_TEMPLATE = '''
                         </div>
                     </div>
                 </div>
+            </div>
+        </div>
+
+        <div class="tab-content" id="tab-rf">
+            <div class="card">
+                <div class="section-title">Bandpass template</div>
+                <div style="color:#888; font-size:13px; margin-bottom:12px; max-width:70ch;">
+                    Everything from the feed to the spectrum shapes the band &mdash; the
+                    SAWbird&rsquo;s filter, the amplifier after it, the AD9361&rsquo;s decimation
+                    chain and the FPGA&rsquo;s down-converter. Measuring the whole product at
+                    once means pointing at sky with no hydrogen in it: the Lockman Hole,
+                    where the line peaks at 1.3 K. The line itself is masked and the fit
+                    bridges it, so &ldquo;empty&rdquo; is only assumed where it is true.
+                </div>
+                <div id="rfBandpassStatus" class="mono" style="padding:10px 12px; background:#0f0f23; border:1px solid #333; border-radius:6px; color:#888; font-size:12px;">
+                    Loading&hellip;
+                </div>
+                <div style="margin-top:12px;">
+                    <button class="btn" onclick="rfRun('bandpass')">Measure bandpass</button>
+                    <span style="color:#666; font-size:12px; margin-left:10px;">
+                        ~2 min on the Lockman Hole
+                    </span>
+                </div>
+            </div>
+
+            <div class="card">
+                <div class="section-title">Gain and system temperature</div>
+                <div style="color:#888; font-size:13px; margin-bottom:12px; max-width:70ch;">
+                    With the band flat, counts still are not kelvin. The simulator gives
+                    the antenna temperature the galactic plane should show through this
+                    beam, so a straight line through counts against kelvin gives the gain
+                    as its slope and the system temperature from its intercept. The
+                    pointing is chosen <strong>now</strong>, not named: the gain drifts, and a
+                    fixed source is below the horizon for most of the day.
+                </div>
+                <div id="rfPlaneTarget" class="mono" style="padding:8px 12px; margin-bottom:10px; background:#0f0f23; border:1px solid #333; border-radius:6px; color:#888; font-size:12px;">
+                    Finding a plane pointing&hellip;
+                </div>
+                <div id="rfGainStatus" class="mono" style="padding:10px 12px; background:#0f0f23; border:1px solid #333; border-radius:6px; color:#888; font-size:12px;">
+                    Loading&hellip;
+                </div>
+                <div style="margin-top:12px;">
+                    <button class="btn" onclick="rfRun('gain')">Calibrate gain now</button>
+                    <button class="btn btn-danger" onclick="rfCancel()">Stop</button>
+                    <span style="color:#666; font-size:12px; margin-left:10px;">
+                        needs a bandpass template first
+                    </span>
+                </div>
+            </div>
+
+            <div class="card">
+                <div class="section-title">Progress</div>
+                <div id="rfProgress" style="color:#888; font-size:13px;">Idle.</div>
             </div>
         </div>
 
@@ -3620,6 +3692,7 @@ HTML_TEMPLATE = '''
             // itself whenever the camera tab is not the one on screen.
             if (name === 'horizon') pollHorizon();
             if (name === 'observe') refreshObserveTuning();
+            if (name === 'rf') { rfRefresh(); rfRefreshTarget(); }
             if (name === 'simulator') showSimulator();
             if (name === 'observe') { loadObserveParams(false); loadObserveLast(); }
             if (name === 'camera' && !camObjectUrl) refreshCamera();
@@ -3981,6 +4054,121 @@ HTML_TEMPLATE = '''
         function scheduleObserveTuning() {
             if (obvTuningTimer) clearTimeout(obvTuningTimer);
             obvTuningTimer = setTimeout(refreshObserveTuning, 250);
+        }
+
+
+        // ---- RF calibration ----
+        // Two measurements that own the dish for a couple of minutes each. The
+        // page polls only while the tab is open and something is running: this
+        // controller has known cross-task locking weaknesses (issue #1), so idle
+        // tabs must not sit on it.
+        let rfPollTimer = null;
+
+        function rfAge(iso) {
+            if (!iso) return '';
+            const mins = (Date.now() - Date.parse(iso)) / 60000;
+            if (!isFinite(mins)) return '';
+            if (mins < 90) return Math.round(mins) + ' min ago';
+            if (mins < 60 * 48) return (mins / 60).toFixed(1) + ' hours ago';
+            return (mins / 1440).toFixed(1) + ' days ago';
+        }
+
+        function rfRefresh() {
+            fetch('/api/rf/status').then(r => r.json()).then(d => {
+                if (!d.success) return;
+                const bp = document.getElementById('rfBandpassStatus');
+                if (!d.bandpass) {
+                    bp.innerHTML = '<span style="color:#ffa502;">No template stored &mdash; '
+                                 + 'spectra are not being corrected.</span>';
+                } else {
+                    bp.innerHTML =
+                        '<div style="color:#00d4ff;">Order ' + d.bandpass.degree
+                        + ' over &plusmn;' + d.bandpass.band_mhz.toFixed(3) + ' MHz, residual '
+                        + d.bandpass.residual_pct.toFixed(3) + '%</div>'
+                        + '<div>measured ' + rfAge(d.bandpass.created_utc)
+                        + (d.bandpass.source_name ? ' on ' + d.bandpass.source_name : '')
+                        + ', at LO ' + d.bandpass.lo_mhz.toFixed(6) + ' MHz, '
+                        + d.bandpass.sample_rate_mhz.toFixed(3) + ' Msps</div>'
+                        + '<div style="color:#666;">Only applies to observations at that '
+                        + 'exact tuning; anything else is left uncorrected and says so.</div>';
+                }
+
+                const g = document.getElementById('rfGainStatus');
+                if (!d.gain) {
+                    g.innerHTML = '<span style="color:#ffa502;">Not calibrated &mdash; '
+                                + 'spectra are in counts, not kelvin.</span>';
+                } else {
+                    const warn = d.gain.t_sys_bound_active
+                        ? '<div style="color:#ff4757;">T_sys hit its 50 K floor &mdash; the fit '
+                        + 'is against the bound, not a measurement. Check the bandpass template '
+                        + 'and that the slew arrived.</div>' : '';
+                    const weak = (d.gain.correlation < 0.8)
+                        ? '<div style="color:#ffa502;">Weak correlation: little lever arm in '
+                        + 'this pointing, so T_sys is poorly determined.</div>' : '';
+                    g.innerHTML =
+                        '<div style="color:#00d4ff;">T_sys ' + d.gain.t_sys_k.toFixed(1)
+                        + ' K &nbsp; gain ' + d.gain.gain_counts_per_k.toExponential(3)
+                        + ' counts/K</div>'
+                        + '<div>from l=' + Math.round(d.gain.glon) + ' b=' + Math.round(d.gain.glat)
+                        + ', ' + rfAge(d.gain.observed_utc)
+                        + ' &nbsp; r=' + d.gain.correlation.toFixed(3)
+                        + ' &nbsp; residual ' + d.gain.residual_rms_k.toFixed(2) + ' K</div>'
+                        + warn + weak;
+                }
+
+                const st = d.state || {};
+                const prog = document.getElementById('rfProgress');
+                if (st.running) {
+                    let t = st.target ? (' &mdash; l=' + Math.round(st.target.glon)
+                          + ' b=' + Math.round(st.target.glat)
+                          + (st.target.alt_deg ? ' at alt ' + st.target.alt_deg.toFixed(0) : '')) : '';
+                    prog.innerHTML = '<span style="color:#00d4ff;">' + st.job + ': '
+                                   + (st.stage || 'working') + '</span>' + t;
+                } else if (st.error) {
+                    prog.innerHTML = '<span style="color:#ff4757;">' + st.job + ' failed: '
+                                   + st.error + '</span>';
+                } else if (st.result) {
+                    prog.innerHTML = '<span style="color:#2ed573;">' + st.job
+                                   + ' finished.</span>';
+                } else {
+                    prog.textContent = 'Idle.';
+                }
+
+                if (st.running && !rfPollTimer) rfPollTimer = setInterval(rfRefresh, 2000);
+                if (!st.running && rfPollTimer) { clearInterval(rfPollTimer); rfPollTimer = null; }
+            }).catch(() => {});
+        }
+
+        function rfRefreshTarget() {
+            fetch('/api/rf/plane-target').then(r => r.json()).then(d => {
+                const box = document.getElementById('rfPlaneTarget');
+                if (!d.success) { box.textContent = d.error || 'unavailable'; return; }
+                if (!d.target) {
+                    box.innerHTML = '<span style="color:#ffa502;">No part of the plane is '
+                                  + 'high enough right now.</span>';
+                    return;
+                }
+                const t = d.target;
+                box.innerHTML = 'Would point at <span style="color:#00d4ff;">l='
+                    + Math.round(t.glon) + ' b=' + Math.round(t.glat) + '</span>, alt '
+                    + t.alt_deg.toFixed(1) + ' az ' + t.az_deg.toFixed(1)
+                    + ' &mdash; expected line peak ' + t.expected_peak_k.toFixed(0) + ' K';
+            }).catch(() => {});
+        }
+
+        function rfRun(job) {
+            const secs = job === 'gain' ? 180 : 120;
+            fetch('/api/rf/run', {
+                method: 'POST', headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({job: job, duration_s: secs})
+            }).then(r => r.json()).then(d => {
+                if (!d.success) { alert(d.error || 'could not start'); return; }
+                rfRefresh();
+            }).catch(e => alert(e));
+        }
+
+        function rfCancel() {
+            fetch('/api/rf/cancel', {method: 'POST'}).then(() => rfRefresh());
         }
 
         // ---- Safety camera ----
@@ -4972,6 +5160,256 @@ def api_observe_last():
         except OSError:
             info['size_bytes'] = None
     return jsonify(info)
+
+
+# ---------------------------------------------------------------------------
+# RF calibration: the bandpass template and the counts-to-kelvin gain
+#
+# Two short observations that both point somewhere, record a spectrum and fit
+# something to it. They are here rather than in a script because the gain drifts,
+# so the useful version of this is "calibrate now, from the web page", not a
+# thing someone remembers to run from a shell.
+
+RF_LOCKMAN_L, RF_LOCKMAN_B = 150.0, 53.0     # the H I minimum: an empty band
+
+
+def _rf_observe(name, glon, glat, duration_s, sdr_type="b210",
+                integration_s=3.0, channels=4096, bandwidth_mhz=2.0):
+    """Point at a galactic direction, record for a while, return the file.
+
+    Uses the ordinary receiver path, headless, so the file carries the same
+    tuning header any observation does - which is what lets the bandpass
+    template match itself to the data later.
+    """
+    obs = {
+        "name": name,
+        "coord_system": "galactic",
+        "coord1_deg": glon, "coord1_min": 0, "coord1_sec": 0.0,
+        "coord2_deg": glat, "coord2_min": 0, "coord2_sec": 0.0,
+        "center_freq_mhz": 1420.405752,
+        "bandwidth_mhz": bandwidth_mhz,
+        "channels": channels,
+        "integration_time_s": integration_s,
+        "gain_db": 40,
+        "sdr_type": sdr_type,
+        "duration_minutes": max(1, int(round(duration_s / 60.0))),
+    }
+
+    rf_state["stage"] = "slewing to l=%.0f b=%.0f" % (glon, glat)
+    if not srt_point_telescope(obs):
+        raise RuntimeError("the telescope would not accept the pointing")
+    if not srt_wait_for_slew(cancel_event=rf_cancel):
+        if rf_cancel.is_set():
+            raise RuntimeError("cancelled during the slew")
+        log.warning("RF calibration: slew timed out, recording anyway")
+
+    out = os.path.join(_SCRIPT_DIR, "data",
+                       "rf_%s_%s.h5" % (name.lower().replace(" ", "_"),
+                                        datetime.now().strftime("%Y%m%d_%H%M%S")))
+    os.makedirs(os.path.dirname(out), exist_ok=True)
+
+    env = os.environ.copy()
+    env["H1_OUTPUT_FILE"] = out
+    env["H1_CENTER_FREQ"] = str(1420.405752e6)
+    env["H1_FFT_SIZE"] = str(channels)
+    env["H1_INTEGRATION_TIME"] = str(integration_s)
+    env["H1_OBS_METADATA"] = json.dumps({
+        "obs_name": name, "coord_system": "galactic",
+        "coord1_deg": glon, "coord1_min": 0, "coord1_sec": 0.0,
+        "coord2_deg": glat, "coord2_min": 0, "coord2_sec": 0.0,
+    })
+    python_exe = receiver_python_path()
+    env = receiver_process_env(env, python_exe)
+
+    rf_state["stage"] = "recording %.0f s" % duration_s
+    proc = subprocess.Popen(
+        [python_exe, RECEIVER_SCRIPT, "--sdr", sdr_type, "--headless",
+         "--sample-rate", str(bandwidth_mhz * 1e6), "--gain", "40"],
+        env=env, cwd=_SCRIPT_DIR,
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try:
+        deadline = time.time() + duration_s
+        while time.time() < deadline:
+            if rf_cancel.is_set():
+                raise RuntimeError("cancelled while recording")
+            if proc.poll() is not None:
+                raise RuntimeError("the receiver exited early (%s)" % proc.returncode)
+            time.sleep(0.5)
+    finally:
+        if proc.poll() is None:
+            proc.terminate()
+            try:
+                proc.wait(timeout=30)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait(timeout=10)
+
+    if not os.path.exists(out):
+        raise RuntimeError("the receiver wrote no file")
+    return out
+
+
+def _run_rf_calibration(job, params):
+    """Worker for both calibration jobs."""
+    import bandpass
+    import rf_calibration
+
+    rf_state.update(running=True, job=job, stage="starting", error=None,
+                    result=None, target=None,
+                    started_utc=datetime.now(timezone.utc).isoformat(timespec="seconds"))
+    try:
+        stop_booted_receiver()
+        duration_s = float(params.get("duration_s", 120))
+        sdr_type = params.get("sdr_type", "b210")
+
+        if job == "bandpass":
+            target = {"glon": RF_LOCKMAN_L, "glat": RF_LOCKMAN_B,
+                      "why": "the H I minimum, so the band is the instrument"}
+            rf_state["target"] = target
+            path = _rf_observe("Bandpass template", RF_LOCKMAN_L, RF_LOCKMAN_B,
+                               duration_s, sdr_type)
+            rf_state["stage"] = "fitting the response"
+            template, out = bandpass.fit_from_observation(path, "Lockman Hole")
+            rf_state["result"] = {
+                "kind": "bandpass",
+                "degree": template["degree"],
+                "band_mhz": template["u_scale_hz"] / 1e6,
+                "residual_pct": 100 * template["fit_residual_rms"],
+                "channels": template["n_channels_fitted"],
+                "file": os.path.basename(path),
+                "stored": os.path.basename(out),
+            }
+            log.info("RF calibration: bandpass template refitted, residual %.3f%%",
+                     100 * template["fit_residual_rms"])
+
+        elif job == "gain":
+            cfg = load_config()
+            rf_state["stage"] = "choosing a plane pointing"
+            target = rf_calibration.plane_target_now(
+                lat=float(cfg.get("observer_lat", 55.902426)),
+                lon=float(cfg.get("observer_lon", -4.307865)),
+                elevation_m=float(cfg.get("observer_elevation", 50)),
+                obstruction_sectors=cfg.get("obstruction_sectors"))
+            if not target:
+                raise RuntimeError("no part of the galactic plane is high enough "
+                                   "right now to calibrate against")
+            rf_state["target"] = target
+            path = _rf_observe("Gain calibration", target["glon"], target["glat"],
+                               duration_s, sdr_type)
+            rf_state["stage"] = "fitting gain and system temperature"
+            cal = rf_calibration.calibrate_observation(
+                path, target["glon"], target["glat"])
+            cal["target"] = target
+            rf_calibration.save_calibration(cal)
+            rf_state["result"] = {
+                "kind": "gain",
+                "gain_counts_per_k": cal["gain_counts_per_k"],
+                "t_sys_k": cal["t_sys_k"],
+                "t_sys_bound_active": cal["t_sys_bound_active"],
+                "correlation": cal["correlation"],
+                "residual_rms_k": cal["residual_rms_k"],
+                "model_peak_k": cal["model_peak_k"],
+                "file": os.path.basename(path),
+            }
+            log.info("RF calibration: gain %.4g counts/K, T_sys %.1f K "
+                     "(l=%.0f b=%.0f, correlation %.3f)",
+                     cal["gain_counts_per_k"], cal["t_sys_k"],
+                     target["glon"], target["glat"], cal["correlation"])
+        else:
+            raise ValueError("unknown calibration job: %s" % job)
+
+        rf_state["stage"] = "done"
+    except Exception as exc:                              # noqa: BLE001
+        rf_state["error"] = str(exc)
+        rf_state["stage"] = "failed"
+        log.error("RF calibration (%s) failed: %s", job, exc)
+    finally:
+        rf_state["running"] = False
+
+
+@app.route('/api/rf/status', methods=['GET'])
+def api_rf_status():
+    """Everything the RF calibration tab needs to draw itself."""
+    import bandpass
+    import rf_calibration
+
+    template = bandpass.load_bandpass()
+    cal = rf_calibration.load_calibration()
+    return jsonify({
+        "success": True,
+        "state": rf_state,
+        "bandpass": None if not template else {
+            "created_utc": template.get("created_utc"),
+            "source_name": template.get("source_name"),
+            "degree": template.get("degree"),
+            "band_mhz": template.get("u_scale_hz", 0) / 1e6,
+            "residual_pct": 100 * template.get("fit_residual_rms", 0),
+            "lo_mhz": template.get("config", {}).get("lo_hz", 0) / 1e6,
+            "sample_rate_mhz": template.get("config", {}).get("sample_rate_hz", 0) / 1e6,
+        },
+        "gain": None if not cal else {
+            "created_utc": cal.get("created_utc"),
+            "observed_utc": cal.get("observed_utc"),
+            "gain_counts_per_k": cal.get("gain_counts_per_k"),
+            "t_sys_k": cal.get("t_sys_k"),
+            "t_sys_bound_active": cal.get("t_sys_bound_active"),
+            "correlation": cal.get("correlation"),
+            "residual_rms_k": cal.get("residual_rms_k"),
+            "glon": cal.get("glon"), "glat": cal.get("glat"),
+        },
+    })
+
+
+@app.route('/api/rf/plane-target', methods=['GET'])
+def api_rf_plane_target():
+    """Where the gain calibration would point if started now."""
+    import rf_calibration
+    cfg = load_config()
+    try:
+        t = rf_calibration.plane_target_now(
+            lat=float(cfg.get("observer_lat", 55.902426)),
+            lon=float(cfg.get("observer_lon", -4.307865)),
+            elevation_m=float(cfg.get("observer_elevation", 50)),
+            obstruction_sectors=cfg.get("obstruction_sectors"))
+    except Exception as exc:                              # noqa: BLE001
+        return jsonify({"success": False, "error": str(exc)}), 500
+    return jsonify({"success": True, "target": t})
+
+
+@app.route('/api/rf/run', methods=['POST'])
+def api_rf_run():
+    """Start a calibration. Refuses if anything else owns the SDR."""
+    global rf_thread
+    data = request.get_json(silent=True) or {}
+    job = data.get("job", "")
+    if job not in ("bandpass", "gain"):
+        return jsonify({"success": False,
+                        "error": "job must be 'bandpass' or 'gain'"}), 400
+    if rf_state["running"]:
+        return jsonify({"success": False,
+                        "error": "a calibration is already running"}), 409
+    if current_observation is not None or horizon_state["running"] \
+            or sun_scan_state["running"] or cal_day_state["running"]:
+        return jsonify({"success": False,
+                        "error": "the telescope is busy with an observation"}), 409
+    with process_lock:
+        if current_process is not None and current_process.poll() is None:
+            return jsonify({"success": False,
+                            "error": "the receiver is busy"}), 409
+
+    params = {"duration_s": float(data.get("duration_s", 120)),
+              "sdr_type": data.get("sdr_type", "b210")}
+    rf_cancel.clear()
+    rf_thread = threading.Thread(target=_run_rf_calibration,
+                                 args=(job, params), daemon=True)
+    rf_thread.start()
+    return jsonify({"success": True, "job": job})
+
+
+@app.route('/api/rf/cancel', methods=['POST'])
+def api_rf_cancel():
+    rf_cancel.set()
+    return jsonify({"success": True})
 
 
 @app.route('/api/observe/plot', methods=['GET'])

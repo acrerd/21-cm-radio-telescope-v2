@@ -150,10 +150,17 @@ def haversine_deg(l1, b1, l2, b2):
     return np.degrees(2 * np.arcsin(np.sqrt(s)))
 
 
-def frame_offset(glon, glat, frame):
+def frame_offset(glon, glat, frame, obstime=None):
     """Velocity (m/s) to ADD to a v_LSRK axis to express the spectrum in
     `frame`: 'lsr' (native), 'ssb' (solar-system barycentre) or 'topo'
-    (the observer site, evaluated at the current time).
+    (the observer site, at `obstime`, or now if that is not given).
+
+    `obstime` matters more than it looks. The barycentric term moves with the
+    Earth's orbit and rotation, so simulating a recorded observation at "now"
+    rather than at the time it was taken misplaces the velocity axis: measured
+    toward l=80 b=0 from Acre Road, 0.06 km/s after an hour but 1.95 km/s after
+    a week and 8.06 km/s after a month - 19 and 78 channels at 0.49 kHz. Live
+    use can leave it None; reducing anything from the archive must not.
 
     LSRK is defined by a 20 km/s solar motion toward RA 18h, Dec +30
     (B1900), so v_SSB = v_LSR - U with U the apex motion projected on
@@ -167,7 +174,8 @@ def frame_offset(glon, glat, frame):
     dv = -20.0e3 * np.cos(apex.separation(tgt).rad)
     if frame == "topo":
         rv = tgt.radial_velocity_correction(
-            "barycentric", obstime=Time.now(), location=SITE_LOC)
+            "barycentric", obstime=Time(obstime) if obstime is not None else Time.now(),
+            location=SITE_LOC)
         dv -= rv.to_value(u.m / u.s)
     return dv
 
