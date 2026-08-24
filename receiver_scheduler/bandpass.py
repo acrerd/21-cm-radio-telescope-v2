@@ -33,6 +33,17 @@ sky, so a template is only valid for the tuning that produced it. Applying one
 to a different setup would be worse than applying none, hence the refusal rather
 than a warning.
 
+A template goes stale within hours, which is measured rather than feared. Two
+fitted from the same field at the same tuning on 2026-08-24, 4.7 hours apart
+(09:42 and 14:21 UTC), differ by 0.68% rms and 2.06% peak to peak, dominated by a
+tilt change of 1.93% across the band - against a parameter uncertainty of 0.017%
+each, so forty times the noise. That is the SAWbird warming through the morning:
+a SAW filter's response slides with substrate temperature, and the observing band
+sits on the flank of its passband ripple, so a small shift in the filter is a
+tilt in the band. The operational consequence is that a bandpass template should
+be measured immediately before whatever it is going to be used to reduce, and in
+particular immediately before a gain calibration, which divides by it.
+
 The correction is applied when a spectrum is reduced or plotted, never in the
 receiver: the HDF5 files stay raw so a better template can be applied later.
 """

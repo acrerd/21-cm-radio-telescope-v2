@@ -1054,6 +1054,11 @@ rf_state: dict = {
     "error": None,
     "started_utc": None,
     "result": None,
+    # When the current timed stage will end, so the page can count down without
+    # polling faster. None whenever the stage has no knowable duration - a slew
+    # takes as long as it takes, and a fake countdown is worse than none.
+    "stage_ends_utc": None,
+    "stage_total_s": None,
 }
 horizon_state: dict = {
     "running": False,
@@ -4063,6 +4068,43 @@ HTML_TEMPLATE = '''
         // controller has known cross-task locking weaknesses (issue #1), so idle
         // tabs must not sit on it.
         let rfPollTimer = null;
+        let rfTickTimer = null;
+        let rfEndsAt = null;      // ms since epoch, or null for an untimed stage
+        let rfTotalS = null;
+
+        function rfStartTicking() {
+            if (!rfTickTimer) rfTickTimer = setInterval(rfTick, 250);
+            rfTick();
+        }
+
+        function rfStopTicking() {
+            if (rfTickTimer) { clearInterval(rfTickTimer); rfTickTimer = null; }
+            rfEndsAt = null; rfTotalS = null;
+        }
+
+        function rfTick() {
+            const box = document.getElementById('rfCountdown');
+            if (!box) return;
+            if (!rfEndsAt) {
+                // A slew has no knowable duration; say so rather than invent one.
+                box.innerHTML = '<span style="color:#888; font-size:12px;">'
+                              + 'no fixed duration for this step</span>';
+                return;
+            }
+            const left = Math.max(0, (rfEndsAt - Date.now()) / 1000);
+            const total = rfTotalS || 1;
+            const done = Math.min(100, Math.max(0, 100 * (1 - left / total)));
+            const mm = Math.floor(left / 60), ss = Math.floor(left % 60);
+            box.innerHTML =
+                '<div style="font-size:26px; font-variant-numeric:tabular-nums; color:#00d4ff;">'
+                + mm + ':' + (ss < 10 ? '0' : '') + ss + '</div>'
+                + '<div style="color:#888; font-size:12px; margin-bottom:6px;">'
+                + Math.round(left) + ' s of ' + Math.round(total) + ' s remaining</div>'
+                + '<div style="height:8px; background:#0a0a1a; border:1px solid #333; '
+                + 'border-radius:4px; overflow:hidden;">'
+                + '<div style="height:100%; width:' + done.toFixed(1) + '%; '
+                + 'background:#00d4ff; transition:width .25s linear;"></div></div>';
+        }
 
         function rfAge(iso) {
             if (!iso) return '';
@@ -4122,8 +4164,12 @@ HTML_TEMPLATE = '''
                     let t = st.target ? (' &mdash; l=' + Math.round(st.target.glon)
                           + ' b=' + Math.round(st.target.glat)
                           + (st.target.alt_deg ? ' at alt ' + st.target.alt_deg.toFixed(0) : '')) : '';
+                    rfEndsAt = st.stage_ends_utc ? Date.parse(st.stage_ends_utc) : null;
+                    rfTotalS = st.stage_total_s || null;
                     prog.innerHTML = '<span style="color:#00d4ff;">' + st.job + ': '
-                                   + (st.stage || 'working') + '</span>' + t;
+                                   + (st.stage || 'working') + '</span>' + t
+                                   + '<div id="rfCountdown" style="margin-top:10px;"></div>';
+                    rfStartTicking();
                 } else if (st.error) {
                     prog.innerHTML = '<span style="color:#ff4757;">' + st.job + ' failed: '
                                    + st.error + '</span>';
@@ -4136,6 +4182,7 @@ HTML_TEMPLATE = '''
 
                 if (st.running && !rfPollTimer) rfPollTimer = setInterval(rfRefresh, 2000);
                 if (!st.running && rfPollTimer) { clearInterval(rfPollTimer); rfPollTimer = null; }
+                if (!st.running) rfStopTicking();
             }).catch(() => {});
         }
 
@@ -5221,7 +5268,11 @@ def _rf_observe(name, glon, glat, duration_s, sdr_type="b210",
     python_exe = receiver_python_path()
     env = receiver_process_env(env, python_exe)
 
-    rf_state["stage"] = "recording %.0f s" % duration_s
+    rf_state["stage"] = "recording"
+    rf_state["stage_total_s"] = float(duration_s)
+    rf_state["stage_ends_utc"] = (
+        datetime.now(timezone.utc) + timedelta(seconds=duration_s)
+    ).isoformat(timespec="seconds")
     proc = subprocess.Popen(
         [python_exe, RECEIVER_SCRIPT, "--sdr", sdr_type, "--headless",
          "--sample-rate", str(bandwidth_mhz * 1e6), "--gain", "40"],
@@ -5244,6 +5295,8 @@ def _rf_observe(name, glon, glat, duration_s, sdr_type="b210",
                 proc.kill()
                 proc.wait(timeout=10)
 
+    rf_state["stage_ends_utc"] = None
+    rf_state["stage_total_s"] = None
     if not os.path.exists(out):
         raise RuntimeError("the receiver wrote no file")
     return out
@@ -5255,7 +5308,8 @@ def _run_rf_calibration(job, params):
     import rf_calibration
 
     rf_state.update(running=True, job=job, stage="starting", error=None,
-                    result=None, target=None,
+                    result=None, target=None, stage_ends_utc=None,
+                    stage_total_s=None,
                     started_utc=datetime.now(timezone.utc).isoformat(timespec="seconds"))
     try:
         stop_booted_receiver()
@@ -5325,6 +5379,8 @@ def _run_rf_calibration(job, params):
         log.error("RF calibration (%s) failed: %s", job, exc)
     finally:
         rf_state["running"] = False
+        rf_state["stage_ends_utc"] = None
+        rf_state["stage_total_s"] = None
 
 
 @app.route('/api/rf/status', methods=['GET'])
