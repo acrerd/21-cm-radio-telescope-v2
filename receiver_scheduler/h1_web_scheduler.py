@@ -6777,7 +6777,6 @@ def api_horizon_profile():
         'clearance_fraction': profile.get("clearance_fraction"),
         'beam_fwhm_deg': profile.get("beam_fwhm_deg"),
         'strips': profile.get("strips", []),
-        'control_azimuths': profile.get("control_azimuths", []),
         'sky_references': [
             {'utc': r.get('utc'), 'level': r.get('level'), 'sigma': r.get('sigma')}
             for r in profile.get("sky_references", [])

@@ -368,7 +368,6 @@ def generate_horizon_plot(profile: dict,
                       for e in entries], dtype=float)
     blocked = np.array([(e["fit"] or {}).get("estimator") == "blocked_above_ceiling"
                         for e in entries])
-    controls = set(profile.get("control_azimuths", []))
 
     fig = plt.figure(figsize=(14, 9))
     ax = fig.add_subplot(2, 2, (1, 2))
@@ -379,12 +378,6 @@ def generate_horizon_plot(profile: dict,
     if blocked.any():
         ax.plot(az[blocked], clear[blocked], "v", color="#ffaa00", markersize=8,
                 label="Still blocked at the ceiling")
-    if controls:
-        mask = np.array([a in controls for a in az])
-        if mask.any():
-            ax.plot(az[mask], clear[mask], "o", color="#00ff88", markersize=7,
-                    markerfacecolor="none", markeredgewidth=1.5,
-                    label="Clear-sky reference azimuths")
     ax.set_xlabel("True azimuth (deg)")
     ax.set_ylabel("Altitude (deg)")
     ax.set_title("Obstructed horizon")
@@ -480,9 +473,9 @@ def main():
                         format="%(asctime)s %(levelname)-5s %(message)s")
 
     def progress(idx, total, info):
-        print("  strip %d/%d  alt %4.1f  az %5.1f  %.6g  (%d pending)" % (
+        print("  strip %d/%d  alt %4.1f  az %5.1f  %.6g  (%d/%d)" % (
             idx + 1, total, info["alt"], info["az"], info["power"],
-            info["pending"]), flush=True)
+            info.get("measured", 0), info.get("of", 0)), flush=True)
 
     profile = horizon_strip_scan(
         az_start=args.az_start, az_end=args.az_end, az_step=args.az_step,
@@ -553,12 +546,11 @@ DEFAULT_HOME_EVERY_STRIPS = 2
 SKY_REFERENCE_ALT = 85.0
 SKY_REFERENCE_AZ = 180.0
 
-# How far above the strip's own clear-sky level a sample may sit and still count
-# as clear, in units of the reference scatter. The metal-clad building showed
-# 2.3% of sky, about ten sigma, so this keeps it flagged as blocked.
-_CLEAR_SIGMA = 5.0
+# Bumped when the record changed shape: version 2 peeled azimuths away as they
+# cleared and thresholded while observing; version 3 measures every azimuth at
+# every altitude, records the power, and decides afterwards.
 
-_STRIP_RECORD_VERSION = 2
+_STRIP_RECORD_VERSION = 3
 
 
 def _home_and_wait(base_url: str, timeout: int = 300, cancel_event=None) -> dict:
@@ -619,6 +611,93 @@ def _sky_reference(base_url, sdr_type, integration_time_s, center_freq,
     }
 
 
+def _partial_path(started):
+    """Where a scan in progress writes itself."""
+    return os.path.join(_SCRIPT_DIR, "horizon_partial_%s.json"
+                        % started.strftime("%Y%m%dT%H%M%SZ"))
+
+
+def derive_clearance(profile, quantile: float = 0.25,
+                     tolerance: float = 0.03) -> dict:
+    """Decide where the horizon is, from powers already measured.
+
+    Kept apart from the observing and re-runnable on a stored profile, because a
+    threshold applied while the dish is moving has to be right first time and
+    there is no way to know whether it is until the data exist. On 2026-08-24 one
+    was wrong and cost a night: it allowed 0.26% above the clear-sky level, being
+    scaled by the *repeat noise* of the sky reference rather than by how much
+    real sky varies between azimuths, and nothing cleared at all.
+
+    Every azimuth is now measured at every altitude, and that changes what is
+    possible here. The scan used to drop azimuths once they cleared, so by the
+    top strip everything remaining was blocked and the strip's own distribution
+    was useless as a reference - which is why it needed control azimuths carried
+    up from below. With nothing dropped, the clear azimuths are present in every
+    strip, so the strip's own lower quartile *is* the clear-sky level, measured
+    at the right airmass, with no reference to carry and nothing to go stale.
+
+    The tolerance is fractional and generous, because what it has to span is the
+    genuine variation of clear sky across azimuth - spillover into different
+    surroundings - and not radiometric noise, which is thirty times smaller.
+
+    Returns the profile, modified in place: each entry gains a `fit`, and each
+    strip the level and threshold used, so a later reader can see what was
+    decided and re-decide it.
+    """
+    entries = profile.get("entries") or []
+    alt_max = float(profile.get("alt_max_deg") or 0.0)
+
+    # Powers by altitude, across every azimuth measured at that altitude.
+    by_alt = {}
+    for entry in entries:
+        for alt, power in zip(entry.get("cut_alt_deg") or [],
+                              entry.get("cut_power") or []):
+            by_alt.setdefault(round(float(alt), 3), []).append(float(power))
+
+    levels = {}
+    for alt, powers in by_alt.items():
+        arr = np.asarray(powers, float)
+        arr = arr[np.isfinite(arr)]
+        if not arr.size:
+            continue
+        clear_level = float(np.quantile(arr, quantile))
+        levels[alt] = {"clear_level": clear_level,
+                       "threshold": clear_level * (1.0 + tolerance),
+                       "n": int(arr.size)}
+
+    for entry in entries:
+        cleared_at = None
+        for alt, power in sorted(zip(entry.get("cut_alt_deg") or [],
+                                     entry.get("cut_power") or [])):
+            level = levels.get(round(float(alt), 3))
+            if level and float(power) <= level["threshold"]:
+                cleared_at = float(alt)
+                break
+        entry["fit"] = {
+            "success": True,
+            "estimator": "strip_quantile" if cleared_at is not None
+                         else "blocked_above_ceiling",
+            "alt_clear": cleared_at if cleared_at is not None else alt_max,
+            "edge_reported_deg": cleared_at if cleared_at is not None else alt_max,
+            "quality": ("clear from %.0f deg" % cleared_at)
+                       if cleared_at is not None
+                       else "still blocked at the ceiling of %.0f deg" % alt_max,
+            "limited_by_ceiling": cleared_at is None,
+        }
+
+    for strip in profile.get("strips") or []:
+        level = levels.get(round(float(strip.get("alt_deg", 0.0)), 3))
+        if level:
+            strip.update({"clear_level": level["clear_level"],
+                          "threshold": level["threshold"],
+                          "n_cleared": sum(
+                              1 for e in entries
+                              if e["fit"]["alt_clear"] == strip.get("alt_deg")
+                              and not e["fit"]["limited_by_ceiling"])})
+    profile["clearance_rule"] = {"quantile": quantile, "tolerance": tolerance}
+    return profile
+
+
 def horizon_strip_scan(az_start: float = 5.0,
                        az_end: float = 350.0,
                        az_step: float = DEFAULT_STRIP_AZ_STEP,
@@ -653,8 +732,7 @@ def horizon_strip_scan(az_start: float = 5.0,
         from sun_scan import _B210PowerMeter
         power_meter = _B210PowerMeter(center_freq, sample_rate, gain)
 
-    pending = list(azimuths)
-    control_azimuths: list = []
+
     clearance: dict = {}
     columns: dict = {az: [] for az in azimuths}
     references = []
@@ -667,10 +745,48 @@ def horizon_strip_scan(az_start: float = 5.0,
                            beam_fwhm_deg, power_meter, cancel_event,
                            position_tolerance, slew_timeout, settle_s=settle_s)
 
+    def build_profile(complete):
+        """The profile as it stands. Called after every strip and at the end."""
+        finished_at = datetime.now(timezone.utc)
+        entries = []
+        for az in azimuths:
+            column = sorted(columns[az])
+            entries.append({
+                "az_deg": az,
+                "cut_alt_deg": [a for a, _ in column],
+                "cut_power": [pw for _, pw in column],
+            })
+        profile = {
+            "record_version": _STRIP_RECORD_VERSION,
+            "pattern": "strips",
+            "started_utc": started.isoformat(),
+            "finished_utc": finished_at.isoformat(),
+            "duration_s": (finished_at - started).total_seconds(),
+            "az_step_deg": az_step,
+            "alt_step_deg": alt_step,
+            "alt_min_deg": alt_start,
+            "alt_max_deg": alt_max,
+            "settle_s": settle_s,
+            "integration_time_s": integration_time_s,
+            "home_every_strips": home_every_strips,
+            "beam_fwhm_deg": beam_fwhm_deg,
+            "sdr_type": sdr_type,
+            "center_freq_hz": center_freq,
+            "sample_rate_hz": sample_rate,
+            "gain_db": gain,
+            "site_lat": cfg.get("observer_lat"),
+            "site_lon": cfg.get("observer_lon"),
+            "n_azimuths": len(entries),
+            "strips": strips,
+            "sky_references": references,
+            "entries": entries,
+            "success": bool(entries),
+            "complete": complete,
+        }
+        return derive_clearance(profile)
+
     try:
         for index, alt in enumerate(altitudes):
-            if not pending:
-                break
             _check_cancelled(cancel_event, "horizon strip scan")
 
             # The sky reference sits high, so taking one costs a large
@@ -684,22 +800,12 @@ def horizon_strip_scan(az_start: float = 5.0,
                     position_tolerance, slew_timeout, settle_s)
                 reference["strip_alt_deg"] = alt
                 references.append(reference)
-            log.info("Strip at alt %.0f deg: %d azimuths pending, sky reference "
-                     "%.6g +- %.2g", alt, len(pending), reference["level"],
+            log.info("Strip at alt %.0f deg: %d azimuths, sky reference "
+                     "%.6g +- %.2g", alt, len(azimuths), reference["level"],
                      reference["sigma"])
 
-            # Re-measure a few azimuths already known to be clear, at this
-            # altitude. They are what the threshold is judged against: the
-            # strip's own distribution cannot serve once most of what remains
-            # is blocked, and by the top strip everything remaining is blocked,
-            # so a percentile of it would clear the tower along with the sky.
-            controls = []
-            for az in control_azimuths:
-                _check_cancelled(cancel_event, "horizon strip scan")
-                controls.append(measure(alt, az)["power"])
-
             # Serpentine in azimuth: no long return slew between strips.
-            order = sorted(pending, reverse=(index % 2 == 1))
+            order = sorted(azimuths, reverse=(index % 2 == 1))
             measured = []
             for az in order:
                 _check_cancelled(cancel_event, "horizon strip scan")
@@ -710,57 +816,53 @@ def horizon_strip_scan(az_start: float = 5.0,
                 if progress_callback:
                     progress_callback(index, len(altitudes), {
                         "alt": alt, "az": az, "power": point["power"],
-                        "pending": len(pending),
+                        "measured": len(measured), "of": len(order),
                         "sky_reference": reference["level"],
                     })
 
-            # The clear-sky level at *this* altitude, from the strip itself.
-            # It cannot come from the zenith reference: even an unobstructed
-            # horizon is warmer low down through airmass and spillover - 0.0114
-            # against 0.0089 at the zenith, measured on 2026-08-21 - so a zenith
-            # threshold would call every low azimuth blocked.
-            powers = np.array([p for _, p in measured], dtype=float)
-            if controls:
-                clear_level = float(np.median(controls))
-                clear_from = 'controls'
-            else:
-                # Bootstrap only: the most open azimuths in the strip stand in
-                # for a clear-sky level until some azimuth has actually been
-                # cleared. It assumes the first strip contains open sky, which
-                # is why the first strip should start below the bulk of the
-                # horizon; if it does not, nothing clears and the next strip
-                # tries again one step higher.
-                clear_level = float(np.percentile(powers, 5))
-                clear_from = 'strip'
-
-            threshold = clear_level + _CLEAR_SIGMA * max(reference["sigma"], 1e-12)
-            newly_clear = [az for az, p in measured if p <= threshold]
-            for az in newly_clear:
-                clearance[az] = alt
-                pending.remove(az)
-            # Keep a few of the first azimuths to clear as controls for every
-            # strip above, spread across the sweep so one local oddity cannot
-            # set the reference by itself.
-            if not control_azimuths and len(newly_clear) >= 3:
-                step = max(1, len(newly_clear) // 3)
-                control_azimuths = newly_clear[::step][:3]
-                log.info("Control azimuths for the clear-sky reference: %s",
-                         ", ".join("%.0f" % a for a in control_azimuths))
+            # Nothing is decided here. Every azimuth is measured at every
+            # altitude and its power recorded; where the horizon lies is worked
+            # out afterwards by derive_clearance(), from the numbers.
+            #
+            # The scan used to threshold as it went, dropping azimuths that had
+            # cleared so later strips had less to do. It cost a night on
+            # 2026-08-24. The threshold was the clear-sky level plus five times
+            # the *repeat noise* of the sky reference - a radiometric scale, not
+            # the scale on which clear sky varies from one azimuth to the next.
+            # At 4.6e-06 that allowed 0.26%, real sky varies by more than that
+            # through spillover alone, and by altitude 20 nothing had cleared at
+            # all while every reading sat within 0.5% of the controls. The
+            # perverse part: measuring the reference better made the test
+            # stricter, so more care produced a worse answer.
+            #
+            # A threshold applied while observing must be right first time or
+            # the observing is wasted, and there is no way to know it is right
+            # until the data exist. Applied afterwards it costs a re-analysis.
             strips.append({
                 "alt_deg": alt,
                 "n_measured": len(measured),
-                "n_controls": len(controls),
-                "clear_level_from": clear_from,
-                "clear_level": clear_level,
-                "threshold": threshold,
-                "n_cleared": len(newly_clear),
-                "n_pending_after": len(pending),
                 "sky_reference": reference["level"],
+                "sky_reference_sigma": reference["sigma"],
+                "powers": {("%.1f" % az): float(pw) for az, pw in measured},
             })
-            log.info("Strip at alt %.0f deg: %d of %d cleared, %d still blocked",
-                     alt, len(newly_clear), len(measured), len(pending))
+            log.info("Strip at alt %.0f deg: %d azimuths measured, median "
+                     "%.6g, sky reference %.6g",
+                     alt, len(measured),
+                     float(np.median([pw for _, pw in measured])) if measured
+                     else float("nan"),
+                     reference["level"])
 
-            if (pending and home_every_strips
+            # Saved after every strip. Tonight's run lost forty-five minutes of
+            # good measurements because nothing was written until the end, and
+            # a power reading exists nowhere else - not in the log, not in the
+            # progress callback's history.
+            try:
+                save_horizon_profile(build_profile(complete=False),
+                                     _partial_path(started))
+            except OSError as exc:
+                log.warning("Could not save the partial horizon scan: %s", exc)
+
+            if (home_every_strips and index + 1 < len(altitudes)
                     and (index + 1) % home_every_strips == 0
                     and sdr_type != "demo"):
                 _home_and_wait(base_url, cancel_event=cancel_event)
@@ -768,61 +870,8 @@ def horizon_strip_scan(az_start: float = 5.0,
         if power_meter is not None:
             power_meter.close()
 
-    finished = datetime.now(timezone.utc)
-    entries = []
-    for az in azimuths:
-        column = sorted(columns[az])
-        cleared_at = clearance.get(az)
-        entries.append({
-            "az_deg": az,
-            "cut_alt_deg": [a for a, _ in column],
-            "cut_power": [p for _, p in column],
-            "fit": {
-                "success": True,
-                "estimator": "strip_threshold" if cleared_at is not None
-                             else "blocked_above_ceiling",
-                "alt_clear": float(cleared_at) if cleared_at is not None
-                             else float(alt_max),
-                "edge_reported_deg": float(cleared_at) if cleared_at is not None
-                                     else float(alt_max),
-                "quality": ("clear from %.0f deg" % cleared_at) if cleared_at is not None
-                           else "still blocked at the ceiling of %.0f deg" % alt_max,
-                "limited_by_ceiling": cleared_at is None,
-            },
-        })
+    return build_profile(complete=True)
 
-    return {
-        "record_version": _STRIP_RECORD_VERSION,
-        "pattern": "strips",
-        "started_utc": started.isoformat(),
-        "finished_utc": finished.isoformat(),
-        "duration_s": (finished - started).total_seconds(),
-        "az_step_deg": az_step,
-        "alt_step_deg": alt_step,
-        "alt_min_deg": alt_start,
-        "alt_max_deg": alt_max,
-        "settle_s": settle_s,
-        "integration_time_s": integration_time_s,
-        "home_every_strips": home_every_strips,
-        "beam_fwhm_deg": beam_fwhm_deg,
-        "sdr_type": sdr_type,
-        "center_freq_hz": center_freq,
-        "sample_rate_hz": sample_rate,
-        "gain_db": gain,
-        "site_lat": cfg.get("observer_lat"),
-        "site_lon": cfg.get("observer_lon"),
-        "n_azimuths": len(entries),
-        "strips": strips,
-        # Which azimuths were re-measured at every altitude to provide the
-        # clear-sky reference. Recorded because the derived clearances depend
-        # on them: if one turns out to have been obstructed after all, every
-        # threshold above the first strip was set too high.
-        "control_azimuths": control_azimuths,
-        "sky_references": references,
-        "entries": entries,
-        "success": bool(entries),
-        "complete": not pending,
-    }
 
 if __name__ == "__main__":
     main()

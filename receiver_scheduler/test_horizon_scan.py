@@ -2,6 +2,7 @@
 """Tests for horizon_scan.py — edge fitting, estimators and derived floors."""
 
 import math
+import json
 import os
 import sys
 
@@ -133,60 +134,74 @@ def test_an_open_azimuth_reaches_the_derived_floor():
 # Strip scan
 # ---------------------------------------------------------------------------
 
-def test_strips_peel_away_as_azimuths_clear():
-    """The horizon is monotonic: sky at 10 degrees means sky at 15.
+def test_every_azimuth_is_measured_at_every_altitude():
+    """Nothing is dropped, so nothing has to be right while the dish is moving.
 
-    So each strip need only visit what is still blocked, and the work shrinks
-    as it climbs. This is what makes a coarse whole-sky scan affordable.
+    The scan used to peel: an azimuth that cleared was not visited again, which
+    made the work shrink but meant the clearing decision had to be correct at
+    the time it was taken. On 2026-08-24 it was not - the threshold was scaled
+    by the repeat noise of the sky reference rather than by how much clear sky
+    varies between azimuths - and a night's observing produced a profile saying
+    everything was blocked, with no way to re-decide because the powers were
+    never kept.
     """
     profile = hs.horizon_strip_scan(sdr_type="demo", settle_s=0.0, alt_max=60.0)
 
     counts = [s["n_measured"] for s in profile["strips"]]
-    assert counts[0] > counts[-1]
-    assert counts == sorted(counts, reverse=True), "a strip must never grow"
-    assert profile["strips"][0]["n_cleared"] > 0
-
-
-def test_a_cleared_azimuth_is_never_revisited():
-    visited = {}
-    real = hs._measure_at
-
-    def counting(base_url, alt, az, *args, **kwargs):
-        visited.setdefault(round(float(az), 1), []).append(round(float(alt), 1))
-        return real(base_url, alt, az, *args, **kwargs)
-
-    with __import__("unittest.mock", fromlist=["patch"]).patch.object(
-            hs, "_measure_at", counting):
-        profile = hs.horizon_strip_scan(sdr_type="demo", settle_s=0.0,
-                                        alt_max=60.0)
-
-    controls = {round(a, 1) for a in profile["control_azimuths"]}
+    assert len(set(counts)) == 1, "every strip must measure the same azimuths"
+    assert counts[0] == profile["n_azimuths"]
     for entry in profile["entries"]:
-        cleared = entry["fit"]["alt_clear"]
-        az = round(entry["az_deg"], 1)
-        if entry["fit"]["estimator"] != "strip_threshold":
-            continue
-        if az in controls:
-            continue          # controls are revisited on purpose, as references
-        higher = [a for a in visited.get(az, [])
-                  if a > cleared + 0.1 and a < hs.SKY_REFERENCE_ALT - 1]
-        assert not higher, f"az {az} was measured again at {higher} after clearing"
+        assert len(entry["cut_power"]) == len(profile["strips"]), \
+            "azimuth %s has a hole in its column" % entry["az_deg"]
 
 
-def test_the_clear_sky_reference_comes_from_known_clear_azimuths():
-    """The strip's own distribution cannot be the reference at the top.
+def test_every_power_is_recorded():
+    """A reading exists nowhere else - not in the log, not in the callback."""
+    profile = hs.horizon_strip_scan(sdr_type="demo", settle_s=0.0, alt_max=60.0)
 
-    By the final strips everything still pending is blocked, so a percentile of
-    the strip would sit at a blocked level and clear the tower along with the
-    sky. Re-measuring a few already-cleared azimuths at each altitude gives a
-    reference that stays valid, and at the right airmass.
+    for entry in profile["entries"]:
+        assert entry["cut_power"], entry["az_deg"]
+        assert len(entry["cut_alt_deg"]) == len(entry["cut_power"])
+        assert all(p == p for p in entry["cut_power"])     # no NaN
+    # And per strip, so a strip can be inspected without transposing.
+    for strip in profile["strips"]:
+        assert strip["powers"], strip["alt_deg"]
+        assert len(strip["powers"]) == strip["n_measured"]
+
+
+def test_the_clear_sky_level_comes_from_the_strip_itself():
+    """With nothing dropped, the strip's own distribution is a valid reference.
+
+    This is what peeling made impossible: once cleared azimuths stopped being
+    revisited, everything left in the top strips was blocked, so a percentile
+    of the strip sat at a blocked level and would have cleared the tower along
+    with the sky. That is why the old scan had to carry control azimuths up
+    from below. Measuring everything removes the need - the clear azimuths are
+    present in every strip, at the right airmass, with nothing to go stale.
     """
     profile = hs.horizon_strip_scan(sdr_type="demo", settle_s=0.0, alt_max=60.0)
 
-    sources = [s["clear_level_from"] for s in profile["strips"]]
-    assert sources[0] == "strip", "the first strip has nothing else to go on"
-    assert all(s == "controls" for s in sources[1:]), sources
-    assert all(s["n_controls"] >= 3 for s in profile["strips"][1:])
+    for strip in profile["strips"]:
+        assert "clear_level" in strip and "threshold" in strip
+        assert strip["threshold"] > strip["clear_level"]
+    assert profile["clearance_rule"]["tolerance"] > 0
+
+
+def test_the_decision_can_be_taken_again_without_reobserving():
+    """The whole point: a wrong threshold costs a re-analysis, not a night."""
+    profile = hs.horizon_strip_scan(sdr_type="demo", settle_s=0.0, alt_max=60.0)
+    powers_before = [list(e["cut_power"]) for e in profile["entries"]]
+
+    strict = hs.derive_clearance(json.loads(json.dumps(profile)), tolerance=0.0001)
+    loose = hs.derive_clearance(json.loads(json.dumps(profile)), tolerance=0.5)
+
+    strict_edges = [e["fit"]["edge_reported_deg"] for e in strict["entries"]]
+    loose_edges = [e["fit"]["edge_reported_deg"] for e in loose["entries"]]
+    assert strict_edges != loose_edges, "the rule must actually bite"
+    assert all(a >= b for a, b in zip(strict_edges, loose_edges)), \
+        "a stricter tolerance can only push the horizon up"
+    # and re-deciding must never touch the measurements
+    assert [list(e["cut_power"]) for e in profile["entries"]] == powers_before
 
 
 def test_an_azimuth_blocked_to_the_ceiling_says_so():
@@ -199,7 +214,10 @@ def test_an_azimuth_blocked_to_the_ceiling_says_so():
     for entry in blocked:
         assert entry["fit"]["limited_by_ceiling"] is True
         assert "ceiling" in entry["fit"]["quality"]
-    assert profile["complete"] is False
+    # `complete` now means the strips were all measured, which they were. It
+    # used to mean "nothing left pending", which conflated finishing the
+    # observing with finding the horizon.
+    assert profile["complete"] is True
 
 
 def test_a_strip_profile_still_drives_the_floor_and_the_landscape(tmp_path):
