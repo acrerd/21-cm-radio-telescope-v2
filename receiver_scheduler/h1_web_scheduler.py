@@ -1888,6 +1888,14 @@ HTML_TEMPLATE = '''
         h1 { color: #00d4ff; margin-bottom: 10px; }
         .subtitle { color: #888; margin-bottom: 20px; }
         .container { max-width: 1400px; margin: 0 auto; }
+        /* The bandpass check is read on the observatory console, never on a
+           phone, and the whole point is seeing fine structure across the band.
+           Let it out of the 1400px column on a wide screen; below that it
+           simply fills the column like everything else. */
+        @media (min-width: 1460px) {
+            .rf-wide { width: calc(100vw - 40px); max-width: calc(100vw - 40px);
+                       margin-left: calc(-50vw + 700px); }
+        }
         .status-bar { background: #16213e; padding: 15px; border-radius: 8px; margin-bottom: 20px; display: flex; justify-content: space-between; align-items: center; gap: 18px; flex-wrap: wrap; }
         .status-indicator { display: flex; align-items: center; gap: 10px; }
         .status-group { display: flex; align-items: center; gap: 26px; flex-wrap: wrap; }
@@ -2156,9 +2164,13 @@ HTML_TEMPLATE = '''
                 </div>
                 <div style="margin-top:12px;">
                     <button class="btn" onclick="rfRun('bandpass')">Measure bandpass</button>
+                    <button class="btn" onclick="rfLoadBandpassPlot()">Refresh plot</button>
                     <span style="color:#666; font-size:12px; margin-left:10px;">
                         ~2 min on the Lockman Hole
                     </span>
+                </div>
+                <div id="rfBandpassPlot" class="rf-wide" style="margin-top:14px; text-align:center; color:#666; font-size:12px;">
+                    Loading the before-and-after&hellip;
                 </div>
             </div>
 
@@ -3720,7 +3732,10 @@ HTML_TEMPLATE = '''
             // itself whenever the camera tab is not the one on screen.
             if (name === 'horizon') pollHorizon();
             if (name === 'observe') refreshObserveTuning();
-            if (name === 'rf') { rfRefresh(); rfRefreshTarget(); rfShowChosen(); }
+            if (name === 'rf') {
+                rfRefresh(); rfRefreshTarget(); rfShowChosen();
+                rfLoadBandpassPlot();
+            }
             if (name === 'simulator') showSimulator();
             if (name === 'observe') { loadObserveParams(false); loadObserveLast(); }
             if (name === 'camera' && !camObjectUrl) refreshCamera();
@@ -4092,6 +4107,7 @@ HTML_TEMPLATE = '''
         // tabs must not sit on it.
         let rfPollTimer = null;
         let rfTickTimer = null;
+        let rfPlotIsCurrent = false;
         let rfEndsAt = null;      // ms since epoch, or null for an untimed stage
         let rfTotalS = null;
 
@@ -4206,6 +4222,13 @@ HTML_TEMPLATE = '''
                 if (st.running && !rfPollTimer) rfPollTimer = setInterval(rfRefresh, 2000);
                 if (!st.running && rfPollTimer) { clearInterval(rfPollTimer); rfPollTimer = null; }
                 if (!st.running) rfStopTicking();
+                // A finished bandpass job means the stored template changed, so
+                // the plot on screen is of the previous one.
+                if (!st.running && st.job === 'bandpass' && st.result && !rfPlotIsCurrent) {
+                    rfPlotIsCurrent = true;
+                    rfLoadBandpassPlot();
+                }
+                if (st.running) rfPlotIsCurrent = false;
             }).catch(() => {});
         }
 
@@ -4242,6 +4265,21 @@ HTML_TEMPLATE = '''
                 });
                 box.innerHTML = h + '</table>';
             }).catch(() => {});
+        }
+
+        function rfLoadBandpassPlot() {
+            const host = document.getElementById('rfBandpassPlot');
+            host.textContent = 'Drawing\u2026';
+            fetch('/api/rf/bandpass/plot?' + Date.now()).then(r => {
+                if (!r.ok) return r.json().then(d => { throw new Error(d.error || ('HTTP ' + r.status)); });
+                return r.blob();
+            }).then(b => {
+                const url = URL.createObjectURL(b);
+                host.innerHTML = '<img src="' + url + '" style="width:100%; height:auto; '
+                               + 'border-radius:8px; border:1px solid #333;">';
+            }).catch(e => {
+                host.innerHTML = '<span style="color:#ffa502;">' + e.message + '</span>';
+            });
         }
 
         function rfUse(l, b) {
@@ -5525,6 +5563,40 @@ def api_rf_target():
     except Exception as exc:                              # noqa: BLE001
         return jsonify({"success": False, "error": str(exc)}), 500
     return jsonify({"success": True, "targets": targets})
+
+
+@app.route('/api/rf/bandpass/plot', methods=['GET'])
+def api_rf_bandpass_plot():
+    """Before and after, so the correction can be checked by eye.
+
+    Drawn from the observation the template was fitted from, which is the
+    honest self-check: it shows what was measured, the curve fitted through it
+    and what dividing by that curve leaves. It is not proof the template
+    generalises - that came from applying one run's fit to a different run - but
+    it is the check that catches a template fitted to the wrong thing.
+    """
+    from flask import send_file
+
+    import bandpass
+    import observation_plot
+
+    template = bandpass.load_bandpass()
+    if not template:
+        return jsonify({'success': False,
+                        'error': 'No bandpass template has been measured yet'}), 404
+    src = os.path.join(_SCRIPT_DIR, 'data', template.get('source_file', ''))
+    if not template.get('source_file') or not os.path.exists(src):
+        return jsonify({'success': False,
+                        'error': 'The observation this template was fitted from '
+                                 'is no longer in the data folder, so the '
+                                 'before-and-after cannot be drawn'}), 404
+    out = os.path.join(_SCRIPT_DIR, 'data', 'bandpass_check.png')
+    try:
+        observation_plot.plot_bandpass_check(src, out, template)
+    except Exception as exc:                              # noqa: BLE001
+        log.error("Bandpass check plot failed: %s", exc)
+        return jsonify({'success': False, 'error': str(exc)}), 500
+    return send_file(out, mimetype='image/png', max_age=0)
 
 
 @app.route('/api/rf/run', methods=['POST'])

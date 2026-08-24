@@ -385,3 +385,108 @@ def _plot_drift(ax, spectra, stamps, transit_minutes):
             ax.axvline(transit_minutes, color=_MARK, lw=1.0, ls="--",
                        label="expected transit")
             ax.legend(fontsize=8, loc="best")
+
+
+def plot_bandpass_check(observation_path, output_path, template=None,
+                        figsize=(16.0, 9.0), dpi=120):
+    """Draw the measured response and what dividing by it leaves.
+
+    The point is to be checked by eye, so both panels share an axis and the
+    lower one is the answer to the only question that matters: is it flat now.
+    Drawn at 1920x1080 because it is read on the observatory console and never
+    on a phone.
+
+    The masked windows are shaded rather than hidden. The H I line was excluded
+    from the fit deliberately - the Lockman Hole is about 1.3 K at the line, not
+    zero - and a reader has to be able to see that the template was interpolated
+    across it rather than fitted through it.
+    """
+    if not MATPLOTLIB_AVAILABLE:
+        raise RuntimeError("matplotlib is not installed, so no plot can be drawn")
+    if template is None:
+        template = bandpass.load_bandpass()
+    if not template:
+        raise RuntimeError("no bandpass template has been measured yet")
+
+    freq_hz, spectra, _stamps, _taus, header = read_observation(observation_path)
+    ok, why = bandpass.applies_to(template, header)
+    if not ok:
+        raise RuntimeError("this template does not apply to that observation: %s" % why)
+
+    raw = np.nanmean(spectra, axis=0)
+    model = bandpass.evaluate(template, freq_hz)
+    inside = np.isfinite(model) & (model > 0)
+    corrected = np.full_like(raw, np.nan)
+    corrected[inside] = raw[inside] / model[inside]
+    level = np.nanmedian(corrected[inside])
+    if level:
+        corrected = corrected / level
+
+    lo = template["config"]["lo_hz"]
+    mhz = freq_hz / 1e6
+    line_mhz = H1_REST_FREQ_HZ / 1e6
+    mask_mhz = template.get("line_mask_hz", 250e3) / 1e6
+    dc_mhz = template.get("dc_mask_hz", 30e3) / 1e6
+
+    fig, (ax_raw, ax_flat) = plt.subplots(
+        2, 1, figsize=figsize, dpi=dpi, sharex=True,
+        gridspec_kw={"height_ratios": [1.15, 1.0], "hspace": 0.08})
+
+    ax_raw.plot(mhz, raw, color=_ACCENT, lw=0.7, label="measured, uncorrected")
+    ax_raw.plot(mhz[inside], model[inside] * (level or 1.0), color=_MARK, lw=2.0,
+                label="fitted response (order %d)" % template["degree"])
+    ax_raw.set_ylabel("Mean power (linear, arb.)")
+    ax_raw.legend(loc="lower right", fontsize=9)
+
+    ax_flat.plot(mhz, 100 * (corrected - 1.0), color=_ACCENT, lw=0.7)
+    ax_flat.axhline(0.0, color=_MARK, lw=1.2)
+    # Quote the flatness over the channels the template was actually fitted to.
+    # Including the LO artefact makes it 1.13% against 0.43%, which says nothing
+    # about the bandpass and everything about a spike that is known, marked, and
+    # interpolated away downstream.
+    scored = inside & (np.abs(freq_hz - H1_REST_FREQ_HZ) > template.get("line_mask_hz", 250e3)) \
+        & (np.abs(freq_hz - lo) > template.get("dc_mask_hz", 30e3))
+    resid = np.nanstd(corrected[scored] - 1.0)
+    for sign in (1, -1):
+        ax_flat.axhline(sign * 100 * resid, color=_PLOT_GRID, lw=1.0, ls="--")
+    ax_flat.set_ylabel("Corrected, deviation from flat (%)")
+    ax_flat.set_xlabel("Frequency (MHz)")
+    span = max(4.0 * 100 * resid, 1.5)
+    ax_flat.set_ylim(-span, span)
+
+    for ax in (ax_raw, ax_flat):
+        # What was excluded from the fit, and why it is not a hole in the data.
+        ax.axvspan(line_mhz - mask_mhz, line_mhz + mask_mhz,
+                   color="#ffa502", alpha=0.10, lw=0)
+        ax.axvspan(lo / 1e6 - dc_mhz, lo / 1e6 + dc_mhz,
+                   color="#ff4757", alpha=0.14, lw=0)
+        for edge in (lo - template["u_scale_hz"], lo + template["u_scale_hz"]):
+            ax.axvline(edge / 1e6, color=_PLOT_GRID, lw=1.0, ls=":")
+        ax.axvline(line_mhz, color=_MARK, lw=1.0, ls="--", alpha=0.7)
+
+    ax_raw.text(0.005, 0.97,
+                "shaded: H I window masked from the fit (amber) and the LO "
+                "artefact (red); dotted: edges of the fitted band",
+                transform=ax_raw.transAxes, fontsize=8.5, color=_PLOT_FG,
+                alpha=0.75, va="top")
+    ax_flat.text(0.005, 0.03,
+                 "dashed: +-%.3f%% rms, over the channels the template was fitted "
+                 "to \u2014 the LO artefact runs off scale and is excluded"
+                 % (100 * resid),
+                 transform=ax_flat.transAxes, fontsize=9, color=_PLOT_FG,
+                 alpha=0.85)
+
+    when = (template.get("created_utc") or "")[:19].replace("T", " ")
+    fig.suptitle("Bandpass correction check \u2014 template of %s UTC%s, "
+                 "order %d, fit residual %.3f%%\n%s at LO %.6f MHz, %.3f Msps"
+                 % (when,
+                    " on " + template["source_name"] if template.get("source_name") else "",
+                    template["degree"], 100 * template["fit_residual_rms"],
+                    os.path.basename(observation_path), lo / 1e6,
+                    template["config"]["sample_rate_hz"] / 1e6),
+                 color=_PLOT_FG, fontsize=12)
+    _style_dark(fig)
+    fig.subplots_adjust(top=0.90, left=0.06, right=0.985, bottom=0.075)
+    fig.savefig(output_path, facecolor=fig.get_facecolor())
+    plt.close(fig)
+    return output_path
