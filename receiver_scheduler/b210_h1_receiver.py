@@ -125,7 +125,8 @@ def create_sdr_source(sdr_type, sample_rate, center_freq, gain):
     throttle = None
 
     if sdr_type == 'demo':
-        return create_demo_source(sample_rate)
+        src, thr, rate = create_demo_source(sample_rate)
+        return src, thr, rate, center_freq      # demo tunes exactly, by fiat
 
     if sdr_type == 'b210':
         from gnuradio import uhd
@@ -170,9 +171,20 @@ def create_sdr_source(sdr_type, sample_rate, center_freq, gain):
 
     print(f"  Center frequency: {actual_freq / 1e6:.6f} MHz")
     print(f"  Sample rate: {actual_rate / 1e6:.3f} MHz")
+    if abs(actual_freq - center_freq) > 1.0:
+        # The frequency axis is built from this, and an axis that is wrong by
+        # 10 kHz is a velocity scale wrong by 2 km/s. The sample rate has always
+        # been taken from the hardware rather than the request; the frequency
+        # had not been, which was a latent error waiting for a device that could
+        # not hit what it was asked for. This B210 tunes exactly - measured
+        # 0.000 kHz across the band used here - so nothing was ever wrong,
+        # which is precisely why it would have stayed invisible.
+        print(f"  NOTE: requested {center_freq / 1e6:.6f} MHz, hardware tuned "
+              f"{(actual_freq - center_freq) / 1e3:+.3f} kHz away; the frequency "
+              f"axis follows the hardware")
     print(f"  Gain: {actual_gain:.1f} dB")
 
-    return source, throttle, actual_rate
+    return source, throttle, actual_rate, actual_freq
 
 
 class GNURadioFlowgraph(gr.top_block):
@@ -194,10 +206,12 @@ class GNURadioFlowgraph(gr.top_block):
         """Create GNU Radio blocks."""
         print(f"Initializing {self.sdr_type.upper()}...")
         try:
-            self.sdr_source, self.throttle, actual_rate = create_sdr_source(
-                self.sdr_type, self.sample_rate, self.center_freq, self.gain
-            )
+            self.sdr_source, self.throttle, actual_rate, actual_freq = \
+                create_sdr_source(self.sdr_type, self.sample_rate,
+                                  self.center_freq, self.gain)
             self.sample_rate = actual_rate
+            # Follow the hardware, as the sample rate already did.
+            self.center_freq = actual_freq
         except Exception as e:
             print(f"  Failed to initialize {self.sdr_type.upper()}: {e}")
             print("  Falling back to demo mode...")
