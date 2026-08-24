@@ -646,33 +646,61 @@ def derive_clearance(profile, quantile: float = 0.25,
     """
     entries = profile.get("entries") or []
     alt_max = float(profile.get("alt_max_deg") or 0.0)
+    strips = profile.get("strips") or []
+    if strips and not all(s.get("powers") for s in strips):
+        raise ValueError("this profile has strips without per-strip powers, so "
+                         "the horizon cannot be re-derived from it; it predates "
+                         "record version 3")
+    if not strips:
+        # A scan interrupted inside its first strip. There is nothing to decide
+        # from, but the measurements it did take are worth keeping, so say the
+        # horizon is undetermined rather than raising - otherwise the emergency
+        # save fails precisely when it is needed, which is the failure it was
+        # written to prevent.
+        for entry in entries:
+            entry["fit"] = {
+                "success": False,
+                "estimator": "not_enough_data",
+                "alt_clear": alt_max,
+                "edge_reported_deg": alt_max,
+                "quality": "no complete strip, so the horizon is undetermined",
+                "limited_by_ceiling": True,
+            }
+        profile["clearance_rule"] = {"quantile": quantile,
+                                     "tolerance": tolerance}
+        return profile
 
-    # Powers by altitude, across every azimuth measured at that altitude.
-    by_alt = {}
-    for entry in entries:
-        for alt, power in zip(entry.get("cut_alt_deg") or [],
-                              entry.get("cut_power") or []):
-            by_alt.setdefault(round(float(alt), 3), []).append(float(power))
-
+    # Group by the strip's *commanded* altitude, not by the true altitude each
+    # measurement landed at. Those differ per azimuth through the pointing
+    # model - 4.8 to 5.2 degrees across one strip - so grouping by true
+    # altitude puts one measurement in each group, and a quantile of a single
+    # value is that value, so every point clears itself. It did exactly that
+    # the first time this ran.
     levels = {}
-    for alt, powers in by_alt.items():
-        arr = np.asarray(powers, float)
+    for strip in strips:
+        arr = np.asarray([float(v) for v in strip["powers"].values()], float)
         arr = arr[np.isfinite(arr)]
         if not arr.size:
             continue
         clear_level = float(np.quantile(arr, quantile))
-        levels[alt] = {"clear_level": clear_level,
-                       "threshold": clear_level * (1.0 + tolerance),
-                       "n": int(arr.size)}
+        levels[float(strip["alt_deg"])] = {
+            "clear_level": clear_level,
+            "threshold": clear_level * (1.0 + tolerance),
+            "n": int(arr.size),
+        }
+
+    cleared = {}
+    for alt in sorted(levels):
+        threshold = levels[alt]["threshold"]
+        powers = next(s["powers"] for s in strips
+                      if float(s["alt_deg"]) == alt)
+        for az_key, power in powers.items():
+            az = round(float(az_key), 1)
+            if az not in cleared and float(power) <= threshold:
+                cleared[az] = alt
 
     for entry in entries:
-        cleared_at = None
-        for alt, power in sorted(zip(entry.get("cut_alt_deg") or [],
-                                     entry.get("cut_power") or [])):
-            level = levels.get(round(float(alt), 3))
-            if level and float(power) <= level["threshold"]:
-                cleared_at = float(alt)
-                break
+        cleared_at = cleared.get(round(float(entry["az_deg"]), 1))
         entry["fit"] = {
             "success": True,
             "estimator": "strip_quantile" if cleared_at is not None
@@ -685,15 +713,15 @@ def derive_clearance(profile, quantile: float = 0.25,
             "limited_by_ceiling": cleared_at is None,
         }
 
-    for strip in profile.get("strips") or []:
-        level = levels.get(round(float(strip.get("alt_deg", 0.0)), 3))
+    for strip in strips:
+        level = levels.get(float(strip["alt_deg"]))
         if level:
-            strip.update({"clear_level": level["clear_level"],
-                          "threshold": level["threshold"],
-                          "n_cleared": sum(
-                              1 for e in entries
-                              if e["fit"]["alt_clear"] == strip.get("alt_deg")
-                              and not e["fit"]["limited_by_ceiling"])})
+            strip.update({
+                "clear_level": level["clear_level"],
+                "threshold": level["threshold"],
+                "n_cleared": sum(1 for a in cleared.values()
+                                 if a == float(strip["alt_deg"])),
+            })
     profile["clearance_rule"] = {"quantile": quantile, "tolerance": tolerance}
     return profile
 
@@ -866,6 +894,20 @@ def horizon_strip_scan(az_start: float = 5.0,
                     and (index + 1) % home_every_strips == 0
                     and sdr_type != "demo"):
                 _home_and_wait(base_url, cancel_event=cancel_event)
+    except BaseException:
+        # Save before unwinding, whatever went wrong - a rejected slew, a
+        # cancellation, a receiver that died. Writing only after each strip was
+        # not enough: on 2026-08-24 a scan was refused a slew on the last
+        # azimuth of the first strip and lost the whole strip, having saved
+        # nothing yet. Measurements already taken are not the failure's to keep.
+        try:
+            path = save_horizon_profile(build_profile(complete=False),
+                                        _partial_path(started))
+            log.warning("Horizon scan interrupted; %d azimuths saved to %s",
+                        sum(1 for az in azimuths if columns[az]), path)
+        except Exception as exc:                      # noqa: BLE001
+            log.error("Could not save the interrupted horizon scan: %s", exc)
+        raise
     finally:
         if power_meter is not None:
             power_meter.close()

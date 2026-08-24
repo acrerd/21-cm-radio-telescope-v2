@@ -246,3 +246,89 @@ def test_the_mount_is_homed_between_strips():
                                   settle_s=0.0, alt_max=30.0,
                                   home_every_strips=2)
     assert homed, "the mount should have been homed at least once"
+
+
+def test_a_scan_that_dies_mid_strip_still_saves_what_it_measured(tmp_path,
+                                                                monkeypatch):
+    """The failure that prompted it: a slew refused on the last azimuth.
+
+    Writing only at strip boundaries lost the whole strip, because none had
+    completed yet. Measurements already taken are not the failure's to keep.
+    """
+    monkeypatch.setattr(hs, "_SCRIPT_DIR", str(tmp_path))
+    real = hs._measure_at
+    seen = {"n": 0}
+
+    def failing(base_url, alt, az, *args, **kwargs):
+        seen["n"] += 1
+        if seen["n"] > 5:
+            raise RuntimeError("SRT controller rejected slew")
+        return real(base_url, alt, az, *args, **kwargs)
+
+    monkeypatch.setattr(hs, "_measure_at", failing)
+    with pytest.raises(RuntimeError):
+        hs.horizon_strip_scan(sdr_type="demo", settle_s=0.0, az_step=45.0,
+                              alt_step=15.0, alt_max=35.0)
+
+    saved = list(tmp_path.glob("horizon_partial_*.json"))
+    assert saved, "the interrupted scan saved nothing"
+    profile = json.loads(saved[0].read_text())
+    assert profile["complete"] is False
+    measured = [e for e in profile["entries"] if e["cut_power"]]
+    assert measured, "the partial holds no measurements"
+    assert len(measured) <= 5
+
+
+def test_the_horizon_is_grouped_by_the_commanded_altitude():
+    """Not by the true altitude each measurement landed at.
+
+    The pointing model spreads one strip across a range of true altitudes -
+    4.8 to 5.2 degrees on the real mount - so grouping by that puts a single
+    measurement in each group, and a quantile of one value is that value, so
+    every point clears itself. The first real run of this reported the whole
+    sky open from 5 degrees, including azimuths reading twice sky. The demo
+    mount has no such spread, so the profile here is built by hand.
+    """
+    strip_alts = [5.0, 10.0, 15.0, 20.0]
+    azimuths = [0.0, 90.0, 180.0, 270.0]
+    # az 0 is blocked to 15 deg; the rest are open all the way down.
+    def power(az, alt):
+        return 0.016 if (az == 0.0 and alt < 15.0) else 0.0088
+
+    strips = [{"alt_deg": a, "n_measured": len(azimuths),
+               "powers": {("%.1f" % az): power(az, a) for az in azimuths}}
+              for a in strip_alts]
+    entries = []
+    for i, az in enumerate(azimuths):
+        # true altitude jittered per azimuth, as the pointing model does
+        entries.append({
+            "az_deg": az,
+            "cut_alt_deg": [a + 0.1 * (i - 1.5) for a in strip_alts],
+            "cut_power": [power(az, a) for a in strip_alts],
+        })
+    profile = {"entries": entries, "strips": strips, "alt_max_deg": 20.0}
+
+    true_alts = {round(a, 3) for e in entries for a in e["cut_alt_deg"]}
+    assert len(true_alts) > len(strips), "the fixture must have a spread"
+
+    hs.derive_clearance(profile)
+    by_az = {e["az_deg"]: e["fit"]["edge_reported_deg"] for e in entries}
+    assert by_az[0.0] == 15.0, "the blocked azimuth cleared too low: %s" % by_az
+    assert all(by_az[az] == 5.0 for az in (90.0, 180.0, 270.0)), by_az
+    for strip in strips:
+        assert strip["n"] if "n" in strip else True
+        assert "threshold" in strip
+
+
+def test_an_interrupted_first_strip_still_yields_a_saveable_profile():
+    """derive_clearance must not raise when there is nothing to decide from.
+
+    The emergency save calls it, so raising here breaks the save at exactly the
+    moment it matters.
+    """
+    profile = {"entries": [{"az_deg": 5.0, "cut_alt_deg": [5.0],
+                            "cut_power": [0.01]}],
+               "strips": [], "alt_max_deg": 60.0}
+    out = hs.derive_clearance(profile)
+    assert out["entries"][0]["fit"]["estimator"] == "not_enough_data"
+    assert out["entries"][0]["fit"]["success"] is False
