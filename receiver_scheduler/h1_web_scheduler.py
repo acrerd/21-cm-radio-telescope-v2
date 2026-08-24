@@ -4409,7 +4409,18 @@ HTML_TEMPLATE = '''
                        + ' onclick="rfUse(' + t.glon + ',' + t.glat + ')">Use</button></td>'
                        + '</tr>';
                 });
-                box.innerHTML = h + '</table>';
+                // Say what the predicted peaks assume. The Simulator tab
+                // defaults to a main-beam efficiency of 0.7 and this to 1.0, so
+                // the same direction reads 9.5 K there and 13.5 K here; without
+                // the assumptions on screen that difference is a mystery.
+                box.innerHTML = h + '</table>'
+                    + '<div style="color:#666; font-size:11px; margin-top:6px;">'
+                    + 'peaks predicted for a ' + (d.beam_fwhm_deg || 0).toFixed(2)
+                    + '&deg; beam at main-beam efficiency '
+                    + (d.main_beam_efficiency || 0).toFixed(2)
+                    + ' &mdash; the Simulator tab defaults to 0.70, which reads '
+                    + (0.70 / (d.main_beam_efficiency || 1)).toFixed(2)
+                    + '&times; these values</div>';
             }).catch(() => {});
         }
 
@@ -5720,6 +5731,7 @@ def api_rf_target():
     import rf_calibration
     cfg = load_config()
     try:
+        import observatory
         targets = rf_calibration.calibration_candidates_now(
             lat=float(cfg.get("observer_lat", SITE_LAT_DEG)),
             lon=float(cfg.get("observer_lon", SITE_LON_DEG)),
@@ -5727,7 +5739,9 @@ def api_rf_target():
             obstruction_sectors=cfg.get("obstruction_sectors"))
     except Exception as exc:                              # noqa: BLE001
         return jsonify({"success": False, "error": str(exc)}), 500
-    return jsonify({"success": True, "targets": targets})
+    return jsonify({"success": True, "targets": targets,
+                    "beam_fwhm_deg": observatory.beam_fwhm_deg(),
+                    "main_beam_efficiency": rf_calibration.MAIN_BEAM_EFFICIENCY})
 
 
 @app.route('/api/rf/bandpass/plot', methods=['GET'])
