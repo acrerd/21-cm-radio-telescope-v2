@@ -2195,6 +2195,39 @@ class TestOneSitePosition:
         b = float(np.nanmax(direct.spectrum(124.0, 36.0)[1]))
         assert a == pytest.approx(b, rel=0.05)
 
+    def test_the_web_simulator_ships_the_same_constants_as_the_python_one(self):
+        """data/meta.json is generated, and generated files go stale silently.
+
+        The web simulator gets its beam, efficiency and site from a JSON bundle
+        built by make_web_data.py. Nothing at runtime checks that bundle against
+        instrument.py, so when MAIN_BEAM_EFFICIENCY went back to 1.0 the bundle
+        kept shipping 0.7 and the Simulator tab reported every antenna
+        temperature 30% low - 74.3 K where the scheduler said 106.1 K at
+        l=184 b=0. The same file was still carrying the pre-survey site
+        position, the last copy of the one that was 3.6 km wrong.
+
+        Regenerate with: python make_web_data.py --meta
+        """
+        import json
+        import os
+
+        import instrument
+        import observatory
+
+        meta_path = os.path.join(observatory.SIMULATOR_DIR, "web", "data",
+                                 "meta.json")
+        with open(meta_path) as fh:
+            meta = json.load(fh)
+
+        assert meta["defaults"]["eta"] == instrument.MAIN_BEAM_EFFICIENCY
+        assert meta["defaults"]["fwhm"] == pytest.approx(
+            instrument.beam_fwhm_deg(instrument.DISH_M), abs=5e-4)
+        assert meta["defaults"]["dish_m"] == instrument.DISH_M
+        assert meta["site"]["name"] == instrument.SITE_NAME
+        assert meta["site"]["lat"] == pytest.approx(instrument.SITE_LAT_DEG)
+        assert meta["site"]["lon"] == pytest.approx(instrument.SITE_LON_DEG)
+        assert meta["site"]["height"] == pytest.approx(instrument.SITE_HEIGHT_M)
+
     def test_observatory_module_holds_no_numbers_of_its_own(self):
         """It is plumbing. If numbers appear in it, there are two places again."""
         import os

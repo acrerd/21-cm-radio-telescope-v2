@@ -2650,9 +2650,12 @@ HTML_TEMPLATE = '''
                 </div>
                 <div style="color:#888; font-size:12px; margin-bottom:6px;">
                     Suggestions for right now, brightest first and spread at least 25&deg;
-                    apart. <strong>Check the direction against the skyline</strong> &mdash; the
-                    software knows the eastern treeline and nothing else, so it cannot
-                    see the dome towers.
+                    apart. Every one is screened against the
+                    <strong>measured horizon</strong> &mdash; the profile in force on the
+                    Horizon tab &mdash; and <em>clears</em> says by how much, after
+                    allowing a full beamwidth above the measured floor. A direction
+                    clearing by only a degree or two is worth a look outside before you
+                    trust it, since the trees grow between scans.
                 </div>
                 <div id="rfTargets" style="margin-bottom:12px; overflow-x:auto;">
                     Finding candidates&hellip;
@@ -2668,8 +2671,9 @@ HTML_TEMPLATE = '''
                     </div>
                 </div>
                 <div id="rfChosen" class="mono" style="padding:8px 12px; margin:8px 0 10px; background:#0f0f23; border:1px solid #333; border-radius:6px; color:#888; font-size:12px;">
-                    Pick a suggestion, or type a direction. Left blank, one is chosen
-                    automatically &mdash; which is what walked into a tower.
+                    Pick a suggestion, or type a direction &mdash; a typed one is
+                    checked against the measured horizon too. Left blank, one is
+                    chosen automatically from the screened list.
                 </div>
                 <div id="rfGainStatus" class="mono" style="padding:10px 12px; background:#0f0f23; border:1px solid #333; border-radius:6px; color:#888; font-size:12px;">
                     Loading&hellip;
@@ -4798,11 +4802,16 @@ HTML_TEMPLATE = '''
                         + 'and that the slew arrived.</div>' : '';
                     // The floor at 50 K only catches errors of one sign. A run
                     // that recorded while the mount was still slewing fitted
-                    // 467 K and said nothing about it.
-                    const hot = d.gain.t_sys_implausible
-                        ? '<div style="color:#ff4757;">T_sys is far hotter than any working '
-                        + 'system &mdash; suspect a recording that began before the mount '
-                        + 'arrived, a stale bandpass template, or ground in the beam.</div>' : '';
+                    // 467 K and said nothing about it. Worth flagging, but this
+                    // telescope runs at 340-372 K and works, so the flag says
+                    // how high it is rather than that it cannot be real.
+                    const level = d.gain.t_sys_level;
+                    const hot = level
+                        ? '<div style="color:' + (level === 'very high' ? '#ff4757' : '#ffa502')
+                        + ';">T_sys is ' + level + '. Loss ahead of the LNA raises it '
+                        + 'genuinely; a sudden change is more likely a recording that began '
+                        + 'before the mount arrived, a stale bandpass template, or ground '
+                        + 'in the beam.</div>' : '';
                     const weak = (d.gain.correlation < 0.8)
                         ? '<div style="color:#ffa502;">Weak correlation: little lever arm in '
                         + 'this pointing, so T_sys is poorly determined.</div>' : '';
@@ -4888,6 +4897,7 @@ HTML_TEMPLATE = '''
                       + '<th style="padding:4px 8px;">az</th>'
                       + '<th style="padding:4px 8px;">looking</th>'
                       + '<th style="padding:4px 8px;">expected peak</th>'
+                      + '<th style="padding:4px 8px;">clears</th>'
                       + '<th></th></tr>';
                 list.forEach(function (t) {
                     const b = (t.glat >= 0 ? '+' : '') + Math.round(t.glat);
@@ -4898,6 +4908,7 @@ HTML_TEMPLATE = '''
                        + '<td class="mono" style="padding:5px 8px;">' + t.az_deg.toFixed(1) + '&deg;</td>'
                        + '<td style="padding:5px 8px; color:#ffa502;">' + t.compass + '</td>'
                        + '<td class="mono" style="padding:5px 8px;">' + t.expected_peak_k.toFixed(0) + ' K</td>'
+                       + '<td class="mono" style="padding:5px 8px;">' + rfClears(t.horizon) + '</td>'
                        + '<td style="padding:3px 8px;"><button class="btn" style="padding:3px 10px; font-size:11px;"'
                        + ' onclick="rfUse(' + t.glon + ',' + t.glat + ')">Use</button></td>'
                        + '</tr>';
@@ -4947,6 +4958,20 @@ HTML_TEMPLATE = '''
             });
         }
 
+        // How far a candidate sits above the measured floor, once a full
+        // beamwidth is allowed for. Amber under 3 deg: that is inside the
+        // sampling of the horizon scan itself (5 deg strips), so the true edge
+        // could be anywhere in the step below the floor it reported.
+        function rfClears(h) {
+            if (!h || !h.known) return '<span style="color:#666;">not measured</span>';
+            const by = h.alt_deg - h.required_deg;
+            if (by < 0) {
+                return '<span style="color:#ff4757;">behind by ' + (-by).toFixed(1) + '&deg;</span>';
+            }
+            const colour = by < 3 ? '#ffa502' : '#2ed573';
+            return '<span style="color:' + colour + ';">+' + by.toFixed(1) + '&deg;</span>';
+        }
+
         function rfUse(l, b) {
             document.getElementById('rfGlon').value = l;
             document.getElementById('rfGlat').value = b;
@@ -4959,10 +4984,29 @@ HTML_TEMPLATE = '''
             const box = document.getElementById('rfChosen');
             if (l === '' || b === '') {
                 box.innerHTML = 'Nothing chosen &mdash; a direction will be picked '
-                              + 'automatically, which is what walked into a tower.';
+                              + 'automatically from the screened list.';
             } else {
                 box.innerHTML = 'Will calibrate on <span style="color:#00d4ff;">l=' + l
-                              + ' b=' + b + '</span>.';
+                              + ' b=' + b + '</span>. Checking the horizon&hellip;';
+                // Ask the server where that lands and whether it is behind the
+                // measured horizon. A typed direction used to be taken wholly
+                // on trust, on the grounds that only the operator could see the
+                // skyline; it is measured now, so it can be said here.
+                fetch('/api/rf/target?glon=' + encodeURIComponent(l)
+                      + '&glat=' + encodeURIComponent(b))
+                    .then(r => r.json()).then(d => {
+                        const c = d.chosen;
+                        if (!c) return;
+                        let txt = 'Will calibrate on <span style="color:#00d4ff;">l='
+                                + l + ' b=' + b + '</span> &mdash; alt '
+                                + c.alt_deg.toFixed(1) + '&deg; az ' + c.az_deg.toFixed(1)
+                                + '&deg;, clears ' + rfClears(c.horizon) + '.';
+                        if (c.warning) {
+                            txt += '<div style="margin-top:6px; color:#ffa502;">&#9888; '
+                                 + c.warning + '</div>';
+                        }
+                        box.innerHTML = txt;
+                    }).catch(() => {});
             }
         }
 
@@ -6165,10 +6209,13 @@ def _run_rf_calibration(job, params):
         elif job == "gain":
             cfg = load_config()
             if params.get("glon") is not None:
-                # Chosen by the operator, and taken as given even if it is low
-                # or faint: they can see the skyline, and this cannot. The
-                # obstruction sectors know only about the eastern treeline, so
-                # an automatic choice once landed straight on a dome tower.
+                # Chosen by the operator and still taken as given: a direction
+                # can be worth calibrating on for reasons this does not know.
+                # It is no longer taken *blind*, though - the skyline used to
+                # be the thing only the operator could see, and since it was
+                # measured the check below says what is behind the beam. It
+                # warns rather than refuses, because the profile is a
+                # measurement of something that grows.
                 target = {"glon": params["glon"], "glat": params["glat"],
                           "chosen_by": "operator"}
                 alt, az = rf_calibration._sky_position(
@@ -6182,6 +6229,13 @@ def _run_rf_calibration(job, params):
                     raise RuntimeError(
                         "l=%.0f b=%.0f is at altitude %.1f - below the horizon"
                         % (target["glon"], target["glat"], target["alt_deg"]))
+                behind = local_horizon_warning(
+                    target["alt_deg"], target["az_deg"],
+                    respect=rf_state.get("respect_horizon", True))
+                if behind:
+                    log.warning("RF calibration target chosen by hand is behind "
+                                "the measured horizon: %s", behind)
+                    rf_state["horizon_warning"] = behind
             else:
                 rf_state["stage"] = "choosing a pointing"
                 target = rf_calibration.calibration_target_now(
@@ -6257,7 +6311,7 @@ def api_rf_status():
             "gain_counts_per_k": cal.get("gain_counts_per_k"),
             "t_sys_k": cal.get("t_sys_k"),
             "t_sys_bound_active": cal.get("t_sys_bound_active"),
-            "t_sys_implausible": cal.get("t_sys_implausible"),
+            "t_sys_level": cal.get("t_sys_level"),
             "implied_loss_db": cal.get("implied_loss_db"),
             "implied_ppm": cal.get("implied_ppm"),
             "velocity_shift_km_s": cal.get("velocity_shift_km_s"),
@@ -6272,11 +6326,20 @@ def api_rf_status():
 def api_rf_target():
     """Directions worth calibrating against right now.
 
-    A list rather than a choice. The software does not know the skyline - the
-    obstruction sectors describe the eastern treeline and nothing else, and the
-    dome towers are not in them - so on 2026-08-24 the best-scoring direction
-    came out at azimuth 15, straight into a tower. The operator knows what is
-    there; this only knows what is bright and how high it is.
+    Still a list rather than a choice, but the reason has changed. It used to
+    be that the software did not know the skyline: the obstruction sectors
+    described the eastern treeline and nothing else, so on 2026-08-24 the
+    best-scoring direction came out at azimuth 15, straight into a dome tower.
+    Since the horizon was measured the candidates are screened against it in
+    every direction, and each one is returned with how far it clears the
+    measured floor so the operator can see that rather than take it on trust.
+
+    It stays a list because clearing the horizon is not the same as being a
+    good calibration field, and because a profile is a measurement of a
+    changing thing - the trees grow between scans.
+
+    `?glon=&glat=` additionally evaluates one direction of the operator's own,
+    which is what the typed boxes use.
     """
     import rf_calibration
     cfg = load_config()
@@ -6287,9 +6350,38 @@ def api_rf_target():
             lon=float(cfg.get("observer_lon", SITE_LON_DEG)),
             elevation_m=float(cfg.get("observer_elevation", 50)),
             obstruction_sectors=horizon_obstruction_sectors(cfg))
+        import horizon_store
+        profile = horizon_store.load_active()
+        for t in targets:
+            t["horizon"] = horizon_store.horizon_clearance(
+                profile, t["alt_deg"], t["az_deg"]) if profile else {"known": False}
     except Exception as exc:                              # noqa: BLE001
         return jsonify({"success": False, "error": str(exc)}), 500
-    return jsonify({"success": True, "targets": targets,
+
+    chosen = None
+    if request.args.get('glon') not in (None, '') and \
+            request.args.get('glat') not in (None, ''):
+        try:
+            glon = float(request.args['glon'])
+            glat = float(request.args['glat'])
+            alt, az = rf_calibration._sky_position(
+                glon, glat, datetime.now(timezone.utc),
+                float(cfg.get("observer_lat", SITE_LAT_DEG)),
+                float(cfg.get("observer_lon", SITE_LON_DEG)),
+                float(cfg.get("observer_elevation", 50)))
+            chosen = {"glon": glon, "glat": glat,
+                      "alt_deg": round(float(alt[0]), 2),
+                      "az_deg": round(float(az[0]), 2)}
+            chosen["horizon"] = horizon_store.horizon_clearance(
+                profile, chosen["alt_deg"], chosen["az_deg"]) \
+                if profile else {"known": False}
+            chosen["warning"] = horizon_store.horizon_warning(
+                profile, chosen["alt_deg"], chosen["az_deg"]) if profile else None
+        except (TypeError, ValueError, IndexError):
+            chosen = None
+
+    return jsonify({"success": True, "targets": targets, "chosen": chosen,
+                    "horizon_measured": bool(profile),
                     "beam_fwhm_deg": observatory.beam_fwhm_deg(),
                     "main_beam_efficiency": rf_calibration.MAIN_BEAM_EFFICIENCY})
 

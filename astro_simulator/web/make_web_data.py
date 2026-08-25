@@ -145,12 +145,30 @@ def main():
          ("lon", (m.lon % 360.0).astype(np.float64)),
          ("lat", m.lat.astype(np.float64))])
 
+    write_meta()
+
+
+def write_meta():
+    """Write data/meta.json from instrument.py, and nothing else.
+
+    Separate from the bundle build, and runnable on its own with --meta, for
+    a reason learned the hard way: every value here is a constant that lives
+    in instrument.py, and they change far more often than the sky does. While
+    refreshing them meant rebuilding a 34 MB cube, nobody did.
+
+    On 2026-08-25 this file was still shipping eta = 0.7, months after the
+    Python side had gone back to 1.0, so the web simulator quietly reported
+    every antenna temperature 30% low - 74.3 K where the scheduler said 106.1 K
+    for l=184 b=0. It was also still carrying the pre-survey site position,
+    55.87/-4.29, the last copy of the one that was 3.6 km wrong.
+    """
+    os.makedirs(DATA, exist_ok=True)
     meta = {
         "f_hi": 1420405751.768,
         "c_light": 299792458.0,
         "site": {"name": instrument.SITE_NAME, "lat": instrument.SITE_LAT_DEG,
                  "lon": instrument.SITE_LON_DEG,
-                 "height": 50.0},
+                 "height": instrument.SITE_HEIGHT_M},
         # fwhm is the measured beam, shipped so the browser never has to fall
         # back on a formula for it; see instrument.py for why it is not
         # 1.22 lambda/D.
@@ -168,4 +186,7 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    if "--meta" in sys.argv:
+        write_meta()
+    else:
+        main()

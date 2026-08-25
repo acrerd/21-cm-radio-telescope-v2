@@ -62,15 +62,22 @@ MIN_T_SYS_K = 50.0
 # saying what it is.
 MIN_TARGET_ALT_DEG = 25.0
 
-# Above this, a fit is reporting something no working system does. The SAWbird
-# is 59 K and spillover, sky and ground on a dish this size bring the total to
-# order 100-150 K; 250 K would be a badly illuminated dish and 400 K is not a
-# system temperature at all. Measured 2026-08-24: a run that recorded while the
-# mount was still slewing across fifty degrees of sky fitted 467 K, and nothing
-# in the result said so - the floor at 50 K only catches errors of the opposite
-# sign. This is a flag rather than a bound: a genuinely hot system is worth
-# seeing, not clamping.
-IMPLAUSIBLE_T_SYS_K = 300.0
+# Two bands for reporting a hot system, not a claim that it is broken. The
+# SAWbird is 59 K and spillover, sky and ground on a dish this size bring the
+# total to order 100-150 K, so anything much above that is worth noticing -
+# but this telescope measures 340-372 K and works, most likely because of loss
+# ahead of the LNA (see _implied_loss_db), so "hotter than any working system"
+# was simply wrong about its own observatory.
+#
+# What the flag is for is catching the errors the 50 K floor cannot, since that
+# only catches errors of one sign. Measured 2026-08-24: a run that recorded
+# while the mount was still slewing across fifty degrees of sky fitted 467 K,
+# and nothing in the result said so.
+#
+# Flags rather than bounds: a genuinely hot system is worth seeing, not
+# clamping.
+HIGH_T_SYS_K = 200.0
+VERY_HIGH_T_SYS_K = 300.0
 
 # For turning a system temperature into something that can be acted on. A lossy
 # element of factor L at physical temperature T_amb ahead of the LNA gives,
@@ -549,9 +556,12 @@ def fit_gain(observed_counts, model_k, min_t_sys_k=MIN_T_SYS_K):
         "gain_counts_per_k": float(slope),
         "t_sys_k": float(t_sys),
         "t_sys_bound_active": bool(constrained),
-        "t_sys_implausible": bool(np.isfinite(t_sys)
-                                  and t_sys > IMPLAUSIBLE_T_SYS_K),
-        "implausible_above_k": float(IMPLAUSIBLE_T_SYS_K),
+        # "high" / "very high" / None. Kept as a level rather than a boolean so
+        # the callers phrase it the same way and there is one place to change
+        # where the bands sit.
+        "t_sys_level": t_sys_level(t_sys),
+        "high_above_k": float(HIGH_T_SYS_K),
+        "very_high_above_k": float(VERY_HIGH_T_SYS_K),
         "min_t_sys_k": float(min_t_sys_k),
         "assumed_main_beam_efficiency": float(MAIN_BEAM_EFFICIENCY),
         "implied_loss_db": _implied_loss_db(t_sys),
@@ -778,6 +788,21 @@ def save_calibration(cal, path=CALIBRATION_FILE):
     return path
 
 
+def t_sys_level(t_sys):
+    """"very high", "high", or None. One place decides where the bands sit."""
+    try:
+        value = float(t_sys)
+    except (TypeError, ValueError):
+        return None
+    if not np.isfinite(value):
+        return None
+    if value > VERY_HIGH_T_SYS_K:
+        return "very high"
+    if value > HIGH_T_SYS_K:
+        return "high"
+    return None
+
+
 def load_calibration(path=CALIBRATION_FILE):
     if not os.path.exists(path):
         return None
@@ -788,6 +813,12 @@ def load_calibration(path=CALIBRATION_FILE):
         return None
     if cal.get("version") != CALIBRATION_VERSION:
         return None
+    # Derived on read for calibrations saved before the field existed - and
+    # recomputed for those that have it, so moving a band takes effect on
+    # everything already on disk rather than only on the next calibration.
+    cal["t_sys_level"] = t_sys_level(cal.get("t_sys_k"))
+    cal.pop("t_sys_implausible", None)
+    cal.pop("implausible_above_k", None)
     return cal
 
 

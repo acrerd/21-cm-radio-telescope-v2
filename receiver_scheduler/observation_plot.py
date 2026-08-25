@@ -666,8 +666,9 @@ def plot_gain_check(calibration, output_path, figsize=(16.0, 9.0), dpi=120):
     if calibration.get("t_sys_bound_active"):
         flags.append("T_sys pinned at its %.0f K floor - fitted against the "
                      "bound, not measured" % calibration.get("min_t_sys_k", 50))
-    if calibration.get("t_sys_implausible"):
-        flags.append("T_sys is far hotter than any working system")
+    if calibration.get("t_sys_level"):
+        flags.append("T_sys is %s (%.0f K)" % (calibration["t_sys_level"],
+                                               calibration.get("t_sys_k", 0)))
     if (calibration.get("correlation") or 0) < 0.8:
         flags.append("weak correlation (r=%.2f): little lever arm, so T_sys is "
                      "poorly determined" % (calibration.get("correlation") or 0))

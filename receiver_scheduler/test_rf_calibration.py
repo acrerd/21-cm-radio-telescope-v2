@@ -120,25 +120,38 @@ def test_missing_calibration_is_not_an_error():
     assert R.load_calibration("/nonexistent/cal.json") is None
 
 
-def test_an_implausibly_hot_system_is_flagged():
+def test_a_hot_system_is_reported_by_degree_not_dismissed():
     """The 50 K floor only catches errors of one sign.
 
     A run that recorded while the mount was still slewing fitted 467 K on
-    2026-08-24 and nothing in the result said so.
+    2026-08-24 and nothing in the result said so. But the flag says how high
+    the temperature is, not that it cannot be real: this telescope calibrates
+    at 340-372 K and works, the excess being loss ahead of the LNA, so a flag
+    reading "hotter than any working system" was wrong about its own
+    observatory.
     """
     _, ta = _fake_plane()
-    counts = 3.0e-5 * (467.0 + ta)
-    out = R.fit_gain(counts, ta)
-    assert out["t_sys_k"] == pytest.approx(467.0, rel=1e-6)
-    assert out["t_sys_implausible"]
-    assert not out["t_sys_bound_active"]
+    for t_sys, expected in ((467.0, "very high"),   # the slewing run
+                            (355.0, "very high"),   # this telescope, working
+                            (240.0, "high"),
+                            (130.0, None),          # a well-fed dish
+                            (60.0, None)):
+        out = R.fit_gain(3.0e-5 * (t_sys + ta), ta)
+        assert out["t_sys_k"] == pytest.approx(t_sys, rel=1e-6)
+        assert out["t_sys_level"] == expected, t_sys
+        assert not out["t_sys_bound_active"]
 
 
-def test_a_normal_system_temperature_is_not_flagged():
+def test_the_bands_meet_without_a_gap():
+    """One threshold's floor is the other's ceiling, so nothing falls between."""
+    assert R.HIGH_T_SYS_K < R.VERY_HIGH_T_SYS_K
     _, ta = _fake_plane()
-    out = R.fit_gain(3.0e-5 * (130.0 + ta), ta)
-    assert not out["t_sys_implausible"]
-    assert not out["t_sys_bound_active"]
+    for t_sys, expected in ((R.HIGH_T_SYS_K - 0.1, None),
+                            (R.HIGH_T_SYS_K + 0.1, "high"),
+                            (R.VERY_HIGH_T_SYS_K - 0.1, "high"),
+                            (R.VERY_HIGH_T_SYS_K + 0.1, "very high")):
+        out = R.fit_gain(3.0e-5 * (t_sys + ta), ta)
+        assert out["t_sys_level"] == expected, t_sys
 
 
 def test_the_lo_artefact_is_kept_out_of_the_fit():
