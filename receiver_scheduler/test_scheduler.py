@@ -230,6 +230,22 @@ class TestCalibrationDayRetry:
 # parse_tle
 # =============================================================================
 
+
+def _page_markup():
+    """The operator page as served.
+
+    It stopped being sched.HTML_TEMPLATE on 2026-08-25 and became a static file
+    under web/, so these read it back through Flask rather than reaching into
+    the module for a string that is no longer there.
+    """
+    import page_sources as ps
+
+    sched.app.config["TESTING"] = True
+    with sched.app.test_client() as client:
+        html, _ = ps.fetch_page(client)
+    return html
+
+
 class TestParseTle:
     """Tests for TLE text parsing."""
 
@@ -1932,7 +1948,7 @@ class TestHorizonDefaultsMatchTheStripScan:
 
     def test_the_page_offers_the_strip_parameters(self):
         """A field the scan needs but the form omits is a silent default."""
-        page = sched.HTML_TEMPLATE
+        page = _page_markup()
         for field in ("hzAzStep", "hzAltStep", "hzAltStart", "hzAltMax",
                       "hzSettle", "hzIntegration", "hzHomeEvery"):
             assert 'id="%s"' % field in page, field
@@ -1950,7 +1966,7 @@ def test_form_fields_are_not_restorable_by_the_browser():
     latitude). On a page that commands a telescope, a stale value silently
     occupying the wrong field is not a cosmetic problem.
     """
-    page = sched.HTML_TEMPLATE
+    page = _page_markup()
     for tag in ("<input ", "<select ", "<textarea "):
         for match in re.finditer(re.escape(tag) + r'[^>]*>', page):
             assert 'autocomplete="off"' in match.group(0), match.group(0)[:90]

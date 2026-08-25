@@ -40,9 +40,17 @@ def fetch_page(client, path="/"):
     return html, "\n".join(chunks)
 
 
-def element_ids(html):
-    """Every id the markup defines."""
-    return set(re.findall(r'\bid="([^"]+)"', html))
+def element_ids(html, js=""):
+    """Every id the page can produce - written in the markup or built by script.
+
+    Both, because some elements are only ever created at runtime: the RF tab
+    writes its countdown into a container as an HTML string, so `rfCountdown`
+    exists in app.js and nowhere else. While the scripts lived inside the page
+    that distinction did not arise, and the first run of these tests after the
+    split reported it as a lost element - which is the right instinct wrongly
+    applied, so the check learned about generated ids rather than being relaxed.
+    """
+    return set(re.findall(r'\bid=[\'"]([^\'"]+)[\'"]', html + js))
 
 
 def referenced_ids(js, html=""):

@@ -1,0 +1,91 @@
+
+        * { box-sizing: border-box; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; }
+        body { margin: 0; padding: 20px; background: #1a1a2e; color: #eee; min-height: 100vh; }
+        h1 { color: #00d4ff; margin-bottom: 10px; }
+        .subtitle { color: #888; margin-bottom: 20px; }
+        .container { max-width: 1400px; margin: 0 auto; }
+        /* The bandpass check is read on the observatory console, never on a
+           phone, and the whole point is seeing fine structure across the band.
+           Let it out of the 1400px column on a wide screen; below that it
+           simply fills the column like everything else. */
+        @media (min-width: 1460px) {
+            .rf-wide { width: calc(100vw - 40px); max-width: calc(100vw - 40px);
+                       margin-left: calc(-50vw + 700px); }
+        }
+        .rf-wide img { display: block; }
+        .status-bar { background: #16213e; padding: 15px; border-radius: 8px; margin-bottom: 20px; display: flex; justify-content: space-between; align-items: center; gap: 18px; flex-wrap: wrap; }
+        .status-indicator { display: flex; align-items: center; gap: 10px; }
+        .status-group { display: flex; align-items: center; gap: 26px; flex-wrap: wrap; }
+        .status-dot { width: 12px; height: 12px; border-radius: 50%; background: #666; }
+        .status-dot.running { background: #00ff88; animation: pulse 1s infinite; }
+        @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
+        .btn { padding: 10px 20px; border: none; border-radius: 5px; cursor: pointer; font-size: 14px; font-weight: 500; transition: all 0.2s; }
+        .btn-primary { background: #00d4ff; color: #000; }
+        .btn-primary:hover { background: #00a8cc; }
+        .btn-danger { background: #ff4757; color: #fff; }
+        .btn-danger:hover { background: #ff3344; }
+        .btn-secondary { background: #444; color: #fff; }
+        .btn-secondary:hover { background: #555; }
+        .btn-success { background: #00ff88; color: #000; }
+        .btn-success:hover { background: #00cc6a; }
+        .form-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 15px; }
+        .form-group { display: flex; flex-direction: column; }
+        .form-group label { font-size: 11px; color: #888; margin-bottom: 5px; text-transform: uppercase; }
+        /* Unit symbols are case-sensitive: MHz, dB and s are not MHZ, DB and S,
+           and the uppercasing above would rewrite them into something that
+           means milli/decibel-nothing. Wrap the unit, not the whole label, so
+           the caps styling on the wording itself stays. */
+        .form-group label .unit { text-transform: none; }
+        .form-group input, .form-group select { padding: 8px; border: 1px solid #333; border-radius: 5px; background: #0f0f23; color: #fff; font-size: 14px; }
+        .form-group input:focus, .form-group select:focus { outline: none; border-color: #00d4ff; }
+        .form-group.wide { grid-column: span 2; }
+        .coord-row { display: flex; gap: 5px; align-items: center; }
+        .coord-row input { width: 60px; text-align: center; }
+        .coord-row span { color: #888; font-size: 12px; }
+        .schedule-list { margin-top: 20px; }
+        .schedule-item { background: #0f0f23; border: 1px solid #333; border-radius: 8px; padding: 15px; margin-bottom: 10px; display: grid; grid-template-columns: auto 1fr auto; gap: 15px; align-items: center; }
+        .schedule-item.disabled { opacity: 0.5; }
+        /* scheduler_thread() will never pick this slot up - see
+           neverRunsReason(). Deliberately not styled the same as .disabled: an
+           operator has to be able to tell "I switched this off" from "its time
+           has gone", and both can be true of the same row at once. */
+        .schedule-item.wont-run { opacity: 0.55; border-style: dashed; border-color: #2b2b3d; }
+        .schedule-item.wont-run .field-value { color: #8b8b9c; }
+        .tag-wont-run { display: inline-block; margin-left: 8px; padding: 1px 6px; border-radius: 4px;
+                        background: #2b2b3d; color: #9a9aad; font-size: 10px; letter-spacing: 0.5px;
+                        text-transform: uppercase; vertical-align: middle; }
+        .schedule-item .checkbox { width: 20px; height: 20px; cursor: pointer; }
+        .schedule-info { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 8px; }
+        .schedule-info .field { font-size: 12px; }
+        .schedule-info .field-label { color: #666; font-size: 10px; }
+        .schedule-info .field-value { color: #fff; }
+        .schedule-actions { display: flex; gap: 8px; }
+        .btn-icon { padding: 6px 10px; font-size: 12px; }
+        .toolbar { display: flex; gap: 10px; margin-bottom: 20px; flex-wrap: wrap; }
+        .file-input { display: none; }
+        .current-obs { background: #1a3a1a; border: 1px solid #00ff88; }
+        .empty-state { text-align: center; padding: 40px; color: #666; }
+        .modal { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.8); justify-content: center; align-items: center; z-index: 1000; }
+        .modal.active { display: flex; }
+        .modal-content { background: #16213e; border-radius: 8px; padding: 25px; width: 95%; max-width: 800px; max-height: 90vh; overflow-y: auto; }
+        .modal-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; }
+        .modal-title { font-size: 20px; color: #00d4ff; }
+        .close-btn { background: none; border: none; color: #888; font-size: 24px; cursor: pointer; }
+        .close-btn:hover { color: #fff; }
+        .modal-footer { display: flex; justify-content: flex-end; gap: 10px; margin-top: 20px; }
+        .section-title { color: #00d4ff; font-size: 14px; margin: 20px 0 10px 0; padding-bottom: 5px; border-bottom: 1px solid #333; }
+        .coord-section { background: #0f0f23; padding: 15px; border-radius: 8px; margin-bottom: 15px; }
+        .tabs { display: flex; gap: 0; margin-bottom: 20px; border-bottom: 2px solid #333; }
+        .tab { padding: 10px 25px; cursor: pointer; color: #888; border-bottom: 2px solid transparent; margin-bottom: -2px; transition: all 0.2s; font-size: 14px; }
+        .tab:hover { color: #ccc; }
+        .tab.active { color: #00d4ff; border-bottom-color: #00d4ff; }
+        .tab-content { display: none; }
+        .tab-content.active { display: block; }
+        .config-form { background: #0f0f23; border: 1px solid #333; border-radius: 8px; padding: 20px; max-width: 700px; }
+        .config-form .form-group { margin-bottom: 15px; }
+        .config-form input { width: 100%; }
+        .config-saved { color: #00ff88; font-size: 13px; display: none; margin-left: 10px; }
+        .log-container { background: #0a0a1a; border: 1px solid #333; border-radius: 8px; padding: 15px; font-family: monospace; font-size: 12px; line-height: 1.6; max-height: 70vh; overflow-y: auto; white-space: pre-wrap; word-break: break-all; color: #ccc; }
+        .log-controls { display: flex; gap: 10px; align-items: center; margin-bottom: 10px; }
+        .log-controls select, .log-controls input { padding: 6px 10px; border: 1px solid #333; border-radius: 5px; background: #0f0f23; color: #fff; font-size: 13px; }
+    

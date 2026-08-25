@@ -1,0 +1,949 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SRT Scheduler</title>
+    <link rel="stylesheet" href="/app.css">
+</head>
+<body>
+    <div class="container">
+        <div style="display:flex; justify-content:space-between; align-items:center;">
+            <div>
+                <h1 id="bannerName">SRT Scheduler</h1>
+                <p class="subtitle" id="bannerSubtitle"></p>
+            </div>
+            <div style="text-align:right;">
+                <div id="currentDate" style="color:#888; font-size:14px;"></div>
+                <div style="display:flex; gap:20px; justify-content:flex-end; align-items:baseline;">
+                    <div>
+                        <div style="color:#888; font-size:10px; text-transform:uppercase;">Local Time</div>
+                        <div id="currentTime" style="color:#00d4ff; font-size:32px; font-family:monospace; font-weight:bold;"></div>
+                    </div>
+                    <div>
+                        <div style="color:#888; font-size:10px; text-transform:uppercase;">UTC</div>
+                        <div id="utcTime" style="color:#ff9500; font-size:24px; font-family:monospace; font-weight:bold;"></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        <div class="status-bar">
+            <div class="status-group">
+                <div class="status-indicator">
+                    <div class="status-dot" id="statusDot"></div>
+                    <span id="statusText">Idle</span>
+                </div>
+                <div class="status-indicator">
+                    <div class="status-dot" id="telescopeDot"></div>
+                    <span id="telescopeText">Telescope: --</span>
+                </div>
+                <div class="status-indicator">
+                    <div class="status-dot" id="receiverDot"></div>
+                    <span id="receiverText">Receiver: --</span>
+                    <button class="btn btn-secondary" id="receiverBootBtn" onclick="bootReceiver()" title="Start the B210 receiver with radioconda Python.">Start receiver</button>
+                </div>
+            </div>
+            <div>
+                <button class="btn btn-danger" id="stopBtn" style="display:none" onclick="stopObs()">Stop</button>
+            </div>
+        </div>
+        <div class="tabs">
+            <div class="tab active" onclick="switchTab('scheduler')">Scheduler</div>
+            <div class="tab" onclick="switchTab('sunscan')">Sun Scan</div>
+            <div class="tab" onclick="switchTab('horizon')">Horizon</div>
+            <div class="tab" onclick="switchTab('rf')">RF calibration</div>
+            <div class="tab" onclick="switchTab('camera')">Camera</div>
+            <div class="tab" onclick="switchTab('simulator')">Simulator</div>
+            <div class="tab" onclick="switchTab('observe')">Observe</div>
+            <div class="tab" onclick="switchTab('config')">Configuration</div>
+            <div class="tab" onclick="switchTab('log')">Log</div>
+        </div>
+
+        <div class="tab-content active" id="tab-scheduler">
+            <div class="toolbar">
+                <button class="btn btn-primary" onclick="openAddModal()">+ Add Observation</button>
+                <button class="btn btn-secondary" onclick="saveSchedule()">Save Schedule</button>
+                <button class="btn btn-secondary" onclick="document.getElementById('loadFile').click()">Load</button>
+                <input autocomplete="off" type="file" id="loadFile" class="file-input" accept=".json" onchange="loadFile(event)">
+                <button class="btn btn-secondary" onclick="exportSchedule()">Export JSON</button>
+                <button class="btn btn-secondary" onclick="clearPast()">Clear Past</button>
+            </div>
+            <!-- Shown only when an auto-save was rejected. Auto-save is the path
+                 that silently loses edits, so a failure has to be visible. -->
+            <div id="autoSaveWarning" style="display:none;background:#752;color:#fff;
+                 padding:8px 12px;border-radius:4px;margin-bottom:10px;"></div>
+            <div class="schedule-list" id="scheduleList">
+                <div class="empty-state">No observations scheduled.</div>
+            </div>
+        </div>
+
+        <div class="tab-content" id="tab-sunscan">
+            <div style="display:flex; gap:20px; flex-wrap:wrap;">
+                <div class="config-form" style="flex:0 0 340px;">
+                    <div class="section-title">Scan Parameters</div>
+                    <div class="form-group">
+                        <label>Grid Size (n x n)</label>
+                        <input autocomplete="off" type="number" id="ssGridN" min="3" max="15" step="2" value="5">
+                    </div>
+                    <div class="form-group">
+                        <label>Grid Spacing (degrees)</label>
+                        <input autocomplete="off" type="number" id="ssSpacing" min="0.1" max="10" step="0.1" value="1.5">
+                    </div>
+                    <div class="form-group">
+                        <label>Beam FWHM Hint (degrees)</label>
+                        <input autocomplete="off" type="number" id="ssBeamFwhm" min="0.5" max="20" step="0.1" value="3.0">
+                    </div>
+                    <div class="section-title">Receiver Settings</div>
+                    <div class="form-group">
+                        <label>Integration Time per Point <span class="unit">(s)</span></label>
+                        <input autocomplete="off" type="number" id="ssIntegration" min="0.1" max="60" step="0.1" value="3.0">
+                    </div>
+                    <div class="form-group">
+                        <label>Center Frequency <span class="unit">(MHz)</span></label>
+                        <input autocomplete="off" type="number" id="ssCenterFreq" step="any" value="1420.405752">
+                    </div>
+                    <div class="form-group">
+                        <label>Bandwidth <span class="unit">(MHz)</span></label>
+                        <input autocomplete="off" type="number" id="ssBandwidth" step="0.1" value="2.4">
+                    </div>
+                    <div class="form-group">
+                        <label>Gain <span class="unit">(dB)</span></label>
+                        <input autocomplete="off" type="number" id="ssGain" min="0" max="80" value="40">
+                    </div>
+                    <div class="form-group">
+                        <label>SDR Type</label>
+                        <select autocomplete="off" id="ssSdrType">
+                            <option value="b210">Ettus B210</option>
+                            <option value="rtlsdr">RTL-SDR</option>
+                            <option value="demo">Demo (Simulated)</option>
+                        </select>
+                    </div>
+                    <div class="form-group wide" style="margin-top:10px;">
+                        <label style="display:flex; align-items:center; gap:8px; cursor:pointer;">
+                            <input autocomplete="off" type="checkbox" id="ssRespectHorizon" checked>
+                            Respect local horizon
+                        </label>
+                        <span style="color:#888; font-size:12px;">
+                            Says so if the Sun is behind the measured treeline. Advisory &mdash;
+                            it never stops the scan.
+                        </span>
+                    </div>
+                    <div style="margin-top:15px; display:flex; gap:10px;">
+                        <button class="btn btn-primary" id="ssStartBtn" onclick="startSunScan()">Start Sun Scan</button>
+                        <button class="btn btn-danger" id="ssStopBtn" style="display:none" onclick="stopSunScan()">Stop</button>
+                    </div>
+                </div>
+                <div style="flex:1; min-width:300px;">
+                    <div class="section-title">Status</div>
+                    <div id="ssStatus" style="background:#0f0f23; border:1px solid #333; border-radius:8px; padding:15px; margin-bottom:15px;">
+                        <span style="color:#888;">Idle — configure parameters and click Start.</span>
+                    </div>
+                    <div id="ssProgress" style="display:none; margin-bottom:15px;">
+                        <div style="background:#333; border-radius:4px; height:20px; overflow:hidden;">
+                            <div id="ssProgressBar" style="background:#00d4ff; height:100%; width:0%; transition:width 0.3s;"></div>
+                        </div>
+                        <div id="ssProgressText" style="color:#888; font-size:12px; margin-top:5px;">0 / 0</div>
+                    </div>
+                    <div class="section-title">Results</div>
+                    <div id="ssResults" style="background:#0f0f23; border:1px solid #333; border-radius:8px; padding:15px; margin-bottom:15px;">
+                        <span style="color:#888;">No results yet.</span>
+                    </div>
+                    <div id="ssImageContainer" style="text-align:center;">
+                    </div>
+                </div>
+            </div>
+
+            <div style="margin-top:30px; border-top:2px solid #333; padding-top:20px;">
+                <div style="display:flex; gap:20px; flex-wrap:wrap;">
+                    <div class="config-form" style="flex:0 0 340px;">
+                        <div class="section-title">Calibration Day</div>
+                        <p style="color:#888; font-size:12px; margin-bottom:15px;">
+                            Run repeated sun scans to determine the effective observer lat/lon
+                            (correcting for mount tilt) and constant alt/az offsets.
+                        </p>
+                        <div class="form-group">
+                            <label>Scan Interval (minutes)</label>
+                            <input autocomplete="off" type="number" id="cdInterval" min="5" max="120" value="30">
+                        </div>
+                        <div style="margin-top:15px; display:flex; gap:10px; flex-wrap:wrap;">
+                            <button class="btn btn-success" id="cdStartBtn" onclick="startCalDay()">Start Calibration Day</button>
+                            <button class="btn btn-danger" id="cdStopBtn" style="display:none" onclick="stopCalDay()">Stop</button>
+                            <button class="btn btn-primary" id="cdFitBtn" onclick="fitModel()">Fit Model</button>
+                            <button class="btn btn-secondary" onclick="clearCalData()">Clear Data</button>
+                        </div>
+                    </div>
+                    <div style="flex:1; min-width:300px;">
+                        <div class="section-title">Calibration Status</div>
+                        <div id="cdStatus" style="background:#0f0f23; border:1px solid #333; border-radius:8px; padding:15px; margin-bottom:15px;">
+                            <span style="color:#888;">Idle.</span>
+                        </div>
+                        <div class="section-title">Pointing Model</div>
+                        <div id="cdModel" style="background:#0f0f23; border:1px solid #333; border-radius:8px; padding:15px; margin-bottom:15px;">
+                            <span style="color:#888;">No model fitted yet.</span>
+                        </div>
+                        <div style="display:flex; gap:10px; margin-bottom:15px;">
+                            <button class="btn btn-success" id="cdApplyBtn" style="display:none" onclick="applyModel()">Apply to Telescope</button>
+                        </div>
+                        <div id="cdPlotContainer" style="text-align:center;">
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="tab-content" id="tab-rf">
+            <div class="card">
+                <div class="section-title">Bandpass template</div>
+                <div style="color:#888; font-size:13px; margin-bottom:12px; max-width:70ch;">
+                    Everything from the feed to the spectrum shapes the band &mdash; the
+                    SAWbird&rsquo;s filter, the amplifier after it, the AD9361&rsquo;s decimation
+                    chain and the FPGA&rsquo;s down-converter. Measuring the whole product at
+                    once means pointing at sky with no hydrogen in it &mdash; the Lockman
+                    Hole, l=150 b=+53, peaks at only 1.3 K. The line itself is masked and
+                    the fit bridges it, so &ldquo;empty&rdquo; is only assumed where it is true.
+                    <br><br>
+                    <strong>It measures wherever the dish is already pointing, and does not
+                    slew.</strong> A template has to match the elevation and the hour of
+                    whatever it will reduce &mdash; two taken 4.7 hours apart differed by 2%
+                    &mdash; so moving to a fixed field would guarantee the wrong one. A
+                    direction carrying more than 1.5&nbsp;K of hydrogen outside the masked
+                    window is refused: that is emission a template would fit as instrument
+                    response and then subtract from every observation.
+                </div>
+                <div id="rfBandpassStatus" class="mono" style="padding:10px 12px; background:#0f0f23; border:1px solid #333; border-radius:6px; color:#888; font-size:12px;">
+                    Loading&hellip;
+                </div>
+                <div style="margin-top:12px;">
+                    <button class="btn" onclick="rfRun('bandpass')">Measure bandpass</button>
+                    <button class="btn" onclick="rfLoadBandpassPlot()">Refresh plot</button>
+                    <span style="color:#666; font-size:12px; margin-left:10px;">
+                        ~2 min, where the dish is pointing now
+                    </span>
+                </div>
+                <div id="rfBandpassPlot" class="rf-wide" style="margin-top:14px; text-align:center; color:#666; font-size:12px;">
+                    Loading the before-and-after&hellip;
+                </div>
+            </div>
+
+            <div class="card">
+                <div class="section-title">Gain and system temperature</div>
+                <div style="color:#888; font-size:13px; margin-bottom:12px; max-width:70ch;">
+                    With the band flat, counts still are not kelvin. The simulator gives
+                    the antenna temperature any direction should show through this beam,
+                    so a straight line through counts against kelvin gives the gain as its
+                    slope and the system temperature from its intercept. The pointing is
+                    chosen <strong>now</strong>, not named: the gain drifts, and a fixed source is
+                    below the horizon for most of the day. It searches the sky rather than
+                    the plane alone &mdash; hydrogen does not stop at b&nbsp;=&nbsp;0, and when
+                    the plane has set there is usually still a 70 K peak a few degrees off
+                    it, higher in the sky than the plane ever was.
+                </div>
+                <div style="color:#888; font-size:12px; margin-bottom:6px;">
+                    Suggestions for right now, brightest first and spread at least 25&deg;
+                    apart. Every one is screened against the
+                    <strong>measured horizon</strong> &mdash; the profile in force on the
+                    Horizon tab &mdash; and <em>clears</em> says by how much, after
+                    allowing a full beamwidth above the measured floor. A direction
+                    clearing by only a degree or two is worth a look outside before you
+                    trust it, since the trees grow between scans.
+                </div>
+                <div id="rfTargets" style="margin-bottom:12px; overflow-x:auto;">
+                    Finding candidates&hellip;
+                </div>
+                <div class="form-grid" style="max-width:520px;">
+                    <div class="form-group">
+                        <label>Galactic longitude <span class="unit">l (&deg;)</span></label>
+                        <input autocomplete="off" type="number" id="rfGlon" step="0.1" value="">
+                    </div>
+                    <div class="form-group">
+                        <label>Galactic latitude <span class="unit">b (&deg;)</span></label>
+                        <input autocomplete="off" type="number" id="rfGlat" step="0.1" value="">
+                    </div>
+                </div>
+                <div id="rfChosen" class="mono" style="padding:8px 12px; margin:8px 0 10px; background:#0f0f23; border:1px solid #333; border-radius:6px; color:#888; font-size:12px;">
+                    Pick a suggestion, or type a direction &mdash; a typed one is
+                    checked against the measured horizon too. Left blank, one is
+                    chosen automatically from the screened list.
+                </div>
+                <div id="rfGainStatus" class="mono" style="padding:10px 12px; background:#0f0f23; border:1px solid #333; border-radius:6px; color:#888; font-size:12px;">
+                    Loading&hellip;
+                </div>
+                <div style="margin-top:12px;">
+                    <label style="display:flex; align-items:center; gap:8px; cursor:pointer; margin-bottom:10px;">
+                        <input autocomplete="off" type="checkbox" id="rfRespectHorizon" checked>
+                        Respect local horizon
+                    </label>
+                    <div style="color:#888; font-size:12px; margin-bottom:10px;">
+                        Suggestions avoid the measured treeline rather than the
+                        hand-entered sectors, and a run into it is flagged. Foliage adds a
+                        continuum the sky model has no term for, so it lands in T_sys and
+                        the fitted gain instead of being spotted as a bad field.
+                    </div>
+                    <button class="btn" onclick="rfRun('gain')">Calibrate gain now</button>
+                    <button class="btn" onclick="rfLoadGainPlot()">Refresh plot</button>
+                    <button class="btn btn-danger" onclick="rfCancel()">Stop</button>
+                    <span style="color:#666; font-size:12px; margin-left:10px;">
+                        needs a bandpass template first
+                    </span>
+                </div>
+                <div id="rfGainPlot" class="rf-wide" style="margin-top:14px; text-align:center; color:#666; font-size:12px;">
+                    No gain calibration yet.
+                </div>
+            </div>
+
+            <div class="card">
+                <div class="section-title">Progress</div>
+                <div id="rfProgress" style="color:#888; font-size:13px;">Idle.</div>
+            </div>
+        </div>
+
+        <div class="tab-content" id="tab-horizon">
+            <div style="display:flex; gap:20px; flex-wrap:wrap;">
+                <div class="config-form" style="flex:0 0 320px;">
+                    <div class="section-title">Horizon Scan</div>
+                    <p style="color:#888; font-size:12px; margin-bottom:12px;">
+                        Maps the skyline by radiometry: trees, roofs and the dome
+                        tower are all near 290&nbsp;K at 1420&nbsp;MHz, so lowering
+                        the beam through them is a large step in total power. Run it
+                        at night, dry and calm &mdash; the Sun would swamp the sky
+                        level and wet or moving foliage changes what is measured.
+                    </p>
+                    <div class="form-group">
+                        <label>Azimuth Step (degrees)</label>
+                        <input autocomplete="off" type="number" id="hzAzStep" min="1" max="30" step="1" value="5">
+                    </div>
+                    <div class="form-group">
+                        <label>Altitude Step (degrees)</label>
+                        <input autocomplete="off" type="number" id="hzAltStep" min="1" max="15" step="1" value="5">
+                    </div>
+                    <div class="form-group">
+                        <label>Altitude Start (degrees)</label>
+                        <input autocomplete="off" type="number" id="hzAltStart" min="1" max="30" step="1" value="5">
+                    </div>
+                    <div class="form-group">
+                        <label>Altitude Ceiling (degrees)</label>
+                        <input autocomplete="off" type="number" id="hzAltMax" min="10" max="85" step="5" value="60">
+                    </div>
+                    <div class="form-group">
+                        <label>Settle after Slew <span class="unit">(s)</span></label>
+                        <input autocomplete="off" type="number" id="hzSettle" min="0" max="10" step="0.5" value="2">
+                    </div>
+                    <div class="form-group">
+                        <label>Integration per Point <span class="unit">(s)</span></label>
+                        <input autocomplete="off" type="number" id="hzIntegration" min="0.1" max="10" step="0.1" value="2">
+                    </div>
+                    <div class="form-group">
+                        <label>Re-home every N strips</label>
+                        <input autocomplete="off" type="number" id="hzHomeEvery" min="0" max="10" step="1" value="2">
+                    </div>
+                    <div class="form-group">
+                        <label>SDR</label>
+                        <select autocomplete="off" id="hzSdrType">
+                            <option value="b210">B210</option>
+                            <option value="rtlsdr">RTL-SDR</option>
+                            <option value="demo">Demo (no hardware)</option>
+                        </select>
+                    </div>
+                    <div style="display:flex; gap:10px; margin-top:15px;">
+                        <button class="btn btn-primary" id="hzStartBtn" onclick="startHorizon()">Start Scan</button>
+                        <button class="btn btn-danger" id="hzStopBtn" style="display:none" onclick="stopHorizon()">Stop</button>
+                    </div>
+                    <div id="hzStatus" style="margin-top:12px; font-size:13px;">
+                        <span style="color:#888;">Idle.</span>
+                    </div>
+                </div>
+                <div style="flex:1; min-width:420px;">
+                    <div class="section-title">Horizon in force</div>
+                    <div style="background:#0f0f23; border:1px solid #333; border-radius:8px; padding:15px; margin-bottom:15px;">
+                        <p style="color:#888; font-size:12px; margin:0 0 10px 0;">
+                            Scans are kept by date, not overwritten &mdash; the trees leaf
+                            out through the summer and are cut back between seasons, so an
+                            older scan is not a worse one. A finished scan is archived but
+                            does not take effect until it is chosen here.
+                        </p>
+                        <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
+                            <select autocomplete="off" id="hzProfileSelect" style="flex:1; min-width:260px;"
+                                    onchange="loadHorizonProfile(this.value)"></select>
+                            <button class="btn btn-primary" id="hzUseBtn" onclick="useHorizonProfile()">Use this one</button>
+                        </div>
+                        <div id="hzArchiveNote" style="margin-top:10px; font-size:12px; color:#888;"></div>
+                    </div>
+                    <div id="hzSkyPlotBox" style="display:none; margin-bottom:15px; text-align:center;">
+                        <img id="hzSkyPlot" alt="Available sky" style="max-width:100%; border-radius:8px;">
+                    </div>
+                    <div class="section-title">Measured Profile</div>
+                    <div id="hzProfile" style="background:#0f0f23; border:1px solid #333; border-radius:8px; padding:15px; margin-bottom:15px;">
+                        <span style="color:#888;">No horizon profile measured yet.</span>
+                    </div>
+                    <div id="hzLandscape" style="display:none; margin-bottom:15px;">
+                        <a class="btn btn-secondary" href="/api/horizon/landscape?use=clearance"
+                           style="text-decoration:none;">Stellarium landscape (clean sky)</a>
+                        <a class="btn btn-secondary" href="/api/horizon/landscape?use=edge"
+                           style="text-decoration:none; margin-left:8px;">Stellarium landscape (skyline)</a>
+                        <p style="color:#888; font-size:12px; margin-top:8px;">
+                            A polygonal landscape built from the measurement itself.
+                            Install in Stellarium with Sky and Viewing Options &rarr;
+                            Landscape &rarr; Add/remove landscapes.
+                        </p>
+                    </div>
+                    <div id="hzPlotContainer" style="text-align:center;"></div>
+                </div>
+            </div>
+        </div>
+
+        <div class="tab-content" id="tab-camera">
+            <div class="config-form">
+                <div class="section-title">Safety Camera</div>
+                <div style="display:flex; gap:10px; align-items:center; margin-bottom:12px;">
+                    <button class="btn btn-primary" id="camRefreshBtn" onclick="refreshCamera()">Refresh</button>
+                    <label style="color:#888; font-size:12px;">
+                        Auto-refresh
+                        <select autocomplete="off" id="camAutoRefresh" onchange="onCameraAutoChange()" style="margin-left:6px;">
+                            <option value="0" selected>Off</option>
+                            <option value="1">Every 1 s</option>
+                            <option value="5">Every 5 s</option>
+                        </select>
+                    </label>
+                    <span id="camStatus" style="color:#888; font-size:12px;">Not captured yet.</span>
+                </div>
+                <div id="camView" style="text-align:center; background:#0f0f23; border:1px solid #333; border-radius:8px; padding:15px; min-height:120px;">
+                    <span style="color:#888;">Press Refresh to capture a frame.</span>
+                </div>
+                <p style="color:#888; font-size:12px; margin-top:10px;">
+                    One frame is captured per refresh, straight from the camera &mdash;
+                    nothing is recorded or kept on disk, and the device is released
+                    again immediately. Auto-refresh stops on its own whenever this tab
+                    is not the one on screen, so a forgotten browser tab cannot leave
+                    the camera running overnight.
+                </p>
+            </div>
+        </div>
+
+        <div class="tab-content" id="tab-simulator">
+            <div id="simHost" style="height:calc(100vh - 190px); min-height:520px;
+                                     border:1px solid #333; border-radius:8px;
+                                     overflow:hidden; background:#fbfcfd;">
+                <div style="color:#888; padding:15px;">Loading the simulator&hellip;</div>
+            </div>
+            <p style="color:#888; font-size:12px; margin-top:10px;">
+                The sky simulator, served from this scheduler so the two are one
+                origin. Its <strong>Realise</strong> button hands the simulated
+                observation to the telescope &mdash; tracking the galactic
+                coordinate on the H&nbsp;I map, or parking for a drift scan on the
+                continuum map. It loads about 33&nbsp;MB of sky data the first time
+                this tab is opened, and stays loaded afterwards.
+            </p>
+        </div>
+
+        <div class="tab-content" id="tab-observe">
+            <div class="config-form">
+                <div class="section-title">Observation</div>
+                <div id="obvSource" style="color:#888; font-size:12px; margin-bottom:12px;">
+                    Set the fields here, or press <strong>Realise</strong> in the
+                    Simulator tab to copy them from what you are simulating.
+                </div>
+                <div class="form-grid">
+                    <div class="form-group">
+                        <label>Type</label>
+                        <select autocomplete="off" id="obvMode" onchange="onObserveModeChange()">
+                            <option value="spectrum">Spectrum (tracked)</option>
+                            <option value="drift">Drift scan</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>Galactic l <span class="unit">(deg)</span></label>
+                        <input autocomplete="off" type="number" id="obvL" step="any" value="132">
+                    </div>
+                    <div class="form-group">
+                        <label>Galactic b <span class="unit">(deg)</span></label>
+                        <input autocomplete="off" type="number" id="obvB" step="any" value="-1">
+                    </div>
+                    <div class="form-group">
+                        <label id="obvDurationLabel">Total integration time <span class="unit">(min)</span></label>
+                        <input autocomplete="off" type="number" id="obvDuration" min="1" max="1435" step="1" value="30">
+                    </div>
+                </div>
+                <div class="section-title">Receiver Settings</div>
+                <div class="form-grid">
+                    <div class="form-group">
+                        <label>Center Frequency <span class="unit">(MHz)</span></label>
+                        <input autocomplete="off" type="number" id="obvCenterFreq" oninput="scheduleObserveTuning()" step="any" value="1420.405752">
+                    </div>
+                    <div class="form-group">
+                        <label>Bandwidth <span class="unit">(MHz)</span></label>
+                        <input autocomplete="off" type="number" id="obvBandwidth" oninput="scheduleObserveTuning()" step="0.1" value="2.4">
+                    </div>
+                    <div class="form-group">
+                        <label>Gain <span class="unit">(dB)</span></label>
+                        <input autocomplete="off" type="number" id="obvGain" min="0" max="80" value="40">
+                    </div>
+                    <div class="form-group">
+                        <label>Channels</label>
+                        <input autocomplete="off" type="number" id="obvChannels" oninput="scheduleObserveTuning()" min="2" max="65536" step="1" value="4096">
+                    </div>
+                    <div class="form-group">
+                        <label>Integration per record <span class="unit">(s)</span></label>
+                        <input autocomplete="off" type="number" id="obvIntegration" min="0.1" step="0.1" value="3.0">
+                    </div>
+                    <div class="form-group">
+                        <label>SDR</label>
+                        <select autocomplete="off" id="obvSdr">
+                            <option value="b210">B210</option>
+                            <option value="rtlsdr">RTL-SDR</option>
+                        </select>
+                    </div>
+                </div>
+                <div id="obvTuning" style="margin-top:10px; padding:10px 12px; background:#0f0f23; border:1px solid #333; border-radius:6px; color:#888; font-size:12px;">
+                    Working out the tuning&hellip;
+                </div>
+
+                <div class="section-title">Output</div>
+                <div class="form-grid">
+                    <div class="form-group">
+                        <label>Name</label>
+                        <input autocomplete="off" type="text" id="obvName" value="Simulator target">
+                    </div>
+                    <div class="form-group">
+                        <label>Filename <span class="unit">(blank = automatic)</span></label>
+                        <input autocomplete="off" type="text" id="obvFilename" placeholder="h1_....h5">
+                    </div>
+                    <div class="form-group">
+                        <label>When Finished</label>
+                        <select autocomplete="off" id="obvEndAction">
+                            <option value="stow">Stow</option>
+                            <option value="home">Home</option>
+                            <option value="none">Leave pointing</option>
+                        </select>
+                    </div>
+                </div>
+                <div style="margin-top:12px;">
+                    <label style="display:flex; align-items:center; gap:8px; cursor:pointer;">
+                        <input autocomplete="off" type="checkbox" id="obvRespectHorizon" checked>
+                        Respect local horizon
+                    </label>
+                    <span style="color:#888; font-size:12px;">
+                        Notes in the log if the dish ends up pointing into the measured
+                        treeline. Advisory &mdash; the observation still runs.
+                    </span>
+                </div>
+                <div style="display:flex; gap:10px; align-items:center; margin-top:15px; flex-wrap:wrap;">
+                    <button class="btn btn-success" id="obvStartBtn" onclick="observeStartNow()">Start Now</button>
+                    <button class="btn btn-secondary" onclick="observeToScheduler()">Send to Scheduler&hellip;</button>
+                    <button class="btn btn-secondary" onclick="loadObserveParams(true)">Copy from Simulator</button>
+                    <span id="obvStatus" style="color:#888; font-size:12px;"></span>
+                </div>
+                <div class="section-title" style="margin-top:20px;">Last Observation</div>
+                <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
+                    <button class="btn btn-secondary" onclick="showObservePlot()">Plot Result</button>
+                    <span id="obvLastInfo" style="color:#888; font-size:12px;">
+                        Nothing has finished yet this session.
+                    </span>
+                </div>
+                <div id="obvPlot" class="rf-wide" style="margin-top:12px;"></div>
+                <p style="color:#888; font-size:12px; margin-top:12px;">
+                    <strong>Start Now</strong> points the telescope and starts the
+                    receiver immediately; it is not owned by a schedule slot, so a
+                    scheduled observation will preempt it.
+                    <strong>Send to Scheduler</strong> opens the Add Observation form
+                    with these values filled in, to be booked for a time.
+                    A drift scan parks the dish and leaves tracking off &mdash; the
+                    source crosses the beam centre half a duration from the start.
+                </p>
+            </div>
+        </div>
+
+        <div class="tab-content" id="tab-config">
+            <div class="config-form">
+                <div class="section-title">Appearance</div>
+                <div class="form-group">
+                    <label>Banner Name</label>
+                    <input autocomplete="off" type="text" id="cfgBannerName" placeholder="H1 Receiver Scheduler">
+                </div>
+                <div class="form-group">
+                    <label>Banner Subtitle</label>
+                    <input autocomplete="off" type="text" id="cfgBannerSubtitle" placeholder="Hydrogen Line (21cm) Observation Manager">
+                </div>
+
+                <div class="section-title">SRT Telescope Controller</div>
+                <div class="form-group">
+                    <label>Controller URL (leave empty to disable)</label>
+                    <input autocomplete="off" type="text" id="cfgControllerUrl" placeholder="http://192.168.50.120">
+                </div>
+                <div class="form-grid">
+                    <div class="form-group">
+                        <label>Slew Timeout (seconds)</label>
+                        <input autocomplete="off" type="number" id="cfgSlewTimeout" min="10" max="600">
+                    </div>
+                    <div class="form-group">
+                        <label>Position Tolerance (degrees)</label>
+                        <input autocomplete="off" type="number" id="cfgPositionTolerance" step="0.1" min="0.1" max="5">
+                    </div>
+                </div>
+
+                <div class="section-title">Observer Location</div>
+                <div class="form-grid">
+                    <div class="form-group">
+                        <label>Latitude (degrees, +N)</label>
+                        <input autocomplete="off" type="number" id="cfgObsLat" step="0.001" min="-90" max="90">
+                    </div>
+                    <div class="form-group">
+                        <label>Longitude (degrees, +E)</label>
+                        <input autocomplete="off" type="number" id="cfgObsLon" step="0.001" min="-180" max="180">
+                    </div>
+                    <div class="form-group">
+                        <label>Elevation (metres)</label>
+                        <input autocomplete="off" type="number" id="cfgObsElev" step="1" min="0" max="9000">
+                    </div>
+                    <div class="form-group">
+                        <label>Min Elevation for passes (degrees)</label>
+                        <input autocomplete="off" type="number" id="cfgMinElev" step="1" min="0" max="90">
+                    </div>
+                </div>
+
+                <div class="section-title">Obstructed Horizon</div>
+                <div class="form-group">
+                    <p style="color:#888; font-size:12px; margin:0;">
+                        Taken from the <strong>measured horizon profile</strong> &mdash;
+                        choose which scan is in force on the Horizon tab. The
+                        hand-entered sectors this box used to hold were retired on
+                        2026-08-25: one blanket floor for a whole quadrant, where the
+                        measurement knows every azimuth separately.
+                        For the Sun the allowance also includes the raster&rsquo;s reach
+                        below its centre, since it is the bottom row that catches
+                        the trees first.
+                    </p>
+                </div>
+
+                <div class="section-title">Safety Camera</div>
+                <div class="form-grid">
+                    <div class="form-group">
+                        <label>Video Device</label>
+                        <input autocomplete="off" type="text" id="cfgCameraDevice" placeholder="/dev/video0">
+                    </div>
+                    <div class="form-group">
+                        <label>Capture Resolution</label>
+                        <input autocomplete="off" type="text" id="cfgCameraResolution" placeholder="640x480">
+                    </div>
+                </div>
+
+                <div class="section-title">Receiver</div>
+                <div class="form-group">
+                    <label>Receiver Python Executable</label>
+                    <input autocomplete="off" type="text" id="cfgReceiverPythonPath" placeholder="/home/astro/radioconda/bin/python">
+                </div>
+
+                <div class="section-title">Data Output</div>
+                <div class="form-group">
+                    <label>Output Folder</label>
+                    <input autocomplete="off" type="text" id="cfgDataFolder" placeholder="Path to store observation data files">
+                </div>
+
+                <div class="section-title">Log</div>
+                <div class="form-group">
+                    <label>Log Lines to Display</label>
+                    <input autocomplete="off" type="number" id="cfgLogLines" min="20" max="1000" step="10">
+                </div>
+
+                <div class="section-title">Notifications</div>
+                <div class="form-group">
+                    <label>Sound on Start/Stop</label>
+                    <select autocomplete="off" id="cfgSoundEnabled">
+                        <option value="true">Enabled</option>
+                        <option value="false">Disabled</option>
+                    </select>
+                </div>
+
+                <div style="margin-top:20px; display:flex; align-items:center;">
+                    <button class="btn btn-primary" type="button" onclick="saveConfig()">Save Configuration</button>
+                    <span class="config-saved" id="configSaved">Saved!</span>
+                </div>
+            </div>
+        </div>
+
+        <div class="tab-content" id="tab-log">
+            <div class="log-controls">
+                <button class="btn btn-secondary" onclick="loadLog()">Refresh</button>
+                <label style="color:#888; font-size:12px;">
+                    <input autocomplete="off" type="checkbox" id="logAutoRefresh" onchange="toggleLogRefresh()" checked> Auto-refresh (5s)
+                </label>
+            </div>
+            <div class="log-container" id="logContent">Loading log...</div>
+        </div>
+    </div>
+
+    <div class="modal" id="obsModal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2 class="modal-title" id="modalTitle">Add Observation</h2>
+                <button class="close-btn" onclick="closeModal()">&times;</button>
+            </div>
+            <form id="obsForm">
+                <input autocomplete="off" type="hidden" id="obsIndex" value="-1">
+
+                <div class="form-grid">
+                    <div class="form-group wide">
+                        <label>Observation Name</label>
+                        <input autocomplete="off" type="text" id="obsName" required placeholder="e.g., Galactic Center Survey">
+                    </div>
+                </div>
+
+                <div class="section-title">Schedule <span style="font-weight:normal; font-size:11px; color:#888;">(Local Time)</span></div>
+                <div class="form-grid">
+                    <div class="form-group">
+                        <label>Start Date</label>
+                        <input autocomplete="off" type="date" id="obsStartDate" onchange="onCoordChange()">
+                    </div>
+                    <div class="form-group">
+                        <label>Start Time</label>
+                        <input autocomplete="off" type="time" id="obsStartTime" required onchange="updateEndTime()">
+                    </div>
+                    <div class="form-group">
+                        <label>Duration (minutes)</label>
+                        <input autocomplete="off" type="number" id="obsDuration" min="1" max="1440" required onchange="updateEndTime()">
+                    </div>
+                    <div class="form-group">
+                        <label>End Time</label>
+                        <input autocomplete="off" type="time" id="obsEndTime" disabled style="background:#2a2a4a; color:#aaa;">
+                    </div>
+                </div>
+                <div id="clashWarning" style="display:none; color:#ff4757; background:#3a1a1a; padding:8px 12px; border-radius:5px; margin-top:5px; font-size:13px;"></div>
+
+                <div class="section-title">Target Coordinates</div>
+                <div class="coord-section">
+                    <div class="form-grid">
+                        <div class="form-group">
+                            <label>Coordinate System</label>
+                            <select autocomplete="off" id="obsCoordSystem" onchange="updateCoordLabels()">
+                                <option value="altaz">Alt/Az (Horizontal)</option>
+                                <option value="radec">RA/Dec (Equatorial J2000)</option>
+                                <option value="galactic">Galactic (l, b)</option>
+                                <option value="drift">Drift Scan (fixed pointing)</option>
+                                <option value="object">Solar System Object</option>
+                                <option value="satellite">Satellite (TLE)</option>
+                                <option value="calibration">Calibration Day (Sun Scan)</option>
+                                <option value="horizon">Horizon Scan</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div class="form-grid" id="objectSelector" style="margin-top:15px; display:none">
+                        <div class="form-group">
+                            <label>Object</label>
+                            <select autocomplete="off" id="obsObjectName">
+                                <option value="sun">Sun</option>
+                                <option value="moon">Moon</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div id="satelliteInput" style="margin-top:15px; display:none">
+                        <div style="display:flex; gap:10px; align-items:flex-end; margin-bottom:10px;">
+                            <div class="form-group" style="flex:1; margin:0;">
+                                <label>Search CelesTrak by name or NORAD ID</label>
+                                <input autocomplete="off" type="text" id="tleSearch" placeholder="e.g. ISS, NOAA 19, 25544" style="width:100%;">
+                            </div>
+                            <button class="btn btn-primary" type="button" onclick="fetchTle()" style="white-space:nowrap;">Fetch TLE</button>
+                        </div>
+                        <div id="tleResults" style="display:none; margin-bottom:10px;">
+                            <div class="form-group">
+                                <label>Select satellite</label>
+                                <select autocomplete="off" id="tleResultSelect" onchange="selectTleResult()" style="width:100%;"></select>
+                            </div>
+                        </div>
+                        <div class="form-group">
+                            <label>TLE (paste, search above, or load from file)</label>
+                            <textarea autocomplete="off" id="obsTleText" rows="4" style="width:100%; padding:8px; border:1px solid #333; border-radius:5px; background:#0f0f23; color:#fff; font-family:monospace; font-size:12px; resize:vertical;" placeholder="ISS (ZARYA)
+1 25544U 98067A   ...
+2 25544  51.6400  ..."></textarea>
+                        </div>
+                        <div style="display:flex; gap:10px; margin-top:8px; align-items:center; flex-wrap:wrap;">
+                            <button class="btn btn-primary" type="button" onclick="predictPass()">Compute Next Pass</button>
+                            <label class="btn btn-secondary" style="margin:0; cursor:pointer;">
+                                Load TLE File <input autocomplete="off" type="file" accept=".tle,.txt" style="display:none" onchange="loadTleFile(event)">
+                            </label>
+                            <span id="passInfo" style="color:#888; font-size:12px;"></span>
+                        </div>
+                        <div id="passDetails" style="display:none; margin-top:10px; padding:10px; background:#0f0f23; border-radius:5px; font-size:12px; color:#ccc;">
+                        </div>
+                    </div>
+                    <div id="calibrationInput" style="margin-top:15px; display:none">
+                        <p style="color:#888; font-size:12px; margin-bottom:10px;">
+                            Runs repeated sun scans for the observation duration to determine
+                            effective observer lat/lon and pointing offsets.
+                        </p>
+                        <div class="form-grid">
+                            <div class="form-group">
+                                <label>Grid Size (n x n)</label>
+                                <input autocomplete="off" type="number" id="obsCalGridN" min="3" max="15" step="2" value="5">
+                            </div>
+                            <div class="form-group">
+                                <label>Grid Spacing (degrees)</label>
+                                <input autocomplete="off" type="number" id="obsCalSpacing" min="0.1" max="10" step="0.1" value="1.5">
+                            </div>
+                            <div class="form-group">
+                                <label>Scan Interval (minutes)</label>
+                                <input autocomplete="off" type="number" id="obsCalInterval" min="5" max="120" value="30">
+                            </div>
+                        </div>
+                    </div>
+                    <div id="horizonInput" style="margin-top:15px; display:none">
+                        <p style="color:#888; font-size:12px; margin-bottom:10px;">
+                            Maps the obstructed horizon by radiometry, one altitude cut
+                            per azimuth. Schedule it for a dark, dry, calm night: the Sun
+                            swamps the sky level, and wet or wind-blown foliage is not the
+                            horizon you want recorded. Allow about two hours.
+                        </p>
+                        <div class="form-grid">
+                            <div class="form-group">
+                                <label>Azimuth Step (degrees)</label>
+                                <input autocomplete="off" type="number" id="obsHorizonAzStep" min="1" max="30" step="1" value="5">
+                            </div>
+                            <div class="form-group">
+                                <label>Altitude Step (degrees)</label>
+                                <input autocomplete="off" type="number" id="obsHorizonAltStep" min="1" max="15" step="1" value="5">
+                            </div>
+                            <div class="form-group">
+                                <label>Azimuth Start (degrees)</label>
+                                <input autocomplete="off" type="number" id="obsHorizonAzStart" min="0" max="360" step="1" value="5">
+                            </div>
+                            <div class="form-group">
+                                <label>Azimuth End (degrees)</label>
+                                <input autocomplete="off" type="number" id="obsHorizonAzEnd" min="0" max="360" step="1" value="350">
+                            </div>
+                        </div>
+                    </div>
+                    <div id="driftInput" style="margin-top:15px; display:none">
+                        <p style="color:#888; font-size:12px; margin-bottom:10px;">
+                            The dish parks where the source will be at the beam-crossing
+                            time and stays fixed while the sky drifts through the beam.
+                            Recording runs from T&minus;window to T+window; start time and
+                            duration are derived automatically.
+                        </p>
+                        <div class="form-grid">
+                            <div class="form-group">
+                                <label>Source Frame</label>
+                                <select autocomplete="off" id="obsDriftFrame" onchange="updateCoordLabels()">
+                                    <option value="radec">RA/Dec (J2000)</option>
+                                    <option value="galactic">Galactic (l, b)</option>
+                                </select>
+                            </div>
+                            <div class="form-group">
+                                <label>Beam-Crossing Time T (local)</label>
+                                <input autocomplete="off" type="time" id="obsDriftTime" onchange="updateDriftDerived()">
+                            </div>
+                            <div class="form-group">
+                                <label>Window &plusmn; (minutes)</label>
+                                <input autocomplete="off" type="number" id="obsDriftWindow" min="1" max="720" value="30" onchange="updateDriftDerived()">
+                            </div>
+                        </div>
+                        <div style="display:flex; gap:10px; margin-top:8px; align-items:center; flex-wrap:wrap;">
+                            <button class="btn btn-primary" type="button" onclick="useNextTransit()">Use Next Transit</button>
+                            <span id="driftPreview" style="color:#888; font-size:12px;"></span>
+                        </div>
+                    </div>
+                    <div class="form-grid" id="coordInputs" style="margin-top:15px">
+                        <div class="form-group">
+                            <label id="coord1Label">Altitude</label>
+                            <div class="coord-row">
+                                <input autocomplete="off" type="number" id="coord1Deg" min="-90" max="360" value="45" onchange="onCoordChange()">
+                                <span id="coord1Unit1">deg</span>
+                                <input autocomplete="off" type="number" id="coord1Min" min="0" max="59" value="0" onchange="onCoordChange()">
+                                <span>min</span>
+                                <input autocomplete="off" type="number" id="coord1Sec" min="0" max="59.99" step="0.01" value="0" onchange="onCoordChange()">
+                                <span>sec</span>
+                            </div>
+                        </div>
+                        <div class="form-group">
+                            <label id="coord2Label">Azimuth</label>
+                            <div class="coord-row">
+                                <input autocomplete="off" type="number" id="coord2Deg" min="-90" max="360" value="180" onchange="onCoordChange()">
+                                <span>deg</span>
+                                <input autocomplete="off" type="number" id="coord2Min" min="0" max="59" value="0" onchange="onCoordChange()">
+                                <span>min</span>
+                                <input autocomplete="off" type="number" id="coord2Sec" min="0" max="59.99" step="0.01" value="0" onchange="onCoordChange()">
+                                <span>sec</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="section-title">Receiver Settings</div>
+                <div class="form-grid">
+                    <div class="form-group">
+                        <label>Center Frequency <span class="unit">(MHz)</span></label>
+                        <input autocomplete="off" type="number" id="obsCenterFreq" step="any" required value="1420.405752">
+                    </div>
+                    <div class="form-group">
+                        <label>Bandwidth <span class="unit">(MHz)</span></label>
+                        <input autocomplete="off" type="number" id="obsBandwidth" step="0.1" required value="2.4">
+                    </div>
+                    <div class="form-group">
+                        <label>Gain <span class="unit">(dB)</span></label>
+                        <input autocomplete="off" type="number" id="obsGain" min="0" max="80" required value="40">
+                    </div>
+                    <div class="form-group">
+                        <label>Channels (FFT)</label>
+                        <select autocomplete="off" id="obsChannels">
+                            <option value="1024">1024</option>
+                            <option value="2048">2048</option>
+                            <option value="4096" selected>4096</option>
+                            <option value="8192">8192</option>
+                            <option value="16384">16384</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>Integration Time <span class="unit">(s)</span></label>
+                        <input autocomplete="off" type="number" id="obsIntegration" step="0.1" min="0.1" required value="3.0">
+                    </div>
+                    <div class="form-group">
+                        <label>SDR Type</label>
+                        <select autocomplete="off" id="obsSdrType">
+                            <option value="b210">Ettus B210</option>
+                            <option value="rtlsdr">RTL-SDR</option>
+                            <option value="demo">Demo (Simulated)</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>Calibrator (Noise Source)</label>
+                        <select autocomplete="off" id="obsCalibrator">
+                            <option value="off">Off</option>
+                            <option value="on">On</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>When Done</label>
+                        <select autocomplete="off" id="obsEndAction">
+                            <option value="none">Stay</option>
+                            <option value="home">Go Home (Alt 0, Az 0)</option>
+                            <option value="stow">Stow (Alt 90, Az 180)</option>
+                        </select>
+                    </div>
+                    <div class="form-group wide">
+                        <label style="display:flex; align-items:center; gap:8px; cursor:pointer;">
+                            <input autocomplete="off" type="checkbox" id="obsRespectHorizon" checked>
+                            Respect local horizon
+                        </label>
+                        <span style="color:#888; font-size:12px;">
+                            Notes in the log if this observation points into the measured
+                            treeline. Advisory &mdash; it never stops the run.
+                        </span>
+                    </div>
+                </div>
+
+                <div class="section-title">Output</div>
+                <div class="form-grid">
+                    <div class="form-group wide">
+                        <label>Filename (leave empty for auto)</label>
+                        <input autocomplete="off" type="text" id="obsFilename" placeholder="auto-generated if empty">
+                    </div>
+                </div>
+
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+                    <button type="submit" class="btn btn-primary">Save Observation</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <script src="/app.js"></script>
+</body>
+</html>

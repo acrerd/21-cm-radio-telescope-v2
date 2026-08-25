@@ -51,7 +51,7 @@ def test_every_element_the_scripts_look_up_exists_in_the_markup(page):
     presses the button that reads it.
     """
     html, js = page
-    missing = sorted(ps.referenced_ids(js, html) - ps.element_ids(html))
+    missing = sorted(ps.referenced_ids(js, html) - ps.element_ids(html, js))
     assert not missing, "getElementById with no matching id: %s" % missing
 
 
@@ -105,7 +105,7 @@ def test_nothing_the_page_had_has_been_lost(page, baseline):
     """
     html, js = page
     lost_fns = sorted(set(baseline["functions"]) - ps.reachable_functions(js))
-    lost_ids = sorted(set(baseline["ids"]) - ps.element_ids(html))
+    lost_ids = sorted(set(baseline["ids"]) - ps.element_ids(html, js))
     lost_api = sorted(set(baseline["fetch_paths"]) - ps.fetch_paths(js, html))
     assert not lost_fns, "functions that used to exist and now do not: %s" % lost_fns
     assert not lost_ids, "element ids no longer in the markup: %s" % lost_ids
@@ -133,7 +133,7 @@ def _bless():
                     "h1_web_scheduler.py. Guards against losing something in "
                     "the move; see test_page_structure.py.",
             "functions": sorted(ps.reachable_functions(js)),
-            "ids": sorted(ps.element_ids(html)),
+            "ids": sorted(ps.element_ids(html, js)),
             "fetch_paths": sorted(ps.fetch_paths(js, html)),
         }, fh, indent=2)
     print("baseline written: %s" % BASELINE)
