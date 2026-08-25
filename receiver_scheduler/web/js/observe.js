@@ -159,6 +159,11 @@
                 if (d.success) {
                     setObserveStatus('Observation started.', '#2ed573');
                     updateStatus();
+                    // Restart the live poll rather than waiting for the next
+                    // tick. The chain stops itself when a run finishes, so
+                    // without this the plot of the *previous* run stayed on
+                    // screen until the tab was switched away and back.
+                    obvLiveStart();
                 } else {
                     setObserveStatus('Failed: ' + (d.error || 'unknown') + ' - see the Log tab.', '#ff4757');
                 }
@@ -292,9 +297,23 @@
             const box = document.getElementById('obvLiveBox');
             fetch('/api/observe/live?limit=2000').then(r => r.json()).then(d => {
                 obvLiveSchedule(d);
-                if (!d.success || !d.is_solar) { box.style.display = 'none'; return; }
+                // kind is 'solar', 'drift' or null. A tracked spectrum gets no
+                // live plot: its band power is meant to be flat, so the trace
+                // would be an autoscaled picture of the noise.
+                if (!d.success || !d.kind) { box.style.display = 'none'; return; }
                 box.style.display = '';
+                const drift = d.kind === 'drift';
+                document.getElementById('obvLiveTitle').textContent =
+                    drift ? 'Drift scan, live' : 'Solar flux, live';
+                document.getElementById('obvLiveBlurbSolar').style.display =
+                    drift ? 'none' : '';
+                document.getElementById('obvLiveBlurbDrift').style.display =
+                    drift ? '' : 'none';
                 if (!d.points || !d.points.length) {
+                    // A drift scan still gets its axes: the window is known
+                    // from the start, and an empty box with the crossing time
+                    // marked says "waiting" better than a line of text does.
+                    if (drift && d.t_start && d.t_end) obvLiveDraw(d);
                     document.getElementById('obvLiveInfo').textContent =
                         d.note || 'waiting for the first record';
                     return;
@@ -321,19 +340,36 @@
             ctx.fillRect(0, 0, W, H);
 
             const cal = d.calibrated;
-            const ys = d.points.map(p => cal ? p.sfu : p.counts);
+            const drift = d.kind === 'drift';
+            const pts = d.points || [];
+            // A drift scan is plotted in antenna temperature, not flux: SFU is
+            // a solar convention, and the sources a drift scan crosses here are
+            // quoted as brightness temperature.
+            const ys = pts.map(p => cal ? (drift ? p.t_a_k : p.sfu) : p.counts);
             // Absolute UTC seconds. Elapsed minutes were easier to draw but
             // meant nothing once the plot was one of several: solar activity is
             // reported against the clock, and a feature here has to be matched
             // to a flare time, to the published index, or to another
             // instrument's record.
-            const xs = d.points.map(p => p.t);
-            let ymin = Math.min.apply(null, ys), ymax = Math.max.apply(null, ys);
+            const xs = pts.map(p => p.t);
+            let ymin = ys.length ? Math.min.apply(null, ys) : 0;
+            let ymax = ys.length ? Math.max.apply(null, ys) : 1;
             if (!(ymax > ymin)) { ymax = ymin + 1; }
             const pad = 0.08 * (ymax - ymin);
             ymin -= pad; ymax += pad;
-            const tStart = xs[0];
-            const tEnd = Math.max(xs[xs.length - 1], tStart + 1);
+            // The time axis. A drift scan gets the observation's own window,
+            // fixed from the moment it starts, because the whole point is to
+            // see where in the scan the source turns up and whether it lands on
+            // the crossing time the pointing was laid out for. Scaling to the
+            // data instead would rescale under the reader every few seconds and
+            // could never show how far through the scan is.
+            let tStart, tEnd;
+            if (drift && d.t_start && d.t_end && d.t_end > d.t_start) {
+                tStart = d.t_start; tEnd = d.t_end;
+            } else {
+                tStart = xs.length ? xs[0] : (d.t_start || 0);
+                tEnd = Math.max(xs.length ? xs[xs.length - 1] : tStart + 1, tStart + 1);
+            }
             const X = v => L + (W - L - R) * ((v - tStart) / (tEnd - tStart));
             // toISOString is UTC whatever the browser's timezone, which is the
             // point: the observatory is worked from more than one place and a
@@ -350,7 +386,7 @@
                 const y = Y(v);
                 ctx.beginPath(); ctx.moveTo(L, y); ctx.lineTo(W - R, y); ctx.stroke();
                 ctx.textAlign = 'right'; ctx.textBaseline = 'middle';
-                ctx.fillText(v.toFixed(cal ? 1 : 5), L - 8, y);
+                ctx.fillText(v.toFixed(cal ? (drift ? 2 : 1) : 5), L - 8, y);
             }
             ctx.textAlign = 'center'; ctx.textBaseline = 'top';
             const fine = span < 1200;            // under 20 minutes, show seconds
@@ -367,11 +403,34 @@
             ctx.font = '22px sans-serif';
             ctx.translate(34, (T + H - B) / 2); ctx.rotate(-Math.PI / 2);
             ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-            ctx.fillText(cal ? (d.opacity_applied
-                                ? 'solar flux (SFU, above the atmosphere)'
-                                : 'solar flux (SFU, T_sys subtracted)')
-                             : 'band power (counts, uncalibrated)', 0, 0);
+            ctx.fillText(!cal ? 'band power (counts, uncalibrated)'
+                         : drift ? 'antenna temperature (K, T_sys subtracted)'
+                         : (d.opacity_applied
+                            ? 'solar flux (SFU, above the atmosphere)'
+                            : 'solar flux (SFU, T_sys subtracted)'), 0, 0);
             ctx.restore();
+
+            // The crossing time the pointing was laid out for. Drawn before the
+            // trace so the data sits on top of it, and dashed so it cannot be
+            // mistaken for a measurement.
+            if (drift && d.t_transit && d.t_transit >= tStart && d.t_transit <= tEnd) {
+                const xt = X(d.t_transit);
+                ctx.save();
+                ctx.setLineDash([10, 8]);
+                ctx.strokeStyle = '#8888aa'; ctx.lineWidth = 2;
+                ctx.beginPath(); ctx.moveTo(xt, T); ctx.lineTo(xt, H - B); ctx.stroke();
+                ctx.setLineDash([]);
+                ctx.fillStyle = '#8888aa'; ctx.font = '18px sans-serif';
+                ctx.textAlign = 'center'; ctx.textBaseline = 'top';
+                ctx.fillText('beam crossing', xt, T + 4);
+                ctx.restore();
+            }
+
+            if (!xs.length) {
+                document.getElementById('obvLiveInfo').textContent =
+                    d.note || 'waiting for the first record';
+                return;
+            }
 
             // A finished run is drawn in a cooler colour than a live one, so
             // it is obvious at a glance that nothing is arriving any more.
@@ -419,7 +478,19 @@
                 text += ' · ' + d.points.length + ' points, '
                       + d.binned + ' records averaged into each';
             }
-            if (cal) {
+            if (cal && drift) {
+                text += ' · latest ' + last.toFixed(2) + ' K · mean '
+                      + mean.toFixed(2) + ' K · peak ' + Math.max.apply(null, ys).toFixed(2) + ' K';
+                if (d.t_sys_k) text += ' · T_sys ' + d.t_sys_k.toFixed(0) + ' K subtracted';
+                // How far through, against the window rather than against the
+                // data - the two differ, and the window is the honest one.
+                if (!d.finished && d.t_end > d.t_start) {
+                    const frac = (xs[xs.length - 1] - tStart) / (tEnd - tStart);
+                    text += ' · ' + Math.round(100 * Math.max(0, Math.min(1, frac)))
+                          + '% through the scan';
+                }
+                text += ' · band median, so a narrow line moves it little';
+            } else if (cal) {
                 text += ' · latest ' + last.toFixed(1) + ' SFU · mean '
                       + mean.toFixed(1) + ' SFU';
                 if (d.t_sys_k) text += ' · T_sys ' + d.t_sys_k.toFixed(0) + ' K subtracted';

@@ -550,8 +550,11 @@
                  margin is computed against the wrong column and drags the block
                  across what sits above it. -->
                 <div id="obvLiveBox" class="rf-wide" style="display:none; margin-top:20px;">
-                    <div class="section-title">Solar flux, live</div>
-                    <div style="color:#888; font-size:12px; margin-bottom:8px; max-width:80ch;">
+                    <div class="section-title" id="obvLiveTitle">Solar flux, live</div>
+                    <!-- Two observations get a live plot and they say different
+                         things, so the blurb is swapped by obvLiveDraw rather
+                         than written once and hedged. -->
+                    <div id="obvLiveBlurbSolar" style="color:#888; font-size:12px; margin-bottom:8px; max-width:80ch; display:none;">
                         Band power from the record the receiver has just written,
                         turned into flux with the stored gain and the system
                         temperature subtracted, so what is plotted is the Sun
@@ -563,6 +566,26 @@
                         file &mdash; the recording itself cannot be opened while
                         it is being written. The full spectra are recorded as
                         usual and can be reduced properly afterwards.
+                    </div>
+                    <div id="obvLiveBlurbDrift" style="color:#888; font-size:12px; margin-bottom:8px; max-width:80ch; display:none;">
+                        Band power from the record the receiver has just written,
+                        in antenna temperature with the system temperature
+                        subtracted. The time axis is the observation's own window
+                        &mdash; start to stop, fixed from the moment it begins
+                        &mdash; so the scan fills in from the left and the dashed
+                        line marks the crossing time the pointing was laid out
+                        for. A source should peak there.
+                        <br><br>
+                        The number is the <em>median across the band</em>, which
+                        is the continuum level: it follows a broadband source
+                        transiting the beam, and is deliberately insensitive to
+                        narrow interference and to the LO artefact. That also
+                        makes it insensitive to a spectral line covering a small
+                        part of the band, so an H&nbsp;I drift scan may show
+                        little here while recording the line perfectly well.
+                        Display only; the recording keeps what the receiver
+                        measured, and the full spectra reduce properly
+                        afterwards.
                     </div>
                     <canvas id="obvLiveCanvas" width="1920" height="520"
                             style="background:#16162e; border-radius:8px;"></canvas>

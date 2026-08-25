@@ -2007,6 +2007,12 @@ def _record_finished_observation(obs: Optional[dict]):
             # mid-point; the plot marks it there.
             'transit_minutes': (duration / 2.0) if drift else None,
             'started_at': obs.get('started_at'),
+            # The end that was *planned*, kept alongside the one that happened.
+            # A drift plot's time axis is the observation's window, and it must
+            # not shrink to the data the moment the run finishes: a scan that
+            # was stopped early should go on showing the stretch it never
+            # reached, or the plot quietly redraws itself as a complete one.
+            'ends_at': obs.get('ends_at'),
             'ended_at': datetime.now().isoformat(timespec='seconds'),
         }
         _save_last_observation(last_observation)
@@ -3548,6 +3554,46 @@ def api_sun_position():
                     "up": bool(alt > 0.0), "horizon_warning": warning})
 
 
+def live_plot_kind(obs):
+    """Which live plot this observation gets, or None for no plot.
+
+    'solar' converts the band power to flux above the atmosphere; 'drift' plots
+    antenna temperature against a time axis fixed to the observation's own
+    start and stop, so the source's transit through the beam can be watched
+    against where it was predicted to fall.
+
+    A drift scan is identified the same way its filename is - by what the mount
+    does, not by which box the entry was typed into - so an `altaz` entry gets
+    the plot too. It is parked, the sky moves through the beam, and that is a
+    drift scan whatever it was called.
+
+    A tracked spectrum gets no live plot. Its band power is meant to be
+    constant, so an autoscaled trace of it is a magnified picture of the noise:
+    it looks like structure, it is not, and there is nothing to compare it to.
+    """
+    if (obs.get('coord_system') == 'object'
+            and str(obs.get('object_name', '')).lower() == 'sun'):
+        return 'solar'
+    if observation_files.observation_mode(obs) == 'drift':
+        return 'drift'
+    return None
+
+
+def _epoch(stamp):
+    """Local naive ISO timestamp to UTC seconds, or None.
+
+    The scheduler writes started_at/ends_at with datetime.now(), so they are
+    naive local time and .timestamp() reads them as such - which is what makes
+    them comparable with the receiver's time.time() record stamps.
+    """
+    if not stamp:
+        return None
+    try:
+        return datetime.fromisoformat(str(stamp)).timestamp()
+    except (TypeError, ValueError):
+        return None
+
+
 @app.route('/api/observe/live', methods=['GET'])
 def api_observe_live():
     """The running observation's band power, in solar flux units.
@@ -3599,13 +3645,26 @@ def api_observe_live():
         if kept:
             dropped = len(records) - len(kept)
             records = kept
+    # The window the plot's time axis spans, for a drift scan: the observation's
+    # own start and stop rather than the extent of the data so far. An axis that
+    # grows with the data cannot show how far through a transit is, and rescales
+    # under the reader every few seconds; a fixed one shows the scan filling in
+    # towards a marked crossing time.
+    kind = live_plot_kind(obs)
+    t_start, t_end = _epoch(obs.get('started_at')), _epoch(obs.get('ends_at'))
+    if t_end is None:
+        t_end = _epoch(obs.get('ended_at'))
+    window = {'kind': kind, 't_start': t_start, 't_end': t_end}
+    if kind == 'drift' and t_start is not None and t_end is not None and t_end > t_start:
+        # The scan is laid out so the source crosses beam centre at the
+        # mid-point - that is what drift_beam_time computes and what the mount
+        # was pointed at - so the plot marks it there.
+        window['t_transit'] = t_start + (t_end - t_start) / 2.0
+
     if not records:
-        return jsonify({'success': True, 'points': [], 'calibrated': False,
-                        'name': obs.get('name'),
-                        'finished': finished,
-                        'is_solar': (obs.get('coord_system') == 'object'
-                                     and str(obs.get('object_name', '')).lower() == 'sun'),
-                        'note': 'the receiver has not written a record yet'})
+        return jsonify(dict(window, success=True, points=[], calibrated=False,
+                            name=obs.get('name'), finished=finished,
+                            note='the receiver has not written a record yet'))
 
     cal = rf_calibration.load_calibration()
     cal_ok, cal_why = rf_calibration.calibration_applies_to(cal, obs_header(obs))
@@ -3614,8 +3673,7 @@ def api_observe_live():
     # fifty points and interpolated rather than computed per record: elevation
     # moves smoothly, a two-hour run holds thousands of records, and this is
     # recomputed on every poll.
-    is_solar = (obs.get('coord_system') == 'object'
-                and str(obs.get('object_name', '')).lower() == 'sun')
+    is_solar = kind == 'solar'
     sun_alt = None
     if is_solar and records and EPHEM_AVAILABLE:
         try:
@@ -3664,20 +3722,19 @@ def api_observe_live():
                     flux = flux / trans
             point['sfu'] = flux
         points.append(point)
-    return jsonify({'success': True, 'points': points, 'calibrated': bool(cal_ok),
-                    'records': len(records), 'binned': group,
-                    'warmup_dropped': dropped, 'warmup_s': LIVE_WARMUP_S,
-                    'opacity_applied': bool(sun_alt is not None and cal_ok),
-                    'zenith_opacity': rf_calibration.ZENITH_OPACITY_NEPERS,
-                    'why': '' if cal_ok else cal_why,
-                    'name': obs.get('name'),
-                    'finished': finished,
-                    'is_solar': (obs.get('coord_system') == 'object'
-                                 and str(obs.get('object_name', '')).lower() == 'sun'),
-                    't_sys_k': (cal or {}).get('t_sys_k') if cal_ok else None,
-                    'started_at': obs.get('started_at'),
-                    'ended_at': obs.get('ended_at'),
-                    'ends_at': obs.get('ends_at')})
+    return jsonify(dict(window,
+                        success=True, points=points, calibrated=bool(cal_ok),
+                        records=len(records), binned=group,
+                        warmup_dropped=dropped, warmup_s=LIVE_WARMUP_S,
+                        opacity_applied=bool(sun_alt is not None and cal_ok),
+                        zenith_opacity=rf_calibration.ZENITH_OPACITY_NEPERS,
+                        why='' if cal_ok else cal_why,
+                        name=obs.get('name'),
+                        finished=finished,
+                        t_sys_k=(cal or {}).get('t_sys_k') if cal_ok else None,
+                        started_at=obs.get('started_at'),
+                        ended_at=obs.get('ended_at'),
+                        ends_at=obs.get('ends_at')))
 
 
 def obs_header(obs):
