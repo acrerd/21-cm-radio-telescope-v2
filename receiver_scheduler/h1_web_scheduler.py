@@ -2174,22 +2174,37 @@ def scheduler_thread():
     # Recover the pointer to the last finished observation, so a restart does
     # not cost the Observe tab its plot.
     _load_last_observation()
-    last_debug = 0
+    last_schedule_seen = None
 
     while scheduler_running:
         try:
             now = datetime.now()
             schedule = load_schedule()
 
-            # Debug output every 30 seconds
-            if now.second % 30 < 5 and time.time() - last_debug > 25:
-                last_debug = time.time()
-                log.debug("%d observations loaded", len(schedule))
-                for obs in schedule:
-                    obs_date = obs.get('start_date', '') or now.strftime('%Y-%m-%d')
-                    obs_time = obs.get('start_time', '')
-                    enabled = obs.get('enabled', True)
-                    log.debug("  - %s: %s %s (enabled=%s)", obs.get('name'), obs_date, obs_time, enabled)
+            # Say what is scheduled when it *changes*, and not otherwise.
+            #
+            # This used to dump the whole schedule every thirty seconds. The
+            # file handler is at DEBUG, so all of it landed in scheduler.log -
+            # some 8600 lines a day of the same two disabled calibration days,
+            # in a file that rotates at 5 MB. It was not merely noise: it
+            # evicted the actual history of what the telescope did, which is
+            # what that file is for.
+            #
+            # A schedule that has not changed carries no information the last
+            # line did not. A schedule that *has* changed is worth a permanent
+            # record, so this is INFO rather than DEBUG - it is an operational
+            # event, not a diagnostic.
+            summary = tuple((obs.get('name'), obs.get('start_date', ''),
+                             obs.get('start_time', ''), obs.get('enabled', True))
+                            for obs in schedule)
+            if summary != last_schedule_seen:
+                if last_schedule_seen is not None:
+                    log.info("Schedule changed: %d observation(s)", len(schedule))
+                for name, date, at, enabled in summary:
+                    log.info("  - %s: %s %s%s", name,
+                             date or now.strftime('%Y-%m-%d'), at,
+                             "" if enabled else " (disabled)")
+                last_schedule_seen = summary
 
             # Check if current observation should end
             with process_lock:
