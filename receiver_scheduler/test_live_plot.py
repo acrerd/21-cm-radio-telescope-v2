@@ -196,6 +196,18 @@ def test_the_axes_are_known_before_the_first_record(client, tmp_path):
         assert d["t_start"] and d["t_end"] and d["t_transit"], \
             "the window must be reported even with no data, or the plot cannot " \
             "draw its axes until the first record arrives"
+
+        # And so is the calibration - it is a property of the tuning, not of
+        # the data. This was hardcoded False in the empty response, invisible
+        # while an empty response drew nothing; once the drift plot drew its
+        # axes while waiting, a 30 s integration meant a solid minute of a
+        # calibrated instrument labelled "uncalibrated".
+        import rf_calibration
+        expected, _ = rf_calibration.calibration_applies_to(
+            rf_calibration.load_calibration(), sched.obs_header(obs))
+        assert d["calibrated"] == bool(expected), (
+            "the empty response must report the calibration that will apply, "
+            "not a placeholder")
     finally:
         sched.current_observation = saved
 
@@ -227,3 +239,140 @@ def test_a_finished_scan_keeps_the_window_it_was_given(client, tmp_path):
             "the axis collapsed onto the data when the run stopped early"
     finally:
         sched.current_observation, sched.last_observation = saved_cur, saved_last
+
+
+# ---------------------------------------------------------------------------
+# The scale of the number the plot is drawn from
+# ---------------------------------------------------------------------------
+
+def _summary_file(tmp_path, correction, valid):
+    """A file with just what _append_live_summary reads, plus its sidecar."""
+    import h5py
+    import numpy as np
+
+    path = str(tmp_path / "scale.h5")
+    hf = h5py.File(path, "w")
+    hf.create_dataset("bandpass_correction", data=np.asarray(correction, float))
+    hf.create_dataset("bandpass_valid", data=np.asarray(valid, bool))
+    return hf, path
+
+
+def test_the_live_median_is_on_the_scale_the_gain_was_fitted_on(tmp_path):
+    """The bug the first blank-sky drift scan surfaced, pinned.
+
+    The sidecar median used to be taken over the raw spectrum, full band, on
+    the reasoning that the template normalises to a median of one so the
+    scales are "very nearly" the same. They differ by about 8% - the band
+    edges roll off - and 8% of a 353 K system temperature is 28 K. Watching
+    the Sun at a thousand kelvin nobody could see it; the first drift scan of
+    blank sky read a steady -24 K, an axis that was confidently wrong.
+
+    So the median must be of the corrected spectrum over the channels the
+    template covers - the scale the gain was fitted on - and this asserts it
+    is *not* the raw full-band value, with numbers far enough apart that a
+    regression cannot pass by luck.
+    """
+    import json
+    import numpy as np
+
+    import b210_h1_receiver as rx
+
+    n = 64
+    # Band edges reading low, the way a real anti-alias rolloff does, with the
+    # template refusing to speak for the outer quarter.
+    correction = np.full(n, 1.0)
+    correction[: n // 4] = 0.5
+    correction[-n // 4:] = 0.5
+    valid = np.ones(n, bool)
+    valid[: n // 8] = False
+    valid[-n // 8:] = False
+    raw = 0.004 * correction          # a flat sky, seen through that bandpass
+
+    hf, path = _summary_file(tmp_path, correction, valid)
+    try:
+        rx._append_live_summary(hf, raw, 123.0, 30.0, 1)
+    finally:
+        hf.close()
+
+    rec = json.loads(open(path.replace(".h5", ".live.jsonl")).read())
+    expected = float(np.median((raw / correction)[valid]))
+    assert rec["median"] == pytest.approx(expected, rel=1e-12)
+    assert rec["median"] != pytest.approx(float(np.median(raw)), rel=0.01), (
+        "corrected and raw medians must differ in this setup, or the test "
+        "cannot tell which one was written")
+
+
+def test_without_a_template_the_raw_median_goes_out_unchanged(tmp_path):
+    """No template means counts, honestly - not a half-applied correction."""
+    import json
+    import numpy as np
+
+    import b210_h1_receiver as rx
+
+    raw = np.linspace(0.003, 0.005, 32)
+    hf, path = _summary_file(tmp_path, np.ones(32), np.zeros(32, bool))
+    try:
+        rx._append_live_summary(hf, raw, 123.0, 30.0, 1)
+    finally:
+        hf.close()
+
+    rec = json.loads(open(path.replace(".h5", ".live.jsonl")).read())
+    assert rec["median"] == pytest.approx(float(np.median(raw)), rel=1e-12)
+
+
+# ---------------------------------------------------------------------------
+# The warm-up rule scales with the record length
+# ---------------------------------------------------------------------------
+
+def _run_with_tau(sched_mod, tmp_path, tau, n=4):
+    """A running drift scan whose records are tau seconds long."""
+    started = datetime.now() - timedelta(minutes=10)
+    out = tmp_path / "20260825_130000_drift.h5"
+    side = tmp_path / "20260825_130000_drift.live.jsonl"
+    t0 = started.timestamp()
+    with open(side, "w") as fh:
+        for i in range(n):
+            # Timestamps are the *end* of each integration.
+            fh.write(json.dumps({"t": t0 + (i + 1) * tau, "tau": tau,
+                                 "n": i + 1, "median": 0.004}) + "\n")
+    return {"name": "Warmup", "coord_system": "drift", "output_file": str(out),
+            "center_freq_mhz": 1420.405752, "bandwidth_mhz": 2.4,
+            "channels": 1024, "gain_db": 40,
+            "started_at": started.isoformat(),
+            "ends_at": (started + timedelta(hours=1)).isoformat()}
+
+
+def test_a_long_first_record_is_not_discarded_as_warm_up(client, tmp_path):
+    """The rule that cost a minute, pinned in proportion.
+
+    The flowgraph settle is ~5 s. Purging it from a 60 s record means
+    throwing away a minute of good data to remove five contaminated seconds,
+    and it doubled the wait for the first point - measured at 2 min 18 s from
+    slew start on 2026-08-25, of which the second minute was only this rule.
+    A record is dropped only when the settle covers more than a tenth of it.
+    """
+    saved = sched.current_observation
+    sched.current_observation = _run_with_tau(sched, tmp_path, tau=60.0)
+    try:
+        d = client.get("/api/observe/live").get_json()
+        assert d["warmup_dropped"] == 0
+        assert len(d["points"]) == 4, "all four 60 s records should be shown"
+    finally:
+        sched.current_observation = saved
+
+
+def test_a_short_first_record_is_still_dropped(client, tmp_path):
+    """The solar behaviour, preserved.
+
+    At a 10 s record the settle is half the integration and the first record
+    was measured 8% low - that is why the rule exists, and the proportionate
+    version must keep dropping it.
+    """
+    saved = sched.current_observation
+    sched.current_observation = _run_with_tau(sched, tmp_path, tau=10.0)
+    try:
+        d = client.get("/api/observe/live").get_json()
+        assert d["warmup_dropped"] == 1, "the half-contaminated record goes"
+        assert len(d["points"]) == 3
+    finally:
+        sched.current_observation = saved

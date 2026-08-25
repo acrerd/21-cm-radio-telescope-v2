@@ -3638,13 +3638,36 @@ def api_observe_live():
     records = _live_records(path)
     dropped = 0
     if records:
-        start = records[0]["t"]
-        kept = [r for r in records if r["t"] - start >= LIVE_WARMUP_S]
+        # Leave off records contaminated by the flowgraph settle - but in
+        # proportion. The first version dropped everything inside LIVE_WARMUP_S
+        # of the first record, written when records were 0.1-10 s and the cost
+        # was at most a few seconds of trace. At a 60 s integration the same
+        # rule discarded the entire first record to remove ~5 s of settle - an
+        # 8% contamination of one point, purged by doubling the wait for the
+        # first point from one minute to two. Now a record is dropped only
+        # when the settle window covers more than a tenth of it: a 10 s solar
+        # record still goes (half contaminated, measured 8% low), a 60 s drift
+        # record stays, carrying a ~1% dip that is visibly the first point of
+        # the run.
+        #
+        # Record timestamps are the *end* of the integration, so the run
+        # started one integration before the first stamp.
+        run_start = records[0]["t"] - records[0].get("tau", 0.0)
+        warm_end = run_start + LIVE_WARMUP_S
+        kept = []
+        for r in records:
+            tau = max(r.get("tau", 0.0), 1e-9)
+            overlap = max(0.0, min(warm_end, r["t"]) - (r["t"] - tau))
+            if overlap / tau > 0.1:
+                dropped += 1
+            else:
+                kept.append(r)
         # Never drop everything: early in a run the warm-up is all there is,
         # and an empty plot would look like a receiver that is not recording.
         if kept:
-            dropped = len(records) - len(kept)
             records = kept
+        else:
+            dropped = 0
     # The window the plot's time axis spans, for a drift scan: the observation's
     # own start and stop rather than the extent of the data so far. An axis that
     # grows with the data cannot show how far through a transit is, and rescales
@@ -3661,13 +3684,21 @@ def api_observe_live():
         # was pointed at - so the plot marks it there.
         window['t_transit'] = t_start + (t_end - t_start) / 2.0
 
-    if not records:
-        return jsonify(dict(window, success=True, points=[], calibrated=False,
-                            name=obs.get('name'), finished=finished,
-                            note='the receiver has not written a record yet'))
-
+    # Whether the calibration applies is a property of the tuning, not of the
+    # data, so it is decided before the records branch. It used to be hardcoded
+    # False in the empty response, which was invisible while an empty response
+    # drew nothing - but a drift scan draws its axes while waiting for the
+    # first record, and at a 30 s integration that meant a solid minute of a
+    # perfectly calibrated instrument labelled "uncalibrated".
     cal = rf_calibration.load_calibration()
     cal_ok, cal_why = rf_calibration.calibration_applies_to(cal, obs_header(obs))
+
+    if not records:
+        return jsonify(dict(window, success=True, points=[],
+                            calibrated=bool(cal_ok),
+                            why='' if cal_ok else cal_why,
+                            name=obs.get('name'), finished=finished,
+                            note='the receiver has not written a record yet'))
 
     # The Sun's elevation across the run, for the airmass correction. Sampled at
     # fifty points and interpolated rather than computed per record: elevation
@@ -3925,7 +3956,13 @@ def post_schedule():
     if clashes:
         return jsonify({'success': False, 'error': f'Schedule has clashing observations: {clashes}'}), 400
     save_schedule(schedule)
-    return jsonify({'success': True, 'horizon_notes': notes})
+    # Hand back what was actually stored. The trim above may have moved the
+    # times just posted, and a client that keeps showing what it *sent* is
+    # showing a schedule that will not run - which is exactly what happened:
+    # the alert announced a trim while the list and the edit window went on
+    # displaying 06:00 for an entry stored as 09:42.
+    return jsonify({'success': True, 'horizon_notes': notes,
+                    'schedule': schedule})
 
 
 @app.route('/api/status', methods=['GET'])

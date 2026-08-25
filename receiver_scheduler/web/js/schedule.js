@@ -48,7 +48,11 @@
             } else {
                 warn.style.display = 'none';
             }
-            return clashes.length > 0;
+            // The names, not a boolean: the save alert must say *what* it
+            // clashes with. "Clashes with another observation" sent someone
+            // hunting through expired calibration days when the culprit was
+            // the same entry's own first, silently-successful save.
+            return clashes;
         }
 
         function updateCoordLabels() {
@@ -225,12 +229,19 @@
                 .then(d => {
                     // The server trims each window to the part where the target
                     // clears the measured horizon, so the times it stored may
-                    // not be the ones just sent. Say so, and reload the list so
-                    // what is on screen is what will run.
+                    // not be the ones just sent. Adopt what it stored - the
+                    // previous version announced the trim in an alert while
+                    // the list and the edit window went on showing the
+                    // untrimmed times, a schedule that would never run.
+                    const ok = resp.ok && d.success !== false;
+                    if (ok && Array.isArray(d.schedule)) {
+                        schedule = d.schedule;
+                        renderSchedule();
+                    }
                     if (d.horizon_notes && d.horizon_notes.length) {
                         alert('Local horizon: ' + d.horizon_notes.join(' | '));
                     }
-                    return {ok: resp.ok && d.success !== false,
+                    return {ok: ok,
                             error: d.error || ('HTTP ' + resp.status)};
                 }))
               .catch(e => ({ok: false, error: String(e)}));
@@ -425,8 +436,11 @@
         }
 
         function saveObservation() {
-            if (checkClash()) {
-                alert('Cannot save: this observation clashes with another scheduled observation.');
+            const clashes = checkClash();
+            if (clashes && clashes.length) {
+                alert('Cannot save: this observation overlaps "'
+                      + clashes.join('", "') + '". Edit or delete that entry '
+                      + 'first (disabled entries never count).');
                 return;
             }
             const i = parseInt(document.getElementById('obsIndex').value);
@@ -488,6 +502,13 @@
                 enabled: i >= 0 ? schedule[i].enabled : true
             };
             if (i >= 0) { schedule[i] = obs; } else { schedule.push(obs); }
+            // Make a second Save an edit of the same entry, not a second add.
+            // Saving is silent when it works, so a double-click - or a "did
+            // that take?" second press - used to find the first press's copy
+            // already in the schedule and refuse itself as a clash with it:
+            // the entry was saved and the alert said it could not be. Pointing
+            // obsIndex at the saved entry makes the operation idempotent.
+            document.getElementById('obsIndex').value = i >= 0 ? i : schedule.length - 1;
             closeModal();
             renderSchedule();
             autoSave();

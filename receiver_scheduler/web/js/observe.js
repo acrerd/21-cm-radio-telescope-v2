@@ -488,6 +488,15 @@
                     const frac = (xs[xs.length - 1] - tStart) / (tEnd - tStart);
                     text += ' · ' + Math.round(100 * Math.max(0, Math.min(1, frac)))
                           + '% through the scan';
+                    // The cadence, so a long integration does not read as a
+                    // stall: at 30 s per record the plot is *supposed* to sit
+                    // still for 30 s at a time, and on a long window each new
+                    // point is a sliver at the far left.
+                    const lastP = d.points[d.points.length - 1];
+                    if (lastP && lastP.tau && lastP.n) {
+                        text += ' · one record every '
+                              + Math.round(lastP.tau / lastP.n) + ' s';
+                    }
                 }
                 text += ' · band median, so a narrow line moves it little';
             } else if (cal) {

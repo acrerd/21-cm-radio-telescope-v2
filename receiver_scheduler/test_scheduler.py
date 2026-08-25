@@ -610,6 +610,26 @@ class TestFlaskAPI:
         assert len(data) == 1
         assert data[0]["name"] == "Test Obs"
 
+    def test_post_schedule_returns_what_it_stored(self, client):
+        """The response carries the stored schedule, not an acknowledgement.
+
+        The server may trim what was posted - the horizon trim rewrites start
+        times - so a client that keeps displaying what it *sent* shows a
+        schedule that will not run. That happened on 2026-08-25: the alert
+        announced a trim to 09:42 while the list and the edit window went on
+        showing 06:00. The page adopts response['schedule'] wholesale, so this
+        pins that the field exists and matches what a GET would return.
+        """
+        obs_list = [_make_obs("Echo", "14:00", 30)]
+        resp = client.post('/api/schedule',
+                           data=json.dumps(obs_list),
+                           content_type='application/json')
+        body = resp.get_json()
+        assert body["success"] is True
+        assert body["schedule"] == client.get('/api/schedule').get_json(), (
+            "the POST response must be the stored schedule, or the browser "
+            "keeps showing times the server has rewritten")
+
     def test_post_schedule_with_clash(self, client):
         obs_list = [
             _make_obs("A", "10:00", 60),
@@ -2280,6 +2300,10 @@ class TestOneSitePosition:
             meta = json.load(fh)
 
         assert meta["defaults"]["eta"] == instrument.MAIN_BEAM_EFFICIENCY
+        # The measured receiver gain instability - without it the web drift
+        # scan draws the ideal radiometer floor, 13x quieter than the receiver.
+        assert meta["defaults"]["gain_sigma"] == pytest.approx(
+            instrument.GAIN_INSTABILITY)
         assert meta["defaults"]["fwhm"] == pytest.approx(
             instrument.beam_fwhm_deg(instrument.DISH_M), abs=5e-4)
         assert meta["defaults"]["dish_m"] == instrument.DISH_M

@@ -549,21 +549,36 @@ def _append_live_summary(hf, avg_linear, timestamp, integration_time, count):
     The number is the median across the band. Median rather than mean because
     it ignores the LO artefact and any narrow interference without having to
     find them, and for a broadband source like the Sun it is the continuum
-    level. The bandpass template normalises to a median of one over the fitted
-    band, so this is on very nearly the same scale as the corrected spectra the
-    gain was fitted against - close enough to watch a flux curve, while the
-    recorded file still allows the exact reduction afterwards.
+    level.
+
+    Taken over the *bandpass-corrected* spectrum, restricted to the channels
+    the template covers - because that is the scale the gain was fitted on,
+    and the scheduler's live endpoint applies that gain to this number. The
+    first version took the raw median over the full band, on the reasoning
+    that the template normalises to a median of one so the scales are "very
+    nearly" the same. They are - to about 8%, the band edges rolling off -
+    and 8% of a 353 K system temperature is 28 K. Watching the Sun at a
+    thousand kelvin nobody noticed; the first blank-sky drift scan read a
+    steady -24 K, which is how "very nearly" was measured. Without a template
+    the raw median goes out as before, and the endpoint reports counts.
 
     Every failure here is swallowed. This is a convenience for whoever is
     watching; an observation must never be lost because a summary line could
     not be written.
     """
     try:
+        values = avg_linear
+        try:
+            valid = hf['bandpass_valid'][:]
+            if valid.any():
+                values = (avg_linear / hf['bandpass_correction'][:])[valid]
+        except Exception:                                 # noqa: BLE001
+            pass
         path = os.path.splitext(hf.filename)[0] + ".live.jsonl"
         line = json.dumps({"t": float(timestamp),
                            "tau": float(integration_time),
                            "n": int(count),
-                           "median": float(np.median(avg_linear))})
+                           "median": float(np.median(values))})
         with open(path, "a") as fh:
             fh.write(line + "\n")
     except Exception:                                     # noqa: BLE001
