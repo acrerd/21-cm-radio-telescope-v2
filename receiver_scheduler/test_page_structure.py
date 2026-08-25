@@ -176,3 +176,76 @@ if __name__ == "__main__":
         _bless()
     else:
         print("run with --bless to regenerate the baseline")
+
+
+def test_the_famous_targets_are_the_simulator_targets():
+    """The schedule form's picker is a copy of the simulator's targets menu.
+
+    A copy, deliberately: the web simulator must keep working with no
+    scheduler present (it can be served from a static host), so it cannot
+    fetch the list from here, and the scheduler page loads no ES modules so
+    it cannot import the simulator's. Two copies are safe exactly as long as
+    something holds them equal - which is this test, parsing both from
+    source, so an entry added, dropped or moved on either side fails here
+    with its name.
+
+    The simulator's menu is TARGETS (the H I list) plus continuumSources()
+    from ephemeris.js - Cyg A, Cas A, Tau A, the Sun and the Moon - and the
+    first version of the picker copied only TARGETS, which is exactly the
+    kind of drift this test exists to catch. The fixed trio's galactic
+    coordinates are re-derived here from the RA/Dec in ephemeris.js, so a
+    typo in the hand-converted numbers fails with the source's name.
+    """
+    import ast
+    import math
+    import os
+    import re
+
+    here = os.path.dirname(os.path.abspath(__file__))
+    sim_js = os.path.join(here, "..", "astro_simulator", "web", "js")
+
+    def parse_rows(path, name):
+        src = open(path).read()
+        block = re.search(name + r"\s*=\s*\[(.*?)\n\s*\];", src, re.S)
+        assert block, "no %s list found in %s" % (name, path)
+        rows = []
+        for m in re.finditer(r'\[\s*"((?:[^"\\]|\\.)*)"\s*,\s*'
+                             r'(?:([-\d.]+)|"(\w+)")\s*,\s*'
+                             r'(?:([-\d.]+)|"(\w+)")', block.group(1)):
+            rows.append((ast.literal_eval('"%s"' % m.group(1)),
+                         float(m.group(2)) if m.group(2) else m.group(3),
+                         float(m.group(4)) if m.group(4) else m.group(5)))
+        return rows
+
+    sim = parse_rows(os.path.join(sim_js, "ui.js"), "TARGETS")
+    sched_list = parse_rows(
+        os.path.join(here, "web", "js", "schedule.js"), "FAMOUS_TARGETS")
+    assert len(sim) > 10, "the simulator list should be substantial"
+
+    # The H I targets, verbatim and in order.
+    assert sched_list[:len(sim)] == sim, (
+        "the schedule form's famous-target list has drifted from the "
+        "simulator's TARGETS - change both together")
+
+    # Then the continuum sources. The trio's RA/Dec come from ephemeris.js
+    # itself, converted here the same way the simulator converts them.
+    extras = {row[0]: row for row in sched_list[len(sim):]}
+    eph = open(os.path.join(sim_js, "ephemeris.js")).read()
+    trio = dict(re.findall(
+        r'\["(Cyg A|Cas A|Tau A)",\s*eqToGal\(([\d.]+,\s*[-\d.]+)\)', eph))
+    assert len(trio) == 3, "ephemeris.js should define Cyg A, Cas A, Tau A"
+
+    import ephem
+    for name, radec in trio.items():
+        ra, dec = (float(x) for x in radec.split(","))
+        g = ephem.Galactic(ephem.Equatorial(
+            math.radians(ra), math.radians(dec), epoch=ephem.J2000))
+        assert name in extras, "%s is in the simulator menu but not the picker" % name
+        assert extras[name][1] == pytest.approx(math.degrees(g.lon), abs=0.01), name
+        assert extras[name][2] == pytest.approx(math.degrees(g.lat), abs=0.01), name
+
+    for name, obj in (("Sun", "sun"), ("Moon", "moon")):
+        assert extras.get(name) == (name, "object", obj), (
+            "%s must save as an ephemeris object, not fixed coordinates" % name)
+
+    assert len(extras) == 5, "unexpected extra rows beyond the continuum sources"

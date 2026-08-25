@@ -167,7 +167,7 @@
                         info += '<br><span style="color:#ccc;">Scan in progress (' + data.scan_progress + '/' + data.scan_total + ' points)</span>';
                     } else if (data.next_scan_time) {
                         const next = new Date(data.next_scan_time).toLocaleTimeString();
-                        info += '<br><span style="color:#888;">Next scan at ' + next + '</span>';
+                        info += '<br><span style="color:#888;">Next scan at ' + next + ' local</span>';
                     }
                     if (data.last_scan_error) {
                         if (data.consecutive_failures === 0 && (data.phase === 'homing' || data.phase === 'retrying')) {

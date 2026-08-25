@@ -87,7 +87,7 @@
                 onObserveModeChange();
                 const when = new Date(p.source_utc);
                 info.innerHTML = 'Copied from the simulator at <strong>' +
-                    when.toLocaleTimeString() + '</strong> &mdash; ' +
+                    when.toLocaleTimeString() + ' local</strong> &mdash; ' +
                     (p.mode === 'drift' ? 'drift scan' : 'tracked spectrum') +
                     ' of l=' + p.l.toFixed(2) + '&deg;, b=' + p.b.toFixed(2) + '&deg;. ' +
                     'Edit anything below before starting.';
@@ -181,7 +181,7 @@
                 const kind = d.mode === 'drift' ? 'Drift scan' : 'Spectrum';
                 const size = d.size_bytes ? ' &mdash; ' + (d.size_bytes / 1e6).toFixed(1) + ' MB' : '';
                 el.innerHTML = kind + ' &ldquo;' + d.name + '&rdquo;, ended ' +
-                    new Date(d.ended_at).toLocaleTimeString() +
+                    new Date(d.ended_at).toLocaleTimeString() + ' local' +
                     ' &mdash; <code>' + d.filename + '</code>' + size +
                     (d.exists ? '' : ' <span style="color:#ff4757;">(file missing)</span>');
             }).catch(() => {});
@@ -463,7 +463,7 @@
             // is smaller for a reason the reader should know.
             let text = (d.records || d.points.length) + ' records';
             if (d.finished) {
-                text = 'finished' + (d.ended_at ? ' ' + d.ended_at.replace('T', ' ') : '')
+                text = 'finished' + (d.ended_at ? ' ' + d.ended_at.replace('T', ' ') + ' local' : '')
                      + ' · ' + text;
             }
             // Say what was left off. The first record of a run comes in several

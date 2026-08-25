@@ -724,6 +724,7 @@
                 <label style="color:#888; font-size:12px;">
                     <input autocomplete="off" type="checkbox" id="logAutoRefresh" onchange="toggleLogRefresh()" checked> Auto-refresh (5s)
                 </label>
+                <span style="color:#888; font-size:12px;">timestamps are local time</span>
             </div>
             <div class="log-container" id="logContent">Loading log...</div>
         </div>
@@ -752,7 +753,7 @@
                         <input autocomplete="off" type="date" id="obsStartDate" onchange="onCoordChange()">
                     </div>
                     <div class="form-group">
-                        <label>Start Time</label>
+                        <label>Start Time <span class="unit">(local)</span></label>
                         <input autocomplete="off" type="time" id="obsStartTime" required onchange="updateEndTime()">
                     </div>
                     <div class="form-group">
@@ -760,7 +761,7 @@
                         <input autocomplete="off" type="number" id="obsDuration" min="1" max="1440" required onchange="updateEndTime()">
                     </div>
                     <div class="form-group">
-                        <label>End Time</label>
+                        <label>End Time <span class="unit">(local)</span></label>
                         <input autocomplete="off" type="time" id="obsEndTime" disabled style="background:#2a2a4a; color:#aaa;">
                     </div>
                 </div>
@@ -775,6 +776,7 @@
                                 <option value="altaz">Alt/Az (Horizontal)</option>
                                 <option value="radec">RA/Dec (Equatorial J2000)</option>
                                 <option value="galactic">Galactic (l, b)</option>
+                                <option value="famous">Famous targets</option>
                                 <option value="drift">Drift Scan (fixed pointing)</option>
                                 <option value="object">Solar System Object</option>
                                 <option value="satellite">Satellite (TLE)</option>
@@ -789,6 +791,24 @@
                             <select autocomplete="off" id="obsObjectName">
                                 <option value="sun">Sun</option>
                                 <option value="moon">Moon</option>
+                            </select>
+                        </div>
+                    </div>
+                    <!-- The simulator's target list, offered as a picker. The
+                         entry is saved as ordinary galactic coordinates - the
+                         server never sees a "famous" coordinate system. -->
+                    <div class="form-grid" id="famousSelector" style="margin-top:15px; display:none">
+                        <div class="form-group">
+                            <label>Object</label>
+                            <select autocomplete="off" id="obsFamousTarget"
+                                    onchange="onFamousTargetChange(); updateCoordLabels()"></select>
+                        </div>
+                        <div class="form-group">
+                            <label>Mode</label>
+                            <select autocomplete="off" id="obsFamousMode"
+                                    onchange="updateCoordLabels()">
+                                <option value="track">Track (follow the sky)</option>
+                                <option value="drift">Drift (park, let it transit)</option>
                             </select>
                         </div>
                     </div>
@@ -901,7 +921,7 @@
                         <div class="form-group">
                             <label id="coord1Label">Altitude</label>
                             <div class="coord-row">
-                                <input autocomplete="off" type="number" id="coord1Deg" min="-90" max="360" value="45" onchange="onCoordChange()">
+                                <input autocomplete="off" type="number" id="coord1Deg" min="-90" max="360" step="any" value="45" onchange="onCoordChange()">
                                 <span id="coord1Unit1">deg</span>
                                 <input autocomplete="off" type="number" id="coord1Min" min="0" max="59" value="0" onchange="onCoordChange()">
                                 <span>min</span>
@@ -912,7 +932,7 @@
                         <div class="form-group">
                             <label id="coord2Label">Azimuth</label>
                             <div class="coord-row">
-                                <input autocomplete="off" type="number" id="coord2Deg" min="-90" max="360" value="180" onchange="onCoordChange()">
+                                <input autocomplete="off" type="number" id="coord2Deg" min="-90" max="360" step="any" value="180" onchange="onCoordChange()">
                                 <span>deg</span>
                                 <input autocomplete="off" type="number" id="coord2Min" min="0" max="59" value="0" onchange="onCoordChange()">
                                 <span>min</span>

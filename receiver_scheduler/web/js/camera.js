@@ -60,7 +60,7 @@
                 camObjectUrl = url;
                 const when = captured ? new Date(captured) : new Date();
                 status.innerHTML = '<span style="color:#00d4ff;">Captured ' +
-                    when.toLocaleTimeString() + '</span>' +
+                    when.toLocaleTimeString() + ' local</span>' +
                     (frames ? '<span style="color:#888;"> &middot; ' + frames +
                               (frames === '1' ? ' frame' : ' frames') + '</span>' : '');
             }).catch(e => {

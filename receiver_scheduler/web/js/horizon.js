@@ -160,7 +160,7 @@
                         '<span style="color:#ff4757;">Simulated &mdash; this is not the ' +
                         'observatory horizon</span>');
                 }
-                html += row('Measured', new Date(m.measured_utc).toLocaleString());
+                html += row('Measured', new Date(m.measured_utc).toLocaleString() + ' local');
                 html += row('Azimuths', m.n_azimuths + ' at ' + m.az_step_deg + '&deg; spacing' +
                             (envelope ? ' <span style="color:#ffa502;">(' + envelope +
                              ' by envelope)</span>' : ''));
