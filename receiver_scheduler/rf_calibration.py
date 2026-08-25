@@ -918,6 +918,53 @@ def trustworthy_velocity_shift(cal):
     return float(shift)
 
 
+def embedded_calibration(header):
+    """The gain calibration carried in an observation's own header, or None.
+
+    Counterpart to bandpass.embedded_template. Recordings written from
+    2026-08-25 carry the gain and system temperature they were taken under, so
+    the file is reducible on its own rather than only on the machine that
+    happens to hold the current gain_calibration.json.
+    """
+    raw = (header or {}).get("gain_calibration")
+    if not raw:
+        return None
+    try:
+        cal = json.loads(raw.decode() if isinstance(raw, bytes) else str(raw))
+    except (ValueError, AttributeError):
+        return None
+    if not isinstance(cal, dict):
+        return None
+    cal["t_sys_level"] = t_sys_level(cal.get("t_sys_k"))
+    return cal
+
+
+def calibration_for(header, path=CALIBRATION_FILE):
+    """(calibration, why, source) - the best gain available for this observation.
+
+    Prefers the stored one while it applies, because re-reducing an old
+    recording against a better calibration is the reason the recording is kept
+    raw. Falls back to the one the file carries, so an observation from a
+    tuning nobody uses any more is still reducible rather than stranded in
+    counts.
+    """
+    cal = load_calibration(path)
+    ok, why = calibration_applies_to(cal, header)
+    if ok:
+        return cal, "", "current"
+    embedded = embedded_calibration(header)
+    if embedded is not None:
+        ok_e, why_e = calibration_applies_to(embedded, header)
+        if ok_e:
+            return embedded, "", "recorded with the observation"
+        # Prefer the embedded reason: "no gain calibration has been made" is
+        # true of this machine but misleading about this file, which carries
+        # one - it simply does not fit the tuning, and that is what the reader
+        # needs to be told.
+        return None, why_e, ""
+    return None, why, ""
+
+
 def calibration_applies_to(cal, header, tolerance_hz=1e3):
     """(ok, why) - whether a stored gain applies to this observation.
 

@@ -235,6 +235,23 @@ def evaluate(template, freq_hz):
     return np.where(np.abs(u) <= 1.0, model, np.nan)
 
 
+def embedded_template(header):
+    """The bandpass template carried in an observation's own header, or None.
+
+    Recordings written from 2026-08-25 carry the template and the gain that
+    were in force when they were taken, so a file can be reduced away from the
+    machine that made it and long after the calibration has moved on. Older
+    files have no such attribute and simply return None.
+    """
+    raw = (header or {}).get("bandpass_template")
+    if not raw:
+        return None
+    try:
+        return json.loads(raw.decode() if isinstance(raw, bytes) else str(raw))
+    except (ValueError, AttributeError):
+        return None
+
+
 def apply_bandpass(freq_hz, spectra, header, template=None, path=BANDPASS_FILE):
     """Divide out the instrument response.
 
@@ -246,6 +263,20 @@ def apply_bandpass(freq_hz, spectra, header, template=None, path=BANDPASS_FILE):
     if template is None:
         template = load_bandpass(path)
     ok, why = applies_to(template, header)
+    if not ok:
+        # Fall back to the template the observation was recorded under, which
+        # since 2026-08-25 travels in the file. The stored one is preferred
+        # while it applies, because re-reducing against a better measurement is
+        # the whole reason the recording is kept raw - but when it does not
+        # apply the choice is between the file's own template and no correction
+        # at all, and an archived observation should not become unreducible
+        # merely because the receiver was retuned afterwards.
+        embedded = embedded_template(header)
+        if embedded is not None:
+            ok_e, why_e = applies_to(embedded, header)
+            if ok_e:
+                template, ok = embedded, True
+                why = ""
     if not ok:
         return spectra, ("not bandpass corrected - %s" % why)
 

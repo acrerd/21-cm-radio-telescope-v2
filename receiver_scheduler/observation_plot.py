@@ -267,8 +267,8 @@ def plot_observation(path, output_path, name="", mode="spectrum",
     # using it on another would be worse than leaving counts alone, because
     # counts are honestly unlabelled and wrong kelvin are not.
     import rf_calibration
-    cal = rf_calibration.load_calibration()
-    cal_ok, cal_why = rf_calibration.calibration_applies_to(cal, header)
+    cal, cal_why, cal_source = rf_calibration.calibration_for(header)
+    cal_ok = cal is not None
     if cal_ok:
         spectra = spectra / cal["gain_counts_per_k"] - cal["t_sys_k"]
     n = spectra.shape[0]
@@ -297,9 +297,13 @@ def plot_observation(path, output_path, name="", mode="spectrum",
     # indistinguishable from one that has not, and the difference matters.
     subtitle += "\n" + bandpass_note
     if cal_ok:
-        subtitle += ("\ncalibrated to kelvin: T_sys %.0f K, gain measured %s UTC"
+        # Say which gain was used. Normally the current one; for an archived
+        # observation whose tuning nobody uses any more it is the one carried
+        # in the file, and a reader comparing two plots needs to know which.
+        subtitle += ("\ncalibrated to kelvin: T_sys %.0f K, gain measured %s UTC%s"
                      % (cal["t_sys_k"],
-                        (cal.get("observed_utc") or "")[:16].replace("T", " ")))
+                        (cal.get("observed_utc") or "")[:16].replace("T", " "),
+                        "" if cal_source == "current" else " (%s)" % cal_source))
     elif "no gain calibration" not in cal_why:
         subtitle += "\nin counts, not kelvin - " + cal_why
 

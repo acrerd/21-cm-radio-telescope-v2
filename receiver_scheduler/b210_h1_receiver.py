@@ -321,6 +321,8 @@ def init_hdf5(filename, freq_axis_hz, fft_size, sdr_type, center_freq,
         hf.attrs['sample_rate_requested_hz'] = tuning_plan['requested_sample_rate_hz']
     hf.attrs['created'] = datetime.now(timezone.utc).isoformat()
 
+    _embed_calibration(hf)
+
     # Observation metadata from scheduler
     import json as _json
     obs_meta = os.environ.get('H1_OBS_METADATA', '')
@@ -336,6 +338,57 @@ def init_hdf5(filename, freq_axis_hz, fft_size, sdr_type, center_freq,
             pass
 
     return hf
+
+
+def _embed_calibration(hf):
+    """Store the bandpass template and gain calibration in force, in the file.
+
+    The recording itself stays raw - counts, uncorrected - and that is right:
+    a better template or a better gain should be able to re-reduce it later.
+    But raw is only useful if what it takes to reduce it travels with it.
+    Without this the file is reducible on exactly one machine, for exactly as
+    long as nobody remeasures anything: the pipeline reads whichever
+    bandpass_template.json and gain_calibration.json happen to be on disk at
+    the time it is asked, so an archived observation silently acquires whatever
+    calibration is current rather than the one it was taken under.
+
+    Stored whether or not they match this tuning. Whether a calibration applies
+    is a decision for whoever reduces the file - `bandpass.applies_to` and
+    `rf_calibration.calibration_applies_to` both check the tuning, which is in
+    these attributes already - and recording only the ones that happened to
+    match would throw away the evidence for that judgement.
+
+    Written as JSON strings: they are a few kilobytes, they are read back with
+    one json.loads, and they do not need the HDF5 schema to grow a field every
+    time the calibration does. Missing or unreadable files are not an error -
+    an observation is worth more than its provenance.
+    """
+    import json as _json
+
+    here = os.path.dirname(os.path.abspath(__file__))
+    for name, attr in (("bandpass_template.json", "bandpass_template"),
+                       ("gain_calibration.json", "gain_calibration")):
+        try:
+            with open(os.path.join(here, name)) as fh:
+                doc = _json.load(fh)
+            hf.attrs[attr] = _json.dumps(doc)
+        except (OSError, ValueError):
+            continue
+    # The beam and the site, because turning antenna temperature into flux
+    # needs them and they are measured quantities that could change.
+    try:
+        import sys as _sys
+        sim = os.path.join(os.path.dirname(here), "astro_simulator")
+        if sim not in _sys.path:
+            _sys.path.insert(0, sim)
+        import instrument
+        hf.attrs["beam_fwhm_deg"] = instrument.beam_fwhm_deg()
+        hf.attrs["effective_area_m2"] = instrument.effective_area_m2()
+        hf.attrs["site_lat_deg"] = instrument.SITE_LAT_DEG
+        hf.attrs["site_lon_deg"] = instrument.SITE_LON_DEG
+        hf.attrs["site_height_m"] = instrument.SITE_HEIGHT_M
+    except Exception:                                     # noqa: BLE001
+        pass
 
 
 def append_spectrum(hf, avg_linear, timestamp, integration_time, fft_size):
