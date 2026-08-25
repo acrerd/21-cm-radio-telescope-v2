@@ -106,9 +106,23 @@ def scan_javascript(js):
     return problems
 
 
-def test_the_embedded_javascript_parses():
+def test_the_page_javascript_parses():
+    """Scans whatever the page actually loads, inline or as modules.
+
+    Goes through page_sources rather than reading HTML_TEMPLATE directly, so
+    this kept working when the page moved into static files on 2026-08-25 -
+    and, more to the point, so it still covers the JavaScript afterwards. A
+    guard that only understands the old arrangement stops guarding the moment
+    the arrangement changes, and says nothing about it.
+    """
     import h1_web_scheduler as sched
-    problems = scan_javascript(_script(sched.HTML_TEMPLATE))
+    import page_sources as ps
+
+    sched.app.config["TESTING"] = True
+    with sched.app.test_client() as client:
+        _, js = ps.fetch_page(client)
+    assert js.strip(), "no JavaScript was served with the page at all"
+    problems = scan_javascript(js)
     assert not problems, "the page's JavaScript is broken:\n  " + "\n  ".join(problems)
 
 
