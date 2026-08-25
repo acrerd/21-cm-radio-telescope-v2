@@ -14,10 +14,17 @@ display belongs to the receiver rewrite (issue #15).
 The two views are chosen to match what each observation type is for:
 
   spectrum  the time-averaged spectrum against frequency, with a second axis
-            in Doppler velocity. That axis is *topocentric* - no LSR or
-            barycentric correction is applied here - and is labelled as such,
-            because a velocity axis silently in the wrong frame is worse than
-            no velocity axis at all.
+            in Doppler velocity. That axis is in **LSR** whenever the direction
+            and epoch can be worked out, which is what H I is quoted in
+            everywhere; the correction reaches ~30 km/s and changes with the
+            direction and the date, so without it nothing recorded here could
+            be compared with published data or with the simulator. It is
+            applied at the observation's own epoch and subtracted for display
+            only - the recorded file stays raw and can be re-reduced.
+
+            Where the direction is unknown the axis stays topocentric and says
+            so, because a velocity axis silently in the wrong frame is worse
+            than one honestly labelled.
 
   drift     band power against time, which for a drift scan is the whole
             result: the source enters, peaks and leaves. The expected transit
@@ -34,6 +41,10 @@ from datetime import datetime, timezone
 import numpy as np
 
 import bandpass
+from observatory import SITE_HEIGHT_M, SITE_LAT_DEG, SITE_LON_DEG
+
+SIMULATOR_DIR = os.path.join(os.path.dirname(os.path.dirname(
+    os.path.abspath(__file__))), "astro_simulator")
 
 log = logging.getLogger("scheduler")
 
@@ -296,12 +307,23 @@ def plot_observation(path, output_path, name="", mode="spectrum",
     # console and never on a phone, and the whole point of a spectrum is fine
     # structure across the band - at 900 px a 0.49 kHz channel is a fifth of a
     # pixel and the line profile is whatever the resampling decided.
+    # The velocity frame is evaluated at the middle of the observation, and at
+    # the observation's own epoch rather than now: the barycentric term moves
+    # 1.95 km/s in a week. For a long run the frame drifts a little across it -
+    # a couple of hundred m/s in an hour - and the mid-point is the honest
+    # single value for an averaged spectrum.
+    mid = None
+    if stamps.size:
+        mid = datetime.fromtimestamp(float(np.mean([stamps[0], stamps[-1]])),
+                                     tz=timezone.utc)
+    lsr = lsr_offset_km_s(header, mid)
+
     fig, ax = plt.subplots(figsize=figsize, dpi=dpi)
     secax = None
     if mode == "drift":
         _plot_drift(ax, spectra, stamps, transit_minutes)
     else:
-        secax = _plot_spectrum(ax, freq_hz, spectra)
+        secax = _plot_spectrum(ax, freq_hz, spectra, lsr=lsr)
         if cal_ok:
             ax.set_ylabel("Antenna temperature (K)")
     # The spectrum's velocity axis lives along the top of the frame, and
@@ -362,7 +384,101 @@ def _robust_ylim(ax, y):
             fontsize=8, color=_MARK)
 
 
-def _plot_spectrum(ax, freq_hz, spectra):
+def observation_direction(header, when=None):
+    """(galactic l, b) the observation was pointed at, or None.
+
+    Every coordinate system ends up here, because the velocity frame depends on
+    the direction on the sky and nothing else. Alt/az and drift pointings have
+    to be converted at a particular moment - the dish is fixed and the sky is
+    not - so those are resolved at `when`, which callers pass as the mid-point
+    of the observation.
+    """
+    system = str(header.get("coord_system", "") or "").lower()
+    c1 = _dms(header, "coord1")
+    c2 = _dms(header, "coord2")
+    if c1 is None or c2 is None:
+        return None
+    try:
+        import astropy.units as u
+        from astropy.coordinates import AltAz, EarthLocation, SkyCoord
+        from astropy.time import Time
+    except ImportError:
+        return None
+
+    if system == "galactic":
+        return float(c1), float(c2)
+    if system in ("radec", "drift"):
+        # coord1 is in hours for an RA, per the schedule form.
+        sky = SkyCoord(ra=float(c1) * 15.0 * u.deg, dec=float(c2) * u.deg,
+                       frame="icrs")
+    elif system == "altaz":
+        if when is None:
+            return None
+        site = EarthLocation(lat=SITE_LAT_DEG * u.deg, lon=SITE_LON_DEG * u.deg,
+                             height=SITE_HEIGHT_M * u.m)
+        sky = SkyCoord(alt=float(c1) * u.deg, az=float(c2) * u.deg,
+                       frame=AltAz(obstime=Time(when), location=site)).icrs
+    else:
+        return None
+    gal = sky.galactic
+    return float(gal.l.deg), float(gal.b.deg)
+
+
+def _dms(header, prefix):
+    """Decimal degrees (or hours) from the deg/min/sec triple in a header."""
+    try:
+        deg = float(header[prefix + "_deg"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    minutes = float(header.get(prefix + "_min", 0) or 0)
+    seconds = float(header.get(prefix + "_sec", 0) or 0)
+    sign = -1.0 if deg < 0 else 1.0
+    return sign * (abs(deg) + minutes / 60.0 + seconds / 3600.0)
+
+
+def lsr_offset_km_s(header, when):
+    """Velocity to SUBTRACT from the topocentric axis to put it in LSR.
+
+    The recorded axis is the raw Doppler shift of the observed frequency: no
+    barycentric term, no solar motion. H I is quoted in LSR everywhere, so
+    without this a spectrum cannot be compared with published data, with the
+    simulator, or with the same source observed six months later - the offset
+    reaches ~30 km/s and changes with the date and the direction.
+
+    The calculation is the one already used in the other direction, and proven
+    there: rf_calibration.simulated_spectrum shifts the simulator's LSR
+    spectra to topocentric before fitting the gain, and those fits agree to
+    1.4% across two days and 102 degrees of longitude. frame_offset returns
+    what to *add* to an LSR axis to get the observed frame, so recovering LSR
+    from an observation subtracts it.
+
+    Evaluated at the observation's own epoch, never at "now": the barycentric
+    term moves 1.95 km/s in a week and 8.06 km/s in a month, which at 0.49 kHz
+    channels is 19 and 78 channels respectively.
+
+    Returns (dv_km_s, glon, glat), or None when the direction cannot be worked
+    out - in which case the caller must leave the axis topocentric and say so,
+    because a velocity axis silently in the wrong frame is worse than one
+    honestly labelled.
+    """
+    if when is None:
+        return None
+    direction = observation_direction(header, when)
+    if direction is None:
+        return None
+    glon, glat = direction
+    try:
+        import sys
+        if SIMULATOR_DIR not in sys.path:
+            sys.path.insert(0, SIMULATOR_DIR)
+        import astro_simulator as A
+        dv_m_s = A.frame_offset(glon, glat, "topo", when)
+    except Exception:                                     # noqa: BLE001
+        return None
+    return float(dv_m_s) / 1000.0, glon, glat
+
+
+def _plot_spectrum(ax, freq_hz, spectra, lsr=None):
     mean = spectra.mean(axis=0)
     freq_mhz = freq_hz / 1e6
     # Staircase, as on the calibration plots. Each point is a channel with a
@@ -380,18 +496,36 @@ def _plot_spectrum(ax, freq_hz, spectra):
                    label="H I rest frequency")
         ax.legend(fontsize=8, loc="best")
 
-    # Velocity on the top axis. Topocentric: this is the raw Doppler shift of
-    # the observed frequency, with no LSR or barycentric term, so it is offset
-    # from the LSR velocity an H I spectrum is normally quoted in by up to
-    # ~30 km/s. Labelled, not silently corrected.
+    # Velocity on the top axis, in LSR when the direction and epoch are known.
+    #
+    # The recorded axis is the raw Doppler shift of the observed frequency, so
+    # it carries the Earth's orbit and rotation and the Sun's motion through
+    # the local standard of rest - up to ~30 km/s, varying with direction and
+    # date. H I is quoted in LSR everywhere, so a topocentric axis cannot be
+    # compared with published data, with the simulator, or with the same source
+    # six months later. The correction is subtracted here rather than written
+    # into the file: the recorded observation stays raw and can be re-reduced.
+    #
+    # Where the direction cannot be worked out the axis stays topocentric and
+    # says so. A velocity axis silently in the wrong frame is worse than one
+    # honestly labelled - which is what this was until 2026-08-25.
+    dv = lsr[0] if lsr else 0.0
+
     def to_vel(f_mhz):
-        return C_KM_S * (1.0 - np.asarray(f_mhz) * 1e6 / H1_REST_FREQ_HZ)
+        topo = C_KM_S * (1.0 - np.asarray(f_mhz) * 1e6 / H1_REST_FREQ_HZ)
+        return topo - dv
 
     def to_freq(v):
-        return H1_REST_FREQ_HZ * (1.0 - np.asarray(v) / C_KM_S) / 1e6
+        topo = np.asarray(v) + dv
+        return H1_REST_FREQ_HZ * (1.0 - topo / C_KM_S) / 1e6
 
     secax = ax.secondary_xaxis("top", functions=(to_vel, to_freq))
-    secax.set_xlabel("Topocentric velocity (km/s) - no LSR correction")
+    if lsr:
+        secax.set_xlabel("LSR velocity (km/s)   [topocentric %+.2f km/s applied,"
+                         " l=%.1f b=%.1f]" % (-dv, lsr[1], lsr[2]))
+    else:
+        secax.set_xlabel("Topocentric velocity (km/s) - direction unknown, "
+                         "no LSR correction")
     return secax
 
 
