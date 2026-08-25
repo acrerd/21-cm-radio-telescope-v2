@@ -257,6 +257,11 @@
         // plot is that it updates, and re-rendering matplotlib every ten
         // seconds for a line graph would put the work on the observatory
         // machine while it is recording.
+        // Matches the canvas background in app.css. Both are needed: the CSS
+        // one covers the element before the first draw, this one is in the
+        // pixels so a copy of the image looks like the image.
+        const PLOT_BG = '#16162e';
+
         let obvLiveTimer = null;
 
         // How long to wait before asking again. Follows the record cadence
@@ -306,7 +311,14 @@
             // proportions rather than for any particular screen.
             const W = c.width, H = c.height;
             const L = 130, R = 30, T = 30, B = 78;
-            ctx.clearRect(0, 0, W, H);
+            // Painted into the canvas, not left to CSS. The stylesheet's
+            // background colours the element on the page but never reaches the
+            // bitmap, so a copied or saved image carried an alpha channel and
+            // whatever pasted it supplied white - dark text and a dark trace on
+            // white, which is illegible and looks like a broken export rather
+            // than a transparency. What is copied now matches what is shown.
+            ctx.fillStyle = PLOT_BG;
+            ctx.fillRect(0, 0, W, H);
 
             const cal = d.calibrated;
             const ys = d.points.map(p => cal ? p.sfu : p.counts);
