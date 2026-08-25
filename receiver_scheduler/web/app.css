@@ -13,6 +13,11 @@
                        margin-left: calc(-50vw + 700px); }
         }
         .rf-wide img { display: block; }
+        /* A canvas has intrinsic pixel dimensions, so without this it renders
+           at its width attribute rather than filling the column it was put in.
+           The live solar plot is drawn at 1920 and shown at whatever the
+           window gives it. */
+        .rf-wide canvas { display: block; width: 100%; height: auto; }
         .status-bar { background: #16213e; padding: 15px; border-radius: 8px; margin-bottom: 20px; display: flex; justify-content: space-between; align-items: center; gap: 18px; flex-wrap: wrap; }
         .status-indicator { display: flex; align-items: center; gap: 10px; }
         .status-group { display: flex; align-items: center; gap: 26px; flex-wrap: wrap; }

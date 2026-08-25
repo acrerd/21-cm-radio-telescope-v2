@@ -276,8 +276,11 @@
         function obvLiveDraw(d) {
             const c = document.getElementById('obvLiveCanvas');
             const ctx = c.getContext('2d');
+            // Drawn in the canvas's own pixel space (1920 x 520) and scaled
+            // to the window by CSS, so these are chosen for the plot's
+            // proportions rather than for any particular screen.
             const W = c.width, H = c.height;
-            const L = 90, R = 20, T = 20, B = 44;
+            const L = 130, R = 30, T = 30, B = 78;
             ctx.clearRect(0, 0, W, H);
 
             const cal = d.calibrated;
@@ -293,7 +296,7 @@
             const Y = v => T + (H - T - B) * (1 - (v - ymin) / (ymax - ymin));
 
             ctx.strokeStyle = '#333355'; ctx.fillStyle = '#c8c8d8';
-            ctx.font = '16px sans-serif'; ctx.lineWidth = 1;
+            ctx.font = '20px sans-serif'; ctx.lineWidth = 1;
             for (let i = 0; i <= 4; i++) {
                 const v = ymin + (ymax - ymin) * i / 4;
                 const y = Y(v);
@@ -304,17 +307,20 @@
             ctx.textAlign = 'center'; ctx.textBaseline = 'top';
             for (let i = 0; i <= 4; i++) {
                 const v = xmax * i / 4;
-                ctx.fillText(v.toFixed(1), X(v), H - B + 8);
+                ctx.fillText(v.toFixed(1), X(v), H - B + 10);
             }
-            ctx.fillText('minutes since the run started', (L + W - R) / 2, H - 20);
+            ctx.font = '22px sans-serif';
+            ctx.fillText('minutes since the run started', (L + W - R) / 2, H - 34);
+            ctx.font = '20px sans-serif';
             ctx.save();
-            ctx.translate(22, (T + H - B) / 2); ctx.rotate(-Math.PI / 2);
+            ctx.font = '22px sans-serif';
+            ctx.translate(34, (T + H - B) / 2); ctx.rotate(-Math.PI / 2);
             ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
             ctx.fillText(cal ? 'solar flux (SFU, T_sys subtracted)'
                              : 'band power (counts, uncalibrated)', 0, 0);
             ctx.restore();
 
-            ctx.strokeStyle = '#ffa502'; ctx.lineWidth = 2;
+            ctx.strokeStyle = '#ffa502'; ctx.lineWidth = 2.5;
             ctx.beginPath();
             xs.forEach((x, i) => { i ? ctx.lineTo(X(x), Y(ys[i])) : ctx.moveTo(X(x), Y(ys[i])); });
             ctx.stroke();
