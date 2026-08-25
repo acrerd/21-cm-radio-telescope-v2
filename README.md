@@ -355,7 +355,9 @@ When **Track** is enabled:
 
 ## H1 Receiver & Observation Scheduler
 
-The `receiver_scheduler/` folder contains the data acquisition system for 21 cm hydrogen line observations.
+The `receiver_scheduler/` folder contains the data acquisition system for 21 cm hydrogen line observations: the receiver itself, a Flask scheduler with a nine-tab operator page, pointing calibration against the Sun, a radiometric measurement of the obstructed horizon, and the bandpass and gain calibration that turns counts into kelvin. See [its README](receiver_scheduler/README.md) for the tabs and the files.
+
+Everything in the observing path is **headless** — the observatory is worked over ssh — with one deliberate exception, the console-only receiver GUI button.
 
 ### Receiver Prerequisites
 
@@ -573,14 +575,25 @@ See `receiver_scheduler/read_h1_data.ipynb` for a complete analysis example.
 │       └── index_html.h        # Embedded web interface
 │
 ├── receiver_scheduler/     # Observation scheduling & data acquisition
-│   ├── h1_web_scheduler.py # Flask web scheduler with ESP32 integration
+│   ├── h1_web_scheduler.py # Flask scheduler: routes, schedule, observing state
+│   ├── web/                # The operator page as static files (index.html,
+│   │                       #   app.css, js/ - one script per tab)
 │   ├── b210_h1_receiver.py # GNU Radio 21cm receiver (B210/RTL-SDR)
-│   ├── sun_scan.py         # Sun raster scan pointing calibration
+│   ├── sun_scan.py         # Sun raster, pointing model, calibration day
+│   ├── horizon_scan.py     # Radiometric horizon measurement
+│   ├── rf_calibration.py   # Counts to kelvin: gain, T_sys, clock offset
+│   ├── bandpass.py         # The measured instrument response
+│   ├── tuning.py           # LO offset and sample rate for the line
+│   ├── observation_plot.py # Finished observations, in kelvin and LSR velocity
+│   ├── observatory.py      # Site and beam - plumbing; numbers in instrument.py
+│   ├── horizon_profiles/   # Every horizon scan, by date, one chosen
 │   ├── read_h1_data.ipynb  # Jupyter notebook for reading/plotting HDF5 data
-│   ├── scheduler_config.json # Persistent configuration (auto-generated)
-│   ├── scheduler.log       # Rotating log file (auto-generated)
-│   ├── h1_schedule.json    # Saved observation schedule
 │   └── README.md           # Receiver/scheduler documentation
+│
+├── astro_simulator/        # Sky simulator (HI4PI + continuum)
+│   ├── instrument.py       # Surveyed site, measured beam - the one copy
+│   ├── horizon_store.py    # The dated horizon archive, and the rule for using it
+│   └── web/                # Browser build, served by the scheduler at /simulator/
 │
 └── docs/
     ├── SRT_DRIVE_MANUAL.md         # Arduino Due firmware manual
