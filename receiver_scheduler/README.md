@@ -17,19 +17,55 @@ This receiver is designed for radio astronomy observations of neutral hydrogen (
 
 | File | Description |
 |------|-------------|
-| `b210_h1_receiver.py` | Main receiver application with GUI |
-| `h1_web_scheduler.py` | Web-based observation scheduler |
-| `h1_schedule.json` | Saved observation schedule |
-| `scheduler_config.json` | Local scheduler configuration (auto-generated, ignored) |
-| `scheduler.log` | Rotating log file (auto-generated, ignored) |
-| `read_h1_data.ipynb` | Jupyter notebook for reading/plotting HDF5 data |
+| `h1_web_scheduler.py` | The Flask scheduler: routes, the schedule, and the observing state machine |
+| `web/` | The operator page as static files — `index.html`, `app.css`, and twelve scripts under `js/`, one per tab. Read per request, so editing them needs a browser refresh and not a scheduler restart |
+| `b210_h1_receiver.py` | The receiver. `--headless` for observing, a Qt window for warm-up at the console |
+| `sun_scan.py` | Sun raster, pointing-model fit, calibration day |
+| `horizon_scan.py` | Radiometric horizon measurement, and the Stellarium landscape export |
+| `rf_calibration.py` | Counts to kelvin: gain, system temperature, and the fitted clock offset |
+| `bandpass.py` | The measured instrument response, and whether it applies to a given tuning |
+| `tuning.py` | Chooses the LO offset and sample rate so the line sits in the flat band |
+| `observation_plot.py` | Renders a finished observation, in kelvin and on an LSR velocity axis |
+| `observatory.py` | Where the telescope is and how big its beam is — plumbing only; the numbers live in `astro_simulator/instrument.py` |
+| `page_sources.py` | Collects the page and every script it loads, for the tests that guard it |
+| `ad9361_filters.py` | Reads the B210's own decimation-filter chain and computes its response |
+| `lo_shape_*.py`, `freq_switch_demo.py` | One-off investigations, kept for their reasoning |
+
+### State the scheduler keeps
+
+| File | Description |
+|------|-------------|
+| `h1_schedule.json` | The observation schedule |
+| `scheduler_config.json` | Local configuration (auto-generated, gitignored) |
+| `scheduler.log` | Rotating log — the operational record of what the telescope did |
+| `bandpass_template.json` | The measured bandpass in force |
+| `gain_calibration.json` | The gain, system temperature and clock offset in force |
+| `pointing_data.json` | Every Sun scan on file, which the pointing model is fitted from |
+| `horizon_profiles/` | Every horizon scan, kept by date, with `active.json` naming the one in force |
+| `horizon_profile.json` | A mirror of whichever horizon profile is active, for older readers |
+| `last_observation.json` | Points at the last run, so the Observe tab survives a restart |
+| `read_h1_data.ipynb` | Jupyter notebook for reading/plotting the HDF5 files |
 | `requirements.txt` | Python package dependencies |
-| `test_scheduler.py` | Unit tests for scheduler behavior |
-| `test_sun_scan.py` | Unit tests for Sun scan geometry and cancellation |
-| `pointing_data.json` | Saved Sun scan pointing corrections |
 | `start_srt_software.sh` | Starts VS Code, Firefox, Stellarium, and optional window layout |
 | `start_platformio_monitor.sh` | Single-instance serial monitor with device wait and lock retry handling |
 | `SRT Software.code-workspace` | VS Code workspace with automatic scheduler and serial-monitor tasks |
+
+### Tests
+
+`cd receiver_scheduler && python -m pytest` — 362 tests. `conftest.py` keeps the suite out of the observatory's records: it detaches the loggers from `scheduler.log` and redirects the last-observation pointer, because several tests run the real `stop_observation`. No test may open the B210; stub `sun_scan._B210PowerMeter` if you need the non-demo path.
+
+| File | Covers |
+|------|--------|
+| `test_scheduler.py` | Scheduling, the observation lifecycle, preemption, the API |
+| `test_scheduler_state.py` | That the names describing a running observation agree with each other |
+| `test_exclusion.py` | That only one thing at a time owns the SDR and the mount |
+| `test_sun_scan.py` | Raster geometry, the pointing fit, obstruction handling |
+| `test_horizon_scan.py` | Strip scanning, partial saves, deriving clearance afterwards |
+| `test_horizon_store.py` | The dated archive, choosing which profile is in force, window trimming |
+| `test_rf_calibration.py` | Gain and T_sys fitting, RFI rejection, the LO artefact |
+| `test_bandpass.py`, `test_tuning.py` | The instrument response and the tuning plan |
+| `test_velocity_frame.py` | The LSR correction and the clock offset |
+| `test_page_structure.py`, `test_page_javascript.py` | That the operator page has not lost an element, a handler, or a route |
 
 ## Hardware Requirements
 
@@ -189,7 +225,43 @@ The scheduler points at the current controller web UI by default: `http://192.16
 
 ### Web Interface Tabs
 
-The scheduler web interface has Scheduler, Sun Scan, Configuration, and Log tabs:
+Nine tabs. Everything that produces data you keep is headless; the one
+deliberately graphical path is the **Start receiver GUI (console only)** button
+in the status bar, which opens the receiver's Qt window on the observatory
+machine for warm-up and checking the band. It will fail over ssh, and that is
+correct rather than broken.
+
+| Tab | For |
+|-----|-----|
+| **Scheduler** | Booking observations, and what is running now |
+| **Sun Scan** | Pointing calibration: a raster on the Sun, the model fit, and the calibration day that repeats it |
+| **Horizon** | Measuring the obstructed horizon, choosing which measured profile is in force, and exporting it to Stellarium |
+| **RF calibration** | The bandpass template and the counts-to-kelvin gain, with suggested targets screened against the measured horizon |
+| **Camera** | The safety camera watching the dish |
+| **Simulator** | The sky simulator, served from the scheduler so the two share an origin |
+| **Observe** | Running an observation now — a tracked spectrum, a drift scan, or a solar flux track with a live plot |
+| **Configuration** | Site, controller, receiver and camera settings |
+| **Log** | The operational record |
+
+Only one of the Sun scan, calibration day, horizon scan, RF calibration, a
+scheduled observation, or a hand-started receiver may hold the B210 and the
+mount at once; whichever is asked for second is refused with the reason.
+
+#### Observe Tab
+
+Runs an observation immediately, or hands one to the scheduler. Three modes:
+
+- **Spectrum (tracked)** — the dish follows a galactic direction
+- **Drift scan** — the dish is parked and the source crosses the beam, transiting at the mid-point
+- **Solar track (flux monitor)** — the dish follows the Sun, plotting flux in
+  solar flux units live while the spectra record as usual. The plot bins the
+  whole run rather than its tail, updates at the rate records appear, and stays
+  on screen until the next observation replaces it.
+
+Finished observations are plotted in kelvin when a gain calibration applies to
+the tuning, and on an **LSR** velocity axis when the direction and epoch can be
+worked out — H I is quoted in LSR everywhere, and the correction reaches
+~30 km/s. Where the direction is unknown the axis stays topocentric and says so.
 
 #### Scheduler Tab
 The main view for managing observations.
