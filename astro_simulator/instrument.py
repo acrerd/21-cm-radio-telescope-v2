@@ -6,6 +6,8 @@ without importing matplotlib and astropy, and so the measured beam is written
 down in exactly one place rather than once per consumer.
 """
 
+import math
+
 # Beam FWHM, measured rather than derived: 18 solar scans on 2026-08-22 fitted
 # 5.173 +/- 0.020 deg on the 3.0 m dish (receiver_scheduler/sun_scan.py, which
 # fits the width as a free parameter of each raster).
@@ -91,3 +93,52 @@ def beam_fwhm_deg(dish_m=DISH_M):
     if dish_m <= 0:
         raise ValueError("Dish diameter must be positive")
     return BEAM_FWHM_REF_DEG * BEAM_FWHM_REF_DISH_M / dish_m
+
+
+# H I rest frequency and c, for turning the beam into a collecting area. Kept
+# here rather than imported so this file stays free of anything but arithmetic -
+# it is read by the scheduler, the simulator and the browser bundle alike.
+H1_REST_FREQ_HZ = 1420.405752e6
+C_M_S = 299792458.0
+BOLTZMANN = 1.380649e-23
+
+
+def beam_solid_angle_sr(dish_m=DISH_M):
+    """Main-beam solid angle for a Gaussian beam of the measured width.
+
+    1.133 theta^2 is the exact integral of a 2-D Gaussian expressed through its
+    FWHM (pi/(4 ln 2)), so this follows from the beam having been *measured*
+    rather than assumed - 5.164 deg off eighteen solar scans, deconvolved.
+    """
+    fwhm_rad = math.radians(beam_fwhm_deg(dish_m))
+    return 1.133 * fwhm_rad ** 2
+
+
+def effective_area_m2(dish_m=DISH_M):
+    """Collecting area from the antenna theorem, A_e * Omega_A = lambda^2.
+
+    Derived from the measured beam, never from an assumed aperture efficiency:
+    that is the same argument that put MAIN_BEAM_EFFICIENCY at 1.0 rather than
+    at a number chosen to make an answer come out. For the 3 m dish this gives
+    4.84 m^2 against a physical 7.07, an aperture efficiency of 0.68 - which is
+    an output of the measurement, not an input to it.
+    """
+    lam = C_M_S / H1_REST_FREQ_HZ
+    return lam ** 2 / beam_solid_angle_sr(dish_m)
+
+
+def flux_to_antenna_temperature(sfu, dish_m=DISH_M):
+    """Antenna temperature (K) a point source of this flux density produces.
+
+    T_A = S * A_e / 2k, in solar flux units of 1e-22 W/m^2/Hz. The factor of
+    two is the single polarisation: an unpolarised source divides its power
+    equally between the two, and this receiver keeps one. It is the same factor
+    that is already inside the simulator's antenna temperatures, and adding it
+    twice would halve every calibrated number.
+    """
+    return float(sfu) * 1e-22 * effective_area_m2(dish_m) / (2.0 * BOLTZMANN)
+
+
+def antenna_temperature_to_flux(t_a_k, dish_m=DISH_M):
+    """Solar flux units from an antenna temperature. The inverse of the above."""
+    return float(t_a_k) * 2.0 * BOLTZMANN / (effective_area_m2(dish_m) * 1e-22)

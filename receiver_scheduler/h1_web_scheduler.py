@@ -3399,6 +3399,89 @@ def api_rf_cancel():
     return jsonify({"success": True})
 
 
+@app.route('/api/observe/live', methods=['GET'])
+def api_observe_live():
+    """The running observation's band power, in solar flux units.
+
+    Reads the summary the receiver writes beside its HDF5 - one line per
+    record - rather than the recording itself, which cannot be opened while it
+    is being written. See _append_live_summary in b210_h1_receiver.py.
+
+    The conversion is the stored calibration and nothing new: counts to kelvin
+    through the fitted gain, minus the fitted system temperature, then the
+    antenna theorem with the *measured* beam. T_sys is subtracted, so what is
+    plotted is the source alone. Against the Sun that term is small - a
+    thousand kelvin of Sun against three hundred and fifty of system - so an
+    error in T_sys moves the flux by a few percent rather than dominating it.
+
+    Reports honestly when it cannot convert: without a calibration for this
+    tuning the counts are returned unlabelled, because counts are honestly
+    arbitrary and wrong flux units are not.
+    """
+    import rf_calibration
+    import tuning
+    from observatory import antenna_temperature_to_flux
+
+    obs = current_observation
+    if not obs or not obs.get('output_file'):
+        return jsonify({'success': False, 'error': 'Nothing is recording'}), 404
+    path = os.path.splitext(obs['output_file'])[0] + '.live.jsonl'
+    try:
+        with open(path) as fh:
+            lines = fh.readlines()
+    except OSError:
+        return jsonify({'success': True, 'points': [], 'calibrated': False,
+                        'name': obs.get('name'),
+                        'note': 'the receiver has not written a record yet'})
+
+    try:
+        limit = max(1, min(5000, int(request.args.get('limit', 2000))))
+    except (TypeError, ValueError):
+        limit = 2000
+
+    cal = rf_calibration.load_calibration()
+    cal_ok, cal_why = rf_calibration.calibration_applies_to(cal, obs_header(obs))
+    points = []
+    for line in lines[-limit:]:
+        try:
+            rec = json.loads(line)
+            counts = float(rec['median'])
+        except (ValueError, KeyError, TypeError):
+            continue                       # a torn last line while it is written
+        point = {'t': rec.get('t'), 'tau': rec.get('tau'), 'counts': counts}
+        if cal_ok:
+            t_a = counts / cal['gain_counts_per_k'] - cal['t_sys_k']
+            point['t_a_k'] = t_a
+            point['sfu'] = antenna_temperature_to_flux(t_a)
+        points.append(point)
+    return jsonify({'success': True, 'points': points, 'calibrated': bool(cal_ok),
+                    'why': '' if cal_ok else cal_why,
+                    'name': obs.get('name'),
+                    'is_solar': (obs.get('coord_system') == 'object'
+                                 and str(obs.get('object_name', '')).lower() == 'sun'),
+                    't_sys_k': (cal or {}).get('t_sys_k') if cal_ok else None,
+                    'started_at': obs.get('started_at'),
+                    'ends_at': obs.get('ends_at')})
+
+
+def obs_header(obs):
+    """The tuning fields calibration_applies_to needs, from a schedule entry.
+
+    The observation's own header is inside the HDF5 and that file is locked
+    while it records, so the same values are rebuilt from the entry that
+    started it - they are what the receiver was told to use.
+    """
+    import tuning
+
+    plan = tuning.plan_tuning(
+        float(obs.get('center_freq_mhz', 1420.405752)) * 1e6,
+        float(obs.get('bandwidth_mhz', 2.4)) * 1e6,
+        obs.get('channels'))
+    return {'center_freq_hz': plan['tuned_center_freq_hz'],
+            'sample_rate_hz': plan['sample_rate_hz'],
+            'gain_db': obs.get('gain_db')}
+
+
 @app.route('/api/observe/plot', methods=['GET'])
 def api_observe_plot():
     """Render the last finished observation to a PNG.

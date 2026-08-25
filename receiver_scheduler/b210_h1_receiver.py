@@ -14,6 +14,7 @@ import h5py
 import signal
 import threading
 import time
+import json
 import os
 import sys
 from datetime import datetime, timezone
@@ -347,7 +348,42 @@ def append_spectrum(hf, avg_linear, timestamp, integration_time, fft_size):
     hf['timestamps'][n] = timestamp
     hf['integration_times'][n] = integration_time
     hf.flush()
+    _append_live_summary(hf, avg_linear, timestamp, integration_time, n + 1)
     return n + 1
+
+
+def _append_live_summary(hf, avg_linear, timestamp, integration_time, count):
+    """One line per record in a plain text file beside the HDF5.
+
+    So something can watch an observation while it runs. The HDF5 itself cannot
+    be read while it is being written - no SWMR, so a second opener hits the
+    file lock - and a live *spectrum* display is the receiver rewrite, issue
+    #15. A live *flux* display is not the same problem: it needs one number per
+    record, not the spectrum, and a few bytes of text cannot corrupt the
+    recording no matter what goes wrong here.
+
+    The number is the median across the band. Median rather than mean because
+    it ignores the LO artefact and any narrow interference without having to
+    find them, and for a broadband source like the Sun it is the continuum
+    level. The bandpass template normalises to a median of one over the fitted
+    band, so this is on very nearly the same scale as the corrected spectra the
+    gain was fitted against - close enough to watch a flux curve, while the
+    recorded file still allows the exact reduction afterwards.
+
+    Every failure here is swallowed. This is a convenience for whoever is
+    watching; an observation must never be lost because a summary line could
+    not be written.
+    """
+    try:
+        path = os.path.splitext(hf.filename)[0] + ".live.jsonl"
+        line = json.dumps({"t": float(timestamp),
+                           "tau": float(integration_time),
+                           "n": int(count),
+                           "median": float(np.median(avg_linear))})
+        with open(path, "a") as fh:
+            fh.write(line + "\n")
+    except Exception:                                     # noqa: BLE001
+        pass
 
 
 class HeadlessRecorder:

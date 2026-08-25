@@ -5,12 +5,26 @@
 // exactly as it did before the split.
 
         function onObserveModeChange() {
-            const drift = document.getElementById('obvMode').value === 'drift';
+            const mode = document.getElementById('obvMode').value;
+            const drift = mode === 'drift';
+            const solar = mode === 'solar';
             // In drift mode the duration IS the scan length, and the source
             // transits at its mid-point; saying so beats a tooltip.
             document.getElementById('obvDurationLabel').innerHTML =
                 drift ? 'Scan length <span class="unit">(min)</span> &mdash; transit at mid-point'
                       : 'Total integration time <span class="unit">(min)</span>';
+            // A solar track has no l and b to type: the target is the Sun, and
+            // the controller follows it.
+            ['obvL', 'obvB'].forEach(function (id) {
+                const el = document.getElementById(id);
+                if (el) el.disabled = solar;
+            });
+            const src = document.getElementById('obvSource');
+            if (solar && src) {
+                src.innerHTML = 'Tracking the <strong>Sun</strong>. The dish '
+                    + 'follows it for the whole run; flux is plotted live below '
+                    + 'and the spectra are recorded as usual.';
+            }
         }
 
         function loadObserveParams(force) {
@@ -56,7 +70,9 @@
         // Build the schedule-entry shape the rest of the app already speaks, so
         // Start Now and Send to Scheduler hand over exactly the same document.
         function observeToObs() {
-            const drift = document.getElementById('obvMode').value === 'drift';
+            const mode = document.getElementById('obvMode').value;
+            const drift = mode === 'drift';
+            const solar = mode === 'solar';
             const num = (id, dflt) => {
                 const v = parseFloat(document.getElementById(id).value);
                 return Number.isFinite(v) ? v : dflt;
@@ -64,7 +80,8 @@
             const l = num('obvL', 0), b = num('obvB', 0);
             const obs = Object.assign({}, DEFAULTS, {
                 name: document.getElementById('obvName').value.trim() || 'Simulator target',
-                coord_system: drift ? 'drift' : 'galactic',
+                coord_system: solar ? 'object' : (drift ? 'drift' : 'galactic'),
+                object_name: solar ? 'sun' : '',
                 drift_frame: 'galactic',
                 // Decimal degrees in the degrees field, which dms_to_decimal
                 // sums as given; the minutes and seconds boxes are for the
@@ -189,4 +206,101 @@
         function scheduleObserveTuning() {
             if (obvTuningTimer) clearTimeout(obvTuningTimer);
             obvTuningTimer = setTimeout(refreshObserveTuning, 250);
+        }
+
+        // ---- Solar flux, live -------------------------------------------
+        //
+        // Polled from /api/observe/live, which reads the one-line-per-record
+        // summary the receiver writes beside its HDF5. The recording itself
+        // cannot be opened while it is being written, and a live *spectrum*
+        // display is a bigger problem than this one (issue #15) - a flux
+        // monitor needs a single number per record, not the spectrum.
+        //
+        // Drawn on a canvas rather than fetched as a PNG: the point of a live
+        // plot is that it updates, and re-rendering matplotlib every ten
+        // seconds for a line graph would put the work on the observatory
+        // machine while it is recording.
+        let obvLiveTimer = null;
+
+        function obvLivePoll() {
+            const box = document.getElementById('obvLiveBox');
+            fetch('/api/observe/live?limit=2000').then(r => r.json()).then(d => {
+                if (!d.success || !d.is_solar) { box.style.display = 'none'; return; }
+                box.style.display = '';
+                if (!d.points || !d.points.length) {
+                    document.getElementById('obvLiveInfo').textContent =
+                        d.note || 'waiting for the first record';
+                    return;
+                }
+                obvLiveDraw(d);
+            }).catch(() => {});
+        }
+
+        function obvLiveDraw(d) {
+            const c = document.getElementById('obvLiveCanvas');
+            const ctx = c.getContext('2d');
+            const W = c.width, H = c.height;
+            const L = 90, R = 20, T = 20, B = 44;
+            ctx.clearRect(0, 0, W, H);
+
+            const cal = d.calibrated;
+            const ys = d.points.map(p => cal ? p.sfu : p.counts);
+            const t0 = d.points[0].t;
+            const xs = d.points.map(p => (p.t - t0) / 60.0);      // minutes
+            let ymin = Math.min.apply(null, ys), ymax = Math.max.apply(null, ys);
+            if (!(ymax > ymin)) { ymax = ymin + 1; }
+            const pad = 0.08 * (ymax - ymin);
+            ymin -= pad; ymax += pad;
+            const xmax = Math.max(1e-6, xs[xs.length - 1]);
+            const X = v => L + (W - L - R) * (v / xmax);
+            const Y = v => T + (H - T - B) * (1 - (v - ymin) / (ymax - ymin));
+
+            ctx.strokeStyle = '#333355'; ctx.fillStyle = '#c8c8d8';
+            ctx.font = '16px sans-serif'; ctx.lineWidth = 1;
+            for (let i = 0; i <= 4; i++) {
+                const v = ymin + (ymax - ymin) * i / 4;
+                const y = Y(v);
+                ctx.beginPath(); ctx.moveTo(L, y); ctx.lineTo(W - R, y); ctx.stroke();
+                ctx.textAlign = 'right'; ctx.textBaseline = 'middle';
+                ctx.fillText(v.toFixed(cal ? 1 : 5), L - 8, y);
+            }
+            ctx.textAlign = 'center'; ctx.textBaseline = 'top';
+            for (let i = 0; i <= 4; i++) {
+                const v = xmax * i / 4;
+                ctx.fillText(v.toFixed(1), X(v), H - B + 8);
+            }
+            ctx.fillText('minutes since the run started', (L + W - R) / 2, H - 20);
+            ctx.save();
+            ctx.translate(22, (T + H - B) / 2); ctx.rotate(-Math.PI / 2);
+            ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+            ctx.fillText(cal ? 'solar flux (SFU, T_sys subtracted)'
+                             : 'band power (counts, uncalibrated)', 0, 0);
+            ctx.restore();
+
+            ctx.strokeStyle = '#ffa502'; ctx.lineWidth = 2;
+            ctx.beginPath();
+            xs.forEach((x, i) => { i ? ctx.lineTo(X(x), Y(ys[i])) : ctx.moveTo(X(x), Y(ys[i])); });
+            ctx.stroke();
+
+            const last = ys[ys.length - 1];
+            const mean = ys.reduce((a, b) => a + b, 0) / ys.length;
+            let text = d.points.length + ' records';
+            if (cal) {
+                text += ' · latest ' + last.toFixed(1) + ' SFU · mean '
+                      + mean.toFixed(1) + ' SFU';
+                if (d.t_sys_k) text += ' · T_sys ' + d.t_sys_k.toFixed(0) + ' K subtracted';
+            } else {
+                text += ' · no gain calibration for this tuning, so counts: ' + (d.why || '');
+            }
+            document.getElementById('obvLiveInfo').textContent = text;
+        }
+
+        function obvLiveStart() {
+            if (obvLiveTimer) clearInterval(obvLiveTimer);
+            obvLivePoll();
+            obvLiveTimer = setInterval(obvLivePoll, 10000);
+        }
+
+        function obvLiveStop() {
+            if (obvLiveTimer) { clearInterval(obvLiveTimer); obvLiveTimer = null; }
         }

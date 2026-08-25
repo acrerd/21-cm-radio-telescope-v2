@@ -193,6 +193,9 @@
             }
             if (name === 'simulator') showSimulator();
             if (name === 'observe') { loadObserveParams(false); loadObserveLast(); }
+            // The live flux panel polls only while its tab is open, and
+            // hides itself unless the running observation is a solar track.
+            if (name === 'observe') { obvLiveStart(); } else { obvLiveStop(); }
             if (name === 'camera' && !camObjectUrl) refreshCamera();
             else scheduleCameraRefresh();
         }
