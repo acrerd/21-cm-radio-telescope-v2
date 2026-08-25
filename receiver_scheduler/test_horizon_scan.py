@@ -232,19 +232,30 @@ def test_a_strip_profile_still_drives_the_floor_and_the_landscape(tmp_path):
 
 
 def test_the_mount_is_homed_between_strips():
-    """Bounds any lost counts to a couple of strips instead of a whole sweep."""
+    """Bounds any lost counts to a couple of strips instead of a whole sweep.
+
+    Runs the non-demo path, because demo mode deliberately skips homing - but
+    with the B210 session stubbed as well as the measurement. Without that stub
+    this opened the real device: it passed whenever the SDR happened to be
+    free, and on 2026-08-25 it failed in the middle of an observation because
+    the receiver had it. Failing was the good outcome. A unit test that can
+    take the radio away from a running observation is a worse bug than
+    anything it was written to catch.
+    """
+    import sun_scan
+    from unittest.mock import MagicMock, patch
+
     homed = []
-    with __import__("unittest.mock", fromlist=["patch"]).patch.object(
-            hs, "_home_and_wait", side_effect=lambda *a, **k: homed.append(1)):
-        # demo mode deliberately skips homing, so drive the real path
-        with __import__("unittest.mock", fromlist=["patch"]).patch.object(
-                hs, "_measure_at",
-                side_effect=lambda base, alt, az, *a, **k: {
-                    "true_alt": alt, "true_az": az, "drive_alt": alt,
-                    "drive_az": az, "power": hs._demo_power(alt, az, 5.8)}):
-            hs.horizon_strip_scan(sdr_type="b210", srt_url="http://ctrl",
-                                  settle_s=0.0, alt_max=30.0,
-                                  home_every_strips=2)
+    with patch.object(hs, "_home_and_wait",
+                      side_effect=lambda *a, **k: homed.append(1)), \
+         patch.object(sun_scan, "_B210PowerMeter", MagicMock()), \
+         patch.object(hs, "_measure_at",
+                      side_effect=lambda base, alt, az, *a, **k: {
+                          "true_alt": alt, "true_az": az, "drive_alt": alt,
+                          "drive_az": az, "power": hs._demo_power(alt, az, 5.8)}):
+        hs.horizon_strip_scan(sdr_type="b210", srt_url="http://ctrl",
+                              settle_s=0.0, alt_max=30.0,
+                              home_every_strips=2)
     assert homed, "the mount should have been homed at least once"
 
 
