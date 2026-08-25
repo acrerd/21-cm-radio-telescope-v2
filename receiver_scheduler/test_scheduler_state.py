@@ -1,0 +1,160 @@
+"""The observing state, pinned before it is rearranged.
+
+Written 2026-08-25, ahead of moving the scheduler's module-level state into one
+object so the routes can be split into blueprints. The existing lifecycle tests
+already check that starting an observation starts one; what none of them check
+is that the half-dozen names describing *whether* an observation is running
+agree with each other afterwards.
+
+That agreement is exactly what a state move breaks. Convert a write and miss
+the matching read and the two drift apart silently: `current_observation` says
+a scan is running while `current_process` says nothing is, and the scheduler
+either refuses to start anything ever again or starts a second observation on
+top of the first. Neither announces itself, and both need the mount to notice.
+
+So these assert the whole tuple at once, at each transition, rather than one
+name at a time. The lesson is from earlier the same day: four structural guards
+passed while the page's log tab was quietly broken, because they checked shape
+and not meaning. These check meaning.
+"""
+
+from unittest.mock import MagicMock, patch
+
+import pytest
+
+import h1_web_scheduler as sched
+
+# The names that together say whether an observation is running. Any refactor
+# that separates them has broken something, whichever way round.
+IDLE = {"current_process": None, "current_observation": None,
+        "observation_end_time": None, "observation_starting": False,
+        "starting_observation_name": ""}
+
+
+def snapshot():
+    return {name: getattr(sched, name) for name in IDLE}
+
+
+def assert_idle(where):
+    now = snapshot()
+    assert now == IDLE, "%s: state should be fully idle, got %s" % (where, now)
+
+
+def assert_running(name, where):
+    now = snapshot()
+    assert now["current_process"] is not None, "%s: no process" % where
+    assert now["current_observation"] is not None, "%s: no observation" % where
+    assert now["current_observation"]["name"] == name, where
+    assert now["observation_end_time"] is not None, "%s: no end time" % where
+    # The starting flags are a door, not a record: they guard the window
+    # between claiming a start and completing it, and must be clear once the
+    # observation is actually running or a second start is refused forever.
+    assert now["observation_starting"] is False, "%s: still marked starting" % where
+    assert now["starting_observation_name"] == "", "%s: stale starting name" % where
+
+
+OBS = {"name": "State test", "coord_system": "altaz",
+       "coord1_deg": 45, "coord1_min": 0, "coord1_sec": 0,
+       "coord2_deg": 180, "coord2_min": 0, "coord2_sec": 0,
+       "center_freq_mhz": 1420.405, "channels": 4096, "integration_time_s": 3.0,
+       "sdr_type": "demo", "gain_db": 40, "bandwidth_mhz": 2.4,
+       "calibrator": False, "duration_minutes": 10}
+
+
+@pytest.fixture
+def idle():
+    """Put the module in the idle state, and put it back afterwards."""
+    saved = snapshot()
+    for name, value in IDLE.items():
+        setattr(sched, name, value)
+    yield
+    for name, value in saved.items():
+        setattr(sched, name, value)
+
+
+@pytest.fixture
+def running_proc():
+    proc = MagicMock()
+    proc.poll.return_value = None
+    return proc
+
+
+def test_every_name_agrees_that_nothing_is_running(idle):
+    assert_idle("at rest")
+
+
+def test_every_name_agrees_after_a_start(idle, running_proc):
+    with patch.object(sched, "SRT_CONTROLLER_URL", None), \
+         patch("subprocess.Popen", return_value=running_proc), \
+         patch.object(sched, "generate_filename", return_value="/tmp/state_test.h5"):
+        assert sched.start_observation(dict(OBS)) is True
+    assert_running("State test", "after start")
+
+
+def test_every_name_agrees_again_after_a_stop(idle, running_proc):
+    """The one that matters most.
+
+    A stop that clears some names and not others is how the scheduler ends up
+    unable to start anything: current_observation still holds the finished
+    observation, so every later start is refused as a clash, and the only
+    symptom is a night with no data.
+    """
+    with patch.object(sched, "SRT_CONTROLLER_URL", None), \
+         patch("subprocess.Popen", return_value=running_proc), \
+         patch.object(sched, "generate_filename", return_value="/tmp/state_test.h5"):
+        sched.start_observation(dict(OBS))
+    assert_running("State test", "after start")
+
+    running_proc.poll.return_value = 0
+    with patch.object(sched, "SRT_CONTROLLER_URL", None):
+        sched.stop_observation()
+    assert_idle("after stop")
+
+
+def test_a_start_and_stop_cycle_leaves_no_residue(idle, running_proc):
+    """Twice round, because state that leaks does it cumulatively."""
+    for run in range(3):
+        running_proc.poll.return_value = None
+        with patch.object(sched, "SRT_CONTROLLER_URL", None), \
+             patch("subprocess.Popen", return_value=running_proc), \
+             patch.object(sched, "generate_filename", return_value="/tmp/state_test.h5"):
+            assert sched.start_observation(dict(OBS)) is True, "cycle %d" % run
+        assert_running("State test", "cycle %d" % run)
+        running_proc.poll.return_value = 0
+        with patch.object(sched, "SRT_CONTROLLER_URL", None):
+            sched.stop_observation()
+        assert_idle("cycle %d" % run)
+
+
+def test_a_failed_start_leaves_the_state_idle(idle):
+    """A start that raises must not leave the door flag set.
+
+    observation_starting is what stops two observations beginning at once. If
+    an exception on the way up leaves it True, the scheduler is wedged: every
+    later start sees a start already in progress and declines, forever, with
+    nothing running.
+    """
+    with patch.object(sched, "SRT_CONTROLLER_URL", None), \
+         patch("subprocess.Popen", side_effect=OSError("no receiver")), \
+         patch.object(sched, "generate_filename", return_value="/tmp/state_test.h5"):
+        try:
+            sched.start_observation(dict(OBS))
+        except OSError:
+            pass
+    assert sched.observation_starting is False, \
+        "a failed start left the scheduler unable to start anything again"
+    assert sched.starting_observation_name == ""
+
+
+def test_the_state_names_are_all_present(idle):
+    """Guards the move itself.
+
+    If the state is relocated into another module, these names must either
+    follow or be deliberately retired - what must not happen is one of them
+    quietly remaining here as a stale copy that nothing updates any more. A
+    read of a stale module global is silent; that is the whole hazard.
+    """
+    for name in IDLE:
+        assert hasattr(sched, name), (
+            "%s has gone. If the state moved, this test should move with it - "
+            "not be deleted." % name)
