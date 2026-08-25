@@ -285,14 +285,25 @@
 
             const cal = d.calibrated;
             const ys = d.points.map(p => cal ? p.sfu : p.counts);
-            const t0 = d.points[0].t;
-            const xs = d.points.map(p => (p.t - t0) / 60.0);      // minutes
+            // Absolute UTC seconds. Elapsed minutes were easier to draw but
+            // meant nothing once the plot was one of several: solar activity is
+            // reported against the clock, and a feature here has to be matched
+            // to a flare time, to the published index, or to another
+            // instrument's record.
+            const xs = d.points.map(p => p.t);
             let ymin = Math.min.apply(null, ys), ymax = Math.max.apply(null, ys);
             if (!(ymax > ymin)) { ymax = ymin + 1; }
             const pad = 0.08 * (ymax - ymin);
             ymin -= pad; ymax += pad;
-            const xmax = Math.max(1e-6, xs[xs.length - 1]);
-            const X = v => L + (W - L - R) * (v / xmax);
+            const tStart = xs[0];
+            const tEnd = Math.max(xs[xs.length - 1], tStart + 1);
+            const X = v => L + (W - L - R) * ((v - tStart) / (tEnd - tStart));
+            // toISOString is UTC whatever the browser's timezone, which is the
+            // point: the observatory is worked from more than one place and a
+            // local clock would label the same run differently.
+            const span = tEnd - tStart;
+            const utc = (t, withSeconds) => new Date(t * 1000).toISOString()
+                            .slice(11, withSeconds ? 19 : 16);
             const Y = v => T + (H - T - B) * (1 - (v - ymin) / (ymax - ymin));
 
             ctx.strokeStyle = '#333355'; ctx.fillStyle = '#c8c8d8';
@@ -305,12 +316,14 @@
                 ctx.fillText(v.toFixed(cal ? 1 : 5), L - 8, y);
             }
             ctx.textAlign = 'center'; ctx.textBaseline = 'top';
-            for (let i = 0; i <= 4; i++) {
-                const v = xmax * i / 4;
-                ctx.fillText(v.toFixed(1), X(v), H - B + 10);
+            const fine = span < 1200;            // under 20 minutes, show seconds
+            for (let i = 0; i <= 5; i++) {
+                const v = tStart + span * i / 5;
+                ctx.fillText(utc(v, fine), X(v), H - B + 10);
             }
             ctx.font = '22px sans-serif';
-            ctx.fillText('minutes since the run started', (L + W - R) / 2, H - 34);
+            ctx.fillText('UTC on ' + new Date(tStart * 1000).toISOString().slice(0, 10),
+                         (L + W - R) / 2, H - 34);
             ctx.font = '20px sans-serif';
             ctx.save();
             ctx.font = '22px sans-serif';
