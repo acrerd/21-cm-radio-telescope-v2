@@ -28,6 +28,7 @@
   #btn-targets { background: #e8f4e8; }
   #btn-map { background: #f4ede8; }
   #btn-frame { background: #f0ede4; }
+  #btn-horizon { background: #fbe9d5; }
   #btn-home, #btn-save { background: #f0f0f2; }
   /* The one button that moves a real telescope, coloured like the desktop's. */
   #btn-realise { background: #e2ecf8; }
@@ -91,6 +92,9 @@
       <button id="btn-targets">Targets ▾</button>
       <button id="btn-map">Map: H I</button>
       <button id="btn-frame">Frame: LSR</button>
+      <!-- Like Realise, shown only when the scheduler is at this origin: the
+           measured horizon comes from its API. See main.js. -->
+      <button id="btn-horizon" hidden title="the measured horizon, above alt 0">Horizon: measured</button>
       <label>scan (min)</label>
       <input id="p-sd" value="240">
       <!-- Shown only when this page is served by the scheduler, which is the

@@ -14,6 +14,29 @@ for (let i = 0; i < 256; i++)
 
 const SQRT2 = Math.SQRT2;
 
+// The lowest clean altitude at an azimuth, from a measured horizon profile.
+//
+// Deliberately the same rule as horizon_store.horizon_floor on the Python
+// side: take the higher of the two bracketing samples rather than
+// interpolating between them. An obstruction narrower than the sampling is
+// likelier to be missed than double-counted, so between two measured azimuths
+// the safe assumption is the worse of them. That is also why the drawn line
+// comes out as a castellation - the rule really is piecewise, and a smooth
+// curve would claim a precision the scan does not have, on the optimistic
+// side. `floors` is the [az, alt] list served by /api/horizon/profile.
+export function horizonFloor(floors, azDeg) {
+  if (!floors || !floors.length) return 0;
+  const az = ((azDeg % 360) + 360) % 360;
+  let before = floors.length - 1, after = 0;
+  for (let i = 0; i < floors.length; i++) {
+    if (floors[i][0] <= az) before = i;
+  }
+  for (let i = floors.length - 1; i >= 0; i--) {
+    if (floors[i][0] >= az) after = i;
+  }
+  return Math.max(floors[before][1], floors[after][1]);
+}
+
 function gaussKernel(sigmaPix, halfOverride) {
   const half = halfOverride || Math.max(1, Math.ceil(4 * sigmaPix));
   const k = new Float64Array(2 * half + 1);
@@ -318,6 +341,25 @@ export class SkyMap {
         .toISOString().slice(11, 16);
     legend.push({ color: "#ffffff", dash: true,
                   text: `horizon at ${hhmm} UT` });
+
+    // ...and above it, the horizon we actually measured. alt=0 is where the
+    // sky would end if the observatory stood on a billiard table; the trees,
+    // the roofline and the two dome towers are what really ends it, and the
+    // difference reaches 45 deg to the north. Anything between the two lines
+    // is up, but not observable.
+    if (this.horizon && this.showHorizon) {
+      const mL = [], mB = [];
+      for (let i = 0; i <= 720; i++) {
+        const az = i * 0.5;
+        const g = altAzToGal(horizonFloor(this.horizon.floors, az), az,
+                             this.site.lat, this.site.lon, jd);
+        mL.push(g.l); mB.push(g.b);
+      }
+      this.path(mL, mB, { color: "#55585b", lw: 3.2 });
+      this.path(mL, mB, { color: "#ff9f43", lw: 1.6 });
+      legend.push({ color: "#ff9f43", dash: false,
+                    text: `measured horizon (${this.horizon.date})` });
+    }
 
     // continuum sources + M31 landmark
     ctx.save();

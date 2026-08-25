@@ -52,6 +52,25 @@ import numpy as np
 
 from observatory import SITE_LAT_DEG, SITE_LON_DEG
 
+# `observatory` puts astro_simulator on the path; the store lives there because
+# the simulator draws the measured horizon and must not import the scheduler.
+import horizon_store  # noqa: E402
+from horizon_store import (  # noqa: E402
+    ARCHIVE_DIR,
+    archive_profile,
+    horizon_castellation,
+    horizon_floor,
+    is_obstructed,
+    list_profiles,
+    load_active,
+    load_profile,
+    profile_date,
+    profile_floors,
+    profile_name,
+    set_active,
+    summarise,
+)
+
 from sun_scan import (MATPLOTLIB_AVAILABLE, ScanCancelled, _cancellable_sleep,
                       _check_cancelled, _load_scheduler_config, _slew_to,
                       _srt_api, _style_dark, measure_power)
@@ -183,17 +202,44 @@ def _measure_at(base_url, alt, az, sdr_type, integration_time_s, center_freq,
 # ---------------------------------------------------------------------------
 
 def save_horizon_profile(profile: dict, path: str | None = None) -> str:
-    path = path or _HORIZON_PROFILE_FILE
-    with open(path, "w") as f:
-        json.dump(profile, f, indent=2)
-    log.info("Horizon profile saved to %s (%d azimuths)", path,
-             profile.get("n_azimuths", 0))
-    return path
+    """Save a scan. With no path, file it in the dated archive.
+
+    An explicit path is a partial save during a scan and goes exactly where it
+    is told. A save with no path is a finished scan, and that is *archived*
+    under its own date rather than overwriting the horizon in force.
+
+    It does not become the horizon in force by itself. The trees are cut back
+    every so often, which genuinely opens the sky, and a scan that lowered the
+    horizon the moment it finished would do so with nobody having agreed that
+    the new one is right - and would destroy the old measurement in the same
+    stroke. Choosing is a separate act (`set_active`). The one exception is the
+    first scan on a fresh installation, where there is nothing to displace.
+    """
+    if path is not None:
+        with open(path, "w") as f:
+            json.dump(profile, f, indent=2)
+        return path
+
+    archived = archive_profile(profile)
+    if horizon_store.active_name() is None:
+        set_active(profile_name(profile), note="first scan on this installation")
+        log.info("Horizon profile %s archived and made active (%d azimuths)",
+                 profile_name(profile), profile.get("n_azimuths", 0))
+    else:
+        log.info("Horizon profile %s archived (%d azimuths). The horizon in "
+                 "force is still %s - choose the new one on the Horizon tab if "
+                 "it is the better record.",
+                 profile_name(profile), profile.get("n_azimuths", 0),
+                 horizon_store.active_name())
+    return archived
 
 
 def load_horizon_profile(path: str | None = None) -> dict | None:
+    """The horizon in force, or the one at an explicit path."""
+    if path is None:
+        return load_active()
     try:
-        with open(path or _HORIZON_PROFILE_FILE) as f:
+        with open(path) as f:
             return json.load(f)
     except (FileNotFoundError, json.JSONDecodeError):
         return None
@@ -313,45 +359,146 @@ def zip_stellarium_landscape(profile: dict, zip_path: str,
     return zip_path
 
 
-def profile_floors(profile: dict) -> list:
-    """(azimuth, clearance altitude) pairs, sorted, for the usable entries."""
-    floors = []
-    for entry in profile.get("entries", []):
-        fit = entry.get("fit") or {}
-        if fit.get("success") and fit.get("alt_clear") is not None:
-            floors.append((float(entry["az_deg"]) % 360.0,
-                           float(fit["alt_clear"])))
-    floors.sort()
-    return floors
-
-
-def horizon_floor(profile: dict, az_deg: float, margin_deg: float = 0.0) -> float:
-    """Lowest clean altitude at this azimuth.
-
-    Takes the higher of the two bracketing samples rather than interpolating.
-    An obstruction narrower than the 5 degree sampling is more likely to be
-    missed than double-counted, so between two measured azimuths the safe
-    assumption is the worse of them.
-    """
-    floors = profile_floors(profile)
-    if not floors:
-        return 0.0
-    az = float(az_deg) % 360.0
-    azs = [a for a, _ in floors]
-    before = max((i for i, a in enumerate(azs) if a <= az), default=len(azs) - 1)
-    after = min((i for i, a in enumerate(azs) if a >= az), default=0)
-    return max(floors[before][1], floors[after][1]) + margin_deg
-
-
-def is_obstructed(profile: dict, alt_deg: float, az_deg: float,
-                  margin_deg: float = 0.0) -> bool:
-    """Is this true-frame sky position inside the obstructed horizon?"""
-    return float(alt_deg) < horizon_floor(profile, az_deg, margin_deg)
+# profile_floors / horizon_floor / is_obstructed now live in horizon_store, so
+# that the simulator can apply the identical rule when it draws the horizon
+# without importing this module and everything it depends on. They are imported
+# above and re-exported here, because every existing caller reads them from
+# `horizon_scan` and there is no reason to make them all move.
 
 
 # ---------------------------------------------------------------------------
 # Plot
 # ---------------------------------------------------------------------------
+
+def _equal_area_radius(alt_deg):
+    """Lambert azimuthal equal-area radius, zenith at 0, horizon at 1.
+
+    r = sqrt(2) * sin(z/2) for zenith distance z. The point of choosing this
+    over the obvious r = z/90 is that area on the page is then *exactly*
+    proportional to solid angle on the sky: r dr dtheta = sin(z) dz dtheta.
+    A linear-in-altitude polar plot exaggerates the zenith enormously and makes
+    a tall obstruction near the horizon look like a thin sliver, when in solid
+    angle it is the expensive one - which is the whole thing this plot exists
+    to show. Half the sky lies inside r = 1/sqrt(2), at altitude 30 deg.
+    """
+    z = np.radians(90.0 - np.asarray(alt_deg, dtype=float))
+    return np.sqrt(2.0) * np.sin(z / 2.0)
+
+
+def _sky_xy(alt_deg, az_deg):
+    """Projected x, y with north up and east left, looking up at the sky.
+
+    Matches the convention of a planetarium all-sky chart (and Stellarium's):
+    azimuth runs from north through east, which is anticlockwise on the page
+    because the observer is underneath looking out, not above looking down.
+    """
+    r = _equal_area_radius(alt_deg)
+    a = np.radians(np.asarray(az_deg, dtype=float))
+    return -r * np.sin(a), r * np.cos(a)
+
+
+def generate_sky_plot(profile: dict,
+                      output_path: str = "horizon_sky.png") -> str:
+    """The available sky as an equal-area polar chart.
+
+    Shows what is left rather than what is blocked, in a projection where the
+    area of the open region on the page is proportional to the solid angle it
+    represents - so the picture can be read directly as "this much sky", and
+    two scans can be compared by eye.
+
+    The boundary is drawn by sampling `horizon_floor`, so it is a castellation
+    and it is the same rule that decides whether a target is blocked, not a
+    prettier curve alongside it.
+    """
+    if not MATPLOTLIB_AVAILABLE:
+        raise ImportError("matplotlib is required")
+
+    floors = profile_floors(profile)
+    if not floors:
+        raise ValueError("horizon profile has no usable entries")
+
+    ink = "#e8eaed"
+    sky = "#16233f"
+    edge = "#ff9f43"
+    grid = "#2f6f5e"
+    compass = "#ff6b6b"
+    back = "#0a0a18"
+    blocked = "#3a1f2b"
+
+    fig = plt.figure(figsize=(9.0, 9.0), facecolor=back)
+    ax = fig.add_axes([0.04, 0.04, 0.92, 0.88])
+    ax.set_facecolor(back)
+    ax.set_aspect("equal")
+    ax.axis("off")
+    ax.set_xlim(-1.30, 1.30)
+    ax.set_ylim(-1.30, 1.30)
+
+    # Everything below the horizon line is obstructed, not absent: tint the
+    # whole disc first and let the open sky cover what it covers, so the
+    # difference between the two is what the eye is actually reading.
+    ax.add_patch(plt.Circle((0, 0), 1.0, facecolor=blocked, edgecolor="none",
+                            zorder=0))
+
+    # The open sky, as one filled polygon: the region is star-shaped about the
+    # zenith, so the boundary alone bounds it.
+    az_fine = np.arange(0.0, 360.0 + 0.25, 0.25)
+    alt_edge = np.array([horizon_floor(profile, a) for a in az_fine])
+    bx, by = _sky_xy(alt_edge, az_fine)
+    ax.fill(bx, by, facecolor=sky, edgecolor="none", zorder=1)
+
+    # Altitude rings, labelled up the most open spoke on this particular
+    # profile - wherever the sky reaches lowest, the numbers have room and are
+    # never overwritten by the horizon crossing them.
+    label_az = min(floors, key=lambda f: f[1])[0]
+    for alt in (0, 15, 30, 45, 60, 75):
+        r = float(_equal_area_radius(alt))
+        ring = plt.Circle((0, 0), r, fill=False, edgecolor=grid,
+                          lw=1.4 if alt == 0 else 0.8,
+                          alpha=0.9 if alt == 0 else 0.55, zorder=3)
+        ax.add_patch(ring)
+        if alt:
+            lx, ly = _sky_xy(alt, label_az)
+            ax.text(float(lx), float(ly), "%d°" % alt, color=ink,
+                    fontsize=9, ha="center", va="center", zorder=4, alpha=0.8,
+                    bbox=dict(boxstyle="round,pad=0.15", fc=back, ec="none",
+                              alpha=0.7))
+
+    # Azimuth spokes every 30 degrees.
+    for a in range(0, 360, 30):
+        sx, sy = _sky_xy([90.0, 0.0], [a, a])
+        ax.plot(sx, sy, color=grid, lw=0.7, alpha=0.5, zorder=3)
+
+    # The measured horizon itself.
+    ax.plot(bx, by, color=edge, lw=2.0, zorder=5)
+
+    names = {0: "N", 45: "NE", 90: "E", 135: "SE",
+             180: "S", 225: "SW", 270: "W", 315: "NW"}
+    for a, name in names.items():
+        lx, ly = _sky_xy(0.0, a)
+        ax.text(float(lx) * 1.13, float(ly) * 1.13, name, color=compass,
+                fontsize=13 if len(name) == 1 else 11, ha="center",
+                va="center", zorder=6)
+
+    visible = horizon_store.visible_sky_sq_deg(profile)
+    fraction = visible / horizon_store.HEMISPHERE_SQ_DEG
+    date = horizon_store.profile_date(profile)
+    demo = " — SIMULATED, not the observatory" if \
+        profile.get("sdr_type") == "demo" else ""
+    fig.text(0.5, 0.965, "Available sky — measured %s%s" % (date, demo),
+             color=ink, fontsize=14, ha="center", va="center")
+    fig.text(0.5, 0.932,
+             "%s of %s deg²  (%.0f%% of the hemisphere)   ·   "
+             "equal-area projection: area on the page = solid angle on the sky"
+             % (format(int(round(visible)), ","),
+                format(int(round(horizon_store.HEMISPHERE_SQ_DEG)), ","),
+                100.0 * fraction),
+             color=grid, fontsize=9.5, ha="center", va="center")
+
+    fig.savefig(output_path, dpi=110, facecolor=back)
+    plt.close(fig)
+    log.info("Sky plot written to %s (%.0f deg2 visible)", output_path, visible)
+    return output_path
+
 
 def generate_horizon_plot(profile: dict,
                           output_path: str = "horizon_profile.png") -> str:

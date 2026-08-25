@@ -43,6 +43,7 @@ from astropy.wcs import WCS
 from continuum_compress import CONTINUUM_DEFAULT, load_continuum
 from hi4pi_compress import COMPACT_DEFAULT, load_compact
 from hi4pi_data import ensure_file
+from horizon_store import horizon_castellation, load_active, profile_date
 from instrument import (MAIN_BEAM_EFFICIENCY, SITE_HEIGHT_M, SITE_LAT_DEG,
                         SITE_LON_DEG, SITE_NAME as SITE_NAME_DEFAULT,
                         beam_fwhm_deg)
@@ -771,6 +772,31 @@ def main():
     # zenith, redrawn once a minute as the sky turns
     horizon_art = []
 
+    # ...and above it, the horizon we actually measured. alt=0 is where the
+    # sky would end if the observatory stood on a billiard table; the trees,
+    # the roofline and the two dome towers are what really ends it, and the
+    # difference reaches 45 deg to the north. Anything drawn between the two
+    # lines is up, but not observable.
+    measured = load_active()
+    show_measured = [bool(measured)]
+
+    def measured_horizon_curve(aa):
+        """The chosen profile in galactic coordinates, as a castellation.
+
+        Stepped rather than smoothed on purpose: the profile samples azimuth
+        every few degrees and the rule applied between samples is the worse of
+        the two, so a smooth curve through the points would draw a precision
+        the measurement does not have - and would draw it on the optimistic
+        side, which is the wrong way to be wrong about an obstruction.
+        """
+        az, alt = horizon_castellation(measured, step_deg=0.5)
+        if not az:
+            return None, None
+        gal = SkyCoord(az=np.asarray(az) * u.deg, alt=np.asarray(alt) * u.deg,
+                       frame=aa).galactic
+        return (-np.radians((gal.l.deg + 180.0) % 360.0 - 180.0),
+                np.radians(gal.b.deg))
+
     def draw_horizon(_=None):
         t = Time.now()
         aa = AltAz(obstime=t, location=SITE_LOC)
@@ -793,6 +819,21 @@ def main():
                          label=(f"horizon at {t.strftime('%H:%M')} UT"
                                 if first else None))[0])
             first = False
+        if show_measured[0] and measured is not None:
+            mx, my = measured_horizon_curve(aa)
+            if mx is not None:
+                first = True
+                for part in np.split(np.arange(len(mx)),
+                                     np.where(np.abs(np.diff(mx)) > 1.0)[0] + 1):
+                    if len(part) < 2:
+                        continue
+                    horizon_art.append(
+                        axm.plot(mx[part], my[part], color="#ff9f43", lw=1.6,
+                                 ls="-", path_effects=outline,
+                                 label=("measured horizon "
+                                        f"({profile_date(measured)})"
+                                        if first else None))[0])
+                    first = False
         zen = SkyCoord(az=0 * u.deg, alt=90 * u.deg, frame=aa).galactic
         zx = -np.radians((zen.l.deg + 180.0) % 360.0 - 180.0)
         zy = np.radians(zen.b.deg)
@@ -1068,6 +1109,26 @@ def main():
             render_drift()
 
     tb_sd.on_submit(on_scan_len)
+
+    # ------- the measured horizon, on or off -------------------------------
+    # below Realise (0.600): the gap above it belongs to the scan-length box's
+    # label, and a button there covers it
+    btn_hz = Button(fig.add_axes([0.015, 0.535, 0.13, 0.045]),
+                    "Horizon: measured" if show_measured[0] else "Horizon: none",
+                    color="#fbe9d5", hovercolor="#f6dcc0")
+    btn_hz.label.set_fontsize(9)
+
+    def toggle_measured(_event):
+        if measured is None:
+            print("No horizon has been measured yet - run a horizon scan from "
+                  "the scheduler, then choose it on the Horizon tab.")
+            return
+        show_measured[0] = not show_measured[0]
+        btn_hz.label.set_text("Horizon: measured" if show_measured[0]
+                              else "Horizon: none")
+        draw_horizon()
+
+    btn_hz.on_clicked(toggle_measured)
 
     # ------- realise: hand the simulated observation to the SRT -------
     btn_rl = Button(fig.add_axes([0.015, 0.600, 0.13, 0.045]), "Realise",
@@ -1461,7 +1522,8 @@ def main():
             home_btn.config(command=_home_and_reset)
 
     fig._hi4pi_widgets = (tb_l, tb_b, tb_fw, tb_ts, tb_ti, tb_bw, tb_fc,
-                          tb_nc, btn_fr, btn_tg, tb_sd, btn_map, btn_rl)
+                          tb_nc, btn_fr, btn_tg, tb_sd, btn_map, btn_rl,
+                          btn_hz)
     fig._hi4pi_reset = reset_params
     update_info()
     plt.show()

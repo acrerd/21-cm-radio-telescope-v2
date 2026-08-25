@@ -2420,6 +2420,24 @@ HTML_TEMPLATE = '''
                     </div>
                 </div>
                 <div style="flex:1; min-width:420px;">
+                    <div class="section-title">Horizon in force</div>
+                    <div style="background:#0f0f23; border:1px solid #333; border-radius:8px; padding:15px; margin-bottom:15px;">
+                        <p style="color:#888; font-size:12px; margin:0 0 10px 0;">
+                            Scans are kept by date, not overwritten &mdash; the trees leaf
+                            out through the summer and are cut back between seasons, so an
+                            older scan is not a worse one. A finished scan is archived but
+                            does not take effect until it is chosen here.
+                        </p>
+                        <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
+                            <select autocomplete="off" id="hzProfileSelect" style="flex:1; min-width:260px;"
+                                    onchange="loadHorizonProfile(this.value)"></select>
+                            <button class="btn btn-primary" id="hzUseBtn" onclick="useHorizonProfile()">Use this one</button>
+                        </div>
+                        <div id="hzArchiveNote" style="margin-top:10px; font-size:12px; color:#888;"></div>
+                    </div>
+                    <div id="hzSkyPlotBox" style="display:none; margin-bottom:15px; text-align:center;">
+                        <img id="hzSkyPlot" alt="Available sky" style="max-width:100%; border-radius:8px;">
+                    </div>
                     <div class="section-title">Measured Profile</div>
                     <div id="hzProfile" style="background:#0f0f23; border:1px solid #333; border-radius:8px; padding:15px; margin-bottom:15px;">
                         <span style="color:#888;">No horizon profile measured yet.</span>
@@ -3866,7 +3884,7 @@ HTML_TEMPLATE = '''
             if (name === 'sunscan') { pollSunScan(); pollCalDay(); loadCalModel(); }
             // Leaving the tab stops the loop; scheduleCameraRefresh cancels
             // itself whenever the camera tab is not the one on screen.
-            if (name === 'horizon') pollHorizon();
+            if (name === 'horizon') { pollHorizon(); loadHorizonProfiles(); }
             if (name === 'observe') refreshObserveTuning();
             if (name === 'rf') {
                 rfRefresh(); rfRefreshTarget(); rfShowChosen();
@@ -4116,16 +4134,90 @@ HTML_TEMPLATE = '''
                 } else {
                     if (hzPollTimer) { clearTimeout(hzPollTimer); hzPollTimer = null; }
                     loadHorizonProfile();
+                    // A scan that has just finished is in the archive but is not
+                    // yet in force, so the list has to refresh for it to be
+                    // choosable.
+                    loadHorizonProfiles();
                 }
             }).catch(() => {});
         }
 
-        function loadHorizonProfile() {
-            fetch('/api/horizon/profile').then(r => r.json()).then(m => {
+        // Which archived scans exist, and which one the system believes. Kept
+        // separate from the profile display because choosing is a deliberate
+        // act: a new scan appears here as soon as it finishes but changes
+        // nothing until someone picks it.
+        function loadHorizonProfiles() {
+            fetch('/api/horizon/profiles').then(r => r.json()).then(d => {
+                const sel = document.getElementById('hzProfileSelect');
+                const note = document.getElementById('hzArchiveNote');
+                if (!sel) return;
+                const list = d.profiles || [];
+                if (!list.length) {
+                    sel.innerHTML = '<option value="">No scans archived yet</option>';
+                    note.textContent = '';
+                    return;
+                }
+                const keep = sel.value;
+                sel.innerHTML = list.map(p => {
+                    const f = p.floors || {};
+                    const bits = [p.date];
+                    if (p.is_demo) bits.push('SIMULATED');
+                    bits.push(p.n_azimuths + ' az at ' + p.az_step_deg + ' deg');
+                    // Visible sky rather than the median floor: solid angle is
+                    // what an obstruction actually costs, and a tall one costs
+                    // far more than its share of the azimuth count.
+                    if (f.visible_sq_deg !== null && f.visible_sq_deg !== undefined) {
+                        bits.push(f.visible_sq_deg.toLocaleString() + ' deg&sup2; visible' +
+                                  ' (' + (100 * f.visible_fraction).toFixed(0) + '%)');
+                    }
+                    if (!p.complete) bits.push('PARTIAL');
+                    if (p.active) bits.push('&larr; in force');
+                    return '<option value="' + p.name + '">' + bits.join('  &middot;  ') +
+                           '</option>';
+                }).join('');
+                const active = list.find(p => p.active);
+                sel.value = keep || (active ? active.name : list[0].name);
+                const chosen = d.chosen || {};
+                note.innerHTML = d.active
+                    ? ('In force: <span style="color:#2ed573;">' + d.active + '</span>' +
+                       (chosen.note ? ' &mdash; ' + chosen.note : ''))
+                    : ('<span style="color:#ffa502;">Nothing chosen &mdash; falling back ' +
+                       'to the most recent complete scan.</span>');
+            }).catch(() => {});
+        }
+
+        function useHorizonProfile() {
+            const sel = document.getElementById('hzProfileSelect');
+            if (!sel || !sel.value) return;
+            fetch('/api/horizon/profiles/select', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({name: sel.value})
+            }).then(r => r.json()).then(d => {
+                if (!d.success) { alert(d.error || 'Could not select that profile'); return; }
+                loadHorizonProfiles();
+                loadHorizonProfile();
+            });
+        }
+
+        function loadHorizonProfile(name) {
+            const url = name ? ('/api/horizon/profile?name=' + encodeURIComponent(name))
+                             : '/api/horizon/profile';
+            fetch(url).then(r => r.json()).then(m => {
                 const box = document.getElementById('hzProfile');
+                const skyBox = document.getElementById('hzSkyPlotBox');
                 if (!m.success) {
                     box.innerHTML = '<span style="color:#888;">' + (m.error || 'No profile') + '</span>';
+                    if (skyBox) skyBox.style.display = 'none';
                     return;
+                }
+                // Always keyed by name: the same URL for two different profiles
+                // would be served from the browser cache, and comparing two
+                // scans would show the same picture twice.
+                if (skyBox && m.name) {
+                    document.getElementById('hzSkyPlot').src =
+                        '/api/horizon/skyplot?name=' + encodeURIComponent(m.name);
+                    skyBox.style.display = '';
                 }
                 const clears = m.azimuths.map(a => a.clear).filter(v => v !== null);
                 const edges = m.azimuths.map(a => a.edge).filter(v => v !== null);
@@ -6757,15 +6849,31 @@ def api_horizon_status():
 
 @app.route('/api/horizon/profile', methods=['GET'])
 def api_horizon_profile():
-    """The stored profile, summarised - the raw cuts are far too big for the UI."""
+    """The stored profile, summarised - the raw cuts are far too big for the UI.
+
+    Defaults to the horizon in force. `?name=` reads any archived scan instead,
+    so two can be compared before one of them is chosen.
+    """
+    import horizon_store
     from horizon_scan import load_horizon_profile, profile_floors
-    profile = load_horizon_profile()
+    name = request.args.get('name')
+    if name:
+        try:
+            profile = horizon_store.load_profile(name)
+        except ValueError:
+            return jsonify({'success': False, 'error': 'Bad profile name'}), 400
+    else:
+        profile = load_horizon_profile()
     if not profile:
         return jsonify({'success': False, 'error': 'No horizon profile measured yet'})
     entries = profile.get("entries", [])
     return jsonify({
         'success': True,
         'measured_utc': profile.get("finished_utc"),
+        'name': horizon_store.profile_name(profile),
+        'date': horizon_store.profile_date(profile),
+        'active_name': horizon_store.active_name(),
+        'is_active': horizon_store.profile_name(profile) == horizon_store.active_name(),
         # Carried so the page can say so: a profile measured with the demo SDR
         # describes a synthetic horizon and must never be mistaken for the
         # observatory's, least of all by whoever later wires it into the
@@ -6795,6 +6903,39 @@ def api_horizon_profile():
     })
 
 
+@app.route('/api/horizon/profiles', methods=['GET'])
+def api_horizon_profiles():
+    """Every horizon we have measured, newest first, with the chosen one flagged.
+
+    They are kept rather than overwritten because the horizon is seasonal: the
+    trees leaf out and are cut back, so an older scan is not a worse scan, and
+    which one describes the sky today is a judgement the operator makes.
+    """
+    import horizon_store
+    return jsonify({'success': True,
+                    'profiles': horizon_store.list_profiles(),
+                    'active': horizon_store.active_name(),
+                    'chosen': horizon_store.active_record()})
+
+
+@app.route('/api/horizon/profiles/select', methods=['POST'])
+def api_horizon_select():
+    """Choose which measured horizon the rest of the system believes."""
+    import horizon_store
+    data = request.get_json(silent=True) or {}
+    name = data.get('name')
+    if not name:
+        return jsonify({'success': False, 'error': 'No profile named'}), 400
+    try:
+        record = horizon_store.set_active(name, note=str(data.get('note') or ''))
+    except (ValueError, FileNotFoundError) as exc:
+        return jsonify({'success': False, 'error': str(exc)}), 404
+    log.info("Horizon in force set to %s%s", record['active'],
+             (" (%s)" % record['note']) if record['note'] else "")
+    return jsonify({'success': True, 'active': record['active'],
+                    'profiles': horizon_store.list_profiles()})
+
+
 @app.route('/api/horizon/landscape', methods=['GET'])
 def api_horizon_landscape():
     """The measured horizon as a Stellarium landscape, ready to install.
@@ -6820,6 +6961,40 @@ def api_horizon_landscape():
     from flask import send_file
     return send_file(zip_path, mimetype='application/zip', as_attachment=True,
                      download_name=os.path.basename(zip_path))
+
+
+@app.route('/api/horizon/skyplot', methods=['GET'])
+def api_horizon_skyplot():
+    """The available sky as an equal-area polar chart.
+
+    Drawn on demand rather than only at the end of a scan, because it has to
+    follow whichever profile is in force - and because it is cheap. Cached per
+    profile name, so switching between two scans to compare them redraws each
+    once and then serves from disk.
+    """
+    import horizon_store
+    from horizon_scan import generate_sky_plot, load_horizon_profile
+    name = request.args.get('name')
+    if name:
+        try:
+            profile = horizon_store.load_profile(name)
+        except ValueError:
+            return jsonify({'success': False, 'error': 'Bad profile name'}), 400
+    else:
+        profile = load_horizon_profile()
+    if not profile:
+        return ('', 404)
+    folder = get_config_value("data_output_folder")
+    os.makedirs(folder, exist_ok=True)
+    path = os.path.join(folder, "sky_%s.png" % horizon_store.profile_name(profile))
+    if not os.path.isfile(path):
+        try:
+            generate_sky_plot(profile, path)
+        except (ImportError, ValueError) as exc:
+            log.warning("Could not draw the sky plot: %s", exc)
+            return ('', 404)
+    from flask import send_file
+    return send_file(path, mimetype='image/png')
 
 
 @app.route('/api/horizon/plot', methods=['GET'])

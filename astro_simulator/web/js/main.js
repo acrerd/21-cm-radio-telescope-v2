@@ -120,6 +120,38 @@ async function boot() {
       })
       .catch(() => {});
 
+    // The measured horizon, for the same reason and on the same terms: it is
+    // the scheduler that holds it, so the button exists exactly where the data
+    // does. What arrives is whichever profile is *in force* - the scheduler
+    // decides that, on its Horizon tab, and this page simply draws the choice.
+    const horizonBtn = document.getElementById("btn-horizon");
+    fetch("/api/horizon/profile")
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => {
+        if (!d || !d.success || !d.floors || !d.floors.length || !horizonBtn) return;
+        map.horizon = {
+          floors: d.floors,
+          date: d.date || "measured",
+          demo: d.sdr_type === "demo",
+        };
+        map.showHorizon = true;
+        horizonBtn.hidden = false;
+        horizonBtn.onclick = () => {
+          map.showHorizon = !map.showHorizon;
+          horizonBtn.textContent = map.showHorizon ? "Horizon: measured"
+                                                   : "Horizon: none";
+          map.draw();
+        };
+        if (map.horizon.demo) {
+          // A demo profile describes a synthetic horizon. Saying so here is
+          // the whole defence against it being read as the observatory's.
+          horizonBtn.title = "SIMULATED horizon - not the observatory";
+          map.horizon.date += " SIMULATED";
+        }
+        map.draw();
+      })
+      .catch(() => {});
+
     document.getElementById("loading").style.display = "none";
     document.getElementById("app").style.visibility = "visible";
   } catch (err) {
