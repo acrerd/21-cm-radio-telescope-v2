@@ -208,3 +208,42 @@ def test_an_uncalibrated_recording_is_left_in_counts(tmp_path):
             "would not open at all")
     finally:
         hf.close()
+
+
+def test_a_retuned_recording_stores_no_misaligned_correction(tmp_path):
+    """The template must refuse a tuning it was not fitted at.
+
+    The polynomial is a function of frequency relative to the LO it was
+    fitted at, and the hardware passband moves with the LO. Evaluated at a
+    different tuning it still returns finite numbers over whatever overlap
+    remains - a 1419.0 MHz retune left 60% of channels "covered" by a shape
+    displaced 1.4 MHz from the real passband, marked valid in the file, and
+    divided into the live summary. The gate is applies_to, keyed on the
+    header, so a retuned file stores correction 1.0 and valid False
+    throughout - honestly uncorrected, exactly recoverable.
+    """
+    import numpy as np
+
+    import b210_h1_receiver as rx
+    import bandpass as bp
+
+    tpl = bp.load_bandpass()
+    if not tpl:
+        pytest.skip("no bandpass template on this machine")
+    lo = tpl["config"]["lo_hz"]
+    sr = tpl["config"]["sample_rate_hz"]
+
+    # At the template's own tuning the correction is real.
+    freq = np.linspace(lo - sr / 2, lo + sr / 2, 512)
+    _, valid = rx._bandpass_correction(
+        freq, {"center_freq_hz": lo, "sample_rate_hz": sr, "gain_db": 40})
+    assert valid.any(), "at its own tuning the template must apply"
+
+    # Shifted 1.4 MHz - the 1419.0 MHz case - it must refuse outright.
+    correction, valid = rx._bandpass_correction(
+        freq - 1.4e6, {"center_freq_hz": lo - 1.4e6,
+                       "sample_rate_hz": sr, "gain_db": 40})
+    assert not valid.any(), (
+        "a template evaluated at the wrong LO is a misaligned correction, "
+        "not a partial one")
+    assert np.all(correction == 1.0)

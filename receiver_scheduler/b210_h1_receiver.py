@@ -316,7 +316,9 @@ def init_hdf5(filename, freq_axis_hz, fft_size, sdr_type, center_freq,
     # in the file: they are stored uncorrected but recoverable, so a future
     # bandpass fit can still use them. Dropping them at write time would have
     # discarded 18% of the recorded band permanently.
-    correction, valid = _bandpass_correction(freq_axis_hz)
+    correction, valid = _bandpass_correction(
+        freq_axis_hz, {'center_freq_hz': center_freq,
+                       'sample_rate_hz': sample_rate, 'gain_db': gain})
     hf.create_dataset('bandpass_correction', data=correction.astype('float32'))
     hf.create_dataset('bandpass_valid', data=valid)
 
@@ -486,16 +488,26 @@ def _calibration_for_writing(hf):
         return None, None
 
 
-def _bandpass_correction(freq_axis_hz):
+def _bandpass_correction(freq_axis_hz, header=None):
     """(correction, valid) for this frequency axis, from the template in force.
 
     The correction is what the spectrum is divided by. Where the template has
     nothing to say the correction is 1.0 and valid is False, so the channel is
     stored as it was measured and can still be recovered.
+
+    The header gates the whole thing through applies_to: the template's
+    polynomial is a function of frequency *relative to the LO it was fitted
+    at*, and the hardware's passband moves with the LO. Evaluated at a
+    different tuning the polynomial still returns finite numbers over
+    whatever frequencies happen to overlap - retuning 1420.4 to 1419.0 left
+    60% of channels "covered" by a shape displaced 1.4 MHz from the real
+    passband, marked valid, and quietly divided into the live summary. A
+    correction for the wrong tuning is worse than none.
     """
     import numpy as _np
 
     ones = _np.ones(len(freq_axis_hz), dtype=float)
+    novalid = _np.zeros(len(freq_axis_hz), dtype=bool)
     try:
         here = os.path.dirname(os.path.abspath(__file__))
         import sys as _sys
@@ -504,14 +516,16 @@ def _bandpass_correction(freq_axis_hz):
         import bandpass as _bp
         template = _bp.load_bandpass()
         if not template:
-            return ones, _np.zeros(len(freq_axis_hz), dtype=bool)
+            return ones, novalid
+        if header is not None and not _bp.applies_to(template, header)[0]:
+            return ones, novalid
         model = _np.asarray(_bp.evaluate(template, _np.asarray(freq_axis_hz, float)),
                             dtype=float)
         valid = _np.isfinite(model) & (model > 0)
         correction = _np.where(valid, model, 1.0)
         return correction, valid
     except Exception:                                     # noqa: BLE001
-        return ones, _np.zeros(len(freq_axis_hz), dtype=bool)
+        return ones, novalid
 
 
 def append_spectrum(hf, avg_linear, timestamp, integration_time, fft_size):
