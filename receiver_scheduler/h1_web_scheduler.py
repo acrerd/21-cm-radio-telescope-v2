@@ -3399,6 +3399,32 @@ def api_rf_cancel():
     return jsonify({"success": True})
 
 
+@app.route('/api/sun/position', methods=['GET'])
+def api_sun_position():
+    """Where the Sun is now, and whether the dish could look at it.
+
+    So the Observe tab can show the target of a solar track rather than asking
+    for coordinates it would only ignore - the controller follows the Sun from
+    its own ephemeris, and there is nothing for an operator to type.
+    """
+    from sun_scan import get_sun_altaz
+    import horizon_store
+
+    cfg = load_config()
+    try:
+        alt, az = get_sun_altaz(float(cfg.get("observer_lat", SITE_LAT_DEG)),
+                                float(cfg.get("observer_lon", SITE_LON_DEG)),
+                                float(cfg.get("observer_elevation", 50)))
+    except Exception as exc:                              # noqa: BLE001
+        return jsonify({"success": False, "error": str(exc)}), 500
+    profile = horizon_store.load_active()
+    warning = (horizon_store.horizon_warning(profile, alt, az)
+               if profile and cfg.get("respect_local_horizon", True) else None)
+    return jsonify({"success": True, "alt_deg": round(float(alt), 2),
+                    "az_deg": round(float(az), 2),
+                    "up": bool(alt > 0.0), "horizon_warning": warning})
+
+
 @app.route('/api/observe/live', methods=['GET'])
 def api_observe_live():
     """The running observation's band power, in solar flux units.

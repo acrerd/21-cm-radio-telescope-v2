@@ -451,13 +451,24 @@
                             <option value="solar">Solar track (flux monitor)</option>
                         </select>
                     </div>
-                    <div class="form-group">
+                    <div class="form-group" id="obvLGroup">
                         <label>Galactic l <span class="unit">(deg)</span></label>
                         <input autocomplete="off" type="number" id="obvL" step="any" value="132">
                     </div>
-                    <div class="form-group">
+                    <div class="form-group" id="obvBGroup">
                         <label>Galactic b <span class="unit">(deg)</span></label>
                         <input autocomplete="off" type="number" id="obvB" step="any" value="-1">
+                    </div>
+                    <!-- Replaces the l/b boxes for a solar track: there is
+                         nothing to type, so the form shows where the Sun is
+                         instead of asking. -->
+                    <div class="form-group wide" id="obvSunGroup" style="display:none">
+                        <label>Target</label>
+                        <div id="obvSunWhere" class="mono"
+                             style="padding:8px 12px; background:#0f0f23; border:1px solid #333;
+                                    border-radius:6px; color:#c8c8d8; font-size:13px;">
+                            the Sun &mdash; looking it up&hellip;
+                        </div>
                     </div>
                     <div class="form-group">
                         <label id="obvDurationLabel">Total integration time <span class="unit">(min)</span></label>

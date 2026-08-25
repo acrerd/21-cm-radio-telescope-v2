@@ -13,18 +13,51 @@
             document.getElementById('obvDurationLabel').innerHTML =
                 drift ? 'Scan length <span class="unit">(min)</span> &mdash; transit at mid-point'
                       : 'Total integration time <span class="unit">(min)</span>';
-            // A solar track has no l and b to type: the target is the Sun, and
-            // the controller follows it.
-            ['obvL', 'obvB'].forEach(function (id) {
+            // A solar track has no coordinates to type - the controller
+            // follows the Sun from its own ephemeris - so the l/b boxes are
+            // replaced by where the Sun actually is. Leaving them on screen
+            // greyed out only invites the question of what to put in them.
+            ['obvLGroup', 'obvBGroup'].forEach(function (id) {
                 const el = document.getElementById(id);
-                if (el) el.disabled = solar;
+                if (el) el.style.display = solar ? 'none' : '';
             });
-            const src = document.getElementById('obvSource');
-            if (solar && src) {
-                src.innerHTML = 'Tracking the <strong>Sun</strong>. The dish '
-                    + 'follows it for the whole run; flux is plotted live below '
-                    + 'and the spectra are recorded as usual.';
-            }
+            const sun = document.getElementById('obvSunGroup');
+            if (sun) sun.style.display = solar ? '' : 'none';
+            if (solar) obvRefreshSun();
+        }
+
+        // The Sun moves, and a form that says where it was ten minutes ago is
+        // worse than one that says nothing. Refreshed when the mode is chosen
+        // and every minute the tab stays open on it.
+        let obvSunTimer = null;
+
+        function obvRefreshSun() {
+            const box = document.getElementById('obvSunWhere');
+            if (!box) return;
+            fetch('/api/sun/position').then(r => r.json()).then(d => {
+                if (!d.success) { box.textContent = d.error || 'unavailable'; return; }
+                let text = 'the Sun \u2014 now at altitude ' + d.alt_deg.toFixed(1)
+                         + '\u00b0, azimuth ' + d.az_deg.toFixed(1) + '\u00b0';
+                if (!d.up) {
+                    text += '  \u2014 below the horizon, so there is nothing to track';
+                    box.style.color = '#ff4757';
+                } else if (d.horizon_warning) {
+                    text += '  \u2014 ' + d.horizon_warning;
+                    box.style.color = '#ffa502';
+                } else {
+                    text += '  \u2014 clear of the measured horizon';
+                    box.style.color = '#2ed573';
+                }
+                box.textContent = text;
+            }).catch(() => {});
+            if (obvSunTimer) clearInterval(obvSunTimer);
+            obvSunTimer = setInterval(function () {
+                if (document.getElementById('obvMode').value === 'solar') {
+                    obvRefreshSun();
+                } else {
+                    clearInterval(obvSunTimer); obvSunTimer = null;
+                }
+            }, 60000);
         }
 
         function loadObserveParams(force) {
@@ -86,8 +119,12 @@
                 // Decimal degrees in the degrees field, which dms_to_decimal
                 // sums as given; the minutes and seconds boxes are for the
                 // schedule form's benefit, not this one's.
-                coord1_deg: l, coord1_min: 0, coord1_sec: 0,
-                coord2_deg: b, coord2_min: 0, coord2_sec: 0,
+                // Zeroed for a solar track. The boxes still hold whatever
+                // was last typed, and recording those would put a galactic
+                // direction in the file that the dish was never pointed at -
+                // which anything reading it later would believe.
+                coord1_deg: solar ? 0 : l, coord1_min: 0, coord1_sec: 0,
+                coord2_deg: solar ? 0 : b, coord2_min: 0, coord2_sec: 0,
                 duration_minutes: Math.round(num('obvDuration', 30)),
                 center_freq_mhz: num('obvCenterFreq', 1420.405752),
                 bandwidth_mhz: num('obvBandwidth', 2.4),
