@@ -31,12 +31,22 @@ import pytest
 import h1_web_scheduler as sched
 
 # Every way of claiming the hardware: how to mark it busy, and how to ask for it.
+# respect_local_horizon is off in these payloads on purpose. This file is about
+# which subsystems may hold the hardware at once, and the Sun scan has its own,
+# separate refusal when the raster would clip the measured treeline - which
+# depends on where the Sun happens to be. Left on, the "each can start when
+# nothing else holds the hardware" test passed all afternoon and failed at
+# 18:50 with the Sun at 13 degrees, its bottom raster row 0.1 degrees short of
+# clearing. A test whose result depends on the time of day teaches people to
+# ignore it.
 SUBSYSTEMS = {
     "sun scan":        {"flag": "sun_scan_state",
-                        "start": ("/api/sunscan/start", {"n": 5, "grid_spacing_deg": 1.5})},
+                        "start": ("/api/sunscan/start", {"n": 5, "grid_spacing_deg": 1.5,
+                                                         "respect_local_horizon": False})},
     "calibration day": {"flag": "cal_day_state",
                         "start": ("/api/calday/start", {"n": 5, "grid_spacing_deg": 1.5,
-                                                        "interval_minutes": 30})},
+                                                        "interval_minutes": 30,
+                                                        "respect_local_horizon": False})},
     "horizon scan":    {"flag": "horizon_state", "start": ("/api/horizon/start", {})},
     "RF calibration":  {"flag": "rf_state", "start": ("/api/rf/run", {"job": "gain"})},
 }

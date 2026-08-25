@@ -3540,6 +3540,7 @@ def api_observe_live():
     tuning the counts are returned unlabelled, because counts are honestly
     arbitrary and wrong flux units are not.
     """
+    import numpy as np
     import rf_calibration
     import tuning
     from observatory import antenna_temperature_to_flux
@@ -3582,6 +3583,28 @@ def api_observe_live():
     cal = rf_calibration.load_calibration()
     cal_ok, cal_why = rf_calibration.calibration_applies_to(cal, obs_header(obs))
 
+    # The Sun's elevation across the run, for the airmass correction. Sampled at
+    # fifty points and interpolated rather than computed per record: elevation
+    # moves smoothly, a two-hour run holds thousands of records, and this is
+    # recomputed on every poll.
+    is_solar = (obs.get('coord_system') == 'object'
+                and str(obs.get('object_name', '')).lower() == 'sun')
+    sun_alt = None
+    if is_solar and records and EPHEM_AVAILABLE:
+        try:
+            t0, t1 = records[0]["t"], records[-1]["t"]
+            knots = [t0 + (t1 - t0) * i / 49.0 for i in range(50)]
+            obsv = _get_observer()
+            alts = []
+            for when in knots:
+                obsv.date = datetime.utcfromtimestamp(when)
+                body = ephem.Sun()
+                body.compute(obsv)
+                alts.append(math.degrees(float(body.alt)))
+            sun_alt = (knots, alts)
+        except Exception:                                 # noqa: BLE001
+            sun_alt = None
+
     # Bin the whole run down rather than showing its tail. A short integration
     # makes records fast - 0.1 s gives 36000 an hour - and a plot of the last N
     # of those would silently be a plot of the last three minutes of a
@@ -3593,17 +3616,32 @@ def api_observe_live():
     for start in range(0, len(records), group):
         chunk = records[start:start + group]
         counts = sum(r['median'] for r in chunk) / len(chunk)
-        point = {'t': chunk[len(chunk) // 2]['t'],
-                 'tau': sum(r['tau'] for r in chunk),
+        when = chunk[len(chunk) // 2]['t']
+        point = {'t': when, 'tau': sum(r['tau'] for r in chunk),
                  'n': len(chunk), 'counts': counts}
         if cal_ok:
             t_a = counts / cal['gain_counts_per_k'] - cal['t_sys_k']
             point['t_a_k'] = t_a
-            point['sfu'] = antenna_temperature_to_flux(t_a)
+            flux = antenna_temperature_to_flux(t_a)
+            if sun_alt is not None:
+                # Corrected to above the atmosphere, which is what a published
+                # index quotes. Applied here and never to the recording - the
+                # file keeps what the receiver measured, as it does for the
+                # bandpass, the gain and the velocity frame.
+                alt = float(np.interp(when, sun_alt[0], sun_alt[1]))
+                trans = rf_calibration.atmospheric_transmission(alt)
+                if trans and trans == trans and trans > 0.5:
+                    point['alt_deg'] = round(alt, 2)
+                    point['airmass'] = round(rf_calibration.airmass(alt), 2)
+                    point['sfu_measured'] = flux
+                    flux = flux / trans
+            point['sfu'] = flux
         points.append(point)
     return jsonify({'success': True, 'points': points, 'calibrated': bool(cal_ok),
                     'records': len(records), 'binned': group,
                     'warmup_dropped': dropped, 'warmup_s': LIVE_WARMUP_S,
+                    'opacity_applied': bool(sun_alt is not None and cal_ok),
+                    'zenith_opacity': rf_calibration.ZENITH_OPACITY_NEPERS,
                     'why': '' if cal_ok else cal_why,
                     'name': obs.get('name'),
                     'finished': finished,

@@ -367,7 +367,9 @@
             ctx.font = '22px sans-serif';
             ctx.translate(34, (T + H - B) / 2); ctx.rotate(-Math.PI / 2);
             ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-            ctx.fillText(cal ? 'solar flux (SFU, T_sys subtracted)'
+            ctx.fillText(cal ? (d.opacity_applied
+                                ? 'solar flux (SFU, above the atmosphere)'
+                                : 'solar flux (SFU, T_sys subtracted)')
                              : 'band power (counts, uncalibrated)', 0, 0);
             ctx.restore();
 
@@ -421,6 +423,18 @@
                 text += ' · latest ' + last.toFixed(1) + ' SFU · mean '
                       + mean.toFixed(1) + ' SFU';
                 if (d.t_sys_k) text += ' · T_sys ' + d.t_sys_k.toFixed(0) + ' K subtracted';
+                // Small, but it grows fast as the Sun sets, so the airmass it
+                // was computed at belongs on screen beside the number.
+                if (d.opacity_applied) {
+                    const last = d.points[d.points.length - 1];
+                    text += ' · above the atmosphere (zenith opacity '
+                          + d.zenith_opacity.toFixed(3) + ' Np';
+                    if (last && last.airmass) {
+                        text += ', now airmass ' + last.airmass.toFixed(2)
+                              + ' at alt ' + last.alt_deg.toFixed(1) + '\u00b0';
+                    }
+                    text += ')';
+                }
             } else {
                 text += ' · no gain calibration for this tuning, so counts: ' + (d.why || '');
             }

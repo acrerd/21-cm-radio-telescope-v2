@@ -118,6 +118,49 @@ VERY_HIGH_T_SYS_K = 300.0
 RECEIVER_T_RX_K = 59.0        # SAWbird+ H1 datasheet, typical
 AMBIENT_T_K = 290.0
 
+# Zenith opacity of the atmosphere at 1.4 GHz, in nepers. Almost all of it is
+# molecular oxygen; water vapour contributes little this far from the 22 GHz
+# line, so it barely moves with humidity - which is what makes a single number
+# defensible here at all.
+#
+# This is the *physical expectation*, not a site measurement. Fitting ln(flux)
+# against airmass on the 2026-08-25 solar track (Sun 30.2 deg down to 14.2 deg,
+# airmass 1.99 to 4.08) gave 0.0149, but that number absorbs everything else
+# that worsens towards the horizon - pointing-model error at low altitude,
+# ground spillover, the beam starting to clip the treeline - so it is an upper
+# bound on the opacity rather than a measurement of it. Replace this with a
+# real tipping curve if the 2-3% ever matters.
+ZENITH_OPACITY_NEPERS = 0.010
+
+
+def airmass(alt_deg):
+    """Airmass at this elevation, by Kasten and Young (1989).
+
+    Not 1/sin(alt): that diverges at the horizon and is already 12% high at
+    5 degrees, which is exactly where a setting Sun spends its most interesting
+    minutes. Agrees with the simple form to better than 0.2% above 20 degrees.
+    """
+    h = float(alt_deg)
+    if h < -1.0:
+        return float("inf")
+    return 1.0 / (math.sin(math.radians(h))
+                  + 0.50572 * (h + 6.07995) ** -1.6364)
+
+
+def atmospheric_transmission(alt_deg, tau=ZENITH_OPACITY_NEPERS):
+    """Fraction of a source's flux that survives the atmosphere at this elevation.
+
+    Divide a measured flux by this to get the flux above the atmosphere, which
+    is what a published index like the RSTN 1415 MHz value quotes. The effect
+    is small - 1% at the zenith, 3% at airmass 4 - and is applied for display
+    only. The recorded spectra stay as they were measured.
+    """
+    a = airmass(alt_deg)
+    if not math.isfinite(a):
+        return float("nan")
+    return math.exp(-float(tau) * a)
+
+
 # Floors to fall back through when nothing clears the preferred one. Each step
 # down is reported, so a compromised calibration announces itself.
 FALLBACK_ALT_FLOORS_DEG = (20.0, 15.0, 12.0)
