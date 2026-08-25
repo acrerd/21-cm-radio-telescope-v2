@@ -142,14 +142,20 @@
                 text.textContent = `Receiver: ${label}${obs}${data.pid ? ' #' + data.pid : ''}`;
                 btn.disabled = true;
                 btn.title = data.source === 'observation'
-                    ? 'A scheduled observation is using the B210 receiver.'
-                    : 'The B210 receiver process is already running.';
+                    ? 'A scheduled observation is using the B210.'
+                    : 'The receiver GUI is already running on the console.';
             } else {
                 dot.classList.remove('running');
                 dot.style.background = data.returncode === null ? '#666' : '#ff9500';
                 text.textContent = data.returncode === null ? 'Receiver: Idle' : `Receiver: Stopped (${data.returncode})`;
                 btn.disabled = false;
-                btn.title = `Start the B210 receiver with ${data.python || 'radioconda Python'}.`;
+                // Says what it is for, because the name no longer has to:
+                // this is the one deliberately graphical path in a system that
+                // is otherwise entirely headless.
+                btn.title = 'Opens the receiver\u2019s Qt window on the observatory '
+                          + 'console, for warm-up and checking the band. Not part of '
+                          + 'the observing path, and it will fail over ssh - there is '
+                          + 'no display. Uses ' + (data.python || 'radioconda Python') + '.';
             }
         }
 
