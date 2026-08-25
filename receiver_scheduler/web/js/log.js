@@ -7,7 +7,7 @@
         function loadLog() {
             fetch('/api/log').then(r => r.json()).then(data => {
                 const el = document.getElementById('logContent');
-                el.textContent = data.lines.join('\\n') || '(empty log)';
+                el.textContent = data.lines.join('\n') || '(empty log)';
                 el.scrollTop = el.scrollHeight;
             }).catch(() => {
                 document.getElementById('logContent').textContent = 'Error loading log';

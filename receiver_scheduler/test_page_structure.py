@@ -112,6 +112,36 @@ def test_nothing_the_page_had_has_been_lost(page, baseline):
     assert not lost_api, "API paths the page no longer calls: %s" % lost_api
 
 
+def test_no_escape_survived_the_move_out_of_the_python_string(page):
+    """The bug the extraction itself introduced, on 2026-08-25.
+
+    The page was lifted out by taking the *source text* between the triple
+    quotes rather than the string Python built from it, so every escape came
+    across un-collapsed. `'\\n'` in the source is a newline once Python has
+    read it and that is what the browser used to receive; the extracted file
+    kept both backslashes, which JavaScript reads as a backslash followed by an
+    n. The Log tab stopped showing line breaks, the pass predictions printed
+    \\u00b0 instead of a degree sign, and `tle.split()` stopped finding the
+    satellite name.
+
+    None of the other guards saw it: nothing was lost, no id went missing, no
+    handler became unreachable. It is a content bug, and only the Log tab
+    looking wrong revealed it.
+
+    This codebase has no legitimate use for a doubled backslash in the page's
+    JavaScript, so the presence of one means an escape has been mangled again.
+    If a real one is ever needed, the right move is to think hard about why
+    before editing this test.
+    """
+    _, js = page
+    import re
+
+    bad = sorted(set(re.findall(r'\\\\.', js)))
+    assert not bad, (
+        "doubled backslashes in the page JavaScript: %s\n"
+        "These are almost certainly escapes that were not collapsed." % bad)
+
+
 def test_the_page_still_carries_all_nine_tabs(page):
     """The coarsest check there is, and it would have caught more than one
     refactor that quietly dropped a panel."""

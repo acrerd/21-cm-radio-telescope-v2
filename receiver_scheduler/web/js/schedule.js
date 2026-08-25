@@ -177,7 +177,7 @@
             }
             if (sys === 'satellite') {
                 const tle = obs.tle_text || '';
-                const name = tle.split('\\n')[0] || 'Satellite';
+                const name = tle.split('\n')[0] || 'Satellite';
                 return `Sat: ${name.substring(0, 20)}`;
             }
             if (sys === 'calibration') {
@@ -548,7 +548,7 @@
             let t = '';
             if (h > 0) t += h + 'h ';
             t += m + 'm ' + s + 's';
-            return ` \u2014 Next: ${nearestName} in ${t}`;
+            return ` — Next: ${nearestName} in ${t}`;
         }
 
         function exportSchedule() {
@@ -647,9 +647,9 @@
                     document.getElementById('passDetails').style.display = 'block';
                     document.getElementById('passDetails').innerHTML =
                         `<b>${p.name}</b><br>` +
-                        `Rise: ${p.rise_time_local} (Az ${p.rise_az}\\u00b0)<br>` +
-                        `Max:  ${p.max_time_utc} UTC (El ${p.max_el}\\u00b0)<br>` +
-                        `Set:  ${p.set_time_local} (Az ${p.set_az}\\u00b0)<br>` +
+                        `Rise: ${p.rise_time_local} (Az ${p.rise_az}\u00b0)<br>` +
+                        `Max:  ${p.max_time_utc} UTC (El ${p.max_el}\u00b0)<br>` +
+                        `Set:  ${p.set_time_local} (Az ${p.set_az}\u00b0)<br>` +
                         `Duration: ${p.duration_minutes} min`;
                 } else {
                     info.textContent = data.error || 'No pass found';

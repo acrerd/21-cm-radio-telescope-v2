@@ -207,7 +207,7 @@
 
         function rfLoadBandpassPlot() {
             const host = document.getElementById('rfBandpassPlot');
-            host.textContent = 'Drawing\u2026';
+            host.textContent = 'Drawing…';
             fetch('/api/rf/bandpass/plot?' + Date.now()).then(r => {
                 if (!r.ok) return r.json().then(d => { throw new Error(d.error || ('HTTP ' + r.status)); });
                 return r.blob();
@@ -222,7 +222,7 @@
 
         function rfLoadGainPlot() {
             const host = document.getElementById('rfGainPlot');
-            host.textContent = 'Drawing\u2026';
+            host.textContent = 'Drawing…';
             fetch('/api/rf/gain/plot?' + Date.now()).then(r => {
                 if (!r.ok) return r.json().then(d => { throw new Error(d.error || ('HTTP ' + r.status)); });
                 return r.blob();

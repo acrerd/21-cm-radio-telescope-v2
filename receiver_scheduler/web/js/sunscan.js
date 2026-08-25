@@ -269,10 +269,10 @@
                 if (data.success) {
                     var t = data.terms || {};
                     var lines = Object.keys(t).map(function (k) {
-                        return k + ': ' + (t[k] >= 0 ? '+' : '') + t[k].toFixed(4) + '\u00b0';
+                        return k + ': ' + (t[k] >= 0 ? '+' : '') + t[k].toFixed(4) + '°';
                     });
-                    alert('Stored on the controller.\\n\\n' + lines.join('\\n') +
-                          '\\n\\nFitted from ' + data.n_scans + ' scans at ' + data.fitted_utc + '.');
+                    alert('Stored on the controller.\n\n' + lines.join('\n') +
+                          '\n\nFitted from ' + data.n_scans + ' scans at ' + data.fitted_utc + '.');
                 } else {
                     alert('Failed: ' + (data.error || 'Unknown error'));
                 }
