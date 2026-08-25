@@ -145,3 +145,66 @@ def test_a_recording_reverses_exactly(tmp_path):
     kelvin = raw / correction / cal["gain_counts_per_k"] - cal["t_sys_k"]
     back = (kelvin + cal["t_sys_k"]) * cal["gain_counts_per_k"] * correction
     assert np.allclose(back, raw, rtol=1e-9, atol=0)
+
+
+def test_a_calibrated_recording_still_reduces_as_counts(tmp_path):
+    """The pipeline must see counts however the file was stored.
+
+    Storing kelvin is for whoever opens the file elsewhere. Inside here the
+    reduction has to work in counts, because fitting a gain from spectra a gain
+    has already been applied to is circular - reduce_for_fit would dutifully
+    return unity and a system temperature of zero, and the calibration would
+    look perfect while meaning nothing.
+    """
+    import numpy as np
+    import h5py
+
+    import observation_plot as op
+
+    cal = R.load_calibration()
+    if not cal:
+        pytest.skip("no gain calibration on this machine")
+    path = str(tmp_path / "calibrated.h5")
+    freq = np.linspace(1420.0e6, 1420.8e6, 256)
+    counts = np.full((3, freq.size), 0.0028)
+    correction = np.linspace(0.95, 1.05, freq.size)
+    kelvin = counts / correction / cal["gain_counts_per_k"] - cal["t_sys_k"]
+
+    with h5py.File(path, "w") as hf:
+        hf.create_dataset("frequency_hz", data=freq)
+        hf.create_dataset("spectra_kelvin", data=kelvin.astype("float32"))
+        hf.create_dataset("bandpass_correction", data=correction.astype("float32"))
+        hf.create_dataset("timestamps", data=np.arange(3, dtype=float))
+        hf.create_dataset("integration_times", data=np.full(3, 3.0))
+        hf.attrs["spectra_units"] = "K"
+        hf.attrs["applied_gain_counts_per_k"] = cal["gain_counts_per_k"]
+        hf.attrs["applied_t_sys_k"] = cal["t_sys_k"]
+
+    _, spectra, _, _, header = op.read_observation(path)
+    assert header["spectra_units"] == "K", "the file says what it holds"
+    assert np.allclose(spectra, counts, rtol=1e-5), (
+        "read_observation must hand the pipeline counts, whatever is stored")
+
+
+def test_an_uncalibrated_recording_is_left_in_counts(tmp_path):
+    """No calibration for the tuning means no pretending there is one.
+
+    Both the template and the gain have to apply. The gain was fitted against
+    corrected spectra, so using it on uncorrected ones would mix two scales -
+    a number that looks like a temperature and is not.
+    """
+    import b210_h1_receiver as rx
+    import h5py
+
+    path = str(tmp_path / "uncal.h5")
+    hf = rx.init_hdf5(path, [1.0e9, 1.1e9], 2, "demo", 1.0e9, 2.0e6, 0.0)
+    try:
+        assert "spectra_linear" in hf
+        assert "spectra_kelvin" not in hf
+        assert hf.attrs["spectra_units"] == "counts"
+        assert hf.attrs["gain_db"] == 0.0, (
+            "the receiver gain must survive - it was once overwritten by the "
+            "calibration gain through a shadowed parameter, and the file "
+            "would not open at all")
+    finally:
+        hf.close()

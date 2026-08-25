@@ -136,7 +136,22 @@ def read_observation(path):
             "it has finished")
     with h5py.File(path, "r") as hf:
         freq_hz = np.asarray(hf["frequency_hz"][:], dtype=float)
-        spectra = np.asarray(hf["spectra_linear"][:], dtype=float)
+        # Recordings are stored in kelvin when the instrument was calibrated
+        # for their tuning, and in counts when it was not. This always hands
+        # back *counts*, reversing the calibration where one was applied.
+        #
+        # That is not a wasted round trip. Storing kelvin is for whoever opens
+        # the file in a notebook or another language; this pipeline has to work
+        # in counts, because fitting a gain from spectra that a gain has
+        # already been applied to would be circular - reduce_for_fit would
+        # dutifully return unity and a system temperature of zero.
+        if "spectra_kelvin" in hf:
+            spectra = np.asarray(hf["spectra_kelvin"][:], dtype=float)
+            correction = np.asarray(hf["bandpass_correction"][:], dtype=float)
+            spectra = ((spectra + float(hf.attrs["applied_t_sys_k"]))
+                       * float(hf.attrs["applied_gain_counts_per_k"]) * correction)
+        else:
+            spectra = np.asarray(hf["spectra_linear"][:], dtype=float)
         stamps = np.asarray(hf["timestamps"][:], dtype=float)
         # How long each record integrated for. Their sum is the total
         # integration, which is what the averaged spectrum's noise corresponds

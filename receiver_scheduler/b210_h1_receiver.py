@@ -302,13 +302,20 @@ def init_hdf5(filename, freq_axis_hz, fft_size, sdr_type, center_freq,
     hf.create_dataset('bandpass_correction', data=correction.astype('float32'))
     hf.create_dataset('bandpass_valid', data=valid)
 
-    hf.create_dataset('spectra_linear',
-                      shape=(0, fft_size),
-                      maxshape=(None, fft_size),
-                      dtype='float32',
-                      chunks=(1, fft_size),
-                      compression='gzip',
-                      compression_opts=4)
+    # Spectra are stored in kelvin when the instrument is calibrated for this
+    # tuning, and in raw counts when it is not. The dataset *name* carries the
+    # units rather than an attribute, so a reader written for one cannot
+    # silently misread the other: an old script asking for spectra_linear on a
+    # calibrated file gets a KeyError, which is the safe way to be wrong.
+    #
+    # Both require the bandpass template as well as the gain. The gain was
+    # fitted against corrected spectra, so applying it to uncorrected ones
+    # would be mixing two scales - better to leave the file in counts and say
+    # so than to write a number that looks like a temperature.
+    # The spectra dataset is created further down, once the tuning attributes
+    # exist: whether the file can be written in kelvin depends on whether the
+    # calibration applies to *this* tuning, and that question cannot be asked
+    # before the tuning has been recorded.
 
     hf.create_dataset('timestamps',
                       shape=(0,),
@@ -337,6 +344,30 @@ def init_hdf5(filename, freq_axis_hz, fft_size, sdr_type, center_freq,
     hf.attrs['created'] = datetime.now(timezone.utc).isoformat()
 
     _embed_calibration(hf)
+
+    # Spectra are stored in kelvin when the instrument is calibrated for this
+    # tuning, and in raw counts when it is not. The dataset *name* carries the
+    # units rather than an attribute, so a reader written for one cannot
+    # silently misread the other: a script asking for spectra_linear on a
+    # calibrated file gets a KeyError, which is the safe way to be wrong.
+    #
+    # Both the template and the gain have to apply. The gain was fitted against
+    # corrected spectra, so applying it to uncorrected ones would mix two
+    # scales - better to leave the file in counts and say so than to write a
+    # number that looks like a temperature.
+    cal_gain, cal_t_sys = _calibration_for_writing(hf)
+    spectra_name = 'spectra_kelvin' if cal_gain else 'spectra_linear'
+    hf.attrs['spectra_units'] = 'K' if cal_gain else 'counts'
+    if cal_gain:
+        hf.attrs['applied_gain_counts_per_k'] = cal_gain
+        hf.attrs['applied_t_sys_k'] = cal_t_sys
+    hf.create_dataset(spectra_name,
+                      shape=(0, fft_size),
+                      maxshape=(None, fft_size),
+                      dtype='float32',
+                      chunks=(1, fft_size),
+                      compression='gzip',
+                      compression_opts=4)
 
     # Observation metadata from scheduler
     import json as _json
@@ -406,6 +437,37 @@ def _embed_calibration(hf):
         pass
 
 
+def _calibration_for_writing(hf):
+    """(gain, T_sys) to record spectra in kelvin with, or (None, None).
+
+    Both the bandpass template and the gain have to apply to this tuning. The
+    check is the same one the reduction uses, run against the attributes just
+    written, so a file is never calibrated by a gain that the pipeline would
+    afterwards refuse.
+    """
+    import json as _json
+
+    try:
+        header = dict(hf.attrs)
+        import sys as _sys
+        here = os.path.dirname(os.path.abspath(__file__))
+        if here not in _sys.path:
+            _sys.path.insert(0, here)
+        import bandpass as _bp
+        import rf_calibration as _rf
+        template = _bp.load_bandpass()
+        ok_bp, _ = _bp.applies_to(template, header)
+        if not ok_bp:
+            return None, None
+        cal = _rf.load_calibration()
+        ok_cal, _ = _rf.calibration_applies_to(cal, header)
+        if not ok_cal or not cal.get("gain_counts_per_k"):
+            return None, None
+        return float(cal["gain_counts_per_k"]), float(cal["t_sys_k"])
+    except Exception:                                     # noqa: BLE001
+        return None, None
+
+
 def _bandpass_correction(freq_axis_hz):
     """(correction, valid) for this frequency axis, from the template in force.
 
@@ -436,11 +498,19 @@ def _bandpass_correction(freq_axis_hz):
 
 def append_spectrum(hf, avg_linear, timestamp, integration_time, fft_size):
     """Append one integrated spectrum, flushing so a reader sees it promptly."""
-    n = hf['spectra_linear'].shape[0]
-    hf['spectra_linear'].resize((n + 1, fft_size))
+    name = 'spectra_kelvin' if 'spectra_kelvin' in hf else 'spectra_linear'
+    values = avg_linear
+    if name == 'spectra_kelvin':
+        # counts -> kelvin, with the correction the file already carries, so
+        # what is written is exactly what the stored numbers reverse.
+        values = (avg_linear / hf['bandpass_correction'][:]
+                  / hf.attrs['applied_gain_counts_per_k']
+                  - hf.attrs['applied_t_sys_k'])
+    n = hf[name].shape[0]
+    hf[name].resize((n + 1, fft_size))
     hf['timestamps'].resize((n + 1,))
     hf['integration_times'].resize((n + 1,))
-    hf['spectra_linear'][n, :] = avg_linear.astype(np.float32)
+    hf[name][n, :] = np.asarray(values, dtype=np.float32)
     hf['timestamps'][n] = timestamp
     hf['integration_times'][n] = integration_time
     hf.flush()
@@ -1558,7 +1628,8 @@ class H1ReceiverWindow(QtWidgets.QMainWindow):
 
     def _ensure_hdf5_geometry(self):
         """Ensure the active HDF5 datasets match the current FFT geometry."""
-        if self.hf['spectra_linear'].shape[1] != self.fft_size:
+        name = 'spectra_kelvin' if 'spectra_kelvin' in self.hf else 'spectra_linear'
+        if self.hf[name].shape[1] != self.fft_size:
             self._roll_hdf5_file(f"fft{self.fft_size}")
             return
 

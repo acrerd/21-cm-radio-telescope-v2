@@ -28,7 +28,7 @@ HALF_BAND = 0.25
 def load(path, order):
     with h5py.File(path, "r") as hf:
         f = np.array(hf["frequency_hz"][:], float)
-        sp = np.array(hf["spectra_linear"][:], float)
+        sp = np.array(hf["spectra_kelvin" if "spectra_kelvin" in hf else "spectra_linear"][:], float)
         a = dict(hf.attrs)
     lo, sr = a["center_freq_hz"], a["sample_rate_hz"]
     mean = sp.mean(axis=0)

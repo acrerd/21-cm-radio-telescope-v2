@@ -39,7 +39,7 @@ def load_group(offset_mhz):
     spectra, taus, lo, sr = [], 0.0, None, None
     for p in paths:
         with h5py.File(p, "r") as hf:
-            spectra.append(np.array(hf["spectra_linear"][:], float))
+            spectra.append(np.array(hf["spectra_kelvin" if "spectra_kelvin" in hf else "spectra_linear"][:], float))
             taus += float(np.nansum(hf["integration_times"][:]))
             a = dict(hf.attrs)
             lo, sr = a["center_freq_hz"], a["sample_rate_hz"]
