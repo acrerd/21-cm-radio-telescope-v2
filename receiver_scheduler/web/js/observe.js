@@ -368,6 +368,14 @@
             // from one that is a single measurement, and the noise on screen
             // is smaller for a reason the reader should know.
             let text = (d.records || d.points.length) + ' records';
+            // Say what was left off. The first record of a run comes in several
+            // percent low while the flowgraph settles, and dropping it silently
+            // would be a plot that quietly disagrees with the recording.
+            if (d.warmup_dropped) {
+                text += ' · first ' + d.warmup_s.toFixed(0) + ' s ('
+                      + d.warmup_dropped + (d.warmup_dropped === 1 ? ' record' : ' records')
+                      + ') left off as warm-up';
+            }
             if (d.binned > 1) {
                 text += ' · ' + d.points.length + ' points, '
                       + d.binned + ' records averaged into each';

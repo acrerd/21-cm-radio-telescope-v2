@@ -3417,6 +3417,26 @@ _live_cache: dict = {}
 _live_cache_lock = threading.Lock()
 
 
+# How much of the start of a run to leave off the live plot.
+#
+# Measured on the 2026-08-25 12-minute run at 3 s per record: the first record
+# came in 7.9% below the settled level and the second was already within 1.5%,
+# where the run's own wander is about +-1%. So the transient is one record's
+# worth of flowgraph startup, five times outside the ordinary scatter, and
+# everything after it is the receiver being itself.
+#
+# Expressed as a time rather than a record count because the cause is: it is
+# the flowgraph settling, which takes as long as it takes whatever integration
+# was asked for. At the 0.1 s a burst watch would use, a count of one would
+# leave most of the transient on the plot.
+#
+# Deliberately small. The slow wander that follows is not warm-up and must not
+# be trimmed away - it never settles, it is still drifting at twelve minutes,
+# and for a flux monitor it is the systematic that sets how well the Sun can
+# be measured at all. Hiding it would be flattering the instrument.
+LIVE_WARMUP_S = 5.0
+
+
 def _live_records(path):
     """Every summary record for this observation, parsed once each.
 
@@ -3524,6 +3544,15 @@ def api_observe_live():
         limit = 2000
 
     records = _live_records(path)
+    dropped = 0
+    if records:
+        start = records[0]["t"]
+        kept = [r for r in records if r["t"] - start >= LIVE_WARMUP_S]
+        # Never drop everything: early in a run the warm-up is all there is,
+        # and an empty plot would look like a receiver that is not recording.
+        if kept:
+            dropped = len(records) - len(kept)
+            records = kept
     if not records:
         return jsonify({'success': True, 'points': [], 'calibrated': False,
                         'name': obs.get('name'),
@@ -3555,6 +3584,7 @@ def api_observe_live():
         points.append(point)
     return jsonify({'success': True, 'points': points, 'calibrated': bool(cal_ok),
                     'records': len(records), 'binned': group,
+                    'warmup_dropped': dropped, 'warmup_s': LIVE_WARMUP_S,
                     'why': '' if cal_ok else cal_why,
                     'name': obs.get('name'),
                     'is_solar': (obs.get('coord_system') == 'object'
