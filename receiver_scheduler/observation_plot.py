@@ -318,12 +318,27 @@ def plot_observation(path, output_path, name="", mode="spectrum",
                                      tz=timezone.utc)
     lsr = lsr_offset_km_s(header, mid)
 
+    # The receiver's own clock offset, on top of the frame. An error in the
+    # B210's TCXO scales the whole frequency axis, which across 2 MHz is a pure
+    # velocity shift - measured at -2.36 +- 0.27 ppm, or -0.71 +- 0.08 km/s,
+    # which is 7 channels at 0.49 kHz.
+    #
+    # Carried from the stored calibration rather than refitted, because the
+    # clock is stable: the eight archived fits scatter by 4 ppm, but that
+    # scatter tracks line strength and not time, and the constrained ones agree
+    # to 0.27 ppm over 18 hours. Only a fit that had a strong enough line to
+    # hold the shift is used - see trustworthy_velocity_shift - since a shift
+    # fitted against a weak line is confidently wrong by several km/s, which is
+    # worse than leaving it out.
+    clock_shift = rf_calibration.trustworthy_velocity_shift(cal) if cal_ok else None
+
     fig, ax = plt.subplots(figsize=figsize, dpi=dpi)
     secax = None
     if mode == "drift":
         _plot_drift(ax, spectra, stamps, transit_minutes)
     else:
-        secax = _plot_spectrum(ax, freq_hz, spectra, lsr=lsr)
+        secax = _plot_spectrum(ax, freq_hz, spectra, lsr=lsr,
+                               clock_shift=clock_shift)
         if cal_ok:
             ax.set_ylabel("Antenna temperature (K)")
     # The spectrum's velocity axis lives along the top of the frame, and
@@ -478,7 +493,7 @@ def lsr_offset_km_s(header, when):
     return float(dv_m_s) / 1000.0, glon, glat
 
 
-def _plot_spectrum(ax, freq_hz, spectra, lsr=None):
+def _plot_spectrum(ax, freq_hz, spectra, lsr=None, clock_shift=None):
     mean = spectra.mean(axis=0)
     freq_mhz = freq_hz / 1e6
     # Staircase, as on the calibration plots. Each point is a channel with a
@@ -509,20 +524,31 @@ def _plot_spectrum(ax, freq_hz, spectra, lsr=None):
     # Where the direction cannot be worked out the axis stays topocentric and
     # says so. A velocity axis silently in the wrong frame is worse than one
     # honestly labelled - which is what this was until 2026-08-25.
+    # Two terms, both subtracted: the frame, and the receiver's clock. The
+    # clock term is what the gain fit measured as velocity_shift_km_s - the
+    # measured line sitting below the model - so removing it means subtracting
+    # it. Checked on the 2026-08-25 anticentre observation by line centroid,
+    # which is far more precise than a peak channel: measured minus HI4PI was
+    # -0.758 km/s against a stored shift of -0.787, and applying it takes the
+    # centroid agreement from 0.76 km/s to 0.03.
     dv = lsr[0] if lsr else 0.0
+    clock = clock_shift or 0.0
 
     def to_vel(f_mhz):
         topo = C_KM_S * (1.0 - np.asarray(f_mhz) * 1e6 / H1_REST_FREQ_HZ)
-        return topo - dv
+        return topo - dv - clock
 
     def to_freq(v):
-        topo = np.asarray(v) + dv
+        topo = np.asarray(v) + dv + clock
         return H1_REST_FREQ_HZ * (1.0 - topo / C_KM_S) / 1e6
 
     secax = ax.secondary_xaxis("top", functions=(to_vel, to_freq))
     if lsr:
-        secax.set_xlabel("LSR velocity (km/s)   [topocentric %+.2f km/s applied,"
-                         " l=%.1f b=%.1f]" % (-dv, lsr[1], lsr[2]))
+        note = "topocentric %+.2f km/s" % -dv
+        if clock_shift is not None:
+            note += ", clock %+.2f km/s" % -clock_shift
+        secax.set_xlabel("LSR velocity (km/s)   [%s applied, l=%.1f b=%.1f]"
+                         % (note, lsr[1], lsr[2]))
     else:
         secax.set_xlabel("Topocentric velocity (km/s) - direction unknown, "
                          "no LSR correction")

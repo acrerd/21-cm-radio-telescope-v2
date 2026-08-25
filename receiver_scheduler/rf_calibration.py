@@ -673,19 +673,41 @@ def fit_gain_with_shift(freq_hz, counts, model_freq_hz, model_k,
     three times. That is 5.9 to 7.2 ppm, outside the +-2 ppm the part is
     specified at but ordinary for one untrimmed or warm.
 
-    Fitted per observation rather than assumed, and that turns out to be
-    necessary rather than merely careful. Three fields between 15:21 and 16:31 on
-    2026-08-24 agreed at -5.92, -6.55 and -6.88 ppm; a fourth at 17:04 fitted
-    -2.67. The later value is not poorly determined - its residual minimum is
-    sharp, and 16% worse at the earlier figure - so the clock really moved by
-    3.7 ppm in an hour and a half. Nor is it the barycentric term, which shifts
-    by a tenth of a km/s over that span, ten times too little.
-    
-    So this is not a constant to measure once and store. It has to be fitted
-    alongside every calibration, and an archived observation with no strong line
-    in it cannot have its velocity axis recovered at all. Consistency across
-    fields at one time is still what shows the shift is instrumental rather than
-    astrophysical; consistency across hours is what it does not have.
+    Fitted per observation rather than assumed - but the reason recorded here
+    until 2026-08-25 was wrong, and the correction matters because it inverts
+    the conclusion.
+
+    The claim was that three fields between 15:21 and 16:31 on 2026-08-24
+    agreeing at -5.92, -6.55 and -6.88 ppm, against -2.67 at 17:04, showed the
+    clock moving 3.7 ppm in an hour and a half. Re-fitting all eight archived
+    calibrations against the settled bandpass template shows what those numbers
+    actually track, and it is not time:
+
+        model peak 93-106 K (the plane)  r = 0.999   ppm -2.63, -2.09
+        model peak 21-46 K  (b ~ 40)     r = 0.51-0.93   ppm -6.6 to -0.8
+        model peak 1.3 K    (Lockman)    r = 0.41    ppm +18.4
+
+    The scatter is entirely explained by line strength. Those three "agreeing"
+    fields were all weak high-latitude pointings with 20 K peaks and
+    correlations of 0.51, 0.78 and 0.93; they agree because they share a bias,
+    not because they measured a common oscillator. With no line to hold it, the
+    shift slides - +18.4 ppm came from a 1.3 K peak, where there is nothing to
+    fit at all.
+
+    Judged on the fits that are actually constrained, the clock is stable:
+    -2.36 +- 0.27 ppm across 18 hours, which is +-0.08 km/s, under one channel,
+    and well inside the +-2 ppm the part is specified at. It is an ordinary
+    TCXO behaving like one.
+
+    So the shift *is* stable enough to carry from one observation to another,
+    and observation_plot applies the stored value to the velocity axis - but
+    only from a calibration whose correlation says the fit was constrained. A
+    shift fitted against a weak line is worse than no shift, because it is
+    confidently wrong by several km/s.
+
+    The wider lesson is the one that produced the error: a quantity fitted
+    alongside others takes up their slack. These numbers were read as a
+    property of the clock when they were a property of the fit.
 
     The search is bounded: given room, a shift will happily slide onto a
     neighbouring velocity component and report a superb fit to the wrong line.
@@ -820,6 +842,37 @@ def load_calibration(path=CALIBRATION_FILE):
     cal.pop("t_sys_implausible", None)
     cal.pop("implausible_above_k", None)
     return cal
+
+
+# How well the model has to match before the fitted velocity shift is worth
+# carrying to another observation. Re-fitting the eight archived calibrations
+# on 2026-08-25 split cleanly: correlations of 0.999 on the plane gave
+# -2.63 and -2.09 ppm, while everything from 0.41 to 0.93 gave -6.6 to +18.4.
+# The shift needs a strong line to hold it; without one it slides onto
+# whatever is nearby and reports a confident number.
+MIN_SHIFT_CORRELATION = 0.99
+
+
+def trustworthy_velocity_shift(cal):
+    """The fitted velocity shift in km/s, or None if the fit could not hold it.
+
+    Returned separately from the gain because the two do not fail together: a
+    fit against a weak line can give a defensible slope while its shift is
+    several km/s out, having slid to wherever the residual happened to fall.
+    """
+    if not cal:
+        return None
+    shift = cal.get("velocity_shift_km_s")
+    corr = cal.get("correlation")
+    if shift is None or corr is None:
+        return None
+    if not np.isfinite(shift) or not np.isfinite(corr):
+        return None
+    if corr < MIN_SHIFT_CORRELATION:
+        return None
+    if cal.get("shift_at_search_limit"):
+        return None          # ran to the bound, so it is a limit not a measurement
+    return float(shift)
 
 
 def calibration_applies_to(cal, header, tolerance_hz=1e3):

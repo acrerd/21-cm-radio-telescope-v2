@@ -148,3 +148,49 @@ def test_it_moves_the_anticentre_line_to_where_the_survey_puts_it():
     assert abs(measured_topocentric - survey_peak_km_s) > 10.0, (
         "the uncorrected axis should be far from the survey, or this test is "
         "not demonstrating anything")
+
+
+def test_the_clock_term_is_only_carried_from_a_constrained_fit():
+    """The correction that inverted a documented conclusion.
+
+    The B210's TCXO scales the frequency axis, which over 2 MHz is a pure
+    velocity shift. It was recorded as unusable - "the clock really moved by
+    3.7 ppm in an hour and a half" - and that reading was wrong. Re-fitting the
+    eight archived calibrations against a settled bandpass showed the scatter
+    tracks *line strength*, not time: 0.999 correlations on the plane give
+    -2.63 and -2.09 ppm, while correlations of 0.41 to 0.93 on weak
+    high-latitude fields give -6.6 to +18.4. A shift with no line to hold it
+    slides onto whatever is nearby and reports a confident number.
+
+    Constrained fits only: -2.36 +- 0.27 ppm across 18 hours, or +-0.08 km/s.
+    An ordinary TCXO behaving like one - which is what made carrying the value
+    between observations defensible.
+    """
+    import rf_calibration
+
+    good = {"velocity_shift_km_s": -0.7875, "correlation": 0.99918,
+            "shift_at_search_limit": False}
+    assert rf_calibration.trustworthy_velocity_shift(good) == pytest.approx(-0.7875)
+
+    for why, cal in (
+            ("a weak line lets the shift slide", dict(good, correlation=0.93)),
+            ("nothing to fit at all", dict(good, correlation=0.41)),
+            ("a limit is not a measurement", dict(good, shift_at_search_limit=True)),
+            ("no fit recorded", {}),
+    ):
+        assert rf_calibration.trustworthy_velocity_shift(cal) is None, why
+
+
+def test_the_clock_term_is_subtracted_like_the_frame_term():
+    """Sign again, checked by line centroid rather than peak channel.
+
+    velocity_shift_km_s is the measured line sitting below the model, so
+    removing it subtracts. On the 2026-08-25 anticentre observation the
+    measured centroid was 0.758 km/s below HI4PI against a stored shift of
+    -0.787; subtracting takes the disagreement to 0.030 km/s. Adding it would
+    have doubled the error to 1.5 km/s while still looking like a spectrum.
+    """
+    shift = -0.7875
+    measured_centroid, survey_centroid = 1.785, 2.543
+    assert abs((measured_centroid - shift) - survey_centroid) < 0.05
+    assert abs((measured_centroid + shift) - survey_centroid) > 1.0
