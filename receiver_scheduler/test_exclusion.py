@@ -118,6 +118,37 @@ def test_one_subsystem_at_a_time(client, busy, asking, quiet_hardware):
 
 
 @pytest.mark.parametrize("asking", sorted(SUBSYSTEMS))
+def test_nothing_starts_while_the_receiver_was_booted_by_hand(client, asking,
+                                                              quiet_hardware):
+    """The claimant that was missed when this matrix was first written.
+
+    The manual receiver (/api/receiver/start) holds the B210 as firmly as any
+    scan does, but it is not one of the four subsystem state dicts, so
+    enumerating those left it out. The Sun scan and calibration day happened to
+    check it separately and were fine; the horizon scan and RF calibration did
+    not, and would have started straight on top of a running receiver with both
+    claiming the device.
+
+    The lesson is in the shape of the bug: the matrix has to enumerate what can
+    *hold the hardware*, not what appears in the tab bar.
+    """
+    from unittest.mock import MagicMock
+
+    proc = MagicMock()
+    proc.poll.return_value = None
+    proc.pid = 4242
+    saved = sched.receiver_boot_process
+    sched.receiver_boot_process = proc
+    try:
+        path, payload = SUBSYSTEMS[asking]["start"]
+        assert _refused(client.post(path, json=payload)), (
+            "%s was allowed to start while the receiver was running by hand"
+            % asking)
+    finally:
+        sched.receiver_boot_process = saved
+
+
+@pytest.mark.parametrize("asking", sorted(SUBSYSTEMS))
 def test_nothing_starts_while_an_observation_holds_the_receiver(client, asking,
                                                                 quiet_hardware):
     """A scheduled observation outranks all four.

@@ -1643,6 +1643,15 @@ def hardware_in_use():
         return "a horizon scan is running"
     if rf_state["running"]:
         return "an RF calibration is running"
+    # The manual receiver holds the B210 just as firmly as anything else, and
+    # was missed when this matrix was first written on 2026-08-25 - the Sun
+    # scan and calibration day happened to check it separately, so a horizon
+    # scan or an RF calibration would start straight on top of it and both
+    # would claim the device. Enumerating the *subsystems* rather than the
+    # *claimants* is what let it through.
+    with receiver_boot_lock:
+        if _proc_running(receiver_boot_process):
+            return "the receiver was started by hand and holds the B210"
     return None
 
 
