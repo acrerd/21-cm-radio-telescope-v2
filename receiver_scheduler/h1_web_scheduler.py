@@ -2694,7 +2694,6 @@ def index():
 
 
 @app.route('/app.css')
-@app.route('/app.js')
 @app.route('/js/<path:path>')
 def page_asset(path=None):
     """The page's own stylesheet and scripts.
