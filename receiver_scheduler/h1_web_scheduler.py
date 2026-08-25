@@ -33,6 +33,12 @@ import urllib.parse
 # The observatory's surveyed position, written down in exactly one place.
 from observatory import SITE_HEIGHT_M, SITE_LAT_DEG, SITE_LON_DEG
 
+# Naming and placing recordings. Shared with b210_h1_receiver, which rolls its
+# own files and must land them in the same folder under the same convention -
+# the scheduler cannot import the receiver back (it pulls in GNU Radio at
+# module scope), so the convention lives in a module they can both have.
+import observation_files
+
 try:
     import ephem
     EPHEM_AVAILABLE = True
@@ -1591,22 +1597,39 @@ def save_schedule(schedule: list):
         json.dump(schedule, f, indent=2)
 
 
+def observations_folder() -> str:
+    """The folder every recording goes in, created if it is not there yet."""
+    folder = os.path.realpath(
+        observation_files.observations_folder(
+            get_config_value("data_output_folder")))
+    os.makedirs(folder, exist_ok=True)
+    return folder
+
+
 def generate_filename(obs: dict) -> str:
-    """Generate output filename for observation, placed in the data output folder."""
-    data_folder = os.path.realpath(get_config_value("data_output_folder"))
-    os.makedirs(data_folder, exist_ok=True)
+    """Where this observation records: <observations>/YYYYMMDD_HHMMSS_<mode>.h5
+
+    The name carries the time and whether the mount tracked or sat parked, and
+    nothing else. The target name, the calibrator flag, the coordinates, the
+    tuning and the calibration in force are all attributes inside the file, so
+    putting any of them in the name only creates a second copy that can
+    disagree with the first - after a rename, or after the schedule entry is
+    edited. See observation_files for the reasoning and for why an `altaz`
+    entry is a drift scan.
+
+    An explicit filename from the operator still wins, and is still contained:
+    relative subfolders are fine, absolute paths and ../ escapes are not.
+    """
+    folder = observations_folder()
     if obs.get('filename'):
-        # Contain the file inside the data folder: relative subfolders are
-        # fine, but absolute paths and ../ escapes are rejected.
-        candidate = os.path.realpath(os.path.join(data_folder, obs['filename']))
-        if candidate != data_folder and candidate.startswith(data_folder + os.sep):
+        candidate = os.path.realpath(os.path.join(folder, obs['filename']))
+        if candidate != folder and candidate.startswith(folder + os.sep):
+            os.makedirs(os.path.dirname(candidate), exist_ok=True)
             return candidate
-        log.warning("Ignoring output filename outside the data folder: %r",
+        log.warning("Ignoring output filename outside the observations folder: %r",
                     obs['filename'])
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    name = obs.get('name', 'obs').replace(' ', '_').lower()
-    cal = "_cal" if obs.get('calibrator') else ""
-    return os.path.join(data_folder, f"h1_{name}{cal}_{timestamp}.h5")
+    return observation_files.observation_filename(
+        folder, observation_files.observation_mode(obs))
 
 
 def hardware_in_use():
@@ -1779,6 +1802,10 @@ def start_observation(obs: dict, duration_override: int = None) -> bool:
         env['H1_OBS_METADATA'] = json.dumps({
             'obs_name': obs.get('name', ''),
             'coord_system': obs.get('coord_system', ''),
+            # The same word the filename carries, so a renamed file still says
+            # whether the mount was tracking. The name is a handle; this is the
+            # record.
+            'observation_mode': observation_files.observation_mode(obs),
             'object_name': obs.get('object_name', ''),
             'coord1_deg': obs.get('coord1_deg', 0),
             'coord1_min': obs.get('coord1_min', 0),
@@ -3905,6 +3932,13 @@ def api_receiver_start():
                             'python': python_path})
 
         env = receiver_process_env(python_path=python_path)
+        # Tell it where to record. Without this it falls back to its own
+        # default, and before 2026-08-25 that default was a bare "h1_data.h5"
+        # resolved against the working directory - which is the repository
+        # root, where it had left 22 stray files. Marked `manual` rather than
+        # track or drift because nobody commanded the mount.
+        env["H1_OUTPUT_FILE"] = observation_files.observation_filename(
+            observations_folder(), observation_files.MANUAL_MODE)
 
         cmd = [python_path, RECEIVER_SCRIPT, "--sdr", "b210"]
         try:

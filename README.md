@@ -507,28 +507,46 @@ To run a calibration day:
 
 ### Output Data Format
 
-HDF5 files contain a fixed frequency axis and FFT width:
+Every recording goes in `receiver_scheduler/data/observations/`, named for when it was made and what the mount was doing — and nothing else, because everything else is inside the file:
 
 ```
-h1_sun_20260328_151303.h5
-├── frequency_hz          # Frequency axis (Hz)
-├── spectra_linear        # Integrated spectra (linear power), shape: [n_spectra, n_channels]
-├── timestamps            # Unix timestamps for each spectrum
-├── integration_times     # Actual integration time per spectrum
+20260825_192937_drift.h5     the dish was parked; the sky drifted through the beam
+20260825_201455_track.h5     the mount followed the source
+20260825_143012_manual.h5    started at the console; nobody commanded the mount
+```
+
+`track` and `drift` describe the mount rather than the box the entry was typed into: an alt/az observation is a **drift** scan, because the scheduler parks the dish and leaves tracking off.
+
+```
+20260825_192937_drift.h5
+├── frequency_hz            # Frequency axis (Hz)
+├── spectra_kelvin          # Antenna temperature (K)  -- when calibrated
+│   or spectra_linear       # Raw power (counts)       -- when not
+├── bandpass_correction     # Per-channel correction that was applied
+├── bandpass_valid          # False where the template had nothing to say
+├── timestamps              # Unix timestamps for each spectrum
+├── integration_times       # Actual integration time per spectrum
 └── attrs:
-    ├── sdr_type          # "b210", "rtlsdr", or "demo"
-    ├── center_freq_hz    # Center frequency
-    ├── sample_rate_hz    # Sample rate / bandwidth
-    ├── fft_size          # Number of FFT channels
-    ├── gain_db           # RF gain setting
-    ├── created           # ISO timestamp
-    ├── obs_name          # Observation name (from scheduler)
-    ├── coord_system      # altaz, radec, galactic, object, or satellite
-    ├── calibrator        # 1 = noise source on, 0 = off
-    └── ...               # Target coordinates, TLE, schedule times
+    ├── spectra_units       # "K" or "counts"
+    ├── applied_gain_counts_per_k, applied_t_sys_k   # to reverse the calibration
+    ├── bandpass_template, gain_calibration          # the full calibration, as JSON
+    ├── sdr_type            # "b210", "rtlsdr", or "demo"
+    ├── center_freq_hz, sample_rate_hz, fft_size, gain_db
+    ├── created             # ISO timestamp
+    ├── obs_name            # Observation name (from scheduler)
+    ├── observation_mode    # "track", "drift" or "manual"
+    ├── coord_system        # altaz, radec, galactic, object, drift, or satellite
+    ├── calibrator          # 1 = noise source on, 0 = off
+    └── ...                 # Target coordinates, TLE, schedule times
 ```
 
-If the receiver frequency, sample rate, or FFT size changes during a run, the receiver closes the current HDF5 file and starts a new timestamped segment so every file remains internally consistent.
+**The dataset name is the units.** If the bandpass template and gain in force applied to the tuning, the spectra were converted at write time and live under `spectra_kelvin`; otherwise they are raw counts under `spectra_linear`. Asking for the wrong name raises `KeyError` instead of quietly handing back the other scale. Nothing is lost by calibrating on write — the correction, the gain and the system temperature all travel in the file, so the raw counts are one line away:
+
+```python
+raw = (spectra + attrs['applied_t_sys_k']) * attrs['applied_gain_counts_per_k'] * bandpass_correction
+```
+
+If the receiver frequency, sample rate, or FFT size changes during a run, the receiver closes the current file and opens a new one so every file stays internally consistent. The new file is named like any other; the reason for the split is recorded in its `segment` and `segment_reason` attributes.
 
 See `receiver_scheduler/read_h1_data.ipynb` for a complete analysis example.
 
@@ -586,6 +604,8 @@ See `receiver_scheduler/read_h1_data.ipynb` for a complete analysis example.
 │   ├── tuning.py           # LO offset and sample rate for the line
 │   ├── observation_plot.py # Finished observations, in kelvin and LSR velocity
 │   ├── observatory.py      # Site and beam - plumbing; numbers in instrument.py
+│   ├── observation_files.py # Where a recording goes and what it is called
+│   ├── data/observations/  # Every recording: <date>_<time>_<track|drift>.h5
 │   ├── horizon_profiles/   # Every horizon scan, by date, one chosen
 │   ├── read_h1_data.ipynb  # Jupyter notebook for reading/plotting HDF5 data
 │   └── README.md           # Receiver/scheduler documentation

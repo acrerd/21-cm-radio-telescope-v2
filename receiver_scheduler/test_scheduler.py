@@ -27,6 +27,8 @@ try:
 except ImportError:
     pytest.skip("Could not import h1_web_scheduler", allow_module_level=True)
 
+import observation_files
+
 
 # =============================================================================
 # dms_to_decimal
@@ -418,46 +420,88 @@ class TestFindClashes:
 # =============================================================================
 
 class TestGenerateFilename:
-    """Tests for observation filename generation."""
+    """The name carries the time and the mode, and nothing else.
+
+    Rewritten 2026-08-25. The old name held the target and the calibrator flag,
+    which are attributes of the file - so the name was a second copy of them,
+    free to disagree with the first after any rename or any edit of the
+    schedule entry. These tests now assert the *absence* of that information as
+    firmly as they assert what is present, because putting it back would look
+    like a helpful improvement.
+    """
 
     @patch.object(sched, 'get_config_value', return_value="/tmp/test_data")
-    @patch('os.makedirs')
-    def test_auto_generated_name(self, mock_makedirs, mock_config):
-        obs = {"name": "Sun Survey", "calibrator": False}
+    def test_the_name_is_the_time_and_the_mode(self, mock_config):
+        obs = {"name": "Sun Survey", "coord_system": "radec", "calibrator": False}
         result = sched.generate_filename(obs)
-        # The data folder is canonicalised for the containment check
-        assert result.startswith(os.path.realpath("/tmp/test_data"))
-        assert "sun_survey" in result
-        assert result.endswith(".h5")
+        assert os.path.basename(result).endswith("_track.h5")
+        # YYYYMMDD_HHMMSS_track.h5 and no more.
+        stem = os.path.basename(result)[:-len(".h5")]
+        assert re.fullmatch(r"\d{8}_\d{6}_track", stem), stem
 
     @patch.object(sched, 'get_config_value', return_value="/tmp/test_data")
-    @patch('os.makedirs')
-    def test_calibrator_suffix(self, mock_makedirs, mock_config):
-        obs = {"name": "Cal Test", "calibrator": True}
+    def test_recordings_go_in_their_own_folder(self, mock_config):
+        """Not loose in the data folder, which is where the plots live."""
+        obs = {"name": "Sun Survey", "coord_system": "radec"}
         result = sched.generate_filename(obs)
-        assert "_cal_" in result
+        expected = os.path.realpath(
+            os.path.join("/tmp/test_data",
+                         observation_files.OBSERVATION_SUBFOLDER))
+        assert os.path.dirname(result) == expected
+        assert os.path.isdir(expected), "the folder should have been created"
 
     @patch.object(sched, 'get_config_value', return_value="/tmp/test_data")
-    @patch('os.makedirs')
-    def test_no_calibrator_suffix(self, mock_makedirs, mock_config):
-        obs = {"name": "Normal", "calibrator": False}
-        result = sched.generate_filename(obs)
-        assert "_cal_" not in result
+    def test_the_name_says_nothing_the_file_already_says(self, mock_config):
+        """The regression this rewrite exists to prevent."""
+        obs = {"name": "Cas A", "coord_system": "radec", "calibrator": True,
+               "object_name": "sun", "center_freq_mhz": 1420.405}
+        name = os.path.basename(sched.generate_filename(obs))
+        for leaked in ("cas", "_cal", "sun", "1420"):
+            assert leaked not in name.lower(), (
+                "%r is an attribute of the file; putting it in the name makes "
+                "a second copy that a rename can falsify" % leaked)
+
+    @pytest.mark.parametrize("system,mode", [
+        ("radec", "track"), ("galactic", "track"), ("object", "track"),
+        ("satellite", "track"),
+        ("drift", "drift"),
+        # The one worth spelling out: an alt/az entry is sent to /direct with
+        # tracking off, so the dish is parked and the sky moves through the
+        # beam. That is a drift scan however the entry was typed.
+        ("altaz", "drift"),
+    ])
+    @patch.object(sched, 'get_config_value', return_value="/tmp/test_data")
+    def test_the_mode_follows_what_the_mount_does(self, mock_config, system, mode):
+        result = sched.generate_filename({"name": "x", "coord_system": system})
+        assert os.path.basename(result).endswith("_%s.h5" % mode)
 
     @patch.object(sched, 'get_config_value', return_value="/tmp/test_data")
-    @patch('os.makedirs')
-    def test_explicit_filename(self, mock_makedirs, mock_config):
+    def test_two_in_the_same_second_do_not_collide(self, mock_config):
+        """Or the second open truncates the first file."""
+        folder = sched.observations_folder()
+        when = datetime(2026, 8, 25, 12, 0, 0)
+        first = observation_files.observation_filename(folder, "track", when)
+        open(first, "w").close()
+        try:
+            second = observation_files.observation_filename(folder, "track", when)
+            assert second != first
+        finally:
+            os.remove(first)
+
+    @patch.object(sched, 'get_config_value', return_value="/tmp/test_data")
+    def test_explicit_filename(self, mock_config):
         obs = {"name": "Test", "filename": "my_file.h5"}
         result = sched.generate_filename(obs)
         assert result.endswith("my_file.h5")
 
     @patch.object(sched, 'get_config_value', return_value="/tmp/test_data")
-    @patch('os.makedirs')
-    def test_spaces_replaced(self, mock_makedirs, mock_config):
-        obs = {"name": "My Long Name", "calibrator": False}
-        result = sched.generate_filename(obs)
-        assert "my_long_name" in result
-        assert " " not in os.path.basename(result)
+    def test_an_explicit_filename_cannot_escape_the_folder(self, mock_config):
+        """Still contained, now against the observations folder."""
+        folder = os.path.realpath(
+            os.path.join("/tmp/test_data", observation_files.OBSERVATION_SUBFOLDER))
+        for escape in ("../../etc/passwd.h5", "/etc/passwd.h5"):
+            result = sched.generate_filename({"name": "T", "filename": escape})
+            assert result.startswith(folder + os.sep), escape
 
 
 # =============================================================================

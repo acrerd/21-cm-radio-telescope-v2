@@ -414,8 +414,31 @@ Default parameters can be modified at the top of `b210_h1_receiver.py`:
 CENTER_FREQ = 1420.405e6    # Hydrogen line frequency (Hz)
 FFT_SIZE = 4096             # FFT bins (frequency resolution)
 INTEGRATION_TIME = 3.0      # Seconds between HDF5 saves
-OUTPUT_FILE = "h1_data.h5"  # Output filename
 ```
+
+### Where recordings go, and what they are called
+
+Every recording lands in `data/observations/`, named for when it was made and
+what the mount was doing:
+
+```
+20260825_192937_drift.h5        the dish was parked; the sky drifted through the beam
+20260825_201455_track.h5        the mount followed the source
+20260825_143012_manual.h5       started at the console, nobody commanded the mount
+```
+
+and nothing else. The target name, the calibrator flag, the coordinates, the
+tuning and the calibration in force are all attributes *inside* the file, so
+repeating any of them in the name would only make a second copy free to
+disagree with the first after a rename or an edit to the schedule entry.
+
+`track` and `drift` describe the mount, not the box the entry was typed into:
+an `altaz` entry is a **drift** scan, because the scheduler sends it to
+`/direct` and leaves tracking off. The same word is stored as the
+`observation_mode` attribute, so a renamed file still says what it was.
+
+The convention lives in `observation_files.py`, shared by the scheduler and the
+receiver. `H1_OUTPUT_FILE` still overrides it outright.
 
 These can also be overridden via environment variables (used by the scheduler):
 - `H1_CENTER_FREQ`
@@ -487,49 +510,58 @@ When launched from the scheduler, additional observation metadata is included:
 
 ### Reading Data in Python
 
+A recording holds its spectra under **one of two names**, and the name is the
+units. `spectra_kelvin` means the bandpass and gain in force were applied at
+write time and the numbers are antenna temperature in K; `spectra_linear` means
+no calibration applied to that tuning and the numbers are raw counts. Ask for
+the wrong one and you get a `KeyError` — which is the point, and is why the
+units are not merely an attribute you could forget to read.
+
 ```python
 import h5py
 import numpy as np
 import matplotlib.pyplot as plt
 
-# Open the data file
-with h5py.File('h1_data.h5', 'r') as hf:
-    # Read datasets (linear power, not dB)
-    freq_hz = hf['frequency_hz'][:]
-    freq_mhz = freq_hz / 1e6
-    spectra = hf['spectra_linear'][:]
+with h5py.File('data/observations/20260825_192937_drift.h5', 'r') as hf:
+    freq_mhz = hf['frequency_hz'][:] / 1e6
     timestamps = hf['timestamps'][:]
 
-    # Print metadata
+    # The dataset name is the units. Never guess.
+    calibrated = 'spectra_kelvin' in hf
+    spectra = hf['spectra_kelvin' if calibrated else 'spectra_linear'][:]
+    units = 'K' if calibrated else 'counts'
+
     print(f"SDR: {hf.attrs['sdr_type']}")
+    print(f"Mode: {hf.attrs.get('observation_mode', '?')}"
+          f"  target: {hf.attrs.get('obs_name', '?')}")
     print(f"Center freq: {hf.attrs['center_freq_hz']/1e6:.3f} MHz")
     print(f"Sample rate: {hf.attrs['sample_rate_hz']/1e6:.3f} MHz")
-    print(f"Number of spectra: {len(timestamps)}")
+    print(f"{len(timestamps)} spectra in {units}")
 
-# Average in linear power domain, then convert to dB for display
-avg_spectrum_db = 10 * np.log10(np.mean(spectra, axis=0))
+    # To go back to raw counts (the calibration travels with the file):
+    if calibrated:
+        raw = ((spectra + hf.attrs['applied_t_sys_k'])
+               * hf.attrs['applied_gain_counts_per_k']
+               * hf['bandpass_correction'][:])
+
 plt.figure(figsize=(12, 6))
-plt.plot(freq_mhz, avg_spectrum_db)
-plt.axvline(x=1420.405, color='r', linestyle='--', label='H1 Line')
+plt.plot(freq_mhz, np.mean(spectra, axis=0))
+plt.axvline(x=1420.405, color='r', linestyle='--', label='H I line')
 plt.xlabel('Frequency (MHz)')
-plt.ylabel('Power (dB)')
-plt.title('Average Hydrogen Line Spectrum')
-plt.legend()
-plt.grid(True)
-plt.show()
+plt.ylabel(f'Antenna temperature ({units})')
+plt.legend(); plt.grid(True); plt.show()
 
-# Plot waterfall (convert to dB for display)
-spectra_db = 10 * np.log10(np.maximum(spectra, 1e-30))
 plt.figure(figsize=(12, 8))
-plt.imshow(spectra_db, aspect='auto',
-           extent=[freq_mhz[0], freq_mhz[-1], len(spectra_db), 0],
-           cmap='viridis')
-plt.colorbar(label='Power (dB)')
-plt.xlabel('Frequency (MHz)')
-plt.ylabel('Time (integration #)')
-plt.title('Hydrogen Line Waterfall')
+plt.imshow(spectra, aspect='auto',
+           extent=[freq_mhz[0], freq_mhz[-1], len(spectra), 0], cmap='viridis')
+plt.colorbar(label=f'Antenna temperature ({units})')
+plt.xlabel('Frequency (MHz)'); plt.ylabel('Time (integration #)')
 plt.show()
 ```
+
+Uncalibrated counts still want `10*np.log10(...)` for display; kelvin does not —
+a temperature is already linear in the thing you care about, and taking its
+logarithm throws away the calibration you just gained.
 
 See `read_h1_data.ipynb` for a more complete example with metadata display and zoomed H I views.
 

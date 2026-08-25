@@ -25,6 +25,7 @@ from gnuradio.fft import window
 
 from tuning import (ANALOG_BW_FACTOR as DEFAULT_ANALOG_BW_FACTOR,
                     DEFAULT_LO_OFFSET_HZ, describe_tuning, plan_tuning)
+import observation_files
 
 # Qt is for the console display only. --headless runs the whole acquisition
 # and recording path without it, so an observation over ssh neither needs a
@@ -75,7 +76,16 @@ ANALOG_BW_FACTOR = float(os.environ.get('H1_ANALOG_BW_FACTOR',
 LO_OFFSET_HZ = float(os.environ.get('H1_LO_OFFSET', DEFAULT_LO_OFFSET_HZ))
 FFT_SIZE = int(os.environ.get('H1_FFT_SIZE', 4096))
 INTEGRATION_TIME = float(os.environ.get('H1_INTEGRATION_TIME', 3.0))
-OUTPUT_FILE = os.environ.get('H1_OUTPUT_FILE', "h1_data.h5")
+# Where to record. The scheduler always sets H1_OUTPUT_FILE, so this default
+# is for running the receiver by hand from a terminal - and it is resolved
+# against this file rather than the working directory. It used to be the bare
+# name "h1_data.h5", which meant a hand-started receiver dropped its recording
+# wherever it happened to be launched from; started through the scheduler that
+# was the repository root, and 22 files had collected there by 2026-08-25.
+_DEFAULT_OUTPUT_FOLDER = observation_files.observations_folder(
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "data"))
+OUTPUT_FILE = os.environ.get('H1_OUTPUT_FILE') or observation_files.observation_filename(
+    _DEFAULT_OUTPUT_FOLDER, observation_files.MANUAL_MODE)
 WATERFALL_HISTORY = 100     # Number of spectra to show in waterfall
 
 # Default blank-sky system temperature for the total-power calibration:
@@ -283,6 +293,14 @@ def init_hdf5(filename, freq_axis_hz, fft_size, sdr_type, center_freq,
     metadata are the thing downstream code reads, and two copies of it would
     drift apart.
     """
+    # The recordings folder may not exist yet - on a fresh checkout, or the
+    # first time a hand-started receiver runs. Creating it here covers every
+    # caller, including a mid-run roll to a new file, where failing would lose
+    # the rest of the observation rather than merely failing to start it.
+    folder = os.path.dirname(os.path.abspath(filename))
+    if folder:
+        os.makedirs(folder, exist_ok=True)
+
     hf = h5py.File(filename, 'w')
 
     hf.create_dataset('frequency_hz', data=freq_axis_hz)
@@ -1590,19 +1608,47 @@ class H1ReceiverWindow(QtWidgets.QMainWindow):
 
     def _init_hdf5(self, filename):
         """Initialize HDF5 file."""
-        return init_hdf5(filename, self.freq_axis_hz, self.fft_size,
-                         sdr_type=self.sdr_type, center_freq=self.center_freq,
-                         sample_rate=self.sample_rate, gain=self.gain,
-                         tuning_plan=getattr(self, 'tuning', None))
+        hf = init_hdf5(filename, self.freq_axis_hz, self.fft_size,
+                       sdr_type=self.sdr_type, center_freq=self.center_freq,
+                       sample_rate=self.sample_rate, gain=self.gain,
+                       tuning_plan=getattr(self, 'tuning', None))
+        # Which piece of a session this is, and why the previous piece ended.
+        # These used to be spelled out in the filename; here they are readable
+        # by the code that cares, and a segment that gets renamed keeps them.
+        segment = getattr(self, 'hdf5_segment', 0)
+        if segment:
+            hf.attrs['segment'] = segment
+            hf.attrs['segment_reason'] = getattr(self, 'hdf5_roll_reason', '')
+        return hf
 
     def _next_hdf5_filename(self, reason):
-        """Create a unique segment filename for changed spectral geometry."""
+        """A fresh recording, when the spectral geometry changed under us.
+
+        Named like any other recording - the time, and the mode - rather than
+        by the reason for the roll. The reason and the segment number go into
+        the new file as attributes instead, which is where a reader can act on
+        them; in the name they only produced things like
+        `h1_data_rate_03_20260819T080527Z.h5`, where every word after the time
+        was already an attribute of the file it named.
+        """
         self.hdf5_segment += 1
-        root, ext = os.path.splitext(OUTPUT_FILE)
-        ext = ext or ".h5"
-        timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-        safe_reason = "".join(ch if ch.isalnum() else "_" for ch in reason)
-        return f"{root}_{safe_reason}_{self.hdf5_segment:02d}_{timestamp}{ext}"
+        folder = os.path.dirname(os.path.abspath(self.output_file)) or "."
+        self.hdf5_roll_reason = reason
+        return observation_files.observation_filename(
+            folder, self._recording_mode())
+
+    def _recording_mode(self):
+        """The word the filename carries: what the mount was doing.
+
+        Taken from the observation metadata the scheduler passed in, so a
+        rolled file keeps the mode of the run it belongs to. A receiver started
+        by hand has no metadata and gets `manual`.
+        """
+        try:
+            meta = json.loads(os.environ.get('H1_OBS_METADATA', '') or '{}')
+        except ValueError:
+            return observation_files.MANUAL_MODE
+        return meta.get('observation_mode') or observation_files.MANUAL_MODE
 
     def _roll_hdf5_file(self, reason):
         """Start a new HDF5 file when frequency axis or FFT width changes."""
