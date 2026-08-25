@@ -97,3 +97,51 @@ def test_the_bandpass_falls_back_the_same_way():
     _, note = bandpass.apply_bandpass(freq, spectra, header_with(),
                                       path="/nonexistent/bp.json")
     assert "not bandpass corrected" in note
+
+
+def test_the_bandpass_correction_is_stored_per_channel(tmp_path):
+    """One array, not a polynomial the reader has to know how to evaluate.
+
+    The correction is a function of frequency alone and constant for a run, so
+    storing it once - a few thousand floats, 6% of a short file - makes every
+    spectrum exactly reversible without this repository. The alternative
+    considered was writing both a raw and a calibrated copy of every spectrum,
+    which would have doubled the recording for the same result.
+    """
+    import numpy as np
+
+    import b210_h1_receiver as rx
+
+    freq = np.linspace(1419.0e6, 1422.0e6, 2048)
+    correction, valid = rx._bandpass_correction(freq)
+
+    assert correction.shape == freq.shape == valid.shape
+    assert np.all(np.isfinite(correction)), "a NaN here would poison the spectrum"
+    assert np.all(correction > 0), "the correction is a divisor"
+    assert np.all(correction[~valid] == 1.0), (
+        "channels the template cannot speak for must be stored uncorrected, "
+        "not dropped - they are what a later bandpass fit has to work from")
+
+
+def test_a_recording_reverses_exactly(tmp_path):
+    """raw = (kelvin + T_sys) * gain * correction, to float32 precision.
+
+    This is the property that makes storing a calibrated spectrum safe at all:
+    if the gain or the template is later found wrong, the measurement is still
+    in there. Without the stored correction it is only recoverable by anyone
+    who has both the polynomial and the code to evaluate it.
+    """
+    import numpy as np
+
+    import b210_h1_receiver as rx
+
+    cal = R.load_calibration()
+    if not cal:
+        pytest.skip("no gain calibration on this machine")
+    freq = np.linspace(1419.5e6, 1421.5e6, 1024)
+    correction, _ = rx._bandpass_correction(freq)
+    raw = np.random.default_rng(1).normal(0.003, 3e-5, size=(4, freq.size))
+
+    kelvin = raw / correction / cal["gain_counts_per_k"] - cal["t_sys_k"]
+    back = (kelvin + cal["t_sys_k"]) * cal["gain_counts_per_k"] * correction
+    assert np.allclose(back, raw, rtol=1e-9, atol=0)

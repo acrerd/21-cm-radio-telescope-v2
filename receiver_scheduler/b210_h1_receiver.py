@@ -287,6 +287,21 @@ def init_hdf5(filename, freq_axis_hz, fft_size, sdr_type, center_freq,
 
     hf.create_dataset('frequency_hz', data=freq_axis_hz)
 
+    # The bandpass correction, one value per channel, stored once. It is a
+    # function of frequency alone and constant for the whole run, so a single
+    # array of a few thousand floats makes every spectrum in the file exactly
+    # reversible - raw = (kelvin + T_sys) * gain * correction - without anyone
+    # needing this repository to evaluate a polynomial.
+    #
+    # Channels the template cannot speak for carry 1.0 rather than NaN, and
+    # bandpass_valid says which those are. That is what keeps the filter skirts
+    # in the file: they are stored uncorrected but recoverable, so a future
+    # bandpass fit can still use them. Dropping them at write time would have
+    # discarded 18% of the recorded band permanently.
+    correction, valid = _bandpass_correction(freq_axis_hz)
+    hf.create_dataset('bandpass_correction', data=correction.astype('float32'))
+    hf.create_dataset('bandpass_valid', data=valid)
+
     hf.create_dataset('spectra_linear',
                       shape=(0, fft_size),
                       maxshape=(None, fft_size),
@@ -389,6 +404,34 @@ def _embed_calibration(hf):
         hf.attrs["site_height_m"] = instrument.SITE_HEIGHT_M
     except Exception:                                     # noqa: BLE001
         pass
+
+
+def _bandpass_correction(freq_axis_hz):
+    """(correction, valid) for this frequency axis, from the template in force.
+
+    The correction is what the spectrum is divided by. Where the template has
+    nothing to say the correction is 1.0 and valid is False, so the channel is
+    stored as it was measured and can still be recovered.
+    """
+    import numpy as _np
+
+    ones = _np.ones(len(freq_axis_hz), dtype=float)
+    try:
+        here = os.path.dirname(os.path.abspath(__file__))
+        import sys as _sys
+        if here not in _sys.path:
+            _sys.path.insert(0, here)
+        import bandpass as _bp
+        template = _bp.load_bandpass()
+        if not template:
+            return ones, _np.zeros(len(freq_axis_hz), dtype=bool)
+        model = _np.asarray(_bp.evaluate(template, _np.asarray(freq_axis_hz, float)),
+                            dtype=float)
+        valid = _np.isfinite(model) & (model > 0)
+        correction = _np.where(valid, model, 1.0)
+        return correction, valid
+    except Exception:                                     # noqa: BLE001
+        return ones, _np.zeros(len(freq_axis_hz), dtype=bool)
 
 
 def append_spectrum(hf, avg_linear, timestamp, integration_time, fft_size):
