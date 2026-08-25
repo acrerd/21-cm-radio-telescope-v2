@@ -3408,6 +3408,63 @@ def api_rf_cancel():
     return jsonify({"success": True})
 
 
+# Parsed live-summary records, per file, with how far through it we have read.
+# The page polls every ten seconds for the whole length of an observation, and
+# at a tenth-second integration the summary reaches 36000 lines an hour - so
+# re-reading and re-parsing it each time would grow without bound on the very
+# machine that is recording. Only the bytes added since last time are read.
+_live_cache: dict = {}
+_live_cache_lock = threading.Lock()
+
+
+def _live_records(path):
+    """Every summary record for this observation, parsed once each.
+
+    Returns a copy. The cached list is appended to under the lock, and handing
+    the live one out would let a second poll - another browser tab is enough -
+    grow it while the first was still iterating it to bin.
+    """
+    with _live_cache_lock:
+        entry = _live_cache.get(path)
+        try:
+            size = os.path.getsize(path)
+        except OSError:
+            return []
+        if entry is None or size < entry["offset"]:
+            # A new run, or the file was replaced under us: start again rather
+            # than splicing the tail of one observation onto another.
+            entry = {"offset": 0, "records": []}
+            _live_cache[path] = entry
+            if len(_live_cache) > 8:
+                for stale in list(_live_cache)[:-8]:
+                    _live_cache.pop(stale, None)
+        if size == entry["offset"]:
+            return list(entry["records"])
+        try:
+            with open(path) as fh:
+                fh.seek(entry["offset"])
+                fresh = fh.read()
+        except OSError:
+            return list(entry["records"])
+        # A record the receiver is midway through writing has no newline yet;
+        # leave it for next time rather than parsing half of it.
+        cut = fresh.rfind("\n")
+        if cut < 0:
+            return list(entry["records"])
+        entry["offset"] += len(fresh[:cut + 1].encode())
+        for line in fresh[:cut].split("\n"):
+            if not line.strip():
+                continue
+            try:
+                rec = json.loads(line)
+                entry["records"].append({"t": float(rec["t"]),
+                                         "tau": float(rec["tau"]),
+                                         "median": float(rec["median"])})
+            except (ValueError, KeyError, TypeError):
+                continue
+        return list(entry["records"])
+
+
 @app.route('/api/sun/position', methods=['GET'])
 def api_sun_position():
     """Where the Sun is now, and whether the dish could look at it.
@@ -3462,34 +3519,42 @@ def api_observe_live():
         return jsonify({'success': False, 'error': 'Nothing is recording'}), 404
     path = os.path.splitext(obs['output_file'])[0] + '.live.jsonl'
     try:
-        with open(path) as fh:
-            lines = fh.readlines()
-    except OSError:
-        return jsonify({'success': True, 'points': [], 'calibrated': False,
-                        'name': obs.get('name'),
-                        'note': 'the receiver has not written a record yet'})
-
-    try:
         limit = max(1, min(5000, int(request.args.get('limit', 2000))))
     except (TypeError, ValueError):
         limit = 2000
 
+    records = _live_records(path)
+    if not records:
+        return jsonify({'success': True, 'points': [], 'calibrated': False,
+                        'name': obs.get('name'),
+                        'is_solar': (obs.get('coord_system') == 'object'
+                                     and str(obs.get('object_name', '')).lower() == 'sun'),
+                        'note': 'the receiver has not written a record yet'})
+
     cal = rf_calibration.load_calibration()
     cal_ok, cal_why = rf_calibration.calibration_applies_to(cal, obs_header(obs))
+
+    # Bin the whole run down rather than showing its tail. A short integration
+    # makes records fast - 0.1 s gives 36000 an hour - and a plot of the last N
+    # of those would silently be a plot of the last three minutes of a
+    # three-hour run, which is the worst kind of wrong: it looks complete.
+    # Binning keeps the whole run on screen and averages down the noise that
+    # the short integration cost in the first place.
+    group = max(1, int(math.ceil(len(records) / float(limit))))
     points = []
-    for line in lines[-limit:]:
-        try:
-            rec = json.loads(line)
-            counts = float(rec['median'])
-        except (ValueError, KeyError, TypeError):
-            continue                       # a torn last line while it is written
-        point = {'t': rec.get('t'), 'tau': rec.get('tau'), 'counts': counts}
+    for start in range(0, len(records), group):
+        chunk = records[start:start + group]
+        counts = sum(r['median'] for r in chunk) / len(chunk)
+        point = {'t': chunk[len(chunk) // 2]['t'],
+                 'tau': sum(r['tau'] for r in chunk),
+                 'n': len(chunk), 'counts': counts}
         if cal_ok:
             t_a = counts / cal['gain_counts_per_k'] - cal['t_sys_k']
             point['t_a_k'] = t_a
             point['sfu'] = antenna_temperature_to_flux(t_a)
         points.append(point)
     return jsonify({'success': True, 'points': points, 'calibrated': bool(cal_ok),
+                    'records': len(records), 'binned': group,
                     'why': '' if cal_ok else cal_why,
                     'name': obs.get('name'),
                     'is_solar': (obs.get('coord_system') == 'object'

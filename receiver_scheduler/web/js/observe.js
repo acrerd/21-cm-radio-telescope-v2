@@ -327,7 +327,16 @@
 
             const last = ys[ys.length - 1];
             const mean = ys.reduce((a, b) => a + b, 0) / ys.length;
-            let text = d.points.length + ' records';
+            // Say when the plot is showing averages rather than records. The
+            // whole run is always drawn - it is binned down, never truncated -
+            // but a point that is twelve records deep is a different thing
+            // from one that is a single measurement, and the noise on screen
+            // is smaller for a reason the reader should know.
+            let text = (d.records || d.points.length) + ' records';
+            if (d.binned > 1) {
+                text += ' · ' + d.points.length + ' points, '
+                      + d.binned + ' records averaged into each';
+            }
             if (cal) {
                 text += ' · latest ' + last.toFixed(1) + ' SFU · mean '
                       + mean.toFixed(1) + ' SFU';
