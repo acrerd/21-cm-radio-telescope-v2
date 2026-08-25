@@ -1609,6 +1609,43 @@ def generate_filename(obs: dict) -> str:
     return os.path.join(data_folder, f"h1_{name}{cal}_{timestamp}.h5")
 
 
+def hardware_in_use():
+    """What currently owns the SDR and the mount, or None if nothing does.
+
+    One list, in one place. Each start path used to carry its own, grown an
+    entry at a time, and they had drifted: on 2026-08-25 a Sun scan would start
+    while a horizon scan was running, a calibration day would start while
+    either a horizon scan or an RF calibration was, and a horizon scan would
+    start during an RF calibration. Every one of those was refused in the
+    opposite order, which is why none had been noticed - starting things in the
+    habitual sequence works.
+
+    The consequence is not a tidy error. The horizon scan drives the mount for
+    two hours; a Sun scan begun alongside it rasters wherever the horizon scan
+    has just moved to, both claim the B210, and the profile records whatever
+    the mount happened to be pointing at.
+
+    Deliberately does not cover a *scheduled* observation, which preempts the
+    others rather than deferring to them - it is the only one whose slot cannot
+    simply be re-run later.
+
+    Acquires process_lock, so never call it while already holding it.
+    """
+    with process_lock:
+        observing = current_process is not None and current_process.poll() is None
+    if observing:
+        return "an observation is recording"
+    if sun_scan_state["running"]:
+        return "a Sun scan is running"
+    if cal_day_state["running"]:
+        return "a calibration day is running"
+    if horizon_state["running"]:
+        return "a horizon scan is running"
+    if rf_state["running"]:
+        return "an RF calibration is running"
+    return None
+
+
 def start_observation(obs: dict, duration_override: int = None) -> bool:
     """Start an observation.
 
@@ -3312,6 +3349,12 @@ def api_rf_gain_plot():
 def api_rf_run():
     """Start a calibration. Refuses if anything else owns the SDR."""
     global rf_thread
+    # One shared matrix rather than this endpoint's own list; see
+    # hardware_in_use for the four holes that drift produced.
+    busy = hardware_in_use()
+    if busy:
+        return jsonify({"success": False, "error": "Cannot start an RF calibration: %s" % busy}), 409
+
     data = request.get_json(silent=True) or {}
     job = data.get("job", "")
     if job not in ("bandpass", "gain"):
@@ -3860,6 +3903,12 @@ def api_get_log():
 @app.route('/api/sunscan/start', methods=['POST'])
 def api_sunscan_start():
     global sun_scan_thread
+    # One shared matrix rather than this endpoint's own list; see
+    # hardware_in_use for the four holes that drift produced.
+    busy = hardware_in_use()
+    if busy:
+        return jsonify({'success': False, 'error': 'Cannot start a Sun scan: %s' % busy}), 409
+
     if sun_scan_state["running"] or (sun_scan_thread and sun_scan_thread.is_alive()):
         return jsonify({'success': False, 'error': 'Scan already running'})
     if cal_day_state["running"]:
@@ -3960,6 +4009,12 @@ def api_sunscan_image():
 @app.route('/api/calday/start', methods=['POST'])
 def api_calday_start():
     global cal_day_thread
+    # One shared matrix rather than this endpoint's own list; see
+    # hardware_in_use for the four holes that drift produced.
+    busy = hardware_in_use()
+    if busy:
+        return jsonify({'success': False, 'error': 'Cannot start a calibration day: %s' % busy}), 409
+
     if cal_day_state["running"] or (cal_day_thread and cal_day_thread.is_alive()):
         return jsonify({'success': False, 'error': 'Calibration day already running'})
     if sun_scan_state["running"]:
@@ -4221,6 +4276,12 @@ def api_tuning():
 @app.route('/api/horizon/start', methods=['POST'])
 def api_horizon_start():
     global horizon_thread
+    # One shared matrix rather than this endpoint's own list; see
+    # hardware_in_use for the four holes that drift produced.
+    busy = hardware_in_use()
+    if busy:
+        return jsonify({'success': False, 'error': 'Cannot start a horizon scan: %s' % busy}), 409
+
     if horizon_state["running"]:
         return jsonify({'success': False, 'error': 'A horizon scan is already running'}), 409
     if sun_scan_state["running"] or cal_day_state["running"]:
