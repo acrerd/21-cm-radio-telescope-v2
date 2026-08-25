@@ -277,6 +277,9 @@
 
         function obvLiveSchedule(d) {
             if (obvLiveTimer) clearTimeout(obvLiveTimer);
+            // A finished run has nothing more to add, so stop asking. The plot
+            // stays on screen; opening the tab again polls once and redraws it.
+            if (d && d.finished) { obvLiveTimer = null; return; }
             obvLiveTimer = setTimeout(obvLivePoll, obvLiveInterval(d));
         }
 
@@ -344,7 +347,8 @@
                 ctx.fillText(utc(v, fine), X(v), H - B + 10);
             }
             ctx.font = '22px sans-serif';
-            ctx.fillText('UTC on ' + new Date(tStart * 1000).toISOString().slice(0, 10),
+            ctx.fillText('UTC on ' + new Date(tStart * 1000).toISOString().slice(0, 10)
+                         + (d.finished ? '   (finished \u2014 kept until the next run)' : ''),
                          (L + W - R) / 2, H - 34);
             ctx.font = '20px sans-serif';
             ctx.save();
@@ -355,7 +359,10 @@
                              : 'band power (counts, uncalibrated)', 0, 0);
             ctx.restore();
 
-            ctx.strokeStyle = '#ffa502'; ctx.lineWidth = 2.5;
+            // A finished run is drawn in a cooler colour than a live one, so
+            // it is obvious at a glance that nothing is arriving any more.
+            ctx.strokeStyle = d.finished ? '#00d4ff' : '#ffa502';
+            ctx.lineWidth = 2.5;
             ctx.beginPath();
             xs.forEach((x, i) => { i ? ctx.lineTo(X(x), Y(ys[i])) : ctx.moveTo(X(x), Y(ys[i])); });
             ctx.stroke();
@@ -368,6 +375,10 @@
             // from one that is a single measurement, and the noise on screen
             // is smaller for a reason the reader should know.
             let text = (d.records || d.points.length) + ' records';
+            if (d.finished) {
+                text = 'finished' + (d.ended_at ? ' ' + d.ended_at.replace('T', ' ') : '')
+                     + ' · ' + text;
+            }
             // Say what was left off. The first record of a run comes in several
             // percent low while the flowgraph settles, and dropping it silently
             // would be a plot that quietly disagrees with the recording.

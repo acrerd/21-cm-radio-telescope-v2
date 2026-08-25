@@ -1965,6 +1965,16 @@ def _record_finished_observation(obs: Optional[dict]):
             'name': obs.get('name', ''),
             'output_file': obs['output_file'],
             'coord_system': obs.get('coord_system', ''),
+            # Carried so a finished solar track can still be identified and its
+            # flux re-derived: the live plot stays up after the run ends, and
+            # needs both what it was pointed at and what it was tuned to.
+            # Absent from anything recorded before 2026-08-25, which simply
+            # reads as "not a solar track".
+            'object_name': obs.get('object_name', ''),
+            'center_freq_mhz': obs.get('center_freq_mhz'),
+            'bandwidth_mhz': obs.get('bandwidth_mhz'),
+            'channels': obs.get('channels'),
+            'gain_db': obs.get('gain_db'),
             'mode': 'drift' if drift else 'spectrum',
             # The scan is laid out so the source crosses beam centre at the
             # mid-point; the plot marks it there.
@@ -3534,7 +3544,15 @@ def api_observe_live():
     import tuning
     from observatory import antenna_temperature_to_flux
 
-    obs = current_observation
+    # The run in progress if there is one, otherwise the last one to finish.
+    # A solar flux curve is the whole record of its run and worth looking at
+    # after the Sun has been left, so the plot stays up until the next
+    # observation replaces it - which is exactly when it stops being current.
+    obs, finished = current_observation, False
+    if not obs or not obs.get('output_file'):
+        with last_observation_lock:
+            obs = last_observation
+        finished = True
     if not obs or not obs.get('output_file'):
         return jsonify({'success': False, 'error': 'Nothing is recording'}), 404
     path = os.path.splitext(obs['output_file'])[0] + '.live.jsonl'
@@ -3556,6 +3574,7 @@ def api_observe_live():
     if not records:
         return jsonify({'success': True, 'points': [], 'calibrated': False,
                         'name': obs.get('name'),
+                        'finished': finished,
                         'is_solar': (obs.get('coord_system') == 'object'
                                      and str(obs.get('object_name', '')).lower() == 'sun'),
                         'note': 'the receiver has not written a record yet'})
@@ -3587,10 +3606,12 @@ def api_observe_live():
                     'warmup_dropped': dropped, 'warmup_s': LIVE_WARMUP_S,
                     'why': '' if cal_ok else cal_why,
                     'name': obs.get('name'),
+                    'finished': finished,
                     'is_solar': (obs.get('coord_system') == 'object'
                                  and str(obs.get('object_name', '')).lower() == 'sun'),
                     't_sys_k': (cal or {}).get('t_sys_k') if cal_ok else None,
                     'started_at': obs.get('started_at'),
+                    'ended_at': obs.get('ended_at'),
                     'ends_at': obs.get('ends_at')})
 
 
