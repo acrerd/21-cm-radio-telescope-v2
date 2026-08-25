@@ -334,6 +334,97 @@ def is_obstructed(profile: dict, alt_deg: float, az_deg: float,
     return float(alt_deg) < horizon_floor(profile, az_deg, margin_deg)
 
 
+def beam_margin_deg() -> float:
+    """How far above the measured floor a target must sit to be clear.
+
+    The whole main beam, not the beam centre. A source centred exactly on the
+    measured floor has half its beam in the foliage, and foliage at 1420 MHz is
+    a ~290 K source rather than a screen - it does not merely add noise, it
+    adds a signal, and one that changes with azimuth as the dish tracks. That
+    is what dragged the Sun centroids 0.5-1.2 deg low on 2026-08-20 and gave no
+    warning in the stated uncertainty.
+    """
+    from instrument import beam_fwhm_deg
+    return float(beam_fwhm_deg())
+
+
+def horizon_clearance(profile: dict, alt_deg: float, az_deg: float,
+                      margin_deg=None) -> dict:
+    """How this sky position stands against the measured horizon.
+
+    Reports rather than decides: returns the floor, what the target would need
+    to clear it, and by how much it falls short. Whoever calls it chooses what
+    to do about that - which for now is to say so and carry on, because a
+    horizon profile can be months old and stopping an observation on the word
+    of a stale measurement is worse than taking a contaminated one knowingly.
+    """
+    margin = beam_margin_deg() if margin_deg is None else float(margin_deg)
+    floor = horizon_floor(profile, az_deg) if profile else 0.0
+    required = floor + margin
+    alt = float(alt_deg)
+    return {
+        "known": bool(profile and profile_floors(profile)),
+        "alt_deg": round(alt, 2),
+        "az_deg": round(float(az_deg) % 360.0, 2),
+        "floor_deg": round(floor, 2),
+        "margin_deg": round(margin, 2),
+        "required_deg": round(required, 2),
+        "clear": alt >= required,
+        "below_floor": alt < floor,
+        "shortfall_deg": round(max(0.0, required - alt), 2),
+    }
+
+
+def horizon_warning(profile: dict, alt_deg: float, az_deg: float,
+                    margin_deg=None):
+    """One sentence about the obstruction, or None if the position is clear."""
+    c = horizon_clearance(profile, alt_deg, az_deg, margin_deg)
+    if not c["known"] or c["clear"]:
+        return None
+    where = "below the measured horizon" if c["below_floor"] \
+        else "within a beamwidth of the measured horizon"
+    return ("Alt %.1f° at az %.0f° is %s (%.1f° there, %.1f° "
+            "needed to clear it by the %.1f° beam) - short by %.1f°. "
+            "Trees are a ~290 K source at 1420 MHz, not a screen."
+            % (c["alt_deg"], c["az_deg"], where, c["floor_deg"],
+               c["required_deg"], c["margin_deg"], c["shortfall_deg"]))
+
+
+def horizon_sectors(profile: dict, margin_deg=None) -> list:
+    """The measured horizon as [az_min, az_max, min_alt] obstruction sectors.
+
+    Lets the measured profile stand in wherever the hand-entered
+    `obstruction_sectors` are already consumed - target selection in
+    rf_calibration, chiefly - without any of those callers learning about
+    horizon profiles. The sectors were always a stand-in for this measurement;
+    this is the measurement in their shape.
+
+    One sector per *interval* between consecutive measured azimuths, floored at
+    the worse of its two ends - the same "worse of the two" rule as
+    `horizon_floor`. Intervals wrap through north, which the consumers already
+    handle (az_min > az_max means "the long way round").
+
+    Exactly on a measured azimuth the two adjacent intervals both claim the
+    boundary, since sector bounds are inclusive at both ends, so the result
+    there is the stricter of the two neighbours rather than the sample's own
+    floor. Checked: never looser than `horizon_floor` at any azimuth, stricter
+    only at the sample points themselves. That is the direction this whole
+    module errs in on purpose, and it costs a warning rather than an
+    observation.
+    """
+    margin = beam_margin_deg() if margin_deg is None else float(margin_deg)
+    floors = profile_floors(profile)
+    if not floors:
+        return []
+    if len(floors) == 1:
+        return [[0.0, 360.0, floors[0][1] + margin]]
+    sectors = []
+    for i, (az, alt) in enumerate(floors):
+        nxt_az, nxt_alt = floors[(i + 1) % len(floors)]
+        sectors.append([az, nxt_az, max(alt, nxt_alt) + margin])
+    return sectors
+
+
 def horizon_castellation(profile: dict, step_deg: float = 1.0,
                          margin_deg: float = 0.0):
     """The measured horizon as a dense (az, alt) outline, ready to draw.

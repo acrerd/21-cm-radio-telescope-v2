@@ -80,10 +80,16 @@ _CONFIG_FILE = os.path.join(_SCRIPT_DIR, "scheduler_config.json")
 # Each sector is [az_min, az_max, min_sun_alt] in degrees: while the Sun is
 # inside that azimuth range and below that altitude it is not scanned, and any
 # scan already on file from there is left out of the fit. The altitude is a
-# floor for the *Sun*, not the height of the trees - it already allows for the
-# half-width of the raster and the beam - so it is read straight off a
-# calibration day rather than surveyed. az_min > az_max wraps through north.
-_DEFAULT_OBSTRUCTION_SECTORS = [[45.0, 120.0, 30.0]]
+# floor for the *Sun*, not the height of the trees - it allows for the raster
+# half-extent and the beam as well. az_min > az_max wraps through north.
+#
+# There is no default list any more. It used to be [[45, 120, 30]], read off a
+# single calibration day, and it was retired on 2026-08-25 in favour of the
+# measured horizon profile: the caller derives sectors from that and passes
+# them in, which is the same arrangement as true_lat/true_lon - the fit stays a
+# pure function of what it is handed. See sun_raster_obstruction_sectors in
+# h1_web_scheduler, which is where the raster half-extent is now computed from
+# the raster rather than remembered inside that 30.
 
 
 def parse_obstruction_sectors(sectors) -> list:
@@ -134,6 +140,57 @@ def sun_is_obstructed(alt_deg: float, az_deg: float, sectors) -> bool:
     return False
 
 
+def raster_command_points(sun_alt: float, sun_az: float, n: int,
+                          grid_spacing_deg: float) -> list:
+    """Every (alt, az) a raster of this shape will visit, in the sky frame.
+
+    Built from the same offsets and the same `_sun_offset_to_command` the scan
+    itself uses, so the check and the scan cannot disagree about where the dish
+    is going. Duplicating the geometry here instead would eventually drift from
+    it, and the failure would be silent - a scan cleared by a check of points it
+    never visits.
+    """
+    half = (int(n) - 1) / 2.0
+    offsets = [(i - half) * float(grid_spacing_deg) for i in range(int(n))]
+    points = []
+    for dalt in offsets:
+        for daz in offsets:
+            cmd_alt, cmd_az, _, _ = _sun_offset_to_command(sun_alt, sun_az,
+                                                           dalt, daz)
+            points.append((cmd_alt, cmd_az))
+    return points
+
+
+def raster_obstruction(sun_alt: float, sun_az: float, n: int,
+                       grid_spacing_deg: float, sectors):
+    """The worst obstructed point of a raster, or None if every point is clear.
+
+    Checks *every* raster point rather than the Sun's own position with an
+    altitude allowance. The two are not equivalent, because the raster spans
+    azimuth as well as altitude and the measured horizon varies with azimuth -
+    on the 2026-08-24 profile the eastern floors run from 15 to 30 deg, so a
+    raster centred on a clear azimuth can still put its western columns into a
+    taller obstruction. An allowance derived from the Sun's own azimuth cannot
+    see that.
+
+    Whole-raster rather than per-point rejection is the right granularity: a
+    contaminated point does not merely lose itself, it puts a ramp under the
+    single Gaussian and pulls the fitted centroid, so it corrupts the scan's
+    one output. There is nothing to salvage by dropping the bad points.
+    """
+    worst = None
+    for alt, az in raster_command_points(sun_alt, sun_az, n, grid_spacing_deg):
+        if sun_is_obstructed(alt, az, sectors):
+            shortfall = min((floor - alt for lo, hi, floor in sectors
+                             if alt < floor
+                             and (az - lo) % 360.0 <= ((hi - lo) % 360.0 or 360.0)),
+                            default=0.0)
+            if worst is None or shortfall > worst["shortfall_deg"]:
+                worst = {"alt_deg": round(alt, 2), "az_deg": round(az, 2),
+                         "shortfall_deg": round(shortfall, 2)}
+    return worst
+
+
 def _load_scheduler_config() -> dict:
     """Load observer location and SRT URL from the scheduler config file."""
     defaults = {
@@ -146,7 +203,6 @@ def _load_scheduler_config() -> dict:
         "observer_lon": SITE_LON_DEG,
         "observer_elevation": 50,
         "slew_timeout": 300,
-        "obstruction_sectors": _DEFAULT_OBSTRUCTION_SECTORS,
     }
     try:
         with open(_CONFIG_FILE) as f:
@@ -1543,7 +1599,7 @@ def fit_pointing_model(data: list | None = None,
     # which is a plausible reason two scan days disagreed about the pole tilt.
     #
     # Those figures come from all 22 scans of that day. Dropping the four whose
-    # rasters caught the eastern treeline (see _DEFAULT_OBSTRUCTION_SECTORS)
+    # rasters caught the eastern treeline (now the measured horizon profile)
     # takes it to +0.0025 deg/deg at 1.9 sigma - still the same sign and order,
     # but no longer significant on its own, because the discarded scans were the
     # ones furthest around the arc. A second calibration day, ideally at another

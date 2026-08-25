@@ -722,6 +722,54 @@ def test_scans_behind_an_obstruction_are_left_out_of_the_fit():
     assert abs(without_mask["alt_offset_deg"] - expected[0]) > 0.1
 
 
+def test_the_whole_raster_is_checked_not_just_the_sun():
+    """A raster reaches below and to either side of the Sun.
+
+    The case that matters is the middle row here: the Sun's own position clears
+    the obstruction, and the raster's bottom row does not. Testing the Sun
+    position with an altitude allowance cannot express this in general, because
+    the raster spans azimuth too and the measured horizon varies with azimuth -
+    so a raster centred on a clear azimuth can put its outer columns into a
+    taller obstruction alongside.
+    """
+    # A tower from az 0 to 20, clear sky either side of it.
+    sectors = sun_scan.parse_obstruction_sectors([[0.0, 20.0, 50.0]])
+
+    assert sun_scan.raster_obstruction(60.0, 10.0, 5, 1.5, sectors) is None
+
+    # Sun at 52 clears 50, but the bottom row sits at 49.
+    assert not sun_scan.sun_is_obstructed(52.0, 10.0, sectors)
+    bad = sun_scan.raster_obstruction(52.0, 10.0, 5, 1.5, sectors)
+    assert bad is not None
+    assert bad["alt_deg"] == pytest.approx(49.0)
+    assert bad["shortfall_deg"] == pytest.approx(1.0)
+
+    # A tighter raster does not reach as far down, so the same Sun is fine.
+    assert sun_scan.raster_obstruction(52.0, 10.0, 3, 0.5, sectors) is None
+
+
+def test_the_raster_check_uses_the_scan_s_own_geometry():
+    """The points checked must be the points visited.
+
+    Both come from _sun_offset_to_command, including the cos(alt) expansion of
+    azimuth. A raster high in the sky spans far more azimuth than its sky
+    offsets suggest - at alt 60 the columns are twice as wide - and a check
+    that used the sky offsets directly would clear rasters whose outer columns
+    reach into an obstruction.
+    """
+    points = sun_scan.raster_command_points(60.0, 100.0, 5, 1.5)
+    assert len(points) == 25
+
+    azimuths = sorted({round(az, 3) for _, az in points})
+    span = azimuths[-1] - azimuths[0]
+    # 4 columns * 1.5 deg of sky offset / cos(60) = 12 deg of mount azimuth.
+    assert span == pytest.approx(12.0, abs=0.1)
+
+    altitudes = sorted({round(alt, 3) for alt, _ in points})
+    assert altitudes[0] == pytest.approx(57.0)
+    assert altitudes[-1] == pytest.approx(63.0)
+
+
 def test_pointing_model_reports_tilt_significance():
     data, _ = _synthetic_pointing_data([80, 105, 135, 165, 195, 225])
     noisy = [dict(entry) for entry in data]

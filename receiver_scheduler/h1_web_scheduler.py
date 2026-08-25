@@ -111,13 +111,26 @@ _DEFAULT_CONFIG = {
     "observer_lon": SITE_LON_DEG,
     "observer_elevation": 50,
     "min_elevation": 10.0,
-    # The obstructed horizon, as [az_min, az_max, min_sun_alt] sectors. The Sun
-    # is not scanned while it sits inside one, and scans already on file from
-    # inside one are left out of the pointing fit: the trees are a 290 K source
-    # at 1.4 GHz, not a screen, so they pull the fitted centroid down towards
-    # themselves. See _DEFAULT_OBSTRUCTION_SECTORS in sun_scan.py, which holds
-    # the same value and the measurement it came from.
-    "obstruction_sectors": [[45.0, 120.0, 30.0]],
+    # `obstruction_sectors` used to live here: a hand-entered
+    # [az_min, az_max, min_sun_alt] list, in practice the single blanket entry
+    # [[45, 120, 30]] read off one calibration day. It was always a stand-in
+    # for a measurement nobody had yet, and it was retired on 2026-08-25 once
+    # the measurement existed. Everything that consumed it now derives its
+    # sectors from the measured horizon profile instead (horizon_store), which
+    # knows each azimuth separately rather than averaging a whole quadrant into
+    # one number - the eastern floors it replaced range from 15 to 30 deg.
+    #
+    # The consumers still take sector triples, so they stayed pure functions of
+    # what they are handed; only the source changed.
+    # Whether to check pointing against the *measured* horizon profile (see
+    # horizon_store) rather than only the flat min_elevation and the hand-
+    # entered sectors above. On by default, and advisory by design: it says
+    # what is behind the trees and never refuses. A profile can be months old -
+    # the trees will have grown or been cut since - so stopping an observation
+    # on the word of a stale measurement is worse than knowingly taking a
+    # contaminated one. Each tab and each scheduled observation carries its own
+    # copy so one can be turned off without turning off the rest.
+    "respect_local_horizon": True,
     # Safety camera: a USB webcam watching the dish. One frame per request, on
     # demand - see /api/camera/snapshot.
     "camera_device": "/dev/video0",
@@ -455,6 +468,105 @@ def srt_point_telescope(obs: dict) -> bool:
 # The mount quantises to half a degree (two encoder pulses per degree), so
 # arrival cannot be judged more tightly than that. 0.6 leaves a little margin
 # over one quantum without being loose enough to accept the wrong target.
+def horizon_obstruction_sectors(cfg=None, respect=None, margin_deg=None):
+    """Obstruction sectors derived from the measured horizon.
+
+    The single source of obstruction knowledge since the hand-entered sectors
+    were retired. Returns an empty list when no horizon has been measured,
+    which means nothing is excluded - the honest answer when nothing is known,
+    and the reason a site should run a horizon scan before trusting a
+    calibration.
+
+    `margin_deg` is how far above the measured floor the *beam centre* has to
+    sit. It defaults to the full beamwidth; callers pointing something with
+    more reach than a single beam pass a larger one - see
+    `sun_raster_obstruction_sectors`.
+    """
+    cfg = cfg if cfg is not None else load_config()
+    if respect is None:
+        respect = bool(cfg.get("respect_local_horizon", True))
+    if not respect:
+        return []
+    import horizon_store
+    profile = horizon_store.load_active()
+    if not profile:
+        return []
+    return horizon_store.horizon_sectors(profile, margin_deg=margin_deg)
+
+
+def sun_raster_obstruction_sectors(cfg=None, n=None, spacing_deg=None):
+    """Obstruction sectors for a Sun raster, from its centre alone.
+
+    Used in exactly one place: excluding already-recorded scans from the
+    pointing fit. Scan records store `sun_alt_deg` and `sun_az_deg` but not the
+    raster's `n` or spacing, so the geometry cannot be reconstructed and the
+    extent has to be an allowance added to the Sun's position instead. Anything
+    checking a raster it is *about* to drive should enumerate the points
+    instead - `sun_scan.raster_obstruction` - which is exact, and which is what
+    the calibration day and the Sun scan both do.
+
+    The allowance below is that approximation.
+
+    A raster is not a single pointing. The lowest row sits (n-1)/2 * spacing
+    below the Sun, so the Sun's own altitude clearing the trees is not enough -
+    the bottom of the raster has to clear them too, or the foliage climbs into
+    the lower rows, puts a ramp under the source and drags the fitted centroid
+    down into it. That is what happened on 2026-08-20: four scans at Sun
+    altitudes of 18-29 deg in the east fitted 0.5-1.2 deg low while evening
+    scans at the *same altitudes* in the west were clean.
+
+    This is the whole content of the retired sectors' 30 deg eastern floor.
+    That number was read off a calibration day with the raster folded in, and
+    dropping to a beam-only margin when the sectors went would have quietly
+    readmitted exactly those scans. Here the same allowance is computed from
+    the raster geometry rather than remembered as a constant.
+    """
+    cfg = cfg if cfg is not None else load_config()
+    if n is None:
+        n = 5
+    if spacing_deg is None:
+        spacing_deg = 1.5
+    import horizon_store
+    half_extent = max(0.0, (float(n) - 1.0) / 2.0 * float(spacing_deg))
+    return horizon_obstruction_sectors(
+        cfg, margin_deg=horizon_store.beam_margin_deg() + half_extent)
+
+
+def local_horizon_warning(alt_deg=None, az_deg=None, respect=None):
+    """Say whether this sky position is behind the measured horizon.
+
+    Returns a sentence, or None when the position is clear, when no horizon has
+    been measured, or when the caller has the check switched off.
+
+    Called with no position, it reads where the dish actually is from /status -
+    `true_alt`/`true_az`, the sky frame, which is the frame the horizon was
+    measured in. Doing it that way rather than converting each observation's
+    own coordinates means one code path serves alt/az, RA/Dec, galactic and
+    named objects alike, with no second ephemeris to disagree with the
+    controller's.
+
+    Advisory only. It never prevents anything - see `respect_local_horizon` in
+    the default config for why.
+    """
+    if respect is None:
+        respect = bool(get_config_value("respect_local_horizon"))
+    if not respect:
+        return None
+    import horizon_store
+    profile = horizon_store.load_active()
+    if not profile:
+        return None
+    if alt_deg is None or az_deg is None:
+        status = srt_get_status()
+        if not status:
+            return None
+        alt_deg = status.get("true_alt", status.get("alt"))
+        az_deg = status.get("true_az", status.get("az"))
+        if alt_deg is None or az_deg is None:
+            return None
+    return horizon_store.horizon_warning(profile, float(alt_deg), float(az_deg))
+
+
 SRT_ARRIVAL_TOLERANCE_DEG = 0.6
 
 # Nothing is accepted as "arrived" until this long after the command. The
@@ -859,6 +971,179 @@ def _drift_body(frame: str, coord1: float, coord2: float) -> 'ephem.FixedBody':
     return body
 
 
+def observation_altaz_at(obs: dict, when_local: datetime) -> Optional[tuple]:
+    """Where an observation's target sits at a given local time, in the sky frame.
+
+    Returns (alt, az) in degrees, or None when the target has no position this
+    code can work out - a satellite, whose window comes from its own pass
+    prediction, or anything PyEphem is not available for.
+
+    Note what "the target" means for the two parked modes. An alt/az
+    observation and a drift scan both park the dish and leave it: the pointing
+    does not change through the observation, so their answer is the same at
+    every time asked. That is not a special case to code around, it just means
+    a trim of one of those is all-or-nothing.
+    """
+    if not EPHEM_AVAILABLE:
+        return None
+    system = obs.get('coord_system', 'altaz')
+    drift_frame = obs.get('drift_frame', 'radec')
+    is_ra = (system == 'radec' or (system == 'drift' and drift_frame == 'radec'))
+    coord1 = dms_to_decimal(obs.get('coord1_deg', 0), obs.get('coord1_min', 0),
+                            obs.get('coord1_sec', 0.0), is_ra=is_ra)
+    coord2 = dms_to_decimal(obs.get('coord2_deg', 0), obs.get('coord2_min', 0),
+                            obs.get('coord2_sec', 0.0), is_ra=False)
+
+    if system == 'altaz':
+        return float(coord1), float(coord2)
+    if system == 'drift':
+        # Parked where the source will be at the beam-crossing time, which is
+        # the middle of the scan - not at `when_local`.
+        start = _observation_start_datetime(obs)
+        if start is None:
+            return None
+        transit = start + timedelta(minutes=float(obs.get('duration_minutes', 30)) / 2.0)
+        return compute_drift_pointing(drift_frame, coord1, coord2, transit)
+
+    observer = _get_observer()
+    observer.date = _local_to_ephem_utc(when_local)
+    if system == 'object':
+        name = str(obs.get('object_name', '')).strip().lower()
+        bodies = {'sun': ephem.Sun, 'moon': ephem.Moon, 'jupiter': ephem.Jupiter,
+                  'venus': ephem.Venus, 'mars': ephem.Mars, 'saturn': ephem.Saturn}
+        maker = bodies.get(name)
+        if maker is None:
+            return None
+        body = maker()
+    elif system in ('radec', 'galactic'):
+        body = _drift_body('galactic' if system == 'galactic' else 'radec',
+                           coord1, coord2)
+    else:
+        return None
+    body.compute(observer)
+    return math.degrees(body.alt), math.degrees(body.az)
+
+
+def _observation_start_datetime(obs: dict) -> Optional[datetime]:
+    """The observation's scheduled start as a naive local datetime."""
+    date_str = obs.get('start_date') or datetime.now().strftime('%Y-%m-%d')
+    time_str = obs.get('start_time') or ''
+    try:
+        return datetime.strptime("%s %s" % (date_str, time_str), '%Y-%m-%d %H:%M')
+    except ValueError:
+        return None
+
+
+# How finely the visible window is searched. One minute is well below the rate
+# at which anything moves through a 5 deg beam and keeps a whole night's search
+# to a few hundred evaluations.
+_HORIZON_TRIM_STEP_MIN = 1.0
+
+
+def horizon_visible_window(obs: dict, profile=None, margin_deg=None):
+    """The longest stretch of an observation's window with the target clear.
+
+    Returns (start, duration_minutes, note) with the trimmed window, or
+    (None, 0, note) when no part of it is clear. Returns the window unchanged
+    when there is nothing to go on - no profile, no ephemeris, a satellite.
+
+    The *longest clear stretch* rather than simply "clear at both ends",
+    because the measured horizon is not a single altitude: a target can be
+    clear at the start and the end of a window and pass behind a tower in
+    between, and with the dome towers reaching 45 deg that is not hypothetical.
+    Taking the longest run means the observation that comes out of it is clear
+    throughout, and trimming an already-clear window is a no-op - which matters
+    because the trim is applied to the stored entry and must not creep every
+    time it is saved.
+    """
+    import horizon_store
+    start = _observation_start_datetime(obs)
+    duration = float(obs.get('duration_minutes', 30) or 0)
+    if start is None or duration <= 0:
+        return start, duration, None
+    # Three kinds of observation are never trimmed, and each for its own
+    # reason. A satellite's window comes from its own pass prediction. A
+    # calibration day follows the Sun all day and already refuses to scan
+    # through a configured sector. A horizon scan is the thing that *measures*
+    # the horizon - trimming it against the last measurement would stop it
+    # re-measuring wherever the sky was previously found blocked, which is
+    # exactly where a pruning most needs re-measuring.
+    if obs.get('coord_system') in ('satellite', 'calibration', 'horizon'):
+        return start, duration, None
+    profile = horizon_store.load_active() if profile is None else profile
+    if not profile or not horizon_store.profile_floors(profile):
+        return start, duration, None
+
+    margin = (horizon_store.beam_margin_deg() if margin_deg is None
+              else float(margin_deg))
+    steps = max(2, int(math.ceil(duration / _HORIZON_TRIM_STEP_MIN)) + 1)
+    clear = []
+    for i in range(steps):
+        offset = min(duration, i * _HORIZON_TRIM_STEP_MIN)
+        pos = observation_altaz_at(obs, start + timedelta(minutes=offset))
+        if pos is None:
+            return start, duration, None
+        alt, az = pos
+        clear.append((offset, alt >= horizon_store.horizon_floor(profile, az) + margin))
+
+    # Longest run of consecutive clear samples.
+    best_from = best_to = None
+    run_from = None
+    for offset, ok in clear:
+        if ok and run_from is None:
+            run_from = offset
+        if not ok and run_from is not None:
+            if best_from is None or (offset - run_from) > (best_to - best_from):
+                best_from, best_to = run_from, offset
+            run_from = None
+    if run_from is not None:
+        last = clear[-1][0]
+        if best_from is None or (last - run_from) > (best_to - best_from):
+            best_from, best_to = run_from, last
+
+    if best_from is None or best_to <= best_from:
+        return None, 0.0, ("the target is behind the measured horizon for the "
+                           "whole of this window")
+    if best_from == 0.0 and best_to >= duration:
+        return start, duration, None                     # already clear throughout
+
+    note = ("trimmed to the %.0f min the target is clear of the measured "
+            "horizon (was %.0f min from %s)"
+            % (best_to - best_from, duration, start.strftime('%H:%M')))
+    return start + timedelta(minutes=best_from), best_to - best_from, note
+
+
+def apply_horizon_trim(obs: dict):
+    """Rewrite an observation's window to the part with the target clear.
+
+    Modifies and returns the observation. The stored entry carries the trimmed
+    times so the schedule shows what will actually run; the trim is idempotent,
+    because a window that is already clear throughout comes back unchanged.
+
+    An observation with no clear window at all is left with its times intact
+    and marked, so the scheduler can skip it and say why rather than silently
+    running it into the trees.
+    """
+    if not obs.get('respect_local_horizon', True):
+        obs.pop('horizon_note', None)
+        obs.pop('horizon_blocked', None)
+        return obs
+    start, duration, note = horizon_visible_window(obs)
+    if start is None:
+        obs['horizon_blocked'] = True
+        obs['horizon_note'] = note
+        return obs
+    obs['horizon_blocked'] = False
+    if note:
+        obs['start_date'] = start.strftime('%Y-%m-%d')
+        obs['start_time'] = start.strftime('%H:%M')
+        obs['duration_minutes'] = max(1, int(round(duration)))
+        obs['horizon_note'] = note
+    else:
+        obs.pop('horizon_note', None)
+    return obs
+
+
 def compute_drift_pointing(frame: str, coord1: float, coord2: float,
                            when_local: datetime) -> Optional[tuple]:
     """Alt/Az (degrees) at which a source will sit at the given local time.
@@ -1182,6 +1467,10 @@ rf_state: dict = {
     # takes as long as it takes, and a fake countdown is worse than none.
     "stage_ends_utc": None,
     "stage_total_s": None,
+    # Whether this run checks the pointing against the measured horizon, and
+    # what it found. Advisory: the run proceeds either way.
+    "respect_horizon": True,
+    "horizon_warning": None,
 }
 horizon_state: dict = {
     "running": False,
@@ -1231,6 +1520,11 @@ DEFAULT_OBSERVATION = {
     "sdr_type": "b210",
     "calibrator": False,
     "end_action": "none",
+    # Check the pointing against the measured horizon and say so in the log if
+    # the target is behind the trees. Advisory - it never stops the run. On for
+    # observations already saved as well as new ones, which is safe precisely
+    # because it only ever warns.
+    "respect_local_horizon": True,
     # Horizon scans (coord_system "horizon") have no target: they visit every
     # azimuth in turn, so these describe the sweep instead of a position.
     "horizon_az_start": 5.0,
@@ -1334,6 +1628,18 @@ def start_observation(obs: dict, duration_override: int = None) -> bool:
     if obs.get('coord_system') == 'horizon':
         return _start_horizon_observation(obs, duration_override)
 
+    # An observation whose window has no part with the target clear of the
+    # measured horizon does not run. This is the one place the horizon stops
+    # something outright, and it is a decision taken when the schedule was
+    # saved - the entry is marked then, and this is where the mark is honoured.
+    # A horizon scan is exempt above, and necessarily so: it is the thing that
+    # measures the horizon, and would otherwise refuse to run wherever the last
+    # measurement said the sky was blocked.
+    if obs.get('horizon_blocked') and obs.get('respect_local_horizon', True):
+        log.warning("Skipping %s: %s", obs.get('name', 'observation'),
+                    obs.get('horizon_note') or "behind the measured horizon")
+        return False
+
     # Claim the start under the lock, then do the slow telescope work
     # (pointing and the slew wait, potentially minutes) with the lock
     # released so /api/status and /api/stop stay responsive throughout.
@@ -1396,6 +1702,19 @@ def start_observation(obs: dict, duration_override: int = None) -> bool:
                     log.info("Observation start aborted during slew")
                     return False
                 log.warning("SRT slew timeout - starting observation at current position")
+
+        # Where the dish actually ended up, against the measured horizon. For
+        # everything except a scheduled observation this only ever warns: the
+        # profile may be months old and the trees will have moved since, so it
+        # is here to be read afterwards when a spectrum looks warm rather than
+        # to cancel the night. A scheduled observation has already had its
+        # window trimmed to the visible part, so a warning here means the trim
+        # could not find one, or the profile changed after it was scheduled.
+        if SRT_CONTROLLER_URL:
+            warning = local_horizon_warning(
+                respect=obs.get('respect_local_horizon', True))
+            if warning:
+                log.warning("Local horizon: %s", warning)
 
         # Set calibrator state
         if SRT_CONTROLLER_URL:
@@ -2209,6 +2528,16 @@ HTML_TEMPLATE = '''
                             <option value="demo">Demo (Simulated)</option>
                         </select>
                     </div>
+                    <div class="form-group wide" style="margin-top:10px;">
+                        <label style="display:flex; align-items:center; gap:8px; cursor:pointer;">
+                            <input autocomplete="off" type="checkbox" id="ssRespectHorizon" checked>
+                            Respect local horizon
+                        </label>
+                        <span style="color:#888; font-size:12px;">
+                            Says so if the Sun is behind the measured treeline. Advisory &mdash;
+                            it never stops the scan.
+                        </span>
+                    </div>
                     <div style="margin-top:15px; display:flex; gap:10px;">
                         <button class="btn btn-primary" id="ssStartBtn" onclick="startSunScan()">Start Sun Scan</button>
                         <button class="btn btn-danger" id="ssStopBtn" style="display:none" onclick="stopSunScan()">Stop</button>
@@ -2346,6 +2675,16 @@ HTML_TEMPLATE = '''
                     Loading&hellip;
                 </div>
                 <div style="margin-top:12px;">
+                    <label style="display:flex; align-items:center; gap:8px; cursor:pointer; margin-bottom:10px;">
+                        <input autocomplete="off" type="checkbox" id="rfRespectHorizon" checked>
+                        Respect local horizon
+                    </label>
+                    <div style="color:#888; font-size:12px; margin-bottom:10px;">
+                        Suggestions avoid the measured treeline rather than the
+                        hand-entered sectors, and a run into it is flagged. Foliage adds a
+                        continuum the sky model has no term for, so it lands in T_sys and
+                        the fitted gain instead of being spotted as a bad field.
+                    </div>
                     <button class="btn" onclick="rfRun('gain')">Calibrate gain now</button>
                     <button class="btn" onclick="rfLoadGainPlot()">Refresh plot</button>
                     <button class="btn btn-danger" onclick="rfCancel()">Stop</button>
@@ -2583,6 +2922,16 @@ HTML_TEMPLATE = '''
                         </select>
                     </div>
                 </div>
+                <div style="margin-top:12px;">
+                    <label style="display:flex; align-items:center; gap:8px; cursor:pointer;">
+                        <input autocomplete="off" type="checkbox" id="obvRespectHorizon" checked>
+                        Respect local horizon
+                    </label>
+                    <span style="color:#888; font-size:12px;">
+                        Notes in the log if the dish ends up pointing into the measured
+                        treeline. Advisory &mdash; the observation still runs.
+                    </span>
+                </div>
                 <div style="display:flex; gap:10px; align-items:center; margin-top:15px; flex-wrap:wrap;">
                     <button class="btn btn-success" id="obvStartBtn" onclick="observeStartNow()">Start Now</button>
                     <button class="btn btn-secondary" onclick="observeToScheduler()">Send to Scheduler&hellip;</button>
@@ -2659,14 +3008,15 @@ HTML_TEMPLATE = '''
 
                 <div class="section-title">Obstructed Horizon</div>
                 <div class="form-group">
-                    <label>Sectors (az_min-az_max:min_sun_alt, comma separated)</label>
-                    <input autocomplete="off" type="text" id="cfgObstructionSectors" placeholder="45-120:30">
-                    <p style="color:#888; font-size:12px; margin-top:6px;">
-                        While the Sun is inside one of these azimuth ranges and below
-                        the stated altitude it is not scanned, and scans already on
-                        file from there are left out of the pointing fit. Trees emit
-                        at 1420&nbsp;MHz, so a raster that catches the skyline drags
-                        the fitted beam centre down into it.
+                    <p style="color:#888; font-size:12px; margin:0;">
+                        Taken from the <strong>measured horizon profile</strong> &mdash;
+                        choose which scan is in force on the Horizon tab. The
+                        hand-entered sectors this box used to hold were retired on
+                        2026-08-25: one blanket floor for a whole quadrant, where the
+                        measurement knows every azimuth separately.
+                        For the Sun the allowance also includes the raster&rsquo;s reach
+                        below its centre, since it is the bottom row that catches
+                        the trees first.
                     </p>
                 </div>
 
@@ -2971,6 +3321,16 @@ HTML_TEMPLATE = '''
                             <option value="home">Go Home (Alt 0, Az 0)</option>
                             <option value="stow">Stow (Alt 90, Az 180)</option>
                         </select>
+                    </div>
+                    <div class="form-group wide">
+                        <label style="display:flex; align-items:center; gap:8px; cursor:pointer;">
+                            <input autocomplete="off" type="checkbox" id="obsRespectHorizon" checked>
+                            Respect local horizon
+                        </label>
+                        <span style="color:#888; font-size:12px;">
+                            Notes in the log if this observation points into the measured
+                            treeline. Advisory &mdash; it never stops the run.
+                        </span>
                     </div>
                 </div>
 
@@ -3286,8 +3646,17 @@ HTML_TEMPLATE = '''
                 headers: {'Content-Type': 'application/json'},
                 body: JSON.stringify(schedule)
             }).then(resp => resp.json().catch(() => ({}))
-                .then(d => ({ok: resp.ok && d.success !== false,
-                             error: d.error || ('HTTP ' + resp.status)})))
+                .then(d => {
+                    // The server trims each window to the part where the target
+                    // clears the measured horizon, so the times it stored may
+                    // not be the ones just sent. Say so, and reload the list so
+                    // what is on screen is what will run.
+                    if (d.horizon_notes && d.horizon_notes.length) {
+                        alert('Local horizon: ' + d.horizon_notes.join(' | '));
+                    }
+                    return {ok: resp.ok && d.success !== false,
+                            error: d.error || ('HTTP ' + resp.status)};
+                }))
               .catch(e => ({ok: false, error: String(e)}));
         }
 
@@ -3343,6 +3712,12 @@ HTML_TEMPLATE = '''
         function neverRunsReason(obs) {
             if (!obs.start_time) return 'No start time';
             if (obs.start_date && obsSlotEnd(obs) === null) return 'Bad date';
+            // Marked by the server when the whole window is behind the measured
+            // horizon. The scheduler honours the mark and skips it, so saying
+            // "won't run" here is a statement of fact, not a prediction.
+            if (obs.horizon_blocked && obs.respect_local_horizon !== false) {
+                return 'Behind the horizon';
+            }
             return isExpired(obs) ? 'Expired' : null;
         }
 
@@ -3361,6 +3736,7 @@ HTML_TEMPLATE = '''
                         <div class="field"><div class="field-label">Name</div><div class="field-value">${obs.name}${dead ? '<span class="tag-wont-run">' + dead + '</span>' : ''}</div></div>
                         <div class="field"><div class="field-label">Start</div><div class="field-value">${obs.start_date || 'Today'} ${obs.start_time}</div></div>
                         <div class="field"><div class="field-label">End</div><div class="field-value">${formatEndTime(obs)}</div></div>
+                        ${obs.horizon_note && !obs.horizon_blocked ? '<div class="field"><div class="field-label">Local horizon</div><div class="field-value" style="color:#ffa502;">' + obs.horizon_note + '</div></div>' : ''}
                         <div class="field"><div class="field-label">Coordinates</div><div class="field-value">${formatCoordDisplay(obs)}</div></div>
                         <div class="field"><div class="field-label">Frequency</div><div class="field-value">${obs.center_freq_mhz} MHz</div></div>
                         <div class="field"><div class="field-label">BW / Gain</div><div class="field-value">${obs.bandwidth_mhz} MHz / ${obs.gain_db} dB</div></div>
@@ -3437,6 +3813,10 @@ HTML_TEMPLATE = '''
             document.getElementById('obsSdrType').value = obs.sdr_type || DEFAULTS.sdr_type;
             document.getElementById('obsCalibrator').value = obs.calibrator ? 'on' : 'off';
             document.getElementById('obsEndAction').value = obs.end_action || 'none';
+            // Entries saved before this field existed have it undefined, and
+            // default to on - safe because the check only ever warns.
+            document.getElementById('obsRespectHorizon').checked =
+                obs.respect_local_horizon !== false;
             document.getElementById('obsFilename').value = obs.filename || '';
             document.getElementById('obsCalGridN').value = obs.cal_grid_n || 5;
             document.getElementById('obsCalSpacing').value = obs.cal_spacing_deg || 1.5;
@@ -3520,6 +3900,8 @@ HTML_TEMPLATE = '''
                 sdr_type: document.getElementById('obsSdrType').value,
                 calibrator: document.getElementById('obsCalibrator').value === 'on',
                 end_action: document.getElementById('obsEndAction').value,
+                respect_local_horizon:
+                    document.getElementById('obsRespectHorizon').checked,
                 filename: document.getElementById('obsFilename').value,
                 cal_grid_n: parseInt(document.getElementById('obsCalGridN').value) || 5,
                 cal_spacing_deg: parseFloat(document.getElementById('obsCalSpacing').value) || 1.5,
@@ -4000,6 +4382,8 @@ HTML_TEMPLATE = '''
                 sdr_type: document.getElementById('obvSdr').value,
                 filename: document.getElementById('obvFilename').value.trim(),
                 end_action: document.getElementById('obvEndAction').value,
+                respect_local_horizon:
+                    document.getElementById('obvRespectHorizon').checked,
                 calibrator: false,
                 enabled: true,
                 // No date or time: for a Run Now start the scheduler reads the
@@ -4465,6 +4849,13 @@ HTML_TEMPLATE = '''
                 } else {
                     prog.textContent = 'Idle.';
                 }
+                // Shown whatever the stage: a run that pointed into the trees is
+                // worth seeing while it happens and afterwards, because it
+                // explains a T_sys that comes out high.
+                if (st.horizon_warning) {
+                    prog.innerHTML += '<div style="margin-top:10px; color:#ffa502;">'
+                                    + '&#9888; ' + st.horizon_warning + '</div>';
+                }
 
                 if (st.running && !rfPollTimer) rfPollTimer = setInterval(rfRefresh, 2000);
                 if (!st.running && rfPollTimer) { clearInterval(rfPollTimer); rfPollTimer = null; }
@@ -4577,7 +4968,9 @@ HTML_TEMPLATE = '''
 
         function rfRun(job) {
             const secs = job === 'gain' ? 180 : 120;
-            const body = {job: job, duration_s: secs};
+            const body = {job: job, duration_s: secs,
+                          respect_local_horizon:
+                              document.getElementById('rfRespectHorizon').checked};
             if (job === 'gain') {
                 const l = document.getElementById('rfGlon').value;
                 const b = document.getElementById('rfGlat').value;
@@ -4686,6 +5079,8 @@ HTML_TEMPLATE = '''
                 gain_db: parseFloat(document.getElementById('ssGain').value),
                 sdr_type: document.getElementById('ssSdrType').value,
                 beam_fwhm_deg: parseFloat(document.getElementById('ssBeamFwhm').value),
+                respect_local_horizon:
+                    document.getElementById('ssRespectHorizon').checked,
             };
             fetch('/api/sunscan/start', {
                 method: 'POST',
@@ -4693,6 +5088,10 @@ HTML_TEMPLATE = '''
                 body: JSON.stringify(params)
             }).then(r => r.json()).then(data => {
                 if (data.success) {
+                    if (data.horizon_warning) {
+                        alert('Local horizon: ' + data.horizon_warning +
+                              ' The scan is starting anyway.');
+                    }
                     document.getElementById('ssStartBtn').style.display = 'none';
                     document.getElementById('ssStopBtn').style.display = 'inline-block';
                     document.getElementById('ssProgress').style.display = 'block';
@@ -4972,30 +5371,6 @@ HTML_TEMPLATE = '''
         }
 
         // ---- Configuration ----
-        // The obstruction sectors are stored as [az_min, az_max, min_sun_alt]
-        // triples and edited as "45-120:30, 300-330:12" — three numbers in a
-        // box beat hand-written JSON in a box.
-        function formatObstructionSectors(sectors) {
-            if (!Array.isArray(sectors)) return '';
-            return sectors.map(s => s[0] + '-' + s[1] + ':' + s[2]).join(', ');
-        }
-
-        function parseObstructionSectors(text) {
-            const sectors = [];
-            for (const part of text.split(',')) {
-                const chunk = part.trim();
-                if (!chunk) continue;
-                // Character classes spelled out: this whole page is a Python
-                // string, where a backslash escape would be Python's first.
-                const m = chunk.match(/^(-?[0-9.]+) *- *(-?[0-9.]+) *: *(-?[0-9.]+)$/);
-                if (!m) return null;
-                const values = [parseFloat(m[1]), parseFloat(m[2]), parseFloat(m[3])];
-                if (values.some(v => !isFinite(v))) return null;
-                sectors.push(values);
-            }
-            return sectors;
-        }
-
         function loadConfig() {
             fetch('/api/config').then(r => r.json()).then(cfg => {
                 document.getElementById('cfgBannerName').value = cfg.banner_name || '';
@@ -5007,8 +5382,6 @@ HTML_TEMPLATE = '''
                 document.getElementById('cfgObsLon').value = cfg.observer_lon ?? -4.3;
                 document.getElementById('cfgObsElev').value = cfg.observer_elevation ?? 50;
                 document.getElementById('cfgMinElev').value = cfg.min_elevation ?? 10;
-                document.getElementById('cfgObstructionSectors').value =
-                    formatObstructionSectors(cfg.obstruction_sectors);
                 document.getElementById('cfgCameraDevice').value = cfg.camera_device || '';
                 document.getElementById('cfgCameraResolution').value = cfg.camera_resolution || '';
                 document.getElementById('cfgReceiverPythonPath').value = cfg.receiver_python_path || cfg.python_path || '';
@@ -5023,12 +5396,6 @@ HTML_TEMPLATE = '''
             // Refuse the whole save rather than store an empty mask: silently
             // dropping a typo here would let the next calibration day scan
             // straight through the trees.
-            const sectors = parseObstructionSectors(
-                document.getElementById('cfgObstructionSectors').value);
-            if (sectors === null) {
-                alert('Obstruction sectors must look like "45-120:30", separated by commas.');
-                return;
-            }
             const cfg = {
                 banner_name: document.getElementById('cfgBannerName').value,
                 banner_subtitle: document.getElementById('cfgBannerSubtitle').value,
@@ -5039,7 +5406,6 @@ HTML_TEMPLATE = '''
                 observer_lon: parseFloat(document.getElementById('cfgObsLon').value) || 0,
                 observer_elevation: parseFloat(document.getElementById('cfgObsElev').value) || 0,
                 min_elevation: parseFloat(document.getElementById('cfgMinElev').value) || 10,
-                obstruction_sectors: sectors,
                 camera_device: document.getElementById('cfgCameraDevice').value,
                 camera_resolution: document.getElementById('cfgCameraResolution').value,
                 receiver_python_path: document.getElementById('cfgReceiverPythonPath').value,
@@ -5128,6 +5494,7 @@ def _validate_sun_scan_params(raw: dict, include_interval: bool = False) -> dict
     if sdr_type not in {"b210", "rtlsdr", "demo"}:
         raise ValueError("sdr_type must be b210, rtlsdr, or demo")
     params["sdr_type"] = sdr_type
+    params["respect_local_horizon"] = bool(raw.get("respect_local_horizon", True))
     if include_interval:
         params["interval_minutes"] = number(
             "interval_minutes", 30, 5, 120, integer=True)
@@ -5298,7 +5665,7 @@ def _run_horizon_scan(params: dict):
 def _run_calibration_day(params: dict):
     """Run repeated sun scans at a fixed interval until sunset or cancelled."""
     from sun_scan import (get_sun_altaz, parse_obstruction_sectors,
-                          save_scan_to_pointing_data, sun_is_obstructed)
+                          raster_obstruction, save_scan_to_pointing_data)
 
     interval = params.get("interval_minutes", 30)
     cal_day_state.update(running=True, finished=False, phase="starting",
@@ -5343,11 +5710,20 @@ def _run_calibration_day(params: dict):
             # Sun and the Gaussian centroid slides into it - and it would be
             # saved looking as respectable as any other. Waiting costs one
             # interval; the fit would have to throw the scan out anyway.
-            sectors = parse_obstruction_sectors(cfg.get("obstruction_sectors"))
-            if sun_is_obstructed(sun_alt, sun_az, sectors):
-                log.info("Calibration day: Sun at alt=%.1f° az=%.1f° is behind a "
-                         "configured obstruction; waiting for it to clear",
-                         sun_alt, sun_az)
+            # Beam-only margin here, not the raster allowance: the raster's
+            # reach is no longer an allowance to add, it is enumerated point by
+            # point below. Adding both would count the extent twice.
+            sectors = parse_obstruction_sectors(horizon_obstruction_sectors(cfg))
+            bad = raster_obstruction(sun_alt, sun_az,
+                                     params.get("n", 5),
+                                     params.get("grid_spacing_deg", 1.5),
+                                     sectors)
+            if bad:
+                log.info("Calibration day: Sun at alt=%.1f° az=%.1f° would put a "
+                         "raster point at alt=%.1f° az=%.1f° into the measured "
+                         "horizon (%.1f° short); waiting for it to clear",
+                         sun_alt, sun_az, bad["alt_deg"], bad["az_deg"],
+                         bad["shortfall_deg"])
                 cal_day_state["phase"] = "waiting_for_clear_horizon"
                 if cal_day_cancel.wait(60):
                     return
@@ -5667,6 +6043,18 @@ def _rf_observe(name, glon, glat, duration_s, sdr_type="b210",
         log.info("RF calibration: recording where the dish already points, "
                  "l=%.2f b=%.2f", glon, glat)
 
+    # Worth saying loudly here: a gain calibration compares a measured
+    # spectrum against a simulated one, and the simulator knows about the sky
+    # but not about the treeline. Foliage in the beam adds a continuum the
+    # model has no term for, so it lands in T_sys and the fitted gain rather
+    # than being flagged as a bad field.
+    warning = local_horizon_warning(respect=rf_state.get("respect_horizon", True))
+    if warning:
+        log.warning("RF calibration, local horizon: %s", warning)
+        rf_state["horizon_warning"] = warning
+    else:
+        rf_state["horizon_warning"] = None
+
     out = os.path.join(_SCRIPT_DIR, "data",
                        "rf_%s_%s.h5" % (name.lower().replace(" ", "_"),
                                         datetime.now().strftime("%Y%m%d_%H%M%S")))
@@ -5800,7 +6188,7 @@ def _run_rf_calibration(job, params):
                     lat=float(cfg.get("observer_lat", SITE_LAT_DEG)),
                     lon=float(cfg.get("observer_lon", SITE_LON_DEG)),
                     elevation_m=float(cfg.get("observer_elevation", 50)),
-                    obstruction_sectors=cfg.get("obstruction_sectors"))
+                    obstruction_sectors=horizon_obstruction_sectors(cfg))
                 if not target:
                     raise RuntimeError("nothing is above the lowest usable "
                                        "altitude right now, in any direction")
@@ -5898,7 +6286,7 @@ def api_rf_target():
             lat=float(cfg.get("observer_lat", SITE_LAT_DEG)),
             lon=float(cfg.get("observer_lon", SITE_LON_DEG)),
             elevation_m=float(cfg.get("observer_elevation", 50)),
-            obstruction_sectors=cfg.get("obstruction_sectors"))
+            obstruction_sectors=horizon_obstruction_sectors(cfg))
     except Exception as exc:                              # noqa: BLE001
         return jsonify({"success": False, "error": str(exc)}), 500
     return jsonify({"success": True, "targets": targets,
@@ -5991,6 +6379,8 @@ def api_rf_run():
 
     params = {"duration_s": float(data.get("duration_s", 120)),
               "sdr_type": data.get("sdr_type", "b210")}
+    rf_state["respect_horizon"] = bool(data.get("respect_local_horizon", True))
+    rf_state["horizon_warning"] = None
     if data.get("glon") is not None and data.get("glat") is not None:
         try:
             params["glon"] = float(data["glon"])
@@ -6150,12 +6540,41 @@ def get_schedule():
 @app.route('/api/schedule', methods=['POST'])
 def post_schedule():
     schedule = request.json
+    # Trim each window to the part where the target clears the measured
+    # horizon, before the clash check - two observations that no longer
+    # overlap once trimmed are not a clash, and one that has been trimmed into
+    # a clash is one. Done here rather than in the browser so it holds for
+    # anything that posts a schedule, and because the horizon profile lives on
+    # this side. Idempotent: re-saving an already-trimmed entry changes
+    # nothing, which is what makes rewriting the stored times safe.
+    notes = []
+    for obs in schedule if isinstance(schedule, list) else []:
+        if not isinstance(obs, dict):
+            continue
+        before = (obs.get('start_time'), obs.get('duration_minutes'))
+        try:
+            apply_horizon_trim(obs)
+        except Exception as exc:                          # noqa: BLE001
+            log.warning("Could not check %s against the horizon: %s",
+                        obs.get('name'), exc)
+            continue
+        if obs.get('horizon_blocked'):
+            notes.append("%s: %s" % (obs.get('name', 'observation'),
+                                     obs.get('horizon_note')))
+            log.warning("Local horizon: %s will not run - %s",
+                        obs.get('name'), obs.get('horizon_note'))
+        elif (obs.get('start_time'), obs.get('duration_minutes')) != before:
+            notes.append("%s: %s" % (obs.get('name', 'observation'),
+                                     obs.get('horizon_note')))
+            log.info("Local horizon: %s %s", obs.get('name'),
+                     obs.get('horizon_note'))
+
     # Server-side clash validation
     clashes = find_clashes(schedule)
     if clashes:
         return jsonify({'success': False, 'error': f'Schedule has clashing observations: {clashes}'}), 400
     save_schedule(schedule)
-    return jsonify({'success': True})
+    return jsonify({'success': True, 'horizon_notes': notes})
 
 
 @app.route('/api/status', methods=['GET'])
@@ -6508,11 +6927,48 @@ def api_sunscan_start():
         params = _validate_sun_scan_params(request.get_json(silent=True) or {})
     except ValueError as exc:
         return jsonify({'success': False, 'error': str(exc)}), 400
+    # Every point of the raster against the measured horizon, before any of it
+    # is driven. Unlike everywhere else the horizon is consulted, this one
+    # *refuses*: a scan with foliage in any of its points is not a weak scan
+    # but a wrong one - the ramp under the source pulls the single Gaussian's
+    # centroid, the fit succeeds, and the result is saved looking as
+    # respectable as any other. There is nothing to be gained by taking it.
+    #
+    # Unticking "respect local horizon" is the way to take one anyway.
+    warning = None
+    if params.get("respect_local_horizon", True):
+        try:
+            from sun_scan import (get_sun_altaz, parse_obstruction_sectors,
+                                  raster_obstruction)
+            cfg = load_config()
+            sun_alt, sun_az = get_sun_altaz(
+                float(cfg.get("observer_lat", SITE_LAT_DEG)),
+                float(cfg.get("observer_lon", SITE_LON_DEG)),
+                float(cfg.get("observer_elevation", 50)))
+            sectors = parse_obstruction_sectors(horizon_obstruction_sectors(cfg))
+            bad = raster_obstruction(sun_alt, sun_az, params["n"],
+                                     params["grid_spacing_deg"], sectors)
+            if bad:
+                warning = ("the Sun is at alt %.1f° az %.1f°, which puts a raster "
+                           "point at alt %.1f° az %.1f° into the measured horizon, "
+                           "%.1f° short of clearing it by a beamwidth. Foliage at "
+                           "1420 MHz is a ~290 K source, so that point would drag "
+                           "the fitted centroid rather than just adding noise."
+                           % (sun_alt, sun_az, bad["alt_deg"], bad["az_deg"],
+                              bad["shortfall_deg"]))
+                log.warning("Refusing the Sun scan: %s", warning)
+                sun_scan_state["horizon_warning"] = warning
+                return jsonify({'success': False, 'error': warning,
+                                'horizon_blocked': True}), 409
+        except (KeyError, ValueError, TypeError) as exc:
+            log.debug("Could not check the raster against the horizon: %s", exc)
+    sun_scan_state["horizon_warning"] = warning
+
     sun_scan_cancel.clear()
     sun_scan_thread = threading.Thread(target=_run_sun_scan, args=(params,),
                                        daemon=True)
     sun_scan_thread.start()
-    return jsonify({'success': True})
+    return jsonify({'success': True, 'horizon_warning': warning})
 
 
 @app.route('/api/sunscan/stop', methods=['POST'])
@@ -6532,6 +6988,7 @@ def api_sunscan_status():
         'error': sun_scan_state["error"],
         'has_image': sun_scan_state["image_path"] is not None
                      and os.path.isfile(sun_scan_state["image_path"]),
+        'horizon_warning': sun_scan_state.get("horizon_warning"),
     })
 
 
@@ -6652,7 +7109,7 @@ def api_calday_fit():
         model = fit_pointing_model(
             true_lat=cfg.get("observer_lat"),
             true_lon=cfg.get("observer_lon"),
-            obstruction_sectors=cfg.get("obstruction_sectors"),
+            obstruction_sectors=sun_raster_obstruction_sectors(cfg),
         )
         if model.get("success"):
             # Stamped at fit time, not at apply time, so the date the controller

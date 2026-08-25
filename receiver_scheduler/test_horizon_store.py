@@ -277,6 +277,233 @@ def test_the_api_serves_floors_in_the_shape_the_web_simulator_draws():
         assert 0.0 <= float(alt) <= 90.0
 
 
+# ---------------------------------------------------------------------------
+# Respecting it
+# ---------------------------------------------------------------------------
+
+def test_clearance_allows_for_the_whole_beam(archive):
+    """A source centred on the floor still has half its beam in the trees.
+
+    Foliage at 1420 MHz is a ~290 K source, not a screen, so a beam clipping it
+    gains signal rather than losing it - which is why this asks for the full
+    width and not the half width.
+    """
+    profile = make_profile(floors={0.0: 20.0, 90.0: 20.0, 180.0: 20.0, 270.0: 20.0})
+    beam = store.beam_margin_deg()
+    assert beam == pytest.approx(5.16, abs=0.2)
+
+    assert store.horizon_clearance(profile, 20.0 + beam + 0.1, 0.0)["clear"]
+    assert not store.horizon_clearance(profile, 20.0 + beam - 0.1, 0.0)["clear"]
+    # Above the floor but inside the beam allowance: not "below the horizon",
+    # but not clear either, and the wording has to distinguish them.
+    mid = store.horizon_clearance(profile, 22.0, 0.0)
+    assert not mid["clear"] and not mid["below_floor"]
+    assert "within a beamwidth" in store.horizon_warning(profile, 22.0, 0.0)
+    assert "below the measured" in store.horizon_warning(profile, 10.0, 0.0)
+
+
+def test_an_unmeasured_horizon_warns_about_nothing(archive):
+    """No profile must never read as "everything is blocked"."""
+    assert store.horizon_warning({}, 1.0, 90.0) is None
+    assert store.horizon_clearance({}, 1.0, 90.0)["known"] is False
+
+
+def test_the_sector_form_is_never_looser_than_the_floor(archive):
+    """horizon_sectors stands in for the hand-entered sectors, so it must not
+    quietly admit anything horizon_floor would exclude.
+
+    They are not bit-identical: sector bounds are inclusive at both ends, so
+    exactly on a measured azimuth both adjacent intervals claim it and the
+    stricter wins. That is the direction to err in, and the test pins the
+    direction rather than the equality.
+    """
+    from rf_calibration import _in_obstructed_sector
+
+    profile = make_profile(floors={0.0: 45.0, 90.0: 5.0, 180.0: 20.0, 270.0: 5.0})
+    sectors = store.horizon_sectors(profile)
+    margin = store.beam_margin_deg()
+    for i in range(720):
+        az = i * 0.5
+        required = store.horizon_floor(profile, az) + margin
+        assert _in_obstructed_sector(az, required - 0.01, sectors), \
+            "sector form is looser than horizon_floor at az %.1f" % az
+
+
+def test_the_sector_form_wraps_through_north(archive):
+    from rf_calibration import _in_obstructed_sector
+
+    profile = make_profile(floors={10.0: 5.0, 90.0: 5.0, 180.0: 5.0, 350.0: 40.0})
+    sectors = store.horizon_sectors(profile)
+    # The interval from 350 round to 10 is blocked to 40 + a beam.
+    assert _in_obstructed_sector(0.0, 40.0, sectors)
+    assert _in_obstructed_sector(355.0, 40.0, sectors)
+    assert not _in_obstructed_sector(0.0, 40.0 + store.beam_margin_deg() + 1, sectors)
+
+
+# ---------------------------------------------------------------------------
+# Trimming a scheduled window to the visible part
+# ---------------------------------------------------------------------------
+
+def _scheduled(**over):
+    obs = {"name": "test", "coord_system": "radec",
+           "coord1_deg": 23.39, "coord1_min": 0, "coord1_sec": 0,
+           "coord2_deg": 58.8, "coord2_min": 0, "coord2_sec": 0,
+           "start_date": "2026-08-25", "start_time": "18:00",
+           "duration_minutes": 480, "respect_local_horizon": True}
+    obs.update(over)
+    return obs
+
+
+def test_a_trimmed_window_stays_put_when_saved_again():
+    """The trim rewrites the stored entry, so it must not creep.
+
+    Saving a schedule trims each window to the part where the target is clear.
+    If that were not idempotent, every save would shave more off the same
+    observation and an entry would walk itself down to nothing over a few
+    edits. It holds because the trim takes the longest *clear* run, and a
+    window that is already clear throughout is returned untouched.
+    """
+    import copy
+
+    import h1_web_scheduler as scheduler
+
+    obs = _scheduled()
+    scheduler.apply_horizon_trim(obs)
+    once = (obs["start_time"], obs["duration_minutes"])
+    for _ in range(4):
+        scheduler.apply_horizon_trim(obs)
+        assert (obs["start_time"], obs["duration_minutes"]) == once
+
+    # And an untrimmed observation is genuinely untouched, not trimmed by zero.
+    high = copy.deepcopy(_scheduled(coord1_deg=19.99, coord2_deg=40.7,
+                                    start_time="20:00", duration_minutes=60))
+    before = copy.deepcopy(high)
+    scheduler.apply_horizon_trim(high)
+    assert high["start_time"] == before["start_time"]
+    assert high["duration_minutes"] == before["duration_minutes"]
+
+
+def test_an_unticked_observation_is_never_trimmed():
+    import h1_web_scheduler as scheduler
+
+    obs = _scheduled(respect_local_horizon=False)
+    scheduler.apply_horizon_trim(obs)
+    assert (obs["start_time"], obs["duration_minutes"]) == ("18:00", 480)
+    assert "horizon_note" not in obs
+    assert "horizon_blocked" not in obs
+
+
+def test_a_window_with_no_visible_part_is_marked_not_trimmed():
+    """Marked rather than zero-length, so the reason survives to the log."""
+    import h1_web_scheduler as scheduler
+
+    # Deep south from Glasgow: never clears the treeline.
+    obs = _scheduled(coord1_deg=18.0, coord2_deg=-45.0,
+                     start_time="20:00", duration_minutes=300)
+    scheduler.apply_horizon_trim(obs)
+    assert obs["horizon_blocked"] is True
+    assert obs["duration_minutes"] == 300, "the times are left for the log to quote"
+    assert "behind the measured horizon" in obs["horizon_note"]
+
+
+def test_the_longest_clear_run_wins_not_merely_the_ends():
+    """A target can be clear at both ends and behind a tower in between.
+
+    The northern towers reach 45 deg, so this is not hypothetical: a
+    circumpolar source clears them, passes behind, and clears again. Trimming
+    on the endpoints alone would keep the whole window and observe the tower
+    for the middle third of it.
+    """
+    import h1_web_scheduler as scheduler
+
+    obs = _scheduled(coord1_deg=2.0, coord2_deg=70.0,
+                     start_time="20:00", duration_minutes=360)
+    start, duration, note = scheduler.horizon_visible_window(obs)
+    assert start is not None and note is not None
+    assert duration < 360, "the passage behind the tower must be cut out"
+
+    # Every minute of what survives really is clear.
+    import horizon_store
+    profile = horizon_store.load_active()
+    margin = horizon_store.beam_margin_deg()
+    from datetime import timedelta
+    for minute in range(int(duration) + 1):
+        alt, az = scheduler.observation_altaz_at(obs, start + timedelta(minutes=minute))
+        assert alt >= horizon_store.horizon_floor(profile, az) + margin - 1e-6, \
+            "minute %d of the trimmed window is behind the horizon" % minute
+
+
+@pytest.mark.parametrize("system,why", [
+    ("satellite", "its window comes from its own pass prediction"),
+    ("calibration", "it follows the Sun all day"),
+    ("horizon", "it is the thing that measures the horizon"),
+])
+def test_some_observations_are_never_trimmed(system, why):
+    """The horizon scan is the one that matters.
+
+    Trimming it against the last measurement would stop it re-measuring
+    wherever the sky was previously found blocked - which is precisely where a
+    pruning needs re-measuring. A horizon that had closed in once could then
+    never be shown to have opened again.
+    """
+    import h1_web_scheduler as scheduler
+
+    obs = _scheduled(coord_system=system)
+    start, duration, note = scheduler.horizon_visible_window(obs)
+    assert note is None and duration == 480, why
+
+    scheduler.apply_horizon_trim(obs)
+    assert obs["start_time"] == "18:00" and obs["duration_minutes"] == 480
+    assert not obs.get("horizon_blocked")
+
+
+def test_a_sun_raster_is_allowed_more_room_than_a_single_pointing():
+    """The retired 30 deg sector folded the raster in; this recomputes it.
+
+    A raster's lowest row sits (n-1)/2 * spacing below the Sun, so the Sun
+    clearing the trees is not enough - the bottom of the raster has to clear
+    them too. Retiring the hand-entered sectors and dropping to a beam-only
+    margin would have quietly readmitted the 2026-08-20 scans that fitted
+    0.5-1.2 deg low, which is exactly what those sectors existed to exclude.
+    """
+    from unittest.mock import patch
+
+    import h1_web_scheduler as scheduler
+
+    profile = {"entries": [
+        {"az_deg": az, "fit": {"success": True, "alt_clear": 20.0}}
+        for az in (0.0, 90.0, 180.0, 270.0)]}
+    cfg = {"respect_local_horizon": True}
+
+    with patch("horizon_store.load_active", return_value=profile):
+        plain = scheduler.horizon_obstruction_sectors(cfg)
+        raster = scheduler.sun_raster_obstruction_sectors(cfg, n=5, spacing_deg=1.5)
+        wider = scheduler.sun_raster_obstruction_sectors(cfg, n=9, spacing_deg=2.0)
+
+    beam = store.beam_margin_deg()
+    assert plain[0][2] == pytest.approx(20.0 + beam)
+    assert raster[0][2] == pytest.approx(20.0 + beam + 3.0)      # (5-1)/2 * 1.5
+    assert wider[0][2] == pytest.approx(20.0 + beam + 8.0)       # (9-1)/2 * 2.0
+    assert wider[0][2] > raster[0][2] > plain[0][2], \
+        "a raster that reaches further down needs more room"
+
+
+def test_with_no_measured_horizon_nothing_is_excluded():
+    """Honest rather than safe, and deliberately so.
+
+    With the hand-entered sectors retired there is no fallback list, so a site
+    that has never run a horizon scan excludes nothing. Inventing a default
+    would be claiming knowledge of a skyline nobody has measured.
+    """
+    from unittest.mock import patch
+
+    import h1_web_scheduler as scheduler
+
+    with patch("horizon_store.load_active", return_value=None):
+        assert scheduler.horizon_obstruction_sectors({"respect_local_horizon": True}) == []
+        assert scheduler.sun_raster_obstruction_sectors({"respect_local_horizon": True}) == []
+
+
 def test_no_profile_blocks_nothing(archive):
     assert store.horizon_floor({}, 123.0) == 0.0
     assert store.is_obstructed({}, 1.0, 123.0) is False

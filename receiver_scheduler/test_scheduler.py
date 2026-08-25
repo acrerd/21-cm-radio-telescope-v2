@@ -180,7 +180,20 @@ class TestCalibrationDayRetry:
         Foliage is a bright extended source at 1420 MHz. Caught in the lower
         rows of the raster it drags the fitted beam centre down into itself, and
         the resulting scan is saved looking as respectable as any other.
+
+        Since 2026-08-25 the sectors come from the measured horizon profile
+        rather than a hand-entered config list, so the profile is what this
+        patches. The Sun sits at alt 25 az 100, where the synthetic profile
+        floor is 20 - clear of the floor itself, but not once the beam and the
+        raster's reach below centre are allowed for, which is the whole point.
         """
+        profile = {
+            "entries": [
+                {"az_deg": az, "fit": {"success": True, "alt_clear": alt}}
+                for az, alt in [(0.0, 5.0), (90.0, 20.0), (110.0, 20.0),
+                                (180.0, 5.0), (270.0, 5.0)]
+            ]
+        }
         original_cal_state = dict(sched.cal_day_state)
         phases = []
 
@@ -191,10 +204,11 @@ class TestCalibrationDayRetry:
 
         try:
             with patch('sun_scan.get_sun_altaz', return_value=(25.0, 100.0)), \
+                 patch('horizon_store.load_active', return_value=profile), \
                  patch.object(sched, 'load_config', return_value={
                      "observer_lat": 55.9, "observer_lon": -4.3,
                      "observer_elevation": 50,
-                     "obstruction_sectors": [[45, 120, 30]],
+                     "respect_local_horizon": True,
                  }), \
                  patch.object(sched.cal_day_cancel, 'wait', side_effect=stop_waiting), \
                  patch.object(sched, '_run_sun_scan') as run_scan, \
