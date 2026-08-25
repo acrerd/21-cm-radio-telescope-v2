@@ -544,6 +544,11 @@
                     <button class="btn btn-secondary" onclick="loadObserveParams(true)">Copy from Simulator</button>
                     <span id="obvStatus" style="color:#888; font-size:12px;"></span>
                 </div>
+            </div><!-- .config-form ends here: everything below is a plot, and
+                 rf-wide widens a block by pulling it left with a margin sized
+                 for the 1400px .container. Inside the 700px .config-form that
+                 margin is computed against the wrong column and drags the block
+                 across what sits above it. -->
                 <div id="obvLiveBox" class="rf-wide" style="display:none; margin-top:20px;">
                     <div class="section-title">Solar flux, live</div>
                     <div style="color:#888; font-size:12px; margin-bottom:8px; max-width:80ch;">
@@ -576,7 +581,6 @@
                     A drift scan parks the dish and leaves tracking off &mdash; the
                     source crosses the beam centre half a duration from the start.
                 </p>
-            </div>
         </div>
 
         <div class="tab-content" id="tab-config">
