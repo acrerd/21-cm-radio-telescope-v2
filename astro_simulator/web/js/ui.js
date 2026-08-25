@@ -6,6 +6,7 @@ import { jdFromDate, decimalYear, galToEq, raDecToAltAz, sepDeg }
   from "./coordinates.js";
 import { frameOffset, continuumSources } from "./ephemeris.js";
 import { C_LIGHT, F_HI } from "./skydata.js";
+import { simDate, setFixedTime, isFixed } from "./clock.js";
 
 const TARGETS = [
   ["Galactic centre wings", 0.0, 0.0, 3.0, "broad velocity wings"],
@@ -145,12 +146,13 @@ export function setupUI(cfg) {
 
   // ---- lower panel --------------------------------------------------
   function velLabel(glon, glat) {
-    const jd = jdFromDate(new Date());
+    const jd = jdFromDate(simDate());
     const shift = frameOffset(glon, glat, state.frame, jd, site);
     const names = {
       lsr: "LSR radial velocity",
       ssb: "SSB (barycentric) radial velocity",
-      topo: `topocentric radial velocity (${site.name}, now)`,
+      topo: `topocentric radial velocity (${site.name}, `
+            + (isFixed() ? "pinned time)" : "now)"),
     };
     return { frame: FRAME_NAMES[state.frame] === "Topo"
                     ? `Topo (${site.name})` : FRAME_NAMES[state.frame],
@@ -362,7 +364,7 @@ export function setupUI(cfg) {
     site.lat = lat;
     site.lon = lon;
     initSiteBoxes();
-    const jd = jdFromDate(new Date());
+    const jd = jdFromDate(simDate());
     sky.setSources(continuumSources(jd, decimalYear(jd), site));
     map.sources = sky.sources;
     buildTargetsMenu();
@@ -380,6 +382,46 @@ export function setupUI(cfg) {
     });
   }
   initSiteBoxes();
+
+  // ---- the clock: pin the sky to a moment, or run live --------------
+  // Everything epoch-dependent re-derives from the pinned time - the sun
+  // and moon, the horizon line, alt/az readouts, and the velocity-frame
+  // shift (the barycentric term moves ~2 km/s in a week, so a spectrum
+  // "for next month" genuinely differs from today's).
+  function onEpochChange() {
+    const jd = jdFromDate(simDate());
+    sky.setSources(continuumSources(jd, decimalYear(jd), site));
+    map.sources = sky.sources;
+    buildTargetsMenu();               // the sun and moon rows move
+    map.draw();
+    updateInfo();
+    if (state.last) {
+      if (state.mode === "cont") renderDrift(); else render();
+    }
+  }
+  els.timeBox.addEventListener("change", () => {
+    const v = els.timeBox.value;
+    if (!v) {
+      setFixedTime(null);
+      onEpochChange();
+      message("Clock: live.");
+      return;
+    }
+    // A datetime-local value has no zone; the box is labelled UTC and the
+    // observatory works in UTC everywhere, so that is the reading.
+    const d = new Date(v + (v.length === 16 ? ":00" : "") + "Z");
+    if (isNaN(d)) { message("Could not parse the time."); return; }
+    setFixedTime(d);
+    onEpochChange();
+    message(`Clock pinned to ${d.toISOString().slice(0, 16).replace("T", " ")} UTC.`);
+  });
+  els.nowBtn.addEventListener("click", () => {
+    els.timeBox.value = "";
+    setFixedTime(null);
+    onEpochChange();
+    message("Clock: live.");
+  });
+
   els.targetsBtn.addEventListener("click", () => {
     menu.style.display = menu.style.display === "none" ? "block" : "none";
   });
@@ -400,7 +442,7 @@ export function setupUI(cfg) {
     const { glon, glat, v, t } = state.last;
     const base = `spectrum_l${glon.toFixed(2).padStart(7, "0")}` +
                  `_b${(glat >= 0 ? "+" : "") + glat.toFixed(2)}`;
-    const jd = jdFromDate(new Date());
+    const jd = jdFromDate(simDate());
     const dv = frameOffset(glon, glat, state.frame, jd, site);
     let txt = `# v_${state.frame}_km/s   T_A_K\n`;
     for (let i = 0; i < v.length; i++)
@@ -433,6 +475,13 @@ export function setupUI(cfg) {
   async function realise() {
     const p = applyParams();
     if (!p) return;
+    // The telescope lives at real time whatever the page's clock says: the
+    // scheduler computes the pointing astronomy at actual now. Realising a
+    // sky pinned to another moment is usually a mistake, so say so - but do
+    // not refuse, since l/b tracking is epoch-free and still valid.
+    if (isFixed())
+      message("Note: the clock is pinned, but the telescope tracks at real "
+              + "time - the sky on screen is not tonight's.");
     const drift = state.mode === "cont";
     const scan = parseFloat(boxes.sd.value);
     els.realiseBtn.disabled = true;
@@ -491,7 +540,7 @@ export function setupUI(cfg) {
     const lv = parseFloat(boxes.l.value), bv = parseFloat(boxes.b.value);
     if (!Number.isFinite(lv) || !Number.isFinite(bv)) return;
     const eq = galToEq(lv, bv);
-    const jd = jdFromDate(new Date());
+    const jd = jdFromDate(simDate());
     const aa = raDecToAltAz(eq.ra, eq.dec, site.lat, site.lon, jd);
     const raH = eq.ra / 15;
     const h = Math.trunc(raH), m = Math.round((raH - h) * 60);

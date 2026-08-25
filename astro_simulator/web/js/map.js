@@ -3,6 +3,7 @@
 // the desktop map panel (inferno colormap, same log stretches).
 
 import { D2R, R2D, galToEq, altAzToGal, jdFromDate } from "./coordinates.js";
+import { simDate, isFixed } from "./clock.js";
 
 // matplotlib inferno, 256 RGB triplets, hex-packed
 const INFERNO_HEX = "00000401000501010601010802010a02020c02020e03021004031204031405041706041907051b08051d09061f0a07220b07240c08260d08290e092b10092d110a30120a32140b34150b37160b39180c3c190c3e1b0c411c0c431e0c451f0c48210c4a230c4c240c4f260c51280b53290b552b0b572d0b592f0a5b310a5c320a5e340a5f3609613809623909633b09643d09653e0966400a67420a68440a68450a69470b6a490b6a4a0c6b4c0c6b4d0d6c4f0d6c510e6c520e6d540f6d550f6d57106e59106e5a116e5c126e5d126e5f136e61136e62146e64156e65156e67166e69166e6a176e6c186e6d186e6f196e71196e721a6e741a6e751b6e771c6d781c6d7a1d6d7c1d6d7d1e6d7f1e6c801f6c82206c84206b85216b87216b88226a8a226a8c23698d23698f24699025689225689326679526679727669827669a28659b29649d29649f2a63a02a63a22b62a32c61a52c60a62d60a82e5fa92e5eab2f5ead305dae305cb0315bb1325ab3325ab43359b63458b73557b93556ba3655bc3754bd3853bf3952c03a51c13a50c33b4fc43c4ec63d4dc73e4cc83f4bca404acb4149cc4248ce4347cf4446d04545d24644d34743d44842d54a41d74b3fd84c3ed94d3dda4e3cdb503bdd513ade5238df5337e05536e15635e25734e35933e45a31e55c30e65d2fe75e2ee8602de9612bea632aeb6429eb6628ec6726ed6925ee6a24ef6c23ef6e21f06f20f1711ff1731df2741cf3761bf37819f47918f57b17f57d15f67e14f68013f78212f78410f8850ff8870ef8890cf98b0bf98c0af98e09fa9008fa9207fa9407fb9606fb9706fb9906fb9b06fb9d07fc9f07fca108fca309fca50afca60cfca80dfcaa0ffcac11fcae12fcb014fcb216fcb418fbb61afbb81dfbba1ffbbc21fbbe23fac026fac228fac42afac62df9c72ff9c932f9cb35f8cd37f8cf3af7d13df7d340f6d543f6d746f5d949f5db4cf4dd4ff4df53f4e156f3e35af3e55df2e661f2e865f2ea69f1ec6df1ed71f1ef75f1f179f2f27df2f482f3f586f3f68af4f88ef5f992f6fa96f8fb9af9fc9dfafda1fcffa4";
@@ -277,7 +278,7 @@ export class SkyMap {
     const W = this.canvas.width, H = this.canvas.height;
     if (!this.baseImage) return;
     ctx.putImageData(this.baseImage, 0, 0);
-    jd = jd ?? jdFromDate(new Date());
+    jd = jd ?? jdFromDate(simDate());
 
     // graticule
     ctx.save();
@@ -337,10 +338,13 @@ export class SkyMap {
     ctx.font = "13px sans-serif";
     this._label("zenith", zp.x + 6, zp.y - 4);
     ctx.restore();
-    const hhmm = new Date((jd - 2440587.5) * 86400e3)
-        .toISOString().slice(11, 16);
+    // Live time is unambiguous from HH:MM alone; a pinned clock may be on
+    // another date entirely, so the legend then carries the date too.
+    const iso = new Date((jd - 2440587.5) * 86400e3).toISOString();
     legend.push({ color: "#ffffff", dash: true,
-                  text: `horizon at ${hhmm} UT` });
+                  text: isFixed()
+                    ? `horizon at ${iso.slice(0, 10)} ${iso.slice(11, 16)} UT`
+                    : `horizon at ${iso.slice(11, 16)} UT` });
 
     // ...and above it, the horizon we actually measured. alt=0 is where the
     // sky would end if the observatory stood on a billiard table; the trees,

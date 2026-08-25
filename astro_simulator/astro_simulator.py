@@ -1092,13 +1092,22 @@ def main():
                 sim.npol * bw_use * tau_s)
             sig_g = GAIN_INSTABILITY * (keep_tsys + tb_smp)
             sig = np.hypot(sig_rad, sig_g)
+            # The simulated measurement as the receiver would record it: a
+            # staircase, each sample a level held over its own integration -
+            # the convention every real plot here uses. The smooth mean was
+            # once drawn through the samples and deliberately is not: it
+            # claimed a knowledge of the sky between samples that no
+            # measurement has.
             axs.plot(t_smp * 60.0, tb_smp + sim.rng.normal(0.0, sig),
-                     ".", ms=2.5 if n_smp > 500 else 3.5,
-                     color="#9aa3ac", rasterized=n_smp > 2000)
+                     drawstyle="steps-mid", color=accent, lw=1.2,
+                     rasterized=n_smp > 2000)
             noise = (f",  $\\tau$/sample {tau_s:g} s, "
                      f"$\\sigma\\approx${np.median(sig) * 1e3:.0f} mK "
                      f"(gain noise {np.median(sig_g) * 1e3:.0f})")
-        axs.plot(mins, tbar, color=accent, lw=1.5)
+        else:
+            # No noise model (empty T_sys box): the noiseless samples, still
+            # stepped, still a measurement rather than a curve.
+            axs.plot(mins, tbar, drawstyle="steps-mid", color=accent, lw=1.5)
         half = (sim.fwhm / 2) / (15.041 * cosd) * 60.0
         for xx in (-half, half):
             axs.axvline(xx, color="#c7cacd", lw=1.0, ls="--")

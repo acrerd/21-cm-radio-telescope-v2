@@ -8,6 +8,7 @@ import { Plot } from "./plot.js";
 import { setupUI } from "./ui.js";
 import { jdFromDate, decimalYear } from "./coordinates.js";
 import { continuumSources } from "./ephemeris.js";
+import { simDate } from "./clock.js";
 
 const status = document.getElementById("load-status");
 
@@ -54,7 +55,7 @@ async function boot() {
     status.textContent = "decoding...";
     await new Promise((r) => setTimeout(r));      // let the text paint
     const sky = new SkyData(cubeBuf, contBuf, meta);
-    const jd = jdFromDate(new Date());
+    const jd = jdFromDate(simDate());
     sky.setSources(continuumSources(jd, decimalYear(jd), site));
 
     const map = new SkyMap(document.getElementById("map"), sky);
@@ -85,6 +86,8 @@ async function boot() {
       siteName: document.getElementById("p-site"),
       siteLat: document.getElementById("p-slat"),
       siteLon: document.getElementById("p-slon"),
+      timeBox: document.getElementById("p-time"),
+      nowBtn: document.getElementById("btn-now"),
     };
     els.sd.disabled = true;                       // until continuum mode
 

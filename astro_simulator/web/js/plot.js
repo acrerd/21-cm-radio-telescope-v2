@@ -1,5 +1,5 @@
 // Lower-panel plot: stepped spectrum with a velocity axis on top, or
-// a drift scan (samples + mean line).  Canvas port of the desktop
+// a drift scan (a stepped simulated measurement).  Canvas port of the desktop
 // panel: wheel zoom about the cursor, double-click to reset.
 
 import { C_LIGHT, F_HI } from "./skydata.js";
@@ -235,19 +235,25 @@ export class Plot {
                 "band-averaged T_A  (K)", d.title);
     const ctx = this.ctx;
     this._clip();
-    if (d.smp) {                                    // noisy samples
-      ctx.fillStyle = "#9aa3ac";
-      const s = d.smp.t.length > 500 ? 1.2 : 1.8;
-      for (let i = 0; i < d.smp.t.length; i++) {
-        const p = this.toPx(d.smp.mins[i], d.smp.t[i]);
-        ctx.fillRect(p.px - s / 2, p.py - s / 2, s, s);
-      }
-    }
+    // The simulated measurement, drawn as the receiver would record it: a
+    // staircase, each sample a level held across its own integration - the
+    // same convention as the Observe tab's live plot, so the simulation and
+    // the real trace can be compared by eye. The underlying smooth mean was
+    // once drawn through it, and is deliberately not: it claimed a knowledge
+    // of the sky between samples that no measurement has. With the noise
+    // model off (empty T_sys box) the samples are simply noiseless.
+    const series = d.smp || { mins: d.mins, t: d.tbar };
     ctx.strokeStyle = ACCENT; ctx.lineWidth = 1.5;
     ctx.beginPath();
-    for (let i = 0; i < d.mins.length; i++) {
-      const p = this.toPx(d.mins[i], d.tbar[i]);
-      if (i) ctx.lineTo(p.px, p.py); else ctx.moveTo(p.px, p.py);
+    const xs = series.mins, ys = series.t;
+    for (let i = 0; i < xs.length; i++) {
+      const half = i ? (xs[i] - xs[i - 1]) / 2
+                     : (xs.length > 1 ? (xs[1] - xs[0]) / 2 : 0.5);
+      const halfR = (i < xs.length - 1) ? (xs[i + 1] - xs[i]) / 2 : half;
+      const p0 = this.toPx(xs[i] - half, ys[i]);
+      const p1 = this.toPx(xs[i] + halfR, ys[i]);
+      if (i === 0) ctx.moveTo(p0.px, p0.py); else ctx.lineTo(p0.px, p0.py);
+      ctx.lineTo(p1.px, p1.py);
     }
     ctx.stroke();
     ctx.strokeStyle = "#c7cacd"; ctx.lineWidth = 1;
