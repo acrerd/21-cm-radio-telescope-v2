@@ -259,9 +259,31 @@
         // machine while it is recording.
         let obvLiveTimer = null;
 
+        // How long to wait before asking again. Follows the record cadence
+        // rather than being fixed: a tenth-second integration is chosen to
+        // catch bursts, and a ten-second refresh would show them ten seconds
+        // late, which defeats the reason for choosing it. At the other end a
+        // minute-long integration made five polls in six find nothing at all.
+        //
+        // Clamped either way. Two seconds is as fast as a line on a screen is
+        // worth redrawing, and thirty keeps a slow run feeling alive.
+        function obvLiveInterval(d) {
+            const last = d && d.points && d.points.length
+                       ? d.points[d.points.length - 1] : null;
+            if (!last || !last.tau) return 10000;
+            const tau = last.n ? last.tau / last.n : last.tau;   // per record
+            return Math.max(2000, Math.min(30000, tau * 1000));
+        }
+
+        function obvLiveSchedule(d) {
+            if (obvLiveTimer) clearTimeout(obvLiveTimer);
+            obvLiveTimer = setTimeout(obvLivePoll, obvLiveInterval(d));
+        }
+
         function obvLivePoll() {
             const box = document.getElementById('obvLiveBox');
             fetch('/api/observe/live?limit=2000').then(r => r.json()).then(d => {
+                obvLiveSchedule(d);
                 if (!d.success || !d.is_solar) { box.style.display = 'none'; return; }
                 box.style.display = '';
                 if (!d.points || !d.points.length) {
@@ -270,7 +292,7 @@
                     return;
                 }
                 obvLiveDraw(d);
-            }).catch(() => {});
+            }).catch(() => { obvLiveSchedule(null); });
         }
 
         function obvLiveDraw(d) {
@@ -360,12 +382,13 @@
             document.getElementById('obvLiveInfo').textContent = text;
         }
 
+        // setTimeout chained rather than setInterval, so the wait can change
+        // between polls and two requests can never overlap on a slow reply.
         function obvLiveStart() {
-            if (obvLiveTimer) clearInterval(obvLiveTimer);
+            obvLiveStop();
             obvLivePoll();
-            obvLiveTimer = setInterval(obvLivePoll, 10000);
         }
 
         function obvLiveStop() {
-            if (obvLiveTimer) { clearInterval(obvLiveTimer); obvLiveTimer = null; }
+            if (obvLiveTimer) { clearTimeout(obvLiveTimer); obvLiveTimer = null; }
         }
