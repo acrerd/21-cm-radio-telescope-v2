@@ -62,14 +62,29 @@ OBS = {"name": "State test", "coord_system": "altaz",
 
 
 @pytest.fixture
-def idle():
-    """Put the module in the idle state, and put it back afterwards."""
+def idle(tmp_path, monkeypatch):
+    """Put the module in the idle state, and put it back afterwards.
+
+    Also points the last-observation pointer at a temporary file. These tests
+    run the real start_observation and stop_observation, and stopping one
+    writes that pointer - so without this they overwrite the observatory's
+    record of its own last run. They did, on 2026-08-25: the Observe tab was
+    left offering a plot of "State test" at /tmp/state_test.h5, from a unit
+    test, while the real solar track sat unreferenced on disk.
+
+    Nothing under test writes anywhere else persistent, but this is the shape
+    of thing to check before adding to this file.
+    """
+    monkeypatch.setattr(sched, "LAST_OBSERVATION_FILE",
+                        str(tmp_path / "last_observation.json"))
     saved = snapshot()
+    saved_last = sched.last_observation
     for name, value in IDLE.items():
         setattr(sched, name, value)
     yield
     for name, value in saved.items():
         setattr(sched, name, value)
+    sched.last_observation = saved_last
 
 
 @pytest.fixture

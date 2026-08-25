@@ -363,8 +363,22 @@
             // it is obvious at a glance that nothing is arriving any more.
             ctx.strokeStyle = d.finished ? '#00d4ff' : '#ffa502';
             ctx.lineWidth = 2.5;
+            // Drawn as a staircase, matching the spectrum and calibration
+            // plots. Each point is an average over a finite time - a record,
+            // or several binned together - so it is a level held across an
+            // interval and not a vertex on a curve. Joining the centres draws
+            // slopes between samples that were never measured, and on a flux
+            // monitor that is exactly the kind of structure someone would
+            // otherwise read as real.
             ctx.beginPath();
-            xs.forEach((x, i) => { i ? ctx.lineTo(X(x), Y(ys[i])) : ctx.moveTo(X(x), Y(ys[i])); });
+            for (let i = 0; i < xs.length; i++) {
+                const half = i ? (xs[i] - xs[i - 1]) / 2
+                               : (xs.length > 1 ? (xs[1] - xs[0]) / 2 : 0.5);
+                const halfR = (i < xs.length - 1) ? (xs[i + 1] - xs[i]) / 2 : half;
+                const x0 = X(xs[i] - half), x1 = X(xs[i] + halfR), y = Y(ys[i]);
+                if (i === 0) ctx.moveTo(x0, y); else ctx.lineTo(x0, y);
+                ctx.lineTo(x1, y);
+            }
             ctx.stroke();
 
             const last = ys[ys.length - 1];
