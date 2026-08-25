@@ -258,6 +258,24 @@ Runs an observation immediately, or hands one to the scheduler. Three modes:
   whole run rather than its tail, updates at the rate records appear, and stays
   on screen until the next observation replaces it.
 
+Drift scans get the same live plot, in antenna temperature: the time axis is
+the observation's own start-to-stop window, fixed from the moment it begins,
+with the beam-crossing time marked — so the trace fills in from the left and a
+source should peak on the dashed line. The plotted number is the band median,
+i.e. the continuum level: it follows a broadband source through the beam but is
+nearly blind to a narrow line, so an H I drift scan can show little here while
+recording the line perfectly well. The first point lands roughly one
+integration after the slew finishes — a 60 s average cannot exist sooner — so
+a shorter integration per record gives faster feedback (the plot bins records
+down anyway). Expect the trace to wander a few tenths of a kelvin beyond the
+radiometer floor: band-integrated total power is limited by receiver gain and
+atmosphere stability (measured 2.3×10⁻⁴ of T_sys per minute), not by thermal
+noise, and an absolute offset of some kelvin means the gain calibration is
+stale — it drifts ~0.3%/h with temperature through the evening, so calibrate
+near the observation if absolute temperatures matter. A tracked spectrum gets
+no live plot: its band power is meant to be flat, and an autoscaled trace of
+it would only magnify noise into the appearance of structure.
+
 Finished observations are plotted in kelvin when a gain calibration applies to
 the tuning, and on an **LSR** velocity axis when the direction and epoch can be
 worked out — H I is quoted in LSR everywhere, and the correction reaches

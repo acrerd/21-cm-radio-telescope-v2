@@ -82,6 +82,34 @@ DISH_M = 3.0
 # rather than discounting the whole sky to hide it.
 MAIN_BEAM_EFFICIENCY = 1.0
 
+# White common-mode instability of band-integrated total power, as a fraction
+# of system temperature per ~minute sample. Measured 2026-08-25 on a 99-record
+# drift scan (60 s records, T_sys ~ 350 K): second differences of the
+# band-mean - which cancel smooth sky drift - give 0.079 K per record,
+# stationary across the run, against a thermal floor for the 618-channel mean
+# of 0.023 K. So 3.4x thermal on the band integral, while the *per-channel*
+# scatter is thermal to 6% (0.617 K measured, 0.581 K predicted): the wobble
+# is a few parts in 1e4 moving every channel together, invisible per channel
+# and dominant on the integral, where thermal divides by sqrt(N_chan) and
+# common mode does not. Receiver gain and atmospheric emission fluctuation
+# are indistinguishable here without a switched load; this constant is their
+# sum, whatever the mixture.
+#
+# The simulator's drift-scan samples add it in quadrature:
+#     sigma = sqrt( ((Tsys+T)/sqrt(npol B tau))^2  +  (GAIN_INSTABILITY (Tsys+T))^2 )
+# independent of tau, since instability does not integrate down like the
+# radiometer term; the fluctuation spectrum's slope is unmeasured, so at very
+# different sample times this is an estimate. Band-integrated drift scans
+# only - in a spectrum it is common mode and largely divides out with the
+# bandpass.
+#
+# First recorded as 1.1e-3 the same day, from four first-differences on a
+# freshly started receiver: that conflated the warm-up transient and real sky
+# drifting through the beam with the instability, and overstated it 5x. Second
+# differences on a settled run are the measurement; keep it honest the same
+# way if remeasuring.
+GAIN_INSTABILITY = 2.3e-4
+
 SITE_NAME = "Acre Road"
 SITE_LAT_DEG = 55.902426
 SITE_LON_DEG = -4.307865

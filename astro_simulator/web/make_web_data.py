@@ -175,7 +175,11 @@ def write_meta():
         "defaults": {"bw_mhz": 2.0, "dish_m": DISH_M,
                      "eta": instrument.MAIN_BEAM_EFFICIENCY,
                      "tsys": 200.0, "tint": 60.0, "npol": 1,
-                     "fwhm": round(beam_fwhm_deg(DISH_M), 3)},
+                     "fwhm": round(beam_fwhm_deg(DISH_M), 3),
+                     # Fractional receiver gain fluctuation per sample - the
+                     # measured reason a drift scan never reaches the
+                     # radiometer floor. See GAIN_INSTABILITY in instrument.py.
+                     "gain_sigma": instrument.GAIN_INSTABILITY},
         # No controller address: the web build cannot command the telescope
         # (see README - mixed content, no CORS, and the controller is on a
         # private link). astro_simulator.py --controller does that instead.

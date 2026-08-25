@@ -213,14 +213,22 @@ export function setupUI(cfg) {
                 * (mins.length - 1);
         const i0 = Math.max(0, Math.min(mins.length - 2, Math.floor(x)));
         const tb = d.tbar[i0] + (d.tbar[i0 + 1] - d.tbar[i0]) * (x - i0);
-        const sig = (sky.tsys + tb) / Math.sqrt(sky.npol * bwUse * tau);
+        // Radiometer floor plus the measured common-mode instability of
+        // band-integrated power, in quadrature - per channel the receiver is
+        // thermal, but the band integral sits ~3x above its floor. See
+        // GAIN_INSTABILITY in instrument.py for the measurement.
+        const sigRad = (sky.tsys + tb) / Math.sqrt(sky.npol * bwUse * tau);
+        const sigG = sky.gainSig * (sky.tsys + tb);
+        const sig = Math.hypot(sigRad, sigG);
         tmins.push(m);
         tvals.push(tb + sky.rng.normal() * sig);
         sigs.push(sig);
       }
       smp = { mins: tmins, t: tvals };
       const sMed = sigs.slice().sort((a, b) => a - b)[sigs.length >> 1];
-      noiseTxt = `,  τ/sample ${tau} s, σ≈${(sMed * 1e3).toFixed(0)} mK`;
+      const gMed = sky.gainSig * (sky.tsys + d.tbar[d.tbar.length >> 1]);
+      noiseTxt = `,  τ/sample ${tau} s, σ≈${(sMed * 1e3).toFixed(0)} mK` +
+                 ` (gain noise ${(gMed * 1e3).toFixed(0)})`;
     }
     const half = (sky.fwhm / 2) / (15.041 * d.cosd) * 60.0;
     const title = `drift scan  l=${glon.toFixed(1)}°, ` +

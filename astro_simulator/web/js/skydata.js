@@ -137,6 +137,12 @@ export class SkyData {
     this.npol = meta.defaults.npol;
     this.tsys = meta.defaults.tsys;
     this.tint = meta.defaults.tint;
+    // Common-mode instability of band-integrated power per sample, from
+    // instrument.py via meta.json; the fallback is the 2026-08-25 measurement,
+    // for a stale meta.json predating the field. Drift scans use it - the
+    // band integral sits ~3x above its radiometer floor while per-channel
+    // noise stays thermal.
+    this.gainSig = meta.defaults.gain_sigma ?? 2.3e-4;
     this.nchan = null;
     this.sources = [];                    // set via setSources()
     this.rng = makeRng((Math.random() * 2 ** 32) >>> 0);

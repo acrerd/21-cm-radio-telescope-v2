@@ -87,7 +87,14 @@ analytic point sources. Every spectrum then rides on the real continuum
 background — Cygnus X, the galactic ridge, the North Polar Spur — which
 both shapes drift-scan baselines and feeds the noise estimate: the
 radiometer rms uses T_sys + T_A(pointing), so pointing at the plane
-degrades the SNR just as it does at the telescope. Notes: the survey's
+degrades the SNR just as it does at the telescope. Drift-scan samples
+carry a second noise term in quadrature — the measured common-mode
+instability of band-integrated total power (`GAIN_INSTABILITY` in
+`instrument.py`, 2.3×10⁻⁴ of T_sys per sample, receiver gain and
+atmosphere together) — because at the huge Δν·τ of a band integral the
+ideal radiometer floor is not what the receiver delivers; per-channel
+spectra stay radiometer-only, where the same wobble is common mode,
+below thermal, and removed by any baseline handling. Notes: the survey's
 uniform zero level (CMB + isotropic, ~3.2 K) is subtracted and assumed
 to live inside your T_sys; the survey saturates or blanks the strongest
 compact sources, so Cyg A, Cas A and Tau A are removed from the map and

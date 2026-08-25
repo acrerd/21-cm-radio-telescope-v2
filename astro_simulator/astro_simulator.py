@@ -44,9 +44,9 @@ from continuum_compress import CONTINUUM_DEFAULT, load_continuum
 from hi4pi_compress import COMPACT_DEFAULT, load_compact
 from hi4pi_data import ensure_file
 from horizon_store import horizon_castellation, load_active, profile_date
-from instrument import (MAIN_BEAM_EFFICIENCY, SITE_HEIGHT_M, SITE_LAT_DEG,
-                        SITE_LON_DEG, SITE_NAME as SITE_NAME_DEFAULT,
-                        beam_fwhm_deg)
+from instrument import (GAIN_INSTABILITY, MAIN_BEAM_EFFICIENCY, SITE_HEIGHT_M,
+                        SITE_LAT_DEG, SITE_LON_DEG,
+                        SITE_NAME as SITE_NAME_DEFAULT, beam_fwhm_deg)
 
 # the cursor moving outside the Mollweide ellipse makes matplotlib's
 # inverse projection hit arcsin(|x| > 1); harmless, so keep it quiet
@@ -1082,13 +1082,22 @@ def main():
                 n_smp = 20000
             t_smp = np.linspace(-dur / 120.0, dur / 120.0, n_smp)
             tb_smp = np.interp(t_smp, dt_h, tbar)
-            sig = (keep_tsys + tb_smp) / np.sqrt(
+            # Radiometer floor plus the measured common-mode instability of
+            # band-integrated power, in quadrature. Per channel the receiver
+            # is thermal; on the band integral thermal divides by
+            # sqrt(N_chan) and the few-parts-in-1e4 common-mode wobble does
+            # not, so the integral sits ~3x above its ideal floor. See
+            # GAIN_INSTABILITY in instrument.py for the measurement.
+            sig_rad = (keep_tsys + tb_smp) / np.sqrt(
                 sim.npol * bw_use * tau_s)
+            sig_g = GAIN_INSTABILITY * (keep_tsys + tb_smp)
+            sig = np.hypot(sig_rad, sig_g)
             axs.plot(t_smp * 60.0, tb_smp + sim.rng.normal(0.0, sig),
                      ".", ms=2.5 if n_smp > 500 else 3.5,
                      color="#9aa3ac", rasterized=n_smp > 2000)
             noise = (f",  $\\tau$/sample {tau_s:g} s, "
-                     f"$\\sigma\\approx${np.median(sig) * 1e3:.0f} mK")
+                     f"$\\sigma\\approx${np.median(sig) * 1e3:.0f} mK "
+                     f"(gain noise {np.median(sig_g) * 1e3:.0f})")
         axs.plot(mins, tbar, color=accent, lw=1.5)
         half = (sim.fwhm / 2) / (15.041 * cosd) * 60.0
         for xx in (-half, half):
