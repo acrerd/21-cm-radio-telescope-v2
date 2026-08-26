@@ -306,6 +306,35 @@
             }).catch(e => alert(e));
         }
 
+        // Slew to and track the Lockman Hole, the field the bandpass wants.
+        // The measurement itself never slews (a template belongs to the
+        // elevation and hour it will reduce), so getting there is this
+        // separate step; the note says where it landed and whether the
+        // measured horizon has anything to say about it.
+        function rfGotoLockman() {
+            const note = document.getElementById('rfGotoNote');
+            note.style.color = '#888';
+            note.textContent = 'Sending the dish to the Lockman Hole…';
+            fetch('/api/rf/goto', {
+                method: 'POST', headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({})
+            }).then(r => r.json()).then(d => {
+                if (!d.success) {
+                    note.style.color = '#ff4757';
+                    note.textContent = d.error || 'could not move the dish';
+                    return;
+                }
+                note.style.color = '#2ed573';
+                note.textContent = 'Tracking the Lockman Hole (l=' + d.glon.toFixed(1) + ' b='
+                    + d.glat.toFixed(1) + '): alt ' + d.alt_deg.toFixed(1) + '° az '
+                    + d.az_deg.toFixed(1) + '°. Wait for the slew to finish, then Measure bandpass.';
+                if (d.warning) {
+                    note.style.color = '#ffa502';
+                    note.textContent += ' ⚠ ' + d.warning;
+                }
+            }).catch(e => { note.style.color = '#ff4757'; note.textContent = String(e); });
+        }
+
         function rfCancel() {
             fetch('/api/rf/cancel', {method: 'POST'}).then(() => rfRefresh());
         }

@@ -3571,6 +3571,16 @@ def _run_rf_calibration(job, params):
         sdr_type = params.get("sdr_type", "b210")
 
         if job == "bandpass":
+            # Measures wherever the dish points - but where it points, not
+            # where it is passing through. Pressed 23 s after "Go to Lockman
+            # Hole" on 2026-08-26 it read the direction mid-slew, 12 deg
+            # short, and refused the field for hydrogen that was not there.
+            if SRT_CONTROLLER_URL:
+                rf_state["stage"] = "waiting for the dish to arrive"
+                if not srt_wait_for_slew(cancel_event=rf_cancel):
+                    if rf_cancel.is_set():
+                        raise RuntimeError("cancelled while waiting for the slew")
+                    log.warning("RF calibration: slew wait timed out; measuring where the dish is")
             status = srt_get_status() or {}
             glon, glat = status.get("gal_l"), status.get("gal_b")
             if glon is None or glat is None:
@@ -3590,7 +3600,7 @@ def _run_rf_calibration(job, params):
                     "l=%.1f b=%.1f has %.1f K of H I outside the masked window, "
                     "which the template would fit as instrument response and "
                     "then subtract from every observation. Point somewhere "
-                    "emptier - the Lockman Hole, l=150 b=53, runs 1.3 K."
+                    "emptier - the Lockman Hole, l=150 b=+52, runs 1.3 K."
                     % (glon, glat, emission["outside_mask_k"]))
             path = _rf_observe("Bandpass template", float(glon), float(glat),
                                duration_s, sdr_type, slew=False)
@@ -3789,6 +3799,70 @@ def api_rf_target():
                     "horizon_measured": bool(profile),
                     "beam_fwhm_deg": observatory.beam_fwhm_deg(),
                     "main_beam_efficiency": rf_calibration.MAIN_BEAM_EFFICIENCY})
+
+
+# The Lockman Hole, RA 10h45m Dec +58 (J2000): the least hydrogen on the
+# northern sky, 1.3 K at its peak, and circumpolar from Glasgow (lower
+# culmination at alt 24). The bandpass measurement deliberately does not
+# slew - a template belongs to the elevation and hour it will reduce - so
+# getting there is a separate act, this one.
+LOCKMAN_HOLE_GLON = 149.77
+LOCKMAN_HOLE_GLAT = 52.03
+
+
+@app.route('/api/rf/goto', methods=['POST'])
+def api_rf_goto():
+    """Track a galactic direction, for a bandpass measurement to follow.
+
+    Body: {"glon": deg, "glat": deg}; the Lockman Hole if omitted. Refused
+    while anything owns the mount, and if the direction is below the minimum
+    elevation. Behind the measured horizon it goes anyway and says so - the
+    profile may be stale, and the operator can see the trees.
+    """
+    import rf_calibration
+    busy = hardware_in_use()
+    if busy:
+        return jsonify({"success": False, "error": "Cannot move the dish: %s" % busy}), 409
+    body = request.get_json(silent=True) or {}
+    try:
+        glon = float(body.get("glon", LOCKMAN_HOLE_GLON))
+        glat = float(body.get("glat", LOCKMAN_HOLE_GLAT))
+    except (TypeError, ValueError):
+        return jsonify({"success": False, "error": "glon and glat must be numbers"}), 400
+    cfg = load_config()
+    try:
+        alt, az = rf_calibration._sky_position(
+            glon, glat, datetime.now(timezone.utc),
+            float(cfg.get("observer_lat", SITE_LAT_DEG)),
+            float(cfg.get("observer_lon", SITE_LON_DEG)),
+            float(cfg.get("observer_elevation", 50)))
+        alt, az = float(alt[0]), float(az[0])
+    except Exception as exc:                              # noqa: BLE001
+        return jsonify({"success": False, "error": str(exc)}), 500
+    min_el = float(get_config_value('min_elevation') or 0.0)
+    if alt < min_el:
+        return jsonify({"success": False,
+                        "error": "l=%.1f b=%.1f is at alt %.1f now, below the %g deg minimum elevation"
+                                 % (glon, glat, alt, min_el),
+                        "alt_deg": round(alt, 2), "az_deg": round(az, 2)}), 409
+    warning = None
+    try:
+        import horizon_store
+        profile = horizon_store.load_active()
+        if profile:
+            warning = horizon_store.horizon_warning(profile, alt, az)
+    except Exception:                                     # noqa: BLE001
+        warning = None
+    if not SRT_CONTROLLER_URL:
+        return jsonify({"success": False, "error": "no telescope controller configured"}), 503
+    result = srt_api_call("/track/galactic", {"l": glon, "b": glat})
+    if not (result and result.get("ok")):
+        return jsonify({"success": False,
+                        "error": "the controller refused: %s" % ((result or {}).get("error") or result)}), 502
+    log.info("RF: tracking l=%.2f b=%.2f (alt %.1f az %.1f) for a bandpass measurement%s",
+             glon, glat, alt, az, (" - " + warning) if warning else "")
+    return jsonify({"success": True, "glon": glon, "glat": glat,
+                    "alt_deg": round(alt, 2), "az_deg": round(az, 2), "warning": warning})
 
 
 @app.route('/api/rf/bandpass/plot', methods=['GET'])

@@ -491,11 +491,14 @@
 
         function obvLiveSchedule(d) {
             if (obvLiveTimer) clearTimeout(obvLiveTimer);
-            // A finished run has nothing more to add, so stop asking. The plot
-            // stays on screen; opening the tab again polls once and redraws it.
+            // A finished run has nothing more to add, so stop asking.
             if (d && d.finished) { obvLiveTimer = null; return; }
             obvLiveTimer = setTimeout(obvLivePoll, obvLiveInterval(d));
         }
+
+        // Whether the last poll saw a run in progress, so the moment it ends
+        // can be told from a tab opened after the fact.
+        let obvLiveWasLive = false;
 
         function obvLivePoll() {
             const box = document.getElementById('obvLiveBox');
@@ -504,7 +507,31 @@
                 // kind is 'solar', 'drift' or null. A tracked spectrum gets no
                 // live plot: its band power is meant to be flat, so the trace
                 // would be an autoscaled picture of the noise.
-                if (!d.success || !d.kind) { box.style.display = 'none'; return; }
+                if (!d.success || !d.kind) { box.style.display = 'none'; obvLiveWasLive = false; return; }
+                // A finished run comes down: the recording itself can be
+                // plotted now (SWMR made that possible), and it shows the same
+                // data properly - the file's own axes, the recorded crossing,
+                // the fit. If this poll is the one that saw it end, switch the
+                // viewer to that recording and draw it, so the trace is
+                // replaced rather than removed.
+                if (d.finished) {
+                    box.style.display = 'none';
+                    if (obvLiveWasLive) {
+                        obvLiveWasLive = false;
+                        fetch('/api/observations').then(r => r.json()).then(o => {
+                            const sel = document.getElementById('obvFileSelect');
+                            if (o.last && o.observations && o.observations.some(x => x.filename === o.last)) {
+                                // Select first: loadObserveLast keeps whatever
+                                // is selected across its relist.
+                                sel.value = o.last;
+                                loadObserveLast();
+                                showObservePlot();
+                            }
+                        }).catch(() => {});
+                    }
+                    return;
+                }
+                obvLiveWasLive = true;
                 box.style.display = '';
                 const drift = d.kind === 'drift';
                 document.getElementById('obvLiveTitle').textContent =
@@ -607,8 +634,7 @@
                 ctx.fillText(utc(v, fine), x, H - B + 10);
             }
             ctx.font = '22px sans-serif';
-            ctx.fillText('UTC on ' + new Date(tStart * 1000).toISOString().slice(0, 10)
-                         + (d.finished ? '   (finished \u2014 kept until the next run)' : ''),
+            ctx.fillText('UTC on ' + new Date(tStart * 1000).toISOString().slice(0, 10),
                          (L + W - R) / 2, H - 34);
             ctx.font = '20px sans-serif';
             ctx.save();

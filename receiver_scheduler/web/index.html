@@ -199,7 +199,7 @@
                     SAWbird&rsquo;s filter, the amplifier after it, the AD9361&rsquo;s decimation
                     chain and the FPGA&rsquo;s down-converter. Measuring the whole product at
                     once means pointing at sky with no hydrogen in it &mdash; the Lockman
-                    Hole, l=150 b=+53, peaks at only 1.3 K. The line itself is masked and
+                    Hole, l=150 b=+52, peaks at only 1.3 K. The line itself is masked and
                     the fit bridges it, so &ldquo;empty&rdquo; is only assumed where it is true.
                     <br><br>
                     <strong>It measures wherever the dish is already pointing, and does not
@@ -214,11 +214,13 @@
                     Loading&hellip;
                 </div>
                 <div style="margin-top:12px;">
-                    <button title="Point at an empty field and measure the receiver's spectral shape - the template every recording is corrected with." class="btn" onclick="rfRun('bandpass')">Measure bandpass</button>
+                    <button title="Track the Lockman Hole (l=149.8 b=+52.0, RA 10h45m Dec +58) - the emptiest hydrogen sky in the north, circumpolar from here. Slews and keeps tracking; press Measure bandpass once the dish has arrived." class="btn btn-secondary" onclick="rfGotoLockman()">Go to Lockman Hole</button>
+                    <button title="Measure the receiver's spectral shape where the dish is pointing now - the template every recording is corrected with. Does not slew." class="btn" onclick="rfRun('bandpass')">Measure bandpass</button>
                     <button title="Redraw the bandpass template and its residual." class="btn" onclick="rfLoadBandpassPlot()">Refresh plot</button>
                     <span style="color:#666; font-size:12px; margin-left:10px;">
                         ~2 min, where the dish is pointing now
                     </span>
+                    <div id="rfGotoNote" class="mono" style="color:#888; font-size:12px; margin-top:8px;"></div>
                 </div>
                 <div id="rfBandpassPlot" class="rf-wide" style="margin-top:14px; text-align:center; color:#666; font-size:12px;">
                     Loading the before-and-after&hellip;
