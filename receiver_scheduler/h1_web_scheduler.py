@@ -3343,6 +3343,10 @@ def api_observe_fit():
             cal = rf_calibration.calibrate_observation(path, glon, glat)
             cal['source_file'] = os.path.basename(path)
             observation_plot.plot_gain_check(cal, OBSERVE_FIT_PLOT)
+    except KeyError as exc:
+        # A recording without the product the fit needs - one from before
+        # the fixed instrument asked for as continuum.
+        return jsonify({'success': False, 'error': str(exc).strip('"\'')}), 400
     except (ValueError, RuntimeError) as exc:
         return jsonify({'success': False, 'error': str(exc)}), 409
     except Exception as exc:                              # noqa: BLE001
@@ -4434,14 +4438,12 @@ def _recording_details(path):
     lo_hz, sr = f('center_freq_hz'), f('sample_rate_hz')
     sky_hz = f('sky_center_freq_hz', lo_hz)
     band = (float(freq.min()), float(freq.max())) if len(freq) else (None, None)
-    # The continuum window is measured on the wide product when there is
-    # one, else on the single product with the line cut out.
-    if wide_freq is not None:
-        a_wide = dict(a, product_used='wide')
-        win_lo, win_hi, _ = drift_fit._band_window(a_wide, wide_freq)
+    # The continuum window is measured on the wide product; a recording
+    # without one has no continuum window.
+    if wide_freq is not None and a.get('continuum_band_hz') is not None:
+        win_lo, win_hi, _ = drift_fit._band_window(a, wide_freq)
     else:
-        a_legacy = dict(a, product_used='legacy')
-        win_lo, win_hi, _ = drift_fit._band_window(a_legacy, freq) if len(freq) else (None, None, None)
+        win_lo = win_hi = None
     line_in_band = band[0] is not None and band[0] <= H1_LINE_HZ <= band[1]
     line_in_window = win_lo is not None and win_lo <= H1_LINE_HZ <= win_hi
     mode = a.get('observation_mode')

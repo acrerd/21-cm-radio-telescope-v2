@@ -163,11 +163,10 @@ def read_observation(path, product="h1"):
     the records so far.
 
     `product` is "h1" (the fine sub-band, the dataset names every recording
-    has always had) or "wide" (the coarse whole-band continuum product a
-    fixed-instrument recording adds, issue #27). Asked for "wide" on a file
-    without one, the single product it has is returned instead - a legacy
-    recording is its own continuum product - and the header says so in
-    `product_used`, so a consumer cutting the H I band out can still do so.
+    has always had) or "wide" (the coarse whole-band continuum product,
+    issue #27). A file without a continuum product cannot be reduced as
+    continuum, and says so: recordings from before the fixed instrument are
+    not carried (the project is still in development).
     """
     if not H5PY_AVAILABLE:
         raise RuntimeError("h5py is not installed, so the file cannot be read")
@@ -177,10 +176,10 @@ def read_observation(path, product="h1"):
         suffix = ""
         used = "h1"
         if product == "wide":
-            if "frequency_hz_wide" in hf:
-                suffix, used = "_wide", "wide"
-            else:
-                used = "legacy"
+            if "frequency_hz_wide" not in hf:
+                raise KeyError("%s has no continuum product: it was recorded before "
+                               "the fixed instrument" % os.path.basename(path))
+            suffix, used = "_wide", "wide"
         freq_hz = np.asarray(hf["frequency_hz" + suffix][:], dtype=float)
         # Recordings are stored in kelvin when the instrument was calibrated
         # for their tuning, and in counts when it was not. This always hands
@@ -339,13 +338,8 @@ def plot_observation(path, output_path, name="", mode="spectrum",
     if continuum_keep is not None:
         # Everything outside the continuum window - the H I band, the spur,
         # the skirts - is dropped from a drift plot before the band mean.
-        import drift_fit
         spectra = np.where(continuum_keep[None, :], spectra, np.nan)
-        if drift_fit.continuum_is_clean(header, freq_hz, continuum_keep):
-            bandpass_note += "; continuum only, H I band excluded"
-        else:
-            bandpass_note += ("; NOTE: the recorded band lies inside the H I "
-                              "exclusion, so the line is in this total power")
+        bandpass_note += "; continuum only, H I band excluded"
     spectra, n_patched, patched_at = patch_dc_artefact(freq_hz, spectra, header)
 
     # If a gain calibration applies to this tuning, put the spectrum in kelvin.

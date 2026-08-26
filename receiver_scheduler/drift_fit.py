@@ -84,55 +84,37 @@ def track_galactic(alt_deg, az_deg, stamps):
     return np.asarray(sky.l.deg, float), np.asarray(sky.b.deg, float)
 
 
-# Continuum always excludes hydrogen (issue #27). A fixed-instrument recording
-# names its H I band; anything older gets the line cut out over this much
-# either side of the rest frequency, which covers the disc and the HVCs at
-# any date's Earth motion.
-LEGACY_H1_EXCLUSION_HZ = 1.5e6
 H1_REST_HZ = 1420.405752e6
 
 
 def _band_window(header, freq_hz):
     """The frequency span the continuum is taken over, and the channels in it.
 
-    A recording with a continuum product (fixed instrument) is measured over
-    its continuum band, which by construction holds no hydrogen. A legacy
-    recording is measured over the central BAND_FRACTION of its band with
-    the H I line cut out - the continuum never includes the line, whatever
-    the file.
+    The recording's continuum band (fixed instrument, issue #27), which by
+    construction holds no hydrogen, less the LO spur and anything inside the
+    H I band. A recording that does not name its bands cannot be reduced as
+    continuum.
     """
     freq_hz = np.asarray(freq_hz, float)
+    cont = header.get("continuum_band_hz")
+    if cont is None:
+        raise ValueError("the recording names no continuum band: it was made "
+                         "before the fixed instrument")
     fc = float(header.get("center_freq_hz", np.median(freq_hz)))
     dc = float(header.get("dc_artefact_freq_hz", fc))
-    cont = header.get("continuum_band_hz")
-    if cont is not None and header.get("product_used", "wide") != "legacy":
-        lo, hi = float(cont[0]), float(cont[1])
-    else:
-        sr = float(header.get("sample_rate_hz", abs(freq_hz[-1] - freq_hz[0])))
-        lo, hi = fc - 0.5 * BAND_FRACTION * sr, fc + 0.5 * BAND_FRACTION * sr
+    lo, hi = float(cont[0]), float(cont[1])
     keep = (freq_hz >= lo) & (freq_hz <= hi) & (np.abs(freq_hz - dc) > DC_MASK_HZ)
-    without_line = keep & ~h1_channels(header, freq_hz)
-    # A legacy recording narrow enough to lie wholly inside the exclusion
-    # has no continuum channels at all; its whole band is then used, and
-    # continuum_is_clean() says so, rather than returning nothing.
-    if without_line.any():
-        keep = without_line
+    keep &= ~h1_channels(header, freq_hz)
     return lo, hi, keep
 
 
-def continuum_is_clean(header, freq_hz, keep):
-    """Whether the continuum channels chosen are free of the H I band."""
-    return not h1_channels(header, np.asarray(freq_hz, float))[keep].any()
-
-
 def h1_channels(header, freq_hz):
-    """Which channels of this axis carry the H I band - the file's own band
-    where it names one, the rest frequency +- LEGACY_H1_EXCLUSION_HZ otherwise."""
+    """Which channels of this axis carry the H I band the file names."""
     freq_hz = np.asarray(freq_hz, float)
     band = header.get("h1_band_hz")
-    if band is not None:
-        return (freq_hz >= float(band[0])) & (freq_hz <= float(band[1]))
-    return np.abs(freq_hz - H1_REST_HZ) <= LEGACY_H1_EXCLUSION_HZ
+    if band is None:
+        raise ValueError("the recording names no H I band")
+    return (freq_hz >= float(band[0])) & (freq_hz <= float(band[1]))
 
 
 def band_power(freq_hz, spectra, header):
@@ -185,8 +167,8 @@ def fit_total_power(path, sim=None):
     """
     from observation_plot import read_observation
 
-    # The continuum product where the file has one; a legacy file's single
-    # product otherwise, with the line cut out either way.
+    # The continuum product, with the H I band cut out; a recording without
+    # one raises here and the caller reports it.
     freq_hz, spectra, stamps, taus, header = read_observation(path, product="wide")
     stamps = np.asarray(stamps, float)
     if stamps.size < 3:

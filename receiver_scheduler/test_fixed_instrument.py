@@ -99,7 +99,7 @@ class TestTwoProductFile:
             assert list(hf.attrs["h1_band_hz"]) == pytest.approx(inst["h1_band_hz"])
             assert hf.attrs["product"] == "h1"
 
-    def test_readers_pick_a_product_and_legacy_files_fall_back(self, tmp_path):
+    def test_readers_pick_a_product_and_a_file_without_one_says_so(self, tmp_path):
         from observation_plot import read_observation, has_wide_product
         path = str(tmp_path / "two.h5")
         f_h1, f_wide = _two_product_file(path)
@@ -110,7 +110,8 @@ class TestTwoProductFile:
         assert hw["overflows_total"] == 6
         assert has_wide_product(path)
 
-        # A recording from before: one product, which is its own continuum.
+        # A recording from before the fixed instrument has one product and
+        # is not carried as continuum: asking is an error, not a guess.
         import b210_h1_receiver as rx
         old = str(tmp_path / "old.h5")
         freq = np.linspace(1419.0e6, 1423.5e6, 64)
@@ -118,8 +119,8 @@ class TestTwoProductFile:
         rx.append_spectrum(hf, np.full(64, 0.003), 1.7e9, 1.0, 64)
         hf.close()
         assert not has_wide_product(old)
-        fo, so, _, _, ho = read_observation(old, product="wide")
-        assert fo == pytest.approx(freq) and ho["product_used"] == "legacy"
+        with pytest.raises(KeyError, match="no continuum product"):
+            read_observation(old, product="wide")
 
     def test_the_live_sidecar_carries_the_continuum(self, tmp_path):
         path = str(tmp_path / "two.h5")
@@ -148,15 +149,13 @@ class TestContinuumExcludesHydrogen:
         power = drift_fit.band_power(fw, sw, hw)
         assert power == pytest.approx([0.002 + 1e-5 * i for i in range(4)], rel=1e-6)
 
-    def test_a_legacy_file_has_the_line_cut_out(self):
+    def test_a_file_that_names_no_bands_cannot_be_reduced_as_continuum(self):
         import drift_fit
         header = {"center_freq_hz": 1421.2e6, "sample_rate_hz": 4.5e6,
-                  "dc_artefact_freq_hz": 1421.2e6, "product_used": "legacy"}
+                  "dc_artefact_freq_hz": 1421.2e6}
         f = np.linspace(1419.0e6, 1423.4e6, 2000)
-        lo, hi, keep = drift_fit._band_window(header, f)
-        assert keep.any()
-        assert not keep[np.abs(f - 1420.405752e6) <= 1.5e6].any()
-        assert not keep[np.abs(f - 1421.2e6) <= 30e3].any()
+        with pytest.raises(ValueError, match="no continuum band"):
+            drift_fit._band_window(header, f)
 
 
 class TestInstrumentConfig:
