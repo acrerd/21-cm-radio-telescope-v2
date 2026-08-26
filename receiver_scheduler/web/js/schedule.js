@@ -387,7 +387,7 @@
 
         function formatEndTime(obs) {
             // For the currently running observation, show the actual end time from the server
-            if (currentObs && currentObs.name === obs.name && currentObs.ends_at) {
+            if (isRunning(obs) && currentObs.ends_at) {
                 const end = new Date(currentObs.ends_at);
                 const hh = String(end.getHours()).padStart(2,'0');
                 const mm = String(end.getMinutes()).padStart(2,'0');
@@ -455,7 +455,7 @@
             }
             list.innerHTML = schedule.map((obs, i) => {
               const dead = neverRunsReason(obs);
-              const running = currentObs?.name === obs.name;
+              const running = isRunning(obs);
               // Queued: enabled, still to come, and not the one running now.
               const queued = obs.enabled && !dead && !running;
               return `

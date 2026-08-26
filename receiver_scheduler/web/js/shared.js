@@ -47,8 +47,19 @@
             return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
         }
 
+        // The running observation, matched by identity rather than by name.
+        // Two entries can share a name - the simulator names them by target,
+        // so a scan booked for now and one for tomorrow are both "Drift scan
+        // l=184.6 b=-5.8" - and on 2026-08-26 both rows showed green. The
+        // start date and time are what make an entry one booking rather than
+        // another; where the running record carries them they must agree.
         function isRunning(obs) {
-            return currentObs && currentObs.name === obs.name;
+            if (!currentObs || currentObs.name !== obs.name) return false;
+            if (currentObs.start_date && obs.start_date
+                && currentObs.start_date !== obs.start_date) return false;
+            if (currentObs.start_time && obs.start_time
+                && currentObs.start_time !== obs.start_time) return false;
+            return true;
         }
 
         function stopObs() {
