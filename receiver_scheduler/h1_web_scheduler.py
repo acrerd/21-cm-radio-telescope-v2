@@ -4349,12 +4349,18 @@ def api_simulator_schedule():
     with the comment saying where it came from. Nothing moves.
 
     Times come from the simulator's own clock, which may be pinned to another
-    moment - that is the point of pinning it. A tracked spectrum starts at
-    that moment and runs for the simulator's integration time; a drift scan
-    is centred on the target's next meridian transit after it, the classical
-    geometry and what the simulator's drift panel draws, with the scan length
-    as the window. The entry then goes through the same trim and clash check
-    as any other save.
+    moment - that is the point of pinning it. Both modes *start at that
+    moment*: a tracked spectrum runs for the simulator's integration time; a
+    drift scan runs for the scan length, parked where the target will be at
+    the mid-point, so the source crosses beam centre half a scan in - which
+    is what the simulator's drift panel draws. The first version centred a
+    drift scan on the target's next meridian transit instead, on the grounds
+    that transit is the classical geometry; with the clock live that booked
+    tomorrow morning for a scan asked for now, and the scheduler's drift
+    machinery has never needed transit - it parks for any T. A transit-centred
+    scan is still one click away: pin the clock to transit minus half a scan.
+    The entry then goes through the same trim and clash check as any other
+    save.
     """
     body = request.json or {}
     try:
@@ -4392,20 +4398,12 @@ def api_simulator_schedule():
         'drift_frame': 'galactic', 'drift_time': '', 'drift_window_min': 30,
     }
     if drift:
-        if not EPHEM_AVAILABLE:
-            return jsonify({'success': False,
-                            'error': 'PyEphem is unavailable, so the transit '
-                                     'cannot be computed'}), 501
         scan = _clamped('duration_minutes', body.get('scan_minutes'), 240.0)
         window = max(1, int(round(scan / 2.0)))
-        observer = _get_observer()
-        observer.date = datetime.fromtimestamp(epoch.timestamp(),
-                                               timezone.utc).replace(tzinfo=None)
-        transit = ephem.localtime(observer.next_transit(
-            _drift_body('galactic', glon, glat)))
-        start = transit - timedelta(minutes=window)
+        start = epoch
+        crossing = start + timedelta(minutes=window)
         entry.update(
-            drift_time=transit.strftime('%H:%M'),
+            drift_time=crossing.strftime('%H:%M'),
             drift_window_min=window,
             start_date=start.strftime('%Y-%m-%d'),
             start_time=start.strftime('%H:%M'),

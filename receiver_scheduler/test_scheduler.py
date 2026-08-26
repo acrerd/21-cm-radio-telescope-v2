@@ -704,11 +704,11 @@ class TestFlaskAPI:
         stored = client.get('/api/schedule').get_json()
         assert [o['name'] for o in stored] == [e['name']]
 
-    def test_the_simulator_books_a_drift_scan_centred_on_transit(self, client):
-        """A drift scan is what the simulator's drift panel draws: centred on
-        the target's meridian transit, the scan length as the window."""
-        if not sched.EPHEM_AVAILABLE:
-            pytest.skip("no ephem")
+    def test_the_simulator_books_a_drift_scan_starting_at_the_clock(self, client):
+        """A drift scan starts at the page's clock and crosses beam centre
+        half a scan in - what the drift panel draws. It is not centred on the
+        next meridian transit: that booked tomorrow morning for a scan asked
+        for now (2026-08-26), and the drift machinery parks for any T."""
         resp = client.post('/api/simulator/schedule', json={
             'l': 111.735, 'b': -2.130, 'mode': 'cont',
             'epoch_utc': '2026-08-25T22:00:00Z', 'scan_minutes': 300,
@@ -721,15 +721,10 @@ class TestFlaskAPI:
         assert e['drift_window_min'] == 150 and e['duration_minutes'] == 300
         assert e['integration_time_s'] == 240.0, "tau is the time per sample"
         assert e['comment'] == sched.SIMULATOR_COMMENT
-        # Cas A transits at 01:24:36 UTC on the 26th (the night it was
-        # observed); the entry's T is that in local time, and the start is
-        # one window earlier.
-        import ephem
-        expected = ephem.localtime(ephem.Date('2026/8/26 01:24:36'))
-        assert e['drift_time'] == expected.strftime('%H:%M')
-        start = expected - timedelta(minutes=150)
-        assert e['start_time'] == start.strftime('%H:%M')
+        start = datetime(2026, 8, 25, 22, 0, tzinfo=timezone.utc).astimezone()
         assert e['start_date'] == start.strftime('%Y-%m-%d')
+        assert e['start_time'] == start.strftime('%H:%M')
+        assert e['drift_time'] == (start + timedelta(minutes=150)).strftime('%H:%M')
 
     def test_the_simulator_is_refused_a_clash(self, client):
         """Same refusal as any other save: the entry must not be stored."""
