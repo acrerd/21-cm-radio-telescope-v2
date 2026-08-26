@@ -98,6 +98,9 @@
         .config-form.observe-form { max-width: 1400px; }
         .config-form .form-group { margin-bottom: 15px; }
         .config-form input { width: 100%; }
+        /* ...except a tick box, which the rule above stretched across the row
+           so the tick sat at the far left and its label a panel-width away. */
+        .config-form input[type="checkbox"] { width: auto; }
         .config-saved { color: #00ff88; font-size: 13px; display: none; margin-left: 10px; }
         .log-container { background: #0a0a1a; border: 1px solid #333; border-radius: 8px; padding: 15px; font-family: monospace; font-size: 12px; line-height: 1.6; max-height: 70vh; overflow-y: auto; white-space: pre-wrap; word-break: break-all; color: #ccc; }
         .log-controls { display: flex; gap: 10px; align-items: center; margin-bottom: 10px; }
