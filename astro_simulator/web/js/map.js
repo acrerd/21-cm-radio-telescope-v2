@@ -294,10 +294,13 @@ export class SkyMap {
       const l = g.l * D2R, b = g.b * D2R, cb = Math.cos(b);
       return [cb * Math.cos(l), cb * Math.sin(l), Math.sin(b)];
     };
+    // North and east taken from the same transform that draws the horizon
+    // line, so the two cannot disagree. (A cross product z x n gave *west*
+    // here, and the dimmed band came out mirrored in azimuth against the
+    // line - the bug the operator saw.)
     const z = vec(altAzToGal(90, 0, this.site.lat, this.site.lon, jd));
     const n = vec(altAzToGal(0, 0, this.site.lat, this.site.lon, jd));
-    const e = [z[1] * n[2] - z[2] * n[1], z[2] * n[0] - z[0] * n[2],
-               z[0] * n[1] - z[1] * n[0]];
+    const e = vec(altAzToGal(0, 90, this.site.lat, this.site.lon, jd));
     const floors = (this.horizon && this.showHorizon) ? this.horizon.floors : null;
     for (let py = 0; py < H; py++) {
       for (let px = 0; px < W; px++) {
