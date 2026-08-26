@@ -178,6 +178,40 @@ if __name__ == "__main__":
         print("run with --bless to regenerate the baseline")
 
 
+def _parse_javascript(path, module):
+    """Parse a script with esprima, which stops at ES2019: the few newer
+    forms these files use - optional chaining, nullish coalescing, the
+    optional catch binding - are rewritten to their older equivalents first,
+    so anything that still fails is a real syntax error."""
+    import re
+    esprima = pytest.importorskip("esprima")
+    src = open(path).read()
+    src = re.sub(r"\?\.\(", "(", src)
+    src = re.sub(r"\?\.\[", "[", src)
+    src = src.replace("?.", ".").replace("??", "||")
+    src = re.sub(r"catch\s*\{", "catch (_e) {", src)
+    (esprima.parseModule if module else esprima.parseScript)(src)
+
+
+@pytest.mark.parametrize("name", sorted(
+    f for f in os.listdir(os.path.join(os.path.dirname(os.path.abspath(__file__)), "web", "js"))
+    if f.endswith(".js")))
+def test_every_page_script_parses(name):
+    """A syntax error in one classic script kills every handler it defines
+    while the rest of the page keeps working - the Save button of the
+    schedule form, say - and nothing in the browser tells the operator.
+    Twice on 2026-08-24/25 that took a day to find. Parse each file.
+    """
+    _parse_javascript(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                   "web", "js", name), module=False)
+
+
+@pytest.mark.parametrize("name", sorted(
+    f for f in os.listdir(os.path.join(scheduler.SIMULATOR_DIR, "js")) if f.endswith(".js")))
+def test_every_simulator_script_parses(name):
+    _parse_javascript(os.path.join(scheduler.SIMULATOR_DIR, "js", name), module=True)
+
+
 def test_the_famous_targets_are_the_simulator_targets():
     """The schedule form's picker is a copy of the simulator's targets menu.
 

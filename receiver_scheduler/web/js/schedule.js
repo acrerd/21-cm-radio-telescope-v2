@@ -609,6 +609,15 @@
                       document.getElementById('obsFamousTarget').value)]
                 : null;
             const famousObject = famous && famous[1] === 'object';
+            // The name box is not `required` in the markup any more: the
+            // browser's validation blocked the submit with a tooltip on a
+            // field scrolled out of view, and a famous target supplies its
+            // own name anyway. Anything else without a name is told so.
+            if (!document.getElementById('obsName').value.trim() && !famous) {
+                alert('Give the observation a name.');
+                document.getElementById('obsName').focus();
+                return;
+            }
             // Famous + drift mode is an ordinary drift entry: same derived
             // start (T - window), same beam-crossing astronomy, coordinates
             // from the list. The boxes already hold them (onFamousTargetChange
