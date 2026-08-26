@@ -2391,6 +2391,15 @@ def stop_observation() -> bool:
         if SRT_CONTROLLER_URL and current_observation and current_observation.get('calibrator'):
             srt_set_calibrator(False)
 
+        # This booking's slot is finished with, however the run ended -
+        # duration complete or stopped by hand. Without this a slot that was
+        # still due restarted the run within ten seconds of a stop (issue
+        # #25, twice on 2026-08-26), and a run started from the simulator
+        # could not be listed in the schedule at all.
+        key = _slot_key(current_observation)
+        if key:
+            finished_slots.add(key)
+
         # Return telescope to home/stow if requested
         if SRT_CONTROLLER_URL and current_observation:
             end_action = current_observation.get('end_action', 'none')
@@ -2556,6 +2565,20 @@ def _record_start_failure(obs: dict, reason: str):
                     obs.get('name'), reason, count, MAX_START_FAILURES)
 
 
+# Slots whose run has ended - completed or stopped - and must not be started
+# again by the scheduler thread while the slot is still nominally due. Keyed
+# by the booking's identity; pruned to the schedule whenever it changes.
+finished_slots = set()
+
+
+def _slot_key(obs):
+    """(start_date, start_time, name) for a booking, or None for a run that
+    carries no slot (Start Now from the Observe tab)."""
+    if not obs or not obs.get('start_date') or not obs.get('start_time'):
+        return None
+    return (str(obs.get('start_date')), str(obs.get('start_time')), str(obs.get('name', '')))
+
+
 def _same_booking(running, due, running_name=''):
     """Is the observation running the very booking that is due?
 
@@ -2615,6 +2638,10 @@ def scheduler_thread():
                              date or now.strftime('%Y-%m-%d'), at,
                              "" if enabled else " (disabled)")
                 last_schedule_seen = summary
+                # Forget finished slots that are no longer in the schedule -
+                # deleted, or edited into a different booking.
+                finished_slots.intersection_update(
+                    {k for k in (_slot_key(o) for o in schedule) if k})
 
             # Check if current observation should end
             with process_lock:
@@ -2668,6 +2695,9 @@ def scheduler_thread():
             due_remaining = None
             for obs in schedule:
                 if not obs.get('enabled', True):
+                    continue
+                # A slot whose run has already ended is not due again.
+                if _slot_key(obs) in finished_slots:
                     continue
                 obs_date = obs.get('start_date', '')
                 obs_time = obs.get('start_time', '')
@@ -4972,9 +5002,19 @@ def api_simulator_schedule():
                             'error': "'%s' is already recording; stop it first, or pin the "
                                      "simulator's clock to a later time to book instead"
                                      % name}), 409
+        # Listed in the schedule as well, so the page shows it running in
+        # its place; the thread sees the same booking already running
+        # (_same_booking) and, once it ends, a finished slot (finished_slots),
+        # so it neither double-starts nor restarts it.
+        schedule = load_schedule()
+        schedule.append(entry)
+        notes, clashes = _store_schedule(schedule)
+        if clashes:
+            return jsonify({'success': False,
+                            'error': 'clashes with the schedule: %s' % clashes}), 409
         log.info("Simulator: starting now: %s (%d min)", entry['name'], entry['duration_minutes'])
         ok = start_observation(entry)
-        return jsonify({'success': ok, 'started': True, 'entry': entry, 'horizon_notes': [],
+        return jsonify({'success': ok, 'started': True, 'entry': entry, 'horizon_notes': notes,
                         'error': None if ok else 'Failed to start - see the Log tab'}), (200 if ok else 500)
 
     schedule = load_schedule()

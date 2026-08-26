@@ -751,7 +751,28 @@ class TestFlaskAPI:
         assert resp.status_code == 200 and d['success'] and d['started'], d
         assert len(started) == 1 and started[0]['coord_system'] == 'galactic'
         assert started[0]['duration_minutes'] == sched.SIMULATOR_MIN_SPECTRUM_MIN
-        assert client.get('/api/schedule').get_json() == []
+        # Listed as well, so the page shows it running in its place.
+        listed = client.get('/api/schedule').get_json()
+        assert [o['name'] for o in listed] == [started[0]['name']]
+
+    def test_a_finished_slot_is_not_started_again(self):
+        """Stopped by hand or run to the end, a booking's slot is done with:
+        the thread must not start it again while the slot is still due
+        (issue #25 - twice on 2026-08-26 a stopped Sun drift restarted within
+        ten seconds)."""
+        obs = {'name': 'Once only', 'start_date': '2026-08-26', 'start_time': '14:00',
+               'duration_minutes': 30, 'coord_system': 'altaz'}
+        key = sched._slot_key(obs)
+        assert key == ('2026-08-26', '14:00', 'Once only')
+        assert sched._slot_key({'name': 'Run Now, no slot'}) is None
+        sched.finished_slots.clear()
+        try:
+            sched.finished_slots.add(key)
+            assert sched._slot_key(dict(obs)) in sched.finished_slots
+            # An edited booking is a different slot.
+            assert sched._slot_key(dict(obs, start_time='14:05')) not in sched.finished_slots
+        finally:
+            sched.finished_slots.clear()
 
     def test_a_live_clock_is_refused_while_something_records(self, client):
         proc = MagicMock(); proc.poll.return_value = None
