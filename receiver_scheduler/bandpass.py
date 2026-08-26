@@ -127,10 +127,16 @@ def _product_band(header, freq_hz, product):
     spans the whole recorded axis, not only the continuum band, so the
     template can correct the H I channels of the wide spectrum too.
     """
-    if product == "wide" and header.get("frequency_hz_wide_span") is not None:
-        lo, hi = header["frequency_hz_wide_span"]
-        return float(lo), float(hi)
     if product == "wide":
+        # From the continuum band's low edge to the H I band's high edge:
+        # the part of the wide product anything measures. Fitted over the
+        # whole 8 MHz axis the polynomial had to follow the filter skirts
+        # (the response halves in the outer 0.8 MHz) and left 2.8 % on the
+        # science bands; over the bands alone it does not.
+        cont, h1 = header.get("continuum_band_hz"), header.get("h1_band_hz")
+        if cont is not None and h1 is not None:
+            return (min(float(cont[0]), float(h1[0])),
+                    max(float(cont[1]), float(h1[1])))
         f = np.asarray(freq_hz, float)
         if f.size:
             return float(f.min()), float(f.max())
