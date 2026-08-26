@@ -44,7 +44,7 @@
                 </div>
             </div>
             <div>
-                <button class="btn btn-danger" id="stopBtn" style="display:none" onclick="stopObs()">Stop</button>
+                <button title="Stop the observation that is recording now. The file keeps what it has; the dish stows or homes if the entry asked for it." class="btn btn-danger" id="stopBtn" style="display:none" onclick="stopObs()">Stop</button>
             </div>
         </div>
         <div class="tabs">
@@ -61,12 +61,12 @@
 
         <div class="tab-content active" id="tab-scheduler">
             <div class="toolbar">
-                <button class="btn btn-primary" onclick="openAddModal()">+ Add Observation</button>
-                <button class="btn btn-secondary" onclick="saveSchedule()">Save Schedule</button>
-                <button class="btn btn-secondary" onclick="document.getElementById('loadFile').click()">Load</button>
+                <button title="Book a new observation: target, times, receiver settings and a comment." class="btn btn-primary" onclick="openAddModal()">+ Add Observation</button>
+                <button title="Save the schedule to the server now. Edits auto-save anyway; this is for reassurance." class="btn btn-secondary" onclick="saveSchedule()">Save Schedule</button>
+                <button title="Load a schedule from a JSON file, replacing the current list." class="btn btn-secondary" onclick="document.getElementById('loadFile').click()">Load</button>
                 <input autocomplete="off" type="file" id="loadFile" class="file-input" accept=".json" onchange="loadFile(event)">
-                <button class="btn btn-secondary" onclick="exportSchedule()">Export JSON</button>
-                <button class="btn btn-secondary" onclick="clearPast()">Clear Past</button>
+                <button title="Download the current schedule as JSON." class="btn btn-secondary" onclick="exportSchedule()">Export JSON</button>
+                <button title="Remove every entry whose slot has already passed." class="btn btn-secondary" onclick="clearPast()">Clear Past</button>
             </div>
             <!-- Shown only when an auto-save was rejected. Auto-save is the path
                  that silently loses edits, so a failure has to be visible. -->
@@ -129,8 +129,8 @@
                         </span>
                     </div>
                     <div style="margin-top:15px; display:flex; gap:10px;">
-                        <button class="btn btn-primary" id="ssStartBtn" onclick="startSunScan()">Start Sun Scan</button>
-                        <button class="btn btn-danger" id="ssStopBtn" style="display:none" onclick="stopSunScan()">Stop</button>
+                        <button title="Raster the Sun now to measure the pointing offset. Refused if any raster point would clip the measured horizon." class="btn btn-primary" id="ssStartBtn" onclick="startSunScan()">Start Sun Scan</button>
+                        <button title="Cancel the Sun scan in progress. Nothing is fitted from a partial raster." class="btn btn-danger" id="ssStopBtn" style="display:none" onclick="stopSunScan()">Stop</button>
                     </div>
                 </div>
                 <div style="flex:1; min-width:300px;">
@@ -166,10 +166,10 @@
                             <input autocomplete="off" type="number" id="cdInterval" min="5" max="120" value="30">
                         </div>
                         <div style="margin-top:15px; display:flex; gap:10px; flex-wrap:wrap;">
-                            <button class="btn btn-success" id="cdStartBtn" onclick="startCalDay()">Start Calibration Day</button>
-                            <button class="btn btn-danger" id="cdStopBtn" style="display:none" onclick="stopCalDay()">Stop</button>
-                            <button class="btn btn-primary" id="cdFitBtn" onclick="fitModel()">Fit Model</button>
-                            <button class="btn btn-secondary" onclick="clearCalData()">Clear Data</button>
+                            <button title="Run Sun scans on the interval until sunset, keeping each successful fit for the pointing model." class="btn btn-success" id="cdStartBtn" onclick="startCalDay()">Start Calibration Day</button>
+                            <button title="Stop the calibration day. Scans already fitted are kept." class="btn btn-danger" id="cdStopBtn" style="display:none" onclick="stopCalDay()">Stop</button>
+                            <button title="Fit the pointing model to every Sun scan on file. Needs at least four scans over 30 degrees of azimuth." class="btn btn-primary" id="cdFitBtn" onclick="fitModel()">Fit Model</button>
+                            <button title="Discard every stored Sun scan. The pointing model in the controller is not touched." class="btn btn-secondary" onclick="clearCalData()">Clear Data</button>
                         </div>
                     </div>
                     <div style="flex:1; min-width:300px;">
@@ -182,7 +182,7 @@
                             <span style="color:#888;">No model fitted yet.</span>
                         </div>
                         <div style="display:flex; gap:10px; margin-bottom:15px;">
-                            <button class="btn btn-success" id="cdApplyBtn" style="display:none" onclick="applyModel()">Apply to Telescope</button>
+                            <button title="Push the fitted pointing model to the controller, where it is applied to every goto and track." class="btn btn-success" id="cdApplyBtn" style="display:none" onclick="applyModel()">Apply to Telescope</button>
                         </div>
                         <div id="cdPlotContainer" style="text-align:center;">
                         </div>
@@ -214,8 +214,8 @@
                     Loading&hellip;
                 </div>
                 <div style="margin-top:12px;">
-                    <button class="btn" onclick="rfRun('bandpass')">Measure bandpass</button>
-                    <button class="btn" onclick="rfLoadBandpassPlot()">Refresh plot</button>
+                    <button title="Point at an empty field and measure the receiver's spectral shape - the template every recording is corrected with." class="btn" onclick="rfRun('bandpass')">Measure bandpass</button>
+                    <button title="Redraw the bandpass template and its residual." class="btn" onclick="rfLoadBandpassPlot()">Refresh plot</button>
                     <span style="color:#666; font-size:12px; margin-left:10px;">
                         ~2 min, where the dish is pointing now
                     </span>
@@ -279,9 +279,9 @@
                         continuum the sky model has no term for, so it lands in T_sys and
                         the fitted gain instead of being spotted as a bad field.
                     </div>
-                    <button class="btn" onclick="rfRun('gain')">Calibrate gain now</button>
-                    <button class="btn" onclick="rfLoadGainPlot()">Refresh plot</button>
-                    <button class="btn btn-danger" onclick="rfCancel()">Stop</button>
+                    <button title="Point at a plane field and fit counts per kelvin and the system temperature against the simulator's sky." class="btn" onclick="rfRun('gain')">Calibrate gain now</button>
+                    <button title="Redraw the gain check: measured spectrum over the model, scatter and residual." class="btn" onclick="rfLoadGainPlot()">Refresh plot</button>
+                    <button title="Cancel the RF calibration in progress. The calibration in force is unchanged." class="btn btn-danger" onclick="rfCancel()">Stop</button>
                     <span style="color:#666; font-size:12px; margin-left:10px;">
                         needs a bandpass template first
                     </span>
@@ -345,8 +345,8 @@
                         </select>
                     </div>
                     <div style="display:flex; gap:10px; margin-top:15px;">
-                        <button class="btn btn-primary" id="hzStartBtn" onclick="startHorizon()">Start Scan</button>
-                        <button class="btn btn-danger" id="hzStopBtn" style="display:none" onclick="stopHorizon()">Stop</button>
+                        <button title="Sweep azimuth strip by strip to map where trees and buildings end the sky. About two hours." class="btn btn-primary" id="hzStartBtn" onclick="startHorizon()">Start Scan</button>
+                        <button title="Abandon the horizon scan. A partial profile is not saved." class="btn btn-danger" id="hzStopBtn" style="display:none" onclick="stopHorizon()">Stop</button>
                     </div>
                     <div id="hzStatus" style="margin-top:12px; font-size:13px;">
                         <span style="color:#888;">Idle.</span>
@@ -364,7 +364,7 @@
                         <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
                             <select autocomplete="off" id="hzProfileSelect" style="flex:1; min-width:260px;"
                                     onchange="loadHorizonProfile(this.value)"></select>
-                            <button class="btn btn-primary" id="hzUseBtn" onclick="useHorizonProfile()">Use this one</button>
+                            <button title="Make the selected horizon profile the one every horizon check uses. A new scan is archived but not adopted until chosen here." class="btn btn-primary" id="hzUseBtn" onclick="useHorizonProfile()">Use this one</button>
                         </div>
                         <div id="hzArchiveNote" style="margin-top:10px; font-size:12px; color:#888;"></div>
                     </div>
@@ -395,7 +395,7 @@
             <div class="config-form">
                 <div class="section-title">Safety Camera</div>
                 <div style="display:flex; gap:10px; align-items:center; margin-bottom:12px;">
-                    <button class="btn btn-primary" id="camRefreshBtn" onclick="refreshCamera()">Refresh</button>
+                    <button title="Fetch a fresh frame from the dish camera." class="btn btn-primary" id="camRefreshBtn" onclick="refreshCamera()">Refresh</button>
                     <label style="color:#888; font-size:12px;">
                         Auto-refresh
                         <select autocomplete="off" id="camAutoRefresh" onchange="onCameraAutoChange()" style="margin-left:6px;">
@@ -541,9 +541,9 @@
                     </span>
                 </div>
                 <div style="display:flex; gap:10px; align-items:center; margin-top:15px; flex-wrap:wrap;">
-                    <button class="btn btn-success" id="obvStartBtn" onclick="observeStartNow()">Start Now</button>
-                    <button class="btn btn-secondary" onclick="observeToScheduler()">Send to Scheduler&hellip;</button>
-                    <button class="btn btn-secondary" onclick="loadObserveParams(true)">Copy from Simulator</button>
+                    <button title="Point and start recording now with the settings above. Refused if something is already recording." class="btn btn-success" id="obvStartBtn" onclick="observeStartNow()">Start Now</button>
+                    <button title="Open the schedule form filled in from these settings, to book it for later instead." class="btn btn-secondary" onclick="observeToScheduler()">Send to Scheduler&hellip;</button>
+                    <button title="Fill these fields from the last hand-off the Simulator tab made." class="btn btn-secondary" onclick="loadObserveParams(true)">Copy from Simulator</button>
                     <span id="obvStatus" style="color:#888; font-size:12px;"></span>
                 </div>
             </div><!-- .config-form ends here: everything below is a plot, and
@@ -599,7 +599,7 @@
                          files' own attributes: date, filename, and the comment. -->
                     <select autocomplete="off" id="obvFileSelect" onchange="onObserveFileChange()"
                             style="max-width:100%; min-width:320px;" title="which recording to plot or fit"></select>
-                    <button class="btn btn-secondary" onclick="showObservePlot()">Plot Result</button>
+                    <button title="Draw the selected recording: spectrum in kelvin on an LSR axis, or the drift trace." class="btn btn-secondary" onclick="showObservePlot()">Plot Result</button>
                     <button class="btn btn-secondary" id="obvLiveViewBtn" style="display:none;" onclick="viewLiveRecording()"
                             title="plot the recording in progress, as it stands; refreshes while it records">View live recording</button>
                     <button class="btn btn-secondary" onclick="fitObserveModel()"
@@ -734,7 +734,7 @@
                 </div>
 
                 <div style="margin-top:20px; display:flex; align-items:center;">
-                    <button class="btn btn-primary" type="button" onclick="saveConfig()">Save Configuration</button>
+                    <button title="Save the configuration. Some settings apply at the next observation start, not to one already running." class="btn btn-primary" type="button" onclick="saveConfig()">Save Configuration</button>
                     <span class="config-saved" id="configSaved">Saved!</span>
                 </div>
             </div>
@@ -742,7 +742,7 @@
 
         <div class="tab-content" id="tab-log">
             <div class="log-controls">
-                <button class="btn btn-secondary" onclick="loadLog()">Refresh</button>
+                <button title="Reload the log from the server." class="btn btn-secondary" onclick="loadLog()">Refresh</button>
                 <label style="color:#888; font-size:12px;">
                     <input autocomplete="off" type="checkbox" id="logAutoRefresh" onchange="toggleLogRefresh()" checked> Auto-refresh (5s)
                 </label>
@@ -756,7 +756,7 @@
         <div class="modal-content">
             <div class="modal-header">
                 <h2 class="modal-title" id="modalTitle">Add Observation</h2>
-                <button class="close-btn" onclick="closeModal()">&times;</button>
+                <button title="Close without saving." class="close-btn" onclick="closeModal()">&times;</button>
             </div>
             <form id="obsForm">
                 <input autocomplete="off" type="hidden" id="obsIndex" value="-1">
@@ -846,7 +846,7 @@
                                 <label>Search CelesTrak by name or NORAD ID</label>
                                 <input autocomplete="off" type="text" id="tleSearch" placeholder="e.g. ISS, NOAA 19, 25544" style="width:100%;">
                             </div>
-                            <button class="btn btn-primary" type="button" onclick="fetchTle()" style="white-space:nowrap;">Fetch TLE</button>
+                            <button title="Fetch the satellite's current orbital elements from CelesTrak." class="btn btn-primary" type="button" onclick="fetchTle()" style="white-space:nowrap;">Fetch TLE</button>
                         </div>
                         <div id="tleResults" style="display:none; margin-bottom:10px;">
                             <div class="form-group">
@@ -861,7 +861,7 @@
 2 25544  51.6400  ..."></textarea>
                         </div>
                         <div style="display:flex; gap:10px; margin-top:8px; align-items:center; flex-wrap:wrap;">
-                            <button class="btn btn-primary" type="button" onclick="predictPass()">Compute Next Pass</button>
+                            <button title="Compute the next pass of this satellite over the observatory from the elements above." class="btn btn-primary" type="button" onclick="predictPass()">Compute Next Pass</button>
                             <label class="btn btn-secondary" style="margin:0; cursor:pointer;">
                                 Load TLE File <input autocomplete="off" type="file" accept=".tle,.txt" style="display:none" onchange="loadTleFile(event)">
                             </label>
@@ -941,7 +941,7 @@
                             </div>
                         </div>
                         <div style="display:flex; gap:10px; margin-top:8px; align-items:center; flex-wrap:wrap;">
-                            <button class="btn btn-primary" type="button" onclick="useNextTransit()">Use Next Transit</button>
+                            <button title="Set the beam-crossing time to the target's next meridian transit - the classical drift-scan geometry." class="btn btn-primary" type="button" onclick="useNextTransit()">Use Next Transit</button>
                             <span id="driftPreview" style="color:#888; font-size:12px;"></span>
                         </div>
                     </div>
@@ -1043,8 +1043,8 @@
                 </div>
 
                 <div class="modal-footer">
-                    <button type="button" class="btn btn-secondary" onclick="closeModal()">Cancel</button>
-                    <button type="submit" class="btn btn-primary">Save Observation</button>
+                    <button title="Close without saving." type="button" class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+                    <button title="Save this entry to the schedule. It is refused if it overlaps another enabled entry." type="submit" class="btn btn-primary">Save Observation</button>
                 </div>
             </form>
         </div>

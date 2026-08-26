@@ -186,7 +186,7 @@
                        + '<td style="padding:5px 8px; color:#ffa502;">' + t.compass + '</td>'
                        + '<td class="mono" style="padding:5px 8px;">' + t.expected_peak_k.toFixed(0) + ' K</td>'
                        + '<td class="mono" style="padding:5px 8px;">' + rfClears(t.horizon) + '</td>'
-                       + '<td style="padding:3px 8px;"><button class="btn" style="padding:3px 10px; font-size:11px;"'
+                       + '<td style="padding:3px 8px;"><button class="btn" style="padding:3px 10px; font-size:11px;" title="Put this field into the boxes above as the calibration target"'
                        + ' onclick="rfUse(' + t.glon + ',' + t.glat + ')">Use</button></td>'
                        + '</tr>';
                 });
