@@ -778,27 +778,39 @@ def plot_bandpass_check(observation_path, output_path, template=None,
     span = max(4.0 * 100 * resid, 1.5)
     ax_flat.set_ylim(-span, span)
 
+    # The fitted span is centred where the template says (the product's own
+    # band since the fixed instrument; the LO before it), and the LO's DC
+    # mask is drawn only where it falls on this axis - with the LO outside
+    # the H I product by design, a red band off the edge of the plot was
+    # more puzzling than informative.
+    centre = float(template.get("u_centre_hz", lo))
+    lo_on_axis = freq_hz.min() <= lo <= freq_hz.max()
     for ax in (ax_raw, ax_flat):
         # What was excluded from the fit, and why it is not a hole in the data.
         ax.axvspan(line_mhz - mask_mhz, line_mhz + mask_mhz,
                    color="#ffa502", alpha=0.10, lw=0)
-        ax.axvspan(lo / 1e6 - dc_mhz, lo / 1e6 + dc_mhz,
-                   color="#ff4757", alpha=0.14, lw=0)
-        for edge in (lo - template["u_scale_hz"], lo + template["u_scale_hz"]):
+        if lo_on_axis:
+            ax.axvspan(lo / 1e6 - dc_mhz, lo / 1e6 + dc_mhz,
+                       color="#ff4757", alpha=0.14, lw=0)
+        for edge in (centre - template["u_scale_hz"], centre + template["u_scale_hz"]):
             ax.axvline(edge / 1e6, color=_PLOT_GRID, lw=1.0, ls=":")
         ax.axvline(line_mhz, color=_MARK, lw=1.0, ls="--", alpha=0.7)
-
-    ax_raw.text(0.005, 0.97,
-                "shaded: H I window masked from the fit (amber) and the LO "
-                "artefact (red); dotted: edges of the fitted band",
-                transform=ax_raw.transAxes, fontsize=8.5, color=_PLOT_FG,
-                alpha=0.75, va="top")
-    ax_flat.text(0.005, 0.03,
-                 "dashed: +-%.3f%% rms, over the channels the template was fitted "
-                 "to \u2014 the LO artefact runs off scale and is excluded"
-                 % (100 * resid),
-                 transform=ax_flat.transAxes, fontsize=9, color=_PLOT_FG,
-                 alpha=0.85)
+    if lo_on_axis:
+        shaded = ("shaded: H I window masked from the fit (amber) and the LO "
+                  "artefact (red); dotted: edges of the fitted band")
+        flat_note = ("dashed: +-%.3f%% rms, over the channels the template was "
+                     "fitted to \u2014 the LO artefact runs off scale and is excluded"
+                     % (100 * resid))
+    else:
+        shaded = ("shaded: H I window masked from the fit (amber); dotted: edges of "
+                  "the fitted band. The LO (%.6f MHz) and its DC artefact lie outside "
+                  "this product, by design" % (lo / 1e6))
+        flat_note = ("dashed: +-%.3f%% rms, over the channels the template was "
+                     "fitted to" % (100 * resid))
+    ax_raw.text(0.005, 0.97, shaded, transform=ax_raw.transAxes, fontsize=8.5,
+                color=_PLOT_FG, alpha=0.75, va="top")
+    ax_flat.text(0.005, 0.03, flat_note, transform=ax_flat.transAxes, fontsize=9,
+                 color=_PLOT_FG, alpha=0.85)
 
     when = (template.get("created_utc") or "")[:19].replace("T", " ")
     fig.suptitle("Bandpass correction check \u2014 template of %s UTC%s, "
