@@ -397,10 +397,6 @@ export class SkyMap {
     // Live time is unambiguous from HH:MM alone; a pinned clock may be on
     // another date entirely, so the legend then carries the date too.
     const iso = new Date((jd - 2440587.5) * 86400e3).toISOString();
-    legend.push({ color: "#5a5a5a", dash: false,
-                  text: this.horizon && this.showHorizon
-                    ? "grey: below the horizon;  dim: up but behind the measured horizon"
-                    : "grey: below the horizon" });
     legend.push({ color: "#ffffff", dash: true,
                   text: isFixed()
                     ? `horizon at ${iso.slice(0, 10)} ${iso.slice(11, 16)} UT`
@@ -473,13 +469,13 @@ export class SkyMap {
     // legend, bottom-right, inside the page margin
     ctx.save();
     ctx.font = "14px sans-serif";
-    const lx = W - 240, ly = H - 20 * (legend.length + 1) - 6;
+    // No title line: the shading now says where the site can see, and the
+    // site's name is in the box beside the map.
+    const lx = W - 240, ly = H - 20 * legend.length - 6;
     ctx.fillStyle = "rgba(251,252,253,0.92)";
-    ctx.fillRect(lx - 8, ly - 16, 248, 20 * (legend.length + 1) + 14);
-    ctx.fillStyle = "#333639";
-    ctx.fillText(`from ${this.site.name} (inside loop)`, lx, ly);
+    ctx.fillRect(lx - 8, ly - 16, 248, 20 * legend.length + 14);
     legend.forEach((e, i) => {
-      const y = ly + 20 * (i + 1);
+      const y = ly + 20 * i;
       ctx.strokeStyle = e.color === "#ffffff" ? "#55585b" : e.color;
       ctx.lineWidth = 2;
       ctx.setLineDash(e.dash ? [5, 3] : []);
