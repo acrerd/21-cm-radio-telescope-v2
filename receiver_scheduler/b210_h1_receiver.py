@@ -285,7 +285,7 @@ class GNURadioFlowgraph(gr.top_block):
 
 
 def init_hdf5(filename, freq_axis_hz, fft_size, sdr_type, center_freq,
-              sample_rate, gain, tuning_plan=None):
+              sample_rate, gain, tuning_plan=None, segment=0, segment_reason=''):
     """Create the observation file and its datasets.
 
     Module level and Qt-free so the window and the headless recorder write
@@ -301,7 +301,10 @@ def init_hdf5(filename, freq_axis_hz, fft_size, sdr_type, center_freq,
     if folder:
         os.makedirs(folder, exist_ok=True)
 
-    hf = h5py.File(filename, 'w')
+    # libver='latest' is what makes SWMR possible below: a recording can then
+    # be read while it is being written. It writes the HDF5 1.10 file format,
+    # fine for h5py, current MATLAB and the notebook.
+    hf = h5py.File(filename, 'w', libver='latest')
 
     hf.create_dataset('frequency_hz', data=freq_axis_hz)
 
@@ -403,6 +406,24 @@ def init_hdf5(filename, freq_axis_hz, fft_size, sdr_type, center_freq,
         except Exception:
             pass
 
+    # Which piece of a session this is, and why the previous piece ended - a
+    # mid-run roll to a new file. Written here, not by the caller afterwards,
+    # because nothing may add attributes once SWMR mode is on.
+    if segment:
+        hf.attrs['segment'] = int(segment)
+        hf.attrs['segment_reason'] = str(segment_reason or '')
+
+    # Single-writer / multiple-reader: from here on the file can be opened
+    # for reading by another process - the Observe tab, a notebook - while
+    # the spectra are still arriving. The constraints are that no dataset or
+    # attribute may be created after this point, and that anything extended
+    # must be chunked; both hold by the layout above (every extensible
+    # dataset has a maxshape, every attribute is written before the first
+    # spectrum, and a change of geometry rolls to a new file rather than
+    # restructuring this one). Readers see the file as of the last flush,
+    # which append_spectrum does per record.
+    hf.flush()
+    hf.swmr_mode = True
     return hf
 
 
@@ -1637,18 +1658,15 @@ class H1ReceiverWindow(QtWidgets.QMainWindow):
 
     def _init_hdf5(self, filename):
         """Initialize HDF5 file."""
-        hf = init_hdf5(filename, self.freq_axis_hz, self.fft_size,
-                       sdr_type=self.sdr_type, center_freq=self.center_freq,
-                       sample_rate=self.sample_rate, gain=self.gain,
-                       tuning_plan=getattr(self, 'tuning', None))
-        # Which piece of a session this is, and why the previous piece ended.
-        # These used to be spelled out in the filename; here they are readable
-        # by the code that cares, and a segment that gets renamed keeps them.
-        segment = getattr(self, 'hdf5_segment', 0)
-        if segment:
-            hf.attrs['segment'] = segment
-            hf.attrs['segment_reason'] = getattr(self, 'hdf5_roll_reason', '')
-        return hf
+        # The segment number and the reason for the roll go in through
+        # init_hdf5, which writes them before it switches the file to SWMR
+        # mode - after that, no attribute may be added.
+        return init_hdf5(filename, self.freq_axis_hz, self.fft_size,
+                         sdr_type=self.sdr_type, center_freq=self.center_freq,
+                         sample_rate=self.sample_rate, gain=self.gain,
+                         tuning_plan=getattr(self, 'tuning', None),
+                         segment=getattr(self, 'hdf5_segment', 0),
+                         segment_reason=getattr(self, 'hdf5_roll_reason', ''))
 
     def _next_hdf5_filename(self, reason):
         """A fresh recording, when the spectral geometry changed under us.

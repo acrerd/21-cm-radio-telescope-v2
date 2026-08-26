@@ -124,17 +124,40 @@ def _is_open_for_writing(path):
     return False
 
 
+def open_readonly(path):
+    """Open a recording for reading, live or finished.
+
+    A file the receiver is still writing is in SWMR mode (init_hdf5), and
+    the reader has to say so to get in - a plain open hits the HDF5 lock,
+    which is the right protection for a file that is *not* being written
+    that way. So: plain open first, and on the lock, the SWMR open. What the
+    reader then sees is the file as of the writer's last flush - every record
+    - and a recording made before SWMR (2026-08-26) still refuses while open,
+    which is honest: it cannot be read consistently.
+    """
+    try:
+        return h5py.File(path, "r")
+    except (BlockingIOError, OSError) as first:
+        try:
+            return h5py.File(path, "r", swmr=True)
+        except (BlockingIOError, OSError):
+            raise RuntimeError(
+                "The observation is still recording and was written before "
+                "live reading was possible - its plot can be drawn once it "
+                "has finished (%s)" % first)
+
+
 def read_observation(path):
-    """Load the spectra, timestamps and frequency axis from a finished file."""
+    """Load the spectra, timestamps and frequency axis from a recording.
+
+    Finished or still being written: see open_readonly. A live file gives
+    the records so far.
+    """
     if not H5PY_AVAILABLE:
         raise RuntimeError("h5py is not installed, so the file cannot be read")
     if not os.path.exists(path):
         raise FileNotFoundError(f"No such observation file: {path}")
-    if _is_open_for_writing(path):
-        raise RuntimeError(
-            "The observation is still recording - its plot can be drawn once "
-            "it has finished")
-    with h5py.File(path, "r") as hf:
+    with open_readonly(path) as hf:
         freq_hz = np.asarray(hf["frequency_hz"][:], dtype=float)
         # Recordings are stored in kelvin when the instrument was calibrated
         # for their tuning, and in counts when it was not. This always hands

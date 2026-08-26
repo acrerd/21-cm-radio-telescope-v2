@@ -402,19 +402,35 @@ def test_fit_refuses_when_there_is_nothing_to_fit(client, no_run):
         "applying a fit that was never made must be impossible"
 
 
-def test_fit_refuses_the_file_still_being_recorded(client, no_run, tmp_path):
-    """The file is locked while the receiver writes it - but only that file.
+def test_the_live_recording_can_be_plotted_and_listed(client, no_run, tmp_path, monkeypatch):
+    """View live recording: the file the receiver is writing is readable.
 
-    An older recording can be fitted while a new one records; what is refused
-    is the one the receiver still holds open.
+    A writer holds the file open in SWMR mode; the catalogue lists it as
+    recording and readable, and Plot Result draws what has arrived so far.
     """
-    live = str(tmp_path / "x.h5")
-    sched.current_observation = {"name": "live", "output_file": live}
-    sched.last_observation = {"name": "live", "coord_system": "galactic",
-                              "output_file": live}
-    r = client.post("/api/observe/fit")
-    assert r.status_code == 409
-    assert "still recording" in r.get_json()["error"]
+    import numpy as np
+    import b210_h1_receiver as rx
+
+    monkeypatch.setattr(sched, "get_config_value",
+                        lambda k, *a, **kw: str(tmp_path) if k == "data_output_folder" else None)
+    folder = tmp_path / "observations"; folder.mkdir()
+    live = str(folder / "20260826_120000_track.h5")
+    freq = np.linspace(1419.5e6, 1421.5e6, 64)
+    hf = rx.init_hdf5(live, freq, 64, "demo", 1420.4e6, 2.0e6, 0.0)
+    try:
+        for i in range(3):
+            rx.append_spectrum(hf, np.full(64, 0.003 + 1e-5 * i), 1.0e9 + i, 1.0, 64)
+        sched.current_observation = {"name": "live", "coord_system": "galactic",
+                                     "output_file": live}
+        rows = client.get("/api/observations").get_json()["observations"]
+        row = next(r for r in rows if r["filename"] == "20260826_120000_track.h5")
+        assert row["recording"] is True and not row.get("locked"), row
+        assert row["name"] == "" or isinstance(row["name"], str)
+        r = client.get("/api/observe/plot?file=20260826_120000_track.h5")
+        assert r.status_code == 200, r.get_json()
+        assert r.data[:8] == b"\x89PNG\r\n\x1a\n"
+    finally:
+        hf.close()
 
 
 @pytest.mark.parametrize("info,why", [

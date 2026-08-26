@@ -247,3 +247,73 @@ def test_a_retuned_recording_stores_no_misaligned_correction(tmp_path):
         "a template evaluated at the wrong LO is a misaligned correction, "
         "not a partial one")
     assert np.all(correction == 1.0)
+
+
+def _demo_file(path, n_records=3):
+    """A recording written the way the receiver writes one, left open."""
+    import numpy as np
+    import b210_h1_receiver as rx
+
+    freq = np.linspace(1419.5e6, 1421.5e6, 64)
+    hf = rx.init_hdf5(path, freq, 64, "demo", 1420.4e6, 2.0e6, 0.0)
+    for i in range(n_records):
+        rx.append_spectrum(hf, np.full(64, 0.003 + 1e-5 * i), 1.0e9 + i, 1.0, 64)
+    return hf
+
+
+def test_a_recording_can_be_read_while_it_is_being_written(tmp_path):
+    """SWMR: the reason the Observe tab can show a run in progress.
+
+    The writer keeps the file open and appends; a reader opening the same
+    file sees the records written so far, and more after another append and
+    a fresh open. Before this a second opener hit the HDF5 lock, which is
+    what the .live.jsonl sidecar existed to work around.
+    """
+    import observation_plot as op
+
+    path = str(tmp_path / "live.h5")
+    hf = _demo_file(path, 3)
+    try:
+        _, spectra, stamps, _, header = op.read_observation(path)
+        assert spectra.shape[0] == 3 and len(stamps) == 3
+        assert header["sdr_type"] == "demo", "attributes are readable live"
+        import numpy as np
+        import b210_h1_receiver as rx
+        rx.append_spectrum(hf, np.full(64, 0.004), 1.0e9 + 10, 1.0, 64)
+        _, spectra, _, _, _ = op.read_observation(path)
+        assert spectra.shape[0] == 4, "a new record is visible after the writer's flush"
+    finally:
+        hf.close()
+
+
+def test_a_mid_run_roll_still_makes_a_valid_file_under_swmr(tmp_path):
+    """The segment attributes have to go in before SWMR starts, since no
+    attribute may be added afterwards - so they travel through init_hdf5."""
+    import h5py
+    import numpy as np
+    import b210_h1_receiver as rx
+
+    freq = np.linspace(1419.5e6, 1421.5e6, 64)
+    hf = rx.init_hdf5(str(tmp_path / "seg.h5"), freq, 64, "demo", 1420.4e6, 2.0e6, 0.0,
+                      segment=2, segment_reason="fft")
+    try:
+        rx.append_spectrum(hf, np.full(64, 0.003), 1.0e9, 1.0, 64)
+        assert hf.swmr_mode
+    finally:
+        hf.close()
+    with h5py.File(str(tmp_path / "seg.h5"), "r") as back:
+        assert back.attrs["segment"] == 2 and back.attrs["segment_reason"] == "fft"
+        assert back["spectra_linear"].shape[0] == 1
+
+
+def test_a_finished_file_reads_exactly_as_before(tmp_path):
+    """libver='latest' changes the on-disk format, not the contents."""
+    import numpy as np
+    import observation_plot as op
+
+    path = str(tmp_path / "done.h5")
+    _demo_file(path, 2).close()
+    freq, spectra, stamps, taus, header = op.read_observation(path)
+    assert spectra.shape == (2, 64)
+    assert np.allclose(spectra[0], 0.003) and np.allclose(spectra[1], 0.00301)
+    assert list(stamps) == [1.0e9, 1.0e9 + 1]

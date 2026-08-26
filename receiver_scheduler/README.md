@@ -529,6 +529,14 @@ When launched from the scheduler, additional observation metadata is included:
 
 ### Reading Data in Python
 
+Recordings are written in HDF5's single-writer / multiple-reader mode, so a
+file **can be opened for reading while the receiver is still writing it** —
+from the Observe tab's *View live recording*, or in h5py with
+`h5py.File(path, 'r', swmr=True)` (a plain open still hits the lock while the
+run is in progress; that is the protection, and the keyword is how a reader
+says it knows the file is live). The on-disk format is HDF5 1.10
+(`libver='latest'`); h5py, current MATLAB and the notebook read it.
+
 A recording holds its spectra under **one of two names**, and the name is the
 units. `spectra_kelvin` means the bandpass and gain in force were applied at
 write time and the numbers are antenna temperature in K; `spectra_linear` means

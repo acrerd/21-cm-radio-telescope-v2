@@ -3001,12 +3001,11 @@ def api_observe_fit():
                 return jsonify({'success': False,
                                 'error': 'No observation has finished yet'}), 404
             info = dict(last_observation)
-    if (current_observation and current_observation.get('output_file')
-            and os.path.realpath(current_observation['output_file'])
-                == os.path.realpath(info.get('output_file', ''))):
-        return jsonify({'success': False,
-                        'error': 'that observation is still recording; the fit '
-                                 'needs the finished file'}), 409
+    # A recording in progress is fitted on what it has so far - the file is
+    # readable live (SWMR) - and says so in the result.
+    live = bool(current_observation and current_observation.get('output_file')
+                and os.path.realpath(current_observation['output_file'])
+                    == os.path.realpath(info.get('output_file', '')))
     path = info.get('output_file', '')
     if not os.path.exists(path):
         return jsonify({'success': False, 'error': 'the recording is missing: %s'
@@ -3065,8 +3064,10 @@ def api_observe_fit():
         'records_used': cal.get('records_used'),
         'approximate': cal.get('approximate'),
         'kind': cal.get('kind', 'spectral'),
-        # Only a per-channel fit can become the calibration in force.
-        'applicable': cal.get('kind', 'spectral') != 'total_power',
+        'live': live,
+        # Only a per-channel fit can become the calibration in force, and
+        # never one made on a recording that is still arriving.
+        'applicable': cal.get('kind', 'spectral') != 'total_power' and not live,
     }, 'compare': compare,
        'trustworthy_shift': rf_calibration.trustworthy_velocity_shift(cal) is not None})
 
@@ -3955,12 +3956,12 @@ def _observation_info(filename):
     same facts last_observation carries for the run that just finished, so
     either source can drive the same code.
     """
-    import h5py
+    from observation_plot import open_readonly
     folder = observations_folder()
     path = os.path.realpath(os.path.join(folder, os.path.basename(filename or '')))
     if not filename or os.path.dirname(path) != folder or not os.path.isfile(path):
         raise ValueError('no such recording: %s' % filename)
-    with h5py.File(path, 'r') as hf:
+    with open_readonly(path) as hf:
         a = dict(hf.attrs)
     info = {'output_file': path,
             'name': str(a.get('obs_name', os.path.basename(path))),
@@ -3993,9 +3994,9 @@ def _recording_details(path):
     "did the recorded band overlap the line at that tuning?" is answered by
     looking rather than by arithmetic.
     """
-    import h5py
     import drift_fit
-    with h5py.File(path, 'r') as hf:
+    from observation_plot import open_readonly
+    with open_readonly(path) as hf:
         a = dict(hf.attrs)
         name = 'spectra_kelvin' if 'spectra_kelvin' in hf else 'spectra_linear'
         n_rec, n_ch = hf[name].shape
@@ -4076,8 +4077,10 @@ def api_observations():
     page can select it by default. A file the receiver is still writing
     cannot be opened (the HDF5 lock) and is listed as recording.
     """
-    import h5py
+    from observation_plot import open_readonly
     folder = observations_folder()
+    live = os.path.realpath(current_observation['output_file']) \
+        if current_observation and current_observation.get('output_file') else None
     rows = []
     for name in os.listdir(folder):
         if not name.lower().endswith(('.h5', '.hdf5')):
@@ -4091,8 +4094,11 @@ def api_observations():
                'mtime': datetime.fromtimestamp(st.st_mtime).isoformat(timespec='seconds'),
                'recording': False}
         try:
-            with h5py.File(path, 'r') as hf:
+            with open_readonly(path) as hf:
                 a = dict(hf.attrs)
+            # Recording, and readable: the file is in SWMR mode, so the page
+            # can plot what has arrived so far.
+            row['recording'] = os.path.realpath(path) == live
             row.update(name=str(a.get('obs_name', '')),
                        comment=str(a.get('comment', '')),
                        coord_system=str(a.get('coord_system', '')),
@@ -4101,9 +4107,10 @@ def api_observations():
             mode = a.get('observation_mode')
             row['mode'] = str(mode) if mode is not None else \
                 observation_files.observation_mode(row)
-        except (OSError, BlockingIOError):
+        except (OSError, BlockingIOError, RuntimeError):
+            # Being written by a receiver from before SWMR: not readable yet.
             row.update(name='', comment='', coord_system='', created='',
-                       units='', mode='', recording=True)
+                       units='', mode='', recording=True, locked=True)
         rows.append(row)
     # By the recording's own creation stamp where it has one - it survives a
     # rename or a copy, and two files written in the same second tie on

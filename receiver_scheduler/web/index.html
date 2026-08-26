@@ -600,6 +600,8 @@
                     <select autocomplete="off" id="obvFileSelect" onchange="onObserveFileChange()"
                             style="max-width:100%; min-width:320px;" title="which recording to plot or fit"></select>
                     <button class="btn btn-secondary" onclick="showObservePlot()">Plot Result</button>
+                    <button class="btn btn-secondary" id="obvLiveViewBtn" style="display:none;" onclick="viewLiveRecording()"
+                            title="plot the recording in progress, as it stands; refreshes while it records">View live recording</button>
                     <button class="btn btn-secondary" onclick="fitObserveModel()"
                             title="fit the simulator's sky to this recording: gain and system temperature">Fit model</button>
                     <button class="btn btn-secondary" onclick="downloadObserveFile()"

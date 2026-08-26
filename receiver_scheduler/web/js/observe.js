@@ -199,19 +199,23 @@
                     const when = r.created ? r.created.slice(0, 16).replace('T', ' ') + ' UTC'
                                            : r.mtime.slice(0, 16).replace('T', ' ') + ' local';
                     let text = when + '  ' + r.filename;
-                    if (r.recording) text += '  (recording)';
-                    else if (r.name) text += '  \u2014 ' + r.name;
+                    if (r.name) text += '  \u2014 ' + r.name;
+                    if (r.recording) text += r.locked ? '  (recording, not readable yet)' : '  (recording \u2014 live)';
                     if (r.comment) text += '  \u2014 ' + r.comment;
                     o.textContent = text;
-                    o.disabled = !!r.recording;
+                    // Readable while recording (SWMR) unless written by a
+                    // receiver from before that was possible.
+                    o.disabled = !!r.locked;
                     sel.appendChild(o);
                 });
                 // Keep the operator's choice across refreshes; otherwise the
                 // run that most recently finished, else the newest file.
                 const want = obvObservations.some(r => r.filename === current) ? current
                            : (d.last && obvObservations.some(r => r.filename === d.last)) ? d.last
-                           : obvObservations.find(r => !r.recording)?.filename || '';
+                           : obvObservations.find(r => !r.locked)?.filename || '';
                 sel.value = want;
+                const liveRow = obvObservations.find(r => r.recording && !r.locked);
+                document.getElementById('obvLiveViewBtn').style.display = liveRow ? '' : 'none';
                 onObserveFileChange();
             }).catch(() => {});
         }
@@ -221,6 +225,33 @@
             if (!file) return;
             // A navigation, not a fetch: the browser saves the attachment.
             window.location.href = '/api/observe/download?file=' + encodeURIComponent(file);
+        }
+
+        // View live recording: select the file the receiver is writing and
+        // plot it as it stands, then keep re-plotting while it records. The
+        // chain stops when the selection changes or the run finishes.
+        let obvLiveViewTimer = null;
+
+        function viewLiveRecording() {
+            const liveRow = obvObservations.find(r => r.recording && !r.locked);
+            if (!liveRow) return;
+            document.getElementById('obvFileSelect').value = liveRow.filename;
+            onObserveFileChange();
+            showObservePlot();
+            if (obvLiveViewTimer) clearTimeout(obvLiveViewTimer);
+            const tick = () => {
+                obvLiveViewTimer = null;
+                fetch('/api/observations').then(r => r.json()).then(d => {
+                    const still = (d.observations || []).find(r => r.filename === liveRow.filename);
+                    if (!still || !still.recording || obvSelectedFile() !== liveRow.filename) {
+                        loadObserveLast();          // the run ended: relist, keep the selection
+                        return;
+                    }
+                    showObservePlot();
+                    obvLiveViewTimer = setTimeout(tick, 30000);
+                }).catch(() => {});
+            };
+            obvLiveViewTimer = setTimeout(tick, 30000);
         }
 
         function obvSelectedFile() {
