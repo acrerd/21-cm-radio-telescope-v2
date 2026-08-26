@@ -429,6 +429,10 @@
         }
 
         function isExpired(obs) {
+            // A running entry is current whatever its slot says: a short run
+            // started from the simulator spent most of its life badged
+            // "Expired" at the bottom of the list, green (2026-08-26).
+            if (isRunning(obs)) return false;
             const end = obsSlotEnd(obs);
             // The 60 s is scheduler_thread()'s own cutoff: it needs more than a
             // minute left in the window before it will take a slot, so the last
