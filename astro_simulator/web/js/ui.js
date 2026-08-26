@@ -48,12 +48,21 @@ export function setupUI(cfg) {
 
   // ---- parameter row ------------------------------------------------
   const boxes = {
-    l: els.l, b: els.b, fw: els.fw, bw: els.bw, fc: els.fc,
+    l: els.l, b: els.b, fw: els.fw,
     nc: els.nc, ts: els.ts, ti: els.ti, sd: els.sd,
   };
-  let fcShown = (F_HI / 1e6).toFixed(2);
 
+  // The channel count the instrument itself records for the band in force:
+  // the H I product's fine channels, or the continuum product's coarse ones.
+  // Falls back to the compact data's own grid when there is no instrument.
   function nativeChannels() {
+    const inst = sky.instrument;
+    if (inst) {
+      const width = inst.h1_channel_hz;
+      if (state.mode !== "cont" && width) return Math.round(sky.bwHz / width);
+      if (state.mode === "cont" && inst.wide_channel_hz)
+        return Math.round(sky.bwHz / inst.wide_channel_hz);
+    }
     return sky.k1 > sky.k0 + 1 ? sky.k1 - sky.k0
          : Math.max(2, Math.round(sky.bwHz / 6.1e3));
   }
@@ -62,12 +71,22 @@ export function setupUI(cfg) {
     boxes.l.value = "132.0";
     boxes.b.value = "-1.0";
     boxes.fw.value = sky.fwhm.toFixed(2);
-    boxes.bw.value = `${sky.bwHz / 1e6}`;
-    boxes.fc.value = fcShown;
     boxes.nc.value = `${nativeChannels()}`;
     boxes.ts.value = `${sky.tsys}`;
     boxes.ti.value = `${sky.tint}`;
     boxes.sd.value = "240";
+  }
+
+  // The band read-out beside the map toggle: what the instrument records
+  // for this map type, and which of the two per-mode boxes is offered.
+  function showBand() {
+    const cont = state.mode === "cont";
+    els.bandLabel.textContent = cont ? "continuum band" : "H I band";
+    // Centre and width, nothing else: the channel count has its own box.
+    els.bandText.textContent =
+      `${(sky.fc / 1e6).toFixed(3)} MHz, BW ${(sky.bwHz / 1e6).toFixed(1)} MHz`;
+    els.ncGroup.hidden = cont;
+    els.sdGroup.hidden = !cont;
   }
 
   function writeBack(box, val, label) {
@@ -81,15 +100,13 @@ export function setupUI(cfg) {
   function applyParams() {
     const num = (box) => parseFloat(box.value);
     let glon = num(boxes.l), glat = num(boxes.b), fwhm = num(boxes.fw);
-    let tint = num(boxes.ti), bwHz = num(boxes.bw) * 1e6;
-    const fcText = boxes.fc.value.trim();
-    let fcHz = parseFloat(fcText) * 1e6;
+    let tint = num(boxes.ti);
     const tsText = boxes.ts.value.trim();
     // empty box = no noise model; 0 is a valid (ideal) receiver
     let tsys = tsText ? parseFloat(tsText) : null;
     const ncText = boxes.nc.value.trim();
     let nchan = ncText ? Math.trunc(parseFloat(ncText)) : null;
-    if (![glon, glat, fwhm, tint, bwHz, fcHz].every(Number.isFinite)
+    if (![glon, glat, fwhm, tint].every(Number.isFinite)
         || (tsText && !Number.isFinite(tsys))
         || (ncText && !Number.isFinite(nchan))) {
       message("Could not parse the parameter boxes.");
@@ -99,19 +116,8 @@ export function setupUI(cfg) {
     glat = Math.min(90, Math.max(-90, glat));
     fwhm = Math.abs(fwhm);
     tint = Math.min(1e7, Math.max(1e-3, Math.abs(tint)));
-    bwHz = Math.min(8e6, Math.max(2e4, Math.abs(bwHz)));
     if (tsys !== null) tsys = Math.min(1e6, Math.max(0.0, tsys));
     if (nchan !== null) nchan = Math.min(65536, Math.max(2, nchan));
-    // f_c display rule: an unchanged display keeps the exact current
-    // value; a typed value that rounds to the rest frequency at its
-    // own precision means the exact rest frequency
-    if (fcText === fcShown) {
-      fcHz = sky.fc;
-    } else {
-      const dec = fcText.includes(".") ? fcText.split(".")[1].length : 0;
-      if (Math.abs(fcHz - F_HI) < 0.5 * Math.pow(10, 6 - Math.min(dec, 6)))
-        fcHz = F_HI;
-    }
     if (fwhm > 0 && fwhm < sky.minFwhm)
       message(`Beam ${fwhm.toFixed(2)}° is finer than the compact ` +
               `dataset supports; using ${sky.minFwhm.toFixed(2)}°.`);
@@ -120,21 +126,15 @@ export function setupUI(cfg) {
     writeBack(boxes.b, `${glat}`, "b (°)");
     writeBack(boxes.fw, `${fwhm}`, "beam (°)");
     writeBack(boxes.ti, `${tint}`, "τ (s)");
-    writeBack(boxes.bw, `${bwHz / 1e6}`, "BW (MHz)");
     if (ncText) writeBack(boxes.nc, `${nchan}`, "channels");
     if (Math.abs(fwhm - sky.fwhm) > 1e-6) sky.setBeam(fwhm);
     map.setDisplayBeam(sky.fwhm);
     updateMapTitle();
     sky.tsys = tsys;
     sky.tint = tint;
-    sky.nchan = nchan;
-    if (Math.abs(bwHz - sky.bwHz) > 1 || Math.abs(fcHz - sky.fc) > 1) {
-      if (!sky.setBand(bwHz, fcHz))
-        message("Band has no H I coverage in the compact dataset: " +
-                "the spectrum is continuum + noise only.");
-    }
-    fcShown = (sky.fc / 1e6).toFixed(2);
-    if (boxes.fc.value.trim() !== fcShown) boxes.fc.value = fcShown;
+    // The band is the instrument's for the mode (applyModeBand); only the
+    // channel count is the observer's, and only for a spectrum.
+    sky.nchan = state.mode === "cont" ? null : nchan;
     return { glon, glat };
   }
 
@@ -271,7 +271,7 @@ export function setupUI(cfg) {
   }
 
   // ---- controls -----------------------------------------------------
-  for (const box of [boxes.l, boxes.b, boxes.fw, boxes.bw, boxes.fc,
+  for (const box of [boxes.l, boxes.b, boxes.fw,
                      boxes.nc, boxes.ts, boxes.ti]) {
     box.addEventListener("change", onGo);
     box.addEventListener("keydown", (e) => {
@@ -291,6 +291,31 @@ export function setupUI(cfg) {
     if (state.last && state.mode !== "cont") render();
   });
 
+  // The band follows the mode, from the fixed instrument (scheduler issue
+  // #27): the H I sub-band for a spectrum, the continuum band - which holds
+  // no hydrogen - for a drift scan. So the simulated drift scan is the
+  // continuum product a scheduled one will record, line excluded.
+  function bandForMode(mode) {
+    const inst = sky.instrument;
+    if (!inst) return null;
+    const band = mode === "cont" ? inst.continuum_band_hz : inst.h1_band_hz;
+    if (!band) return null;
+    return { bwHz: band[1] - band[0], fcHz: 0.5 * (band[0] + band[1]) };
+  }
+
+  function applyModeBand(mode) {
+    const b = bandForMode(mode);
+    if (b && (Math.abs(b.bwHz - sky.bwHz) > 1 || Math.abs(b.fcHz - sky.fc) > 1)) {
+      sky.setBand(b.bwHz, b.fcHz);
+      // A new band has a new native channel count; a typed count is kept.
+      if (!boxes.nc.value.trim() || boxes.nc.dataset.native === boxes.nc.value.trim()) {
+        boxes.nc.value = `${nativeChannels()}`;
+      }
+    }
+    boxes.nc.dataset.native = `${nativeChannels()}`;
+    showBand();
+  }
+
   els.mapBtn.addEventListener("click", () => {
     state.mode = state.mode === "hi" ? "cont" : "hi";
     const cont = state.mode === "cont";
@@ -298,6 +323,7 @@ export function setupUI(cfg) {
     els.frameBtn.disabled = cont;
     boxes.sd.disabled = !cont;
     map.setMode(cont ? "cont" : "hi");
+    applyModeBand(state.mode);
     updateMapTitle();
     if (state.last) {
       if (cont) renderDrift();
@@ -334,8 +360,12 @@ export function setupUI(cfg) {
       row.addEventListener("click", () => {
         boxes.l.value = l.toFixed(2);
         boxes.b.value = b.toFixed(2);
+        // The band is the instrument's; a target whose profile wants more
+        // of it than the H I sub-band holds is said so, not widened.
         const reqBw = i < TARGETS.length ? TARGETS[i][3] : 2.0;
-        if (sky.bwHz < reqBw * 1e6 - 1) boxes.bw.value = `${reqBw}`;
+        if (sky.bwHz < reqBw * 1e6 - 1)
+          message(`${name}: its profile spans ${reqBw} MHz, wider than the ` +
+                  `instrument's ${(sky.bwHz / 1e6).toFixed(1)} MHz H I band.`);
         menu.style.display = "none";
         message(`Target: ${name}`);
         const p = applyParams();
@@ -442,8 +472,8 @@ export function setupUI(cfg) {
   // which reset the boxes only, and the Save button (2026-08-26).
   els.homeBtn.addEventListener("click", () => {
     const keep = state.last ? { glon: state.last.glon, glat: state.last.glat } : null;
-    // Instrument boxes and the frequency shown.
-    fcShown = (F_HI / 1e6).toFixed(2);
+    // Instrument boxes; the band itself is the fixed instrument's for the
+    // mode, set once the mode is back to H I below.
     initBoxes();
     if (keep) { boxes.l.value = keep.glon.toFixed(3); boxes.b.value = keep.glat.toFixed(3); }
     // Site, as the page was opened with (the site boxes edit `site` in
@@ -459,6 +489,7 @@ export function setupUI(cfg) {
     state.frame = "lsr";
     els.frameBtn.textContent = "Frame: LSR";
     if (state.mode === "cont") els.mapBtn.click();
+    applyModeBand("hi");
     // Rotation and the horizon overlay.
     if (map.l0 !== 0) map.rotate(-map.l0);
     if (map.horizon && els.horizonBtn && !map.showHorizon) els.horizonBtn.click();
@@ -514,18 +545,29 @@ export function setupUI(cfg) {
         return;
       }
       const e = d.entry;
-      message(drift
-        ? `  scheduled "${e.name}": transit ${e.drift_time} local, ` +
-          `${e.start_date} ${e.start_time} for ${e.duration_minutes} min`
-        : `  scheduled "${e.name}": ${e.start_date} ${e.start_time} local ` +
-          `for ${e.duration_minutes} min`);
+      if (d.started) {
+        // A live clock: the observation has started, not been booked.
+        message(drift
+          ? `  started now: "${e.name}", ${e.duration_minutes} min, ` +
+            `beam crossing ${e.drift_time} local`
+          : `  started now: "${e.name}" for ${e.duration_minutes} min`);
+      } else {
+        message(drift
+          ? `  scheduled "${e.name}": transit ${e.drift_time} local, ` +
+            `${e.start_date} ${e.start_time} for ${e.duration_minutes} min`
+          : `  scheduled "${e.name}": ${e.start_date} ${e.start_time} local ` +
+            `for ${e.duration_minutes} min`);
+      }
       for (const n of d.horizon_notes || []) message(`  local horizon: ${n}`);
-      // The schedule list lives in the page that embeds this one; ask it to
-      // reload so the new entry appears without a tab round-trip.
+      // The schedule list and the status line live in the page that embeds
+      // this one; ask it to refresh so the change shows without a tab
+      // round-trip.
       try {
-        if (window.parent && window.parent !== window
-            && typeof window.parent.loadSchedule === "function")
-          window.parent.loadSchedule();
+        const parent = window.parent;
+        if (parent && parent !== window) {
+          if (typeof parent.loadSchedule === "function") parent.loadSchedule();
+          if (d.started && typeof parent.updateStatus === "function") parent.updateStatus();
+        }
       } catch (_) { /* cross-origin or not embedded: nothing to refresh */ }
     } catch (e) {
       message(`Schedule failed: ${e}`);
@@ -561,6 +603,8 @@ export function setupUI(cfg) {
   };
 
   initBoxes();
+  // The band read-out and the per-mode boxes, for the mode the page opens in.
+  applyModeBand(state.mode);
   updateMapTitle();
   updateInfo();
   return { message, point, applyParams };

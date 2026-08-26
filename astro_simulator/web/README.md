@@ -34,15 +34,28 @@ URL parameters replace the desktop CLI flags:
 Feature parity with the desktop app on compact data: click the
 Mollweide map for a beam-weighted H I spectrum (stepped channels,
 per-channel radiometer noise including source self-noise, T_sys 0 =
-ideal receiver / empty = noise off, channels box pre-filled with the
-band's native count); LSR/SSB/topocentric frames; the 18 H I targets
-plus the five analytic continuum sources with Cas A's secular fade;
-site visibility loops and the live horizon; the 1420 MHz continuum
-map with drift scans (τ-per-sample noise); display maps blurred to
-the current beam, like the desktop; observer-site entry boxes (name,
-lat, lon — default Glasgow) that move the horizon, visibility loops,
-Moon and topocentric frame together; wheel-zoom, `s`/Save for PNG +
-txt export.
+ideal receiver / empty = noise off); LSR/SSB/topocentric frames; the
+18 H I targets plus the five analytic continuum sources with Cas A's
+secular fade; site visibility loops, the live horizon with its
+cardinal points, and the measured horizon when the scheduler serves
+the page; the 1420 MHz continuum map with drift scans (τ-per-sample
+noise); display maps blurred to the current beam, like the desktop;
+observer-site entry boxes (name, lat, lon — default Glasgow) that move
+the horizon, visibility loops, Moon and topocentric frame together;
+wheel-zoom; a Reset button that puts every parameter back.
+
+**The band is not a parameter.** Since the scheduler's fixed
+instrument (issue #27) the receiver always records the same tuning,
+and the simulator draws what a scheduled observation will get: the
+**H I sub-band** (1419.0–1422.3 MHz) with the map on H I, the
+**continuum band** (1415.7–1418.8 MHz, no hydrogen in it) with the map
+on continuum — so the drift scan it draws is the continuum product,
+line excluded. Both come from `data/meta.json`'s `instrument` block,
+written by `make_web_data.py --meta` from `receiver_scheduler/tuning.py`,
+and the band in force is read out beside the beam box. The BW and f_c
+boxes and the `bw`/`fc`/`nc` link parameters are gone; what is offered
+depends on the map type — **channels** (pre-filled with the instrument's
+own count) for a spectrum, **scan (min)** for a drift scan.
 
 Known divergences from the desktop app, all deliberate:
 - compact data only — the minimum beam is the compact floor (~1.54°),

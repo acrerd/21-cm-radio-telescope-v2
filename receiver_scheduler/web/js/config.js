@@ -5,8 +5,59 @@
 // exactly as it did before the split.
 
         // ---- Configuration ----
+        // The instrument boxes hold the config *overrides*, empty meaning
+        // the default from tuning.py; what is actually in force is shown
+        // above them. Remembered as loaded so a save can tell what changed
+        // and warn before it goes through.
+        const INSTRUMENT_BOXES = {
+            receiver_lo_hz: ['cfgInstLo', 1e6],
+            receiver_sample_rate_hz: ['cfgInstRate', 1e6],
+            receiver_gain_db: ['cfgInstGain', 1],
+            receiver_h1_channels: ['cfgInstH1Ch', 1],
+            receiver_wide_channels: ['cfgInstWideCh', 1],
+        };
+        let instrumentLoaded = {};
+
+        function readInstrumentBoxes() {
+            const out = {};
+            for (const [key, [id, scale]] of Object.entries(INSTRUMENT_BOXES)) {
+                const v = document.getElementById(id).value.trim();
+                out[key] = v === '' ? null : parseFloat(v) * scale;
+            }
+            const lo = document.getElementById('cfgInstH1Lo').value.trim();
+            const hi = document.getElementById('cfgInstH1Hi').value.trim();
+            out.receiver_h1_band_hz = (lo === '' && hi === '') ? null
+                : [parseFloat(lo) * 1e6, parseFloat(hi) * 1e6];
+            return out;
+        }
+
+        function fillInstrumentBoxes(cfg) {
+            for (const [key, [id, scale]] of Object.entries(INSTRUMENT_BOXES)) {
+                const v = cfg[key];
+                document.getElementById(id).value = (v == null || v === '') ? '' : (Number(v) / scale);
+            }
+            const band = cfg.receiver_h1_band_hz;
+            document.getElementById('cfgInstH1Lo').value = band ? band[0] / 1e6 : '';
+            document.getElementById('cfgInstH1Hi').value = band ? band[1] / 1e6 : '';
+            instrumentLoaded = readInstrumentBoxes();
+        }
+
+        function instrumentChanged() {
+            const now = readInstrumentBoxes();
+            return Object.keys(now).some(k => JSON.stringify(now[k]) !== JSON.stringify(instrumentLoaded[k]));
+        }
+
+        function resetInstrumentConfig() {
+            for (const [, [id]] of Object.entries(INSTRUMENT_BOXES)) document.getElementById(id).value = '';
+            document.getElementById('cfgInstH1Lo').value = '';
+            document.getElementById('cfgInstH1Hi').value = '';
+        }
+
         function loadConfig() {
+            instrumentText = null;             // re-read: it may just have changed
+            showInstrument('cfgInstrument');
             fetch('/api/config').then(r => r.json()).then(cfg => {
+                fillInstrumentBoxes(cfg);
                 document.getElementById('cfgBannerName').value = cfg.banner_name || '';
                 document.getElementById('cfgBannerSubtitle').value = cfg.banner_subtitle || '';
                 document.getElementById('cfgControllerUrl').value = cfg.srt_controller_url || '';
@@ -47,6 +98,21 @@
                 log_lines: parseInt(document.getElementById('cfgLogLines').value) || 100,
                 sound_enabled: document.getElementById('cfgSoundEnabled').value === 'true',
             };
+            // The instrument: warn before a change goes through, because the
+            // calibrations belong to the tuning and every recording after
+            // this one is uncalibrated until they are re-measured.
+            if (instrumentChanged()) {
+                const ok = confirm(
+                    'You are changing the instrument tuning.\n\n'
+                    + 'Every scheduled observation from now on records with the new tuning. '
+                    + 'The bandpass templates and the gain calibration belong to the old one, '
+                    + 'so recordings will be in counts, not kelvin, until you re-measure the '
+                    + 'bandpass and the gain on the RF Calibration tab. The simulator\'s band '
+                    + 'stays on the old tuning until make_web_data.py --meta is re-run.\n\n'
+                    + 'Change the instrument?');
+                if (!ok) return;
+            }
+            Object.assign(cfg, readInstrumentBoxes());
             soundEnabled = cfg.sound_enabled;
             fetch('/api/config', {
                 method: 'POST',
@@ -58,6 +124,9 @@
                     el.style.display = 'inline';
                     setTimeout(() => el.style.display = 'none', 3000);
                     updateTelescope();
+                    instrumentLoaded = readInstrumentBoxes();
+                    instrumentText = null;
+                    showInstrument('cfgInstrument');
                 } else {
                     alert('Error saving: ' + (data.error || 'Unknown'));
                 }

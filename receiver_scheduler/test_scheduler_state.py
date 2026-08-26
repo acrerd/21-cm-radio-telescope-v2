@@ -106,6 +106,36 @@ def test_every_name_agrees_after_a_start(idle, running_proc):
     assert_running("State test", "after start")
 
 
+def test_a_stopped_booking_marks_its_slot_finished(idle, running_proc):
+    """Stopping a booked run retires its slot (issue #25): the scheduler
+    thread must not start it again while the slot is still due. A Run Now
+    observation carries no slot and marks nothing."""
+    booked = dict(OBS, start_date="2026-08-26", start_time="14:00")
+    sched.finished_slots.clear()
+    try:
+        with patch.object(sched, "SRT_CONTROLLER_URL", None), \
+             patch("subprocess.Popen", return_value=running_proc), \
+             patch.object(sched, "generate_filename", return_value="/tmp/state_test.h5"):
+            assert sched.start_observation(booked) is True
+        running_proc.poll.return_value = 0
+        with patch.object(sched, "SRT_CONTROLLER_URL", None):
+            sched.stop_observation()
+        assert sched._slot_key(booked) in sched.finished_slots
+
+        sched.finished_slots.clear()
+        running_proc.poll.return_value = None
+        with patch.object(sched, "SRT_CONTROLLER_URL", None), \
+             patch("subprocess.Popen", return_value=running_proc), \
+             patch.object(sched, "generate_filename", return_value="/tmp/state_test.h5"):
+            assert sched.start_observation(dict(OBS)) is True      # no slot
+        running_proc.poll.return_value = 0
+        with patch.object(sched, "SRT_CONTROLLER_URL", None):
+            sched.stop_observation()
+        assert not sched.finished_slots
+    finally:
+        sched.finished_slots.clear()
+
+
 def test_every_name_agrees_again_after_a_stop(idle, running_proc):
     """The one that matters most.
 

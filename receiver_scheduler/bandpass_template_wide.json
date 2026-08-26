@@ -1,0 +1,39 @@
+{
+  "version": 1,
+  "created_utc": "2026-08-26T17:33:46+00:00",
+  "source_name": "l=149 b=+52",
+  "source_file": "rf_bandpass_template_20260826_182904.h5",
+  "degree": 9,
+  "coefficients": [
+    -0.18216817153357837,
+    -0.4211674384214098,
+    0.4297003607627976,
+    1.33121269492699,
+    -0.38374138168269506,
+    -1.5027281289917391,
+    0.13719603016712037,
+    0.5778082595162048,
+    0.08872193441021194,
+    0.9022714155456107
+  ],
+  "u_scale_hz": 3300000.0,
+  "u_centre_hz": 1419005752.0,
+  "product": "wide",
+  "band_fraction": 0.4125,
+  "config": {
+    "lo_hz": 1418905751.9985752,
+    "sample_rate_hz": 8000000.0,
+    "sky_center_freq_hz": 1420655752.0,
+    "lo_offset_hz": null,
+    "gain_db": 40.0
+  },
+  "n_records": 39,
+  "n_channels_fitted": 774,
+  "line_mask_hz": 250000.0,
+  "dc_mask_hz": 30000.0,
+  "normalise_band_hz": [
+    1419005752.0,
+    1422305752.0
+  ],
+  "fit_residual_rms": 0.0013177551523083726
+}

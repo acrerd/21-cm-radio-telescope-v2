@@ -685,9 +685,12 @@ class TestFlaskAPI:
         2026-08-26 must land as the local equivalent. tau is the simulated
         integration and becomes the duration, as the Observe hand-off did.
         """
+        # A pinned clock a day ahead, on a whole minute: booked as it is.
+        epoch = (datetime.now(timezone.utc) + timedelta(days=1)).replace(
+            hour=12, minute=0, second=0, microsecond=0)
         resp = client.post('/api/simulator/schedule', json={
             'l': 132.0, 'b': -1.0, 'mode': 'hi',
-            'epoch_utc': '2026-08-26T12:00:00Z',
+            'epoch_utc': epoch.strftime('%Y-%m-%dT%H:%M:%SZ'),
             'center_freq_mhz': 1420.405752, 'bandwidth_mhz': 2.0,
             'channels': 327, 'integration_time_s': 600.0})
         d = resp.get_json()
@@ -697,11 +700,13 @@ class TestFlaskAPI:
         assert e['coord1_deg'] == pytest.approx(132.0)
         assert e['coord2_deg'] == pytest.approx(-1.0)
         assert e['comment'] == sched.SIMULATOR_COMMENT
-        local = datetime(2026, 8, 26, 12, 0, tzinfo=timezone.utc).astimezone()
+        local = epoch.astimezone()
         assert e['start_date'] == local.strftime('%Y-%m-%d')
         assert e['start_time'] == local.strftime('%H:%M')
         assert e['duration_minutes'] == 10
-        assert e['channels'] == 327 and e['bandwidth_mhz'] == 2.0
+        # The tuning is the fixed instrument's (issue #27): whatever the page
+        # sent is not carried into the entry.
+        assert 'channels' not in e and 'bandwidth_mhz' not in e and 'center_freq_mhz' not in e
         stored = client.get('/api/schedule').get_json()
         assert [o['name'] for o in stored] == [e['name']]
 
@@ -710,9 +715,11 @@ class TestFlaskAPI:
         half a scan in - what the drift panel draws. It is not centred on the
         next meridian transit: that booked tomorrow morning for a scan asked
         for now (2026-08-26), and the drift machinery parks for any T."""
+        epoch = (datetime.now(timezone.utc) + timedelta(days=1)).replace(
+            hour=22, minute=0, second=0, microsecond=0)
         resp = client.post('/api/simulator/schedule', json={
             'l': 111.735, 'b': -2.130, 'mode': 'cont',
-            'epoch_utc': '2026-08-25T22:00:00Z', 'scan_minutes': 300,
+            'epoch_utc': epoch.strftime('%Y-%m-%dT%H:%M:%SZ'), 'scan_minutes': 300,
             'center_freq_mhz': 1420.405752, 'bandwidth_mhz': 2.4,
             'channels': 4096, 'integration_time_s': 240.0})
         d = resp.get_json()
@@ -722,20 +729,101 @@ class TestFlaskAPI:
         assert e['drift_window_min'] == 150 and e['duration_minutes'] == 300
         assert e['integration_time_s'] == 240.0, "tau is the time per sample"
         assert e['comment'] == sched.SIMULATOR_COMMENT
-        start = datetime(2026, 8, 25, 22, 0, tzinfo=timezone.utc).astimezone()
+        start = epoch.astimezone()
         assert e['start_date'] == start.strftime('%Y-%m-%d')
         assert e['start_time'] == start.strftime('%H:%M')
         assert e['drift_time'] == (start + timedelta(minutes=150)).strftime('%H:%M')
+
+    def test_a_live_clock_starts_now_rather_than_booking(self, client):
+        """Pressed at 21:25:57 with a one-minute spectrum, Schedule used to
+        book 21:25 - a minute already gone - and the entry arrived expired;
+        booked for the next minute instead, a run waited for the minute, then
+        for the thread's poll, then had its duration trimmed to the slot. A
+        live clock now starts the observation at once, with the full
+        duration, and writes nothing to the schedule."""
+        started = []
+        with patch.object(sched, 'start_observation', side_effect=lambda obs: started.append(obs) or True):
+            resp = client.post('/api/simulator/schedule', json={
+                'l': 42.7, 'b': 1.4, 'mode': 'hi',
+                'epoch_utc': datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
+                'integration_time_s': 60.0})
+        d = resp.get_json()
+        assert resp.status_code == 200 and d['success'] and d['started'], d
+        assert len(started) == 1 and started[0]['coord_system'] == 'galactic'
+        assert started[0]['duration_minutes'] == sched.SIMULATOR_MIN_SPECTRUM_MIN
+        # Listed as well, so the page shows it running in its place.
+        listed = client.get('/api/schedule').get_json()
+        assert [o['name'] for o in listed] == [started[0]['name']]
+
+    def test_a_finished_slot_is_not_started_again(self):
+        """Stopped by hand or run to the end, a booking's slot is done with:
+        the thread must not start it again while the slot is still due
+        (issue #25 - twice on 2026-08-26 a stopped Sun drift restarted within
+        ten seconds)."""
+        obs = {'name': 'Once only', 'start_date': '2026-08-26', 'start_time': '14:00',
+               'duration_minutes': 30, 'coord_system': 'altaz'}
+        key = sched._slot_key(obs)
+        assert key == ('2026-08-26', '14:00', 'Once only')
+        assert sched._slot_key({'name': 'Run Now, no slot'}) is None
+        sched.finished_slots.clear()
+        try:
+            sched.finished_slots.add(key)
+            assert sched._slot_key(dict(obs)) in sched.finished_slots
+            # An edited booking is a different slot.
+            assert sched._slot_key(dict(obs, start_time='14:05')) not in sched.finished_slots
+        finally:
+            sched.finished_slots.clear()
+
+    def test_a_live_clock_is_refused_while_something_records(self, client):
+        proc = MagicMock(); proc.poll.return_value = None
+        with patch.object(sched, 'current_process', proc), \
+             patch.object(sched, 'current_observation', {'name': 'Busy one'}), \
+             patch.object(sched, 'start_observation') as start:
+            resp = client.post('/api/simulator/schedule', json={
+                'l': 42.7, 'b': 1.4, 'mode': 'hi',
+                'epoch_utc': datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
+                'integration_time_s': 60.0})
+        assert resp.status_code == 409 and 'Busy one' in resp.get_json()['error']
+        start.assert_not_called()
+
+    def test_a_pinned_clock_books_the_next_whole_minute_and_at_least_two(self, client):
+        """A pinned clock a few minutes ahead is a booking: the next whole
+        minute with 45 s in hand, and a spectrum of at least two minutes."""
+        now = datetime.now()
+        epoch = datetime.now(timezone.utc) + timedelta(minutes=5)
+        resp = client.post('/api/simulator/schedule', json={
+            'l': 42.7, 'b': 1.4, 'mode': 'hi',
+            'epoch_utc': epoch.strftime('%Y-%m-%dT%H:%M:%SZ'),
+            'integration_time_s': 60.0})
+        d = resp.get_json()
+        assert resp.status_code == 200 and d['success'] and not d['started'], d
+        e = d['entry']
+        start = datetime.strptime(e['start_date'] + ' ' + e['start_time'], '%Y-%m-%d %H:%M')
+        assert start.second == 0 and (start - now).total_seconds() >= sched.SIMULATOR_LEAD_S
+        assert e['duration_minutes'] == sched.SIMULATOR_MIN_SPECTRUM_MIN
+
+    def test_a_clock_in_the_past_is_refused_not_booked_dead(self, client):
+        past = datetime.now(timezone.utc) - timedelta(hours=1)
+        resp = client.post('/api/simulator/schedule', json={
+            'l': 42.7, 'b': 1.4, 'mode': 'hi',
+            'epoch_utc': past.strftime('%Y-%m-%dT%H:%M:%SZ'), 'integration_time_s': 600.0})
+        assert resp.status_code == 409
+        assert 'in the past' in resp.get_json()['error']
+        assert client.get('/api/schedule').get_json() == []
 
     def test_the_simulator_is_refused_a_clash(self, client):
         """Same refusal as any other save: the entry must not be stored."""
         first = client.post('/api/simulator/schedule', json={
             'l': 10.0, 'b': 0.0, 'mode': 'hi',
-            'epoch_utc': '2026-09-01T12:00:00Z', 'integration_time_s': 3600.0})
+            'epoch_utc': (datetime.now(timezone.utc) + timedelta(days=6)).replace(
+                hour=12, minute=0, second=0, microsecond=0).strftime('%Y-%m-%dT%H:%M:%SZ'),
+            'integration_time_s': 3600.0})
         assert first.get_json()['success']
         second = client.post('/api/simulator/schedule', json={
             'l': 20.0, 'b': 0.0, 'mode': 'hi',
-            'epoch_utc': '2026-09-01T12:30:00Z', 'integration_time_s': 600.0})
+            'epoch_utc': (datetime.now(timezone.utc) + timedelta(days=6)).replace(
+                hour=12, minute=30, second=0, microsecond=0).strftime('%Y-%m-%dT%H:%M:%SZ'),
+            'integration_time_s': 600.0})
         assert second.status_code == 409
         assert len(client.get('/api/schedule').get_json()) == 1
 
@@ -2615,6 +2703,15 @@ class TestOneSitePosition:
             instrument.beam_fwhm_deg(instrument.DISH_M), abs=5e-4)
         assert meta["defaults"]["dish_m"] == instrument.DISH_M
         assert meta["site"]["name"] == instrument.SITE_NAME
+        # The fixed instrument (issue #27): the simulator draws the band a
+        # scheduled observation will record, so the bundle must carry the
+        # same one tuning.py defines.
+        import tuning
+        inst = tuning.fixed_instrument()
+        assert meta["instrument"]["lo_hz"] == pytest.approx(inst["lo_hz"])
+        assert meta["instrument"]["sample_rate_hz"] == pytest.approx(inst["sample_rate_hz"])
+        assert meta["instrument"]["h1_band_hz"] == pytest.approx(inst["h1_band_hz"])
+        assert meta["instrument"]["continuum_band_hz"] == pytest.approx(inst["continuum_band_hz"])
         assert meta["site"]["lat"] == pytest.approx(instrument.SITE_LAT_DEG)
         assert meta["site"]["lon"] == pytest.approx(instrument.SITE_LON_DEG)
         assert meta["site"]["height"] == pytest.approx(instrument.SITE_HEIGHT_M)

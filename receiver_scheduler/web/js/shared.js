@@ -38,10 +38,8 @@
             });
         });
 
-        document.getElementById('obsForm').addEventListener('submit', e => {
-            e.preventDefault();
-            saveObservation();
-        });
+        // The form's submit listener lives in boot.js; a second copy here made
+        // every Save run twice (idempotent, so harmless, but pointless).
 
         function localDateStr(d) {
             return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
@@ -95,6 +93,28 @@
         function playStartSound() { playTone([440, 554, 659], 0.4); }
 
         function playStopSound()  { playTone([659, 554, 440], 0.4); }
+
+        // The fixed instrument (issue #27), written into any element that
+        // wants to show it. Fetched once and remembered (instrumentText, in
+        // state.js): it changes only when the Configuration tab saves it,
+        // which clears the memory.
+        function showInstrument(elementId) {
+            const el = document.getElementById(elementId);
+            if (!el) return;
+            if (instrumentText) { el.innerHTML = instrumentText; return; }
+            fetch('/api/instrument').then(r => r.json()).then(d => {
+                if (!d.success) { el.textContent = d.error || 'instrument unknown'; return; }
+                const f = (v, n) => Number(v).toFixed(n);
+                instrumentText =
+                    'LO ' + f(d.lo_mhz, 6) + ' MHz · ' + f(d.sample_rate_mhz, 1) + ' Msps · gain ' + f(d.gain_db, 0) + ' dB<br>'
+                    + 'H I sub-band ' + f(d.h1_band_mhz[0], 3) + ' – ' + f(d.h1_band_mhz[1], 3) + ' MHz, '
+                    + d.h1_channels + ' ch × ' + f(d.h1_channel_khz, 2) + ' kHz<br>'
+                    + 'continuum ' + f(d.continuum_band_mhz[0], 3) + ' – ' + f(d.continuum_band_mhz[1], 3) + ' MHz, '
+                    + d.wide_channels + ' ch × ' + f(d.wide_channel_khz, 2) + ' kHz'
+                    + (d.overridden && d.overridden.length ? '<br><span style="color:#ffa502;">overridden in config: ' + d.overridden.join(', ') + '</span>' : '');
+                el.innerHTML = instrumentText;
+            }).catch(() => { el.textContent = 'instrument unavailable'; });
+        }
 
         function updateStatus() {
             fetch('/api/status').then(r => r.json()).then(data => {
@@ -213,7 +233,7 @@
             document.getElementById('tab-' + name).classList.add('active');
             if (name === 'config') loadConfig();
             if (name === 'log') loadLog();
-            if (name === 'sunscan') { pollSunScan(); pollCalDay(); loadCalModel(); }
+            if (name === 'sunscan') { pollSunScan(); pollCalDay(); loadCalModel(); showInstrument('ssInstrument'); }
             // Leaving the tab stops the loop; scheduleCameraRefresh cancels
             // itself whenever the camera tab is not the one on screen.
             if (name === 'horizon') { pollHorizon(); loadHorizonProfiles(); }

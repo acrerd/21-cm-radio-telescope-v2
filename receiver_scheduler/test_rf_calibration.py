@@ -307,7 +307,15 @@ def test_the_reduction_reports_the_total_integration():
                                           "data", "rf_gain_calibration_*.h5")))
     if not files:
         pytest.skip("no calibration observation on disk")
-    red = R.reduce_for_fit(files[0], 36.0, 40.0)
+    try:
+        red = R.reduce_for_fit(files[0], 36.0, 40.0)
+    except ValueError as exc:
+        # An archived field from another tuning, with no template for it
+        # on this machine (recordings from before the fixed instrument are
+        # not carried).
+        if "not bandpass corrected" in str(exc):
+            pytest.skip(str(exc))
+        raise
     assert red["tau_total_s"] > 0
     # Binned onto the model's grid, so the channel width is the model's.
     dnu = float(np.abs(np.median(np.diff(red["sim_freq_hz"]))))
@@ -396,7 +404,12 @@ def test_the_known_interference_line_is_rejected_from_a_real_run():
                         "rf_gain_calibration_20260824_180418.h5")
     if not os.path.exists(path):
         pytest.skip("the 2026-08-24 run is not on disk")
-    red = R.reduce_for_fit(path, 36.53, 56.9)
+    try:
+        red = R.reduce_for_fit(path, 36.53, 56.9)
+    except ValueError as exc:
+        if "not bandpass corrected" in str(exc):
+            pytest.skip("that run's tuning has no template here: " + str(exc))
+        raise
     hits = [x for x in red["rfi_found"] if abs(x["freq_hz"] - 1420.2790e6) < 5e3]
     assert hits, "the 1420.2790 MHz interference was not caught"
     assert hits[0]["sigma"] > 10

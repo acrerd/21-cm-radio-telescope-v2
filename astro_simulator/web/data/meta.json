@@ -16,5 +16,20 @@
     "npol": 1,
     "fwhm": 5.164,
     "gain_sigma": 0.00023
+  },
+  "instrument": {
+    "lo_hz": 1418905752.0,
+    "sample_rate_hz": 8000000.0,
+    "gain_db": 40.0,
+    "h1_band_hz": [
+      1419005752.0,
+      1422305752.0
+    ],
+    "h1_channel_hz": 3906.25,
+    "continuum_band_hz": [
+      1415705752.0,
+      1418805752.0
+    ],
+    "wide_channel_hz": 7812.5
   }
 }

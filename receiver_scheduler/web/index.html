@@ -93,7 +93,18 @@
                         <label>Beam FWHM Hint (degrees)</label>
                         <input autocomplete="off" type="number" id="ssBeamFwhm" min="0.5" max="20" step="0.1" value="3.0">
                     </div>
-                    <div class="section-title">Receiver Settings</div>
+                    <div class="section-title">Instrument (fixed)</div>
+                    <div id="ssInstrument" class="mono" style="padding:8px 12px; margin-bottom:10px; background:#0f0f23; border:1px solid #333; border-radius:6px; color:#888; font-size:12px;">
+                        Loading&hellip;
+                    </div>
+                    <div style="color:#666; font-size:12px; margin-bottom:12px; max-width:70ch;">
+                        Every scheduled observation records with this tuning, and every
+                        recording carries an H I sub-band and a continuum product from it. It
+                        is changed on the Configuration tab, with a warning, and the bandpass and
+                        gain must be re-measured afterwards. The settings below apply only to
+                        the Sun scan's power meter and the manual console receiver.
+                    </div>
+                    <div class="section-title">Receiver Settings (Sun scan and console receiver)</div>
                     <div class="form-group">
                         <label>Integration Time per Point <span class="unit">(s)</span></label>
                         <input autocomplete="off" type="number" id="ssIntegration" min="0.1" max="60" step="0.1" value="3.0">
@@ -481,23 +492,13 @@
                     </div>
                 </div>
                 <div class="section-title">Receiver Settings</div>
+                <div class="form-group wide" style="margin-bottom:8px;">
+                    <label>Instrument <span class="unit">(fixed)</span></label>
+                    <div id="obvTuning" class="mono" style="color:#888; font-size:12px;">
+                        Loading the instrument&hellip;
+                    </div>
+                </div>
                 <div class="form-grid">
-                    <div class="form-group">
-                        <label>Center Frequency <span class="unit">(MHz)</span></label>
-                        <input autocomplete="off" type="number" id="obvCenterFreq" oninput="scheduleObserveTuning()" step="any" value="1420.405752">
-                    </div>
-                    <div class="form-group">
-                        <label>Bandwidth <span class="unit">(MHz)</span></label>
-                        <input autocomplete="off" type="number" id="obvBandwidth" oninput="scheduleObserveTuning()" step="0.1" value="2.4">
-                    </div>
-                    <div class="form-group">
-                        <label>Gain <span class="unit">(dB)</span></label>
-                        <input autocomplete="off" type="number" id="obvGain" min="0" max="80" value="40">
-                    </div>
-                    <div class="form-group">
-                        <label>Channels</label>
-                        <input autocomplete="off" type="number" id="obvChannels" oninput="scheduleObserveTuning()" min="2" max="65536" step="1" value="4096">
-                    </div>
                     <div class="form-group">
                         <label>Integration per record <span class="unit">(s)</span></label>
                         <input autocomplete="off" type="number" id="obvIntegration" min="0.1" step="0.1" value="3.0">
@@ -715,6 +716,53 @@
                     <input autocomplete="off" type="text" id="cfgReceiverPythonPath" placeholder="/home/astro/radioconda/bin/python">
                 </div>
 
+                <div class="section-title">Instrument</div>
+                <div id="cfgInstrument" class="mono" style="padding:8px 12px; margin-bottom:6px; background:#0f0f23; border:1px solid #333; border-radius:6px; color:#888; font-size:12px;">
+                    Loading&hellip;
+                </div>
+                <div style="color:#ffa502; font-size:12px; margin-bottom:10px; max-width:70ch;">
+                    &#9888; Every scheduled observation records with this tuning, and the bandpass
+                    templates and the gain calibration belong to it. Changing anything here
+                    makes every recording after it uncalibrated (counts, not kelvin) until the
+                    bandpass and the gain are re-measured on the RF Calibration tab, and puts the
+                    simulator's band out of step until <code>make_web_data.py --meta</code> is
+                    re-run. The defaults are in <code>tuning.py</code> with the reasoning; leave
+                    a box empty to use its default.
+                </div>
+                <div class="form-grid">
+                    <div class="form-group">
+                        <label>LO <span class="unit">(MHz)</span></label>
+                        <input autocomplete="off" type="number" id="cfgInstLo" step="any" placeholder="1418.905752">
+                    </div>
+                    <div class="form-group">
+                        <label>Sample rate <span class="unit">(Msps)</span></label>
+                        <input autocomplete="off" type="number" id="cfgInstRate" step="any" placeholder="8">
+                    </div>
+                    <div class="form-group">
+                        <label>Gain <span class="unit">(dB)</span></label>
+                        <input autocomplete="off" type="number" id="cfgInstGain" step="any" min="0" max="80" placeholder="40">
+                    </div>
+                    <div class="form-group">
+                        <label>H I band low <span class="unit">(MHz)</span></label>
+                        <input autocomplete="off" type="number" id="cfgInstH1Lo" step="any" placeholder="1419.005752">
+                    </div>
+                    <div class="form-group">
+                        <label>H I band high <span class="unit">(MHz)</span></label>
+                        <input autocomplete="off" type="number" id="cfgInstH1Hi" step="any" placeholder="1422.305752">
+                    </div>
+                    <div class="form-group">
+                        <label>H I channels</label>
+                        <input autocomplete="off" type="number" id="cfgInstH1Ch" step="1" min="64" placeholder="1024">
+                    </div>
+                    <div class="form-group">
+                        <label>Continuum channels</label>
+                        <input autocomplete="off" type="number" id="cfgInstWideCh" step="1" min="64" placeholder="1024">
+                    </div>
+                </div>
+                <div style="margin-bottom:14px;">
+                    <button class="btn btn-secondary" title="Clear every instrument override so the defaults in tuning.py apply again" onclick="resetInstrumentConfig()">Instrument defaults</button>
+                </div>
+
                 <div class="section-title">Data Output</div>
                 <div class="form-group">
                     <label>Output Folder</label>
@@ -761,13 +809,18 @@
                 <h2 class="modal-title" id="modalTitle">Add Observation</h2>
                 <button title="Close without saving." class="close-btn" onclick="closeModal()">&times;</button>
             </div>
-            <form id="obsForm">
+            <!-- novalidate: the browser's own constraint validation blocks a
+                 submit with a tooltip on the offending field - or with no
+                 message at all when that field is hidden, as several of these
+                 are depending on the coordinate system. saveObservation does
+                 the checking and says what is wrong. -->
+            <form id="obsForm" novalidate>
                 <input autocomplete="off" type="hidden" id="obsIndex" value="-1">
 
                 <div class="form-grid">
                     <div class="form-group wide">
                         <label>Observation Name</label>
-                        <input autocomplete="off" type="text" id="obsName" required placeholder="e.g., Galactic Center Survey">
+                        <input autocomplete="off" type="text" id="obsName" placeholder="e.g., Galactic Center Survey (a famous target fills this in)">
                     </div>
                 </div>
                 <div class="form-group">
@@ -976,29 +1029,18 @@
                 </div>
 
                 <div class="section-title">Receiver Settings</div>
+                <div class="form-group wide" style="margin-bottom:8px;">
+                    <label>Instrument <span class="unit">(fixed)</span></label>
+                    <div id="obsInstrumentNote" class="mono" style="color:#888; font-size:12px;">
+                        Loading the instrument&hellip;
+                    </div>
+                    <span style="color:#666; font-size:12px;">
+                        The tuning is not the observation's to choose: every recording carries
+                        an H I sub-band and a continuum product from the same fixed band.
+                        Change it in <code>scheduler_config.json</code>, deliberately.
+                    </span>
+                </div>
                 <div class="form-grid">
-                    <div class="form-group">
-                        <label>Center Frequency <span class="unit">(MHz)</span></label>
-                        <input autocomplete="off" type="number" id="obsCenterFreq" step="any" required value="1420.405752">
-                    </div>
-                    <div class="form-group">
-                        <label>Bandwidth <span class="unit">(MHz)</span></label>
-                        <input autocomplete="off" type="number" id="obsBandwidth" step="0.1" required value="2.4">
-                    </div>
-                    <div class="form-group">
-                        <label>Gain <span class="unit">(dB)</span></label>
-                        <input autocomplete="off" type="number" id="obsGain" min="0" max="80" required value="40">
-                    </div>
-                    <div class="form-group">
-                        <label>Channels (FFT)</label>
-                        <select autocomplete="off" id="obsChannels">
-                            <option value="1024">1024</option>
-                            <option value="2048">2048</option>
-                            <option value="4096" selected>4096</option>
-                            <option value="8192">8192</option>
-                            <option value="16384">16384</option>
-                        </select>
-                    </div>
                     <div class="form-group">
                         <label>Integration Time <span class="unit">(s)</span></label>
                         <input autocomplete="off" type="number" id="obsIntegration" step="0.1" min="0.1" required value="3.0">

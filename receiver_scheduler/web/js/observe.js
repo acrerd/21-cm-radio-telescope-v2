@@ -73,9 +73,6 @@
                 document.getElementById('obvMode').value = p.mode;
                 document.getElementById('obvL').value = p.l;
                 document.getElementById('obvB').value = p.b;
-                document.getElementById('obvCenterFreq').value = p.center_freq_mhz;
-                document.getElementById('obvBandwidth').value = p.bandwidth_mhz;
-                document.getElementById('obvChannels').value = p.channels;
                 document.getElementById('obvDuration').value = p.duration_minutes;
                 // Null for a tracked spectrum: there tau is the length of the
                 // observation, which has gone into the duration, and how finely
@@ -129,10 +126,6 @@
                 coord1_deg: solar ? 0 : l, coord1_min: 0, coord1_sec: 0,
                 coord2_deg: solar ? 0 : b, coord2_min: 0, coord2_sec: 0,
                 duration_minutes: Math.round(num('obvDuration', 30)),
-                center_freq_mhz: num('obvCenterFreq', 1420.405752),
-                bandwidth_mhz: num('obvBandwidth', 2.4),
-                gain_db: num('obvGain', 40),
-                channels: Math.round(num('obvChannels', 4096)),
                 integration_time_s: num('obvIntegration', 3.0),
                 sdr_type: document.getElementById('obvSdr').value,
                 filename: document.getElementById('obvFilename').value.trim(),
@@ -308,13 +301,26 @@
                         + (x.drift_frame ? ' (' + escapeHtml(x.drift_frame) + ')' : ''));
                 }
                 if (x.created) row('started', escapeHtml(x.created.slice(0, 19).replace('T', ' ')) + ' UTC');
-                row('records', x.records + ' \u00d7 ' + f(x.integration_s, 0) + ' s, ' + x.channels + ' ch');
+                row('records', x.records + ' \u00d7 ' + f(x.integration_s, 0) + ' s, ' + x.channels + ' ch'
+                    + (x.wide_channels ? ' H I + ' + x.wide_channels + ' ch continuum' : ''));
+                if (x.h1_band_mhz) {
+                    // A fixed-instrument recording: both products, their bands.
+                    row('H I band', f(x.h1_band_mhz[0], 3) + ' \u2013 ' + f(x.h1_band_mhz[1], 3) + ' MHz');
+                    row('continuum', f(x.continuum_band_mhz[0], 3) + ' \u2013 ' + f(x.continuum_band_mhz[1], 3) + ' MHz'
+                        + (x.wide_units === 'K' ? ', kelvin' : ', counts'));
+                }
+                if (x.overflows_total != null) {
+                    row('samples lost', x.overflows_total
+                        ? '<span style="color:#ff4757;">' + x.overflows_total + ' overflows \u2014 records affected are averaged over fewer samples</span>'
+                        : '<span style="color:#2ed573;">none (no overflows)</span>');
+                }
                 row('sky centre', f(x.sky_center_mhz, 3) + ' MHz');
                 row('LO', f(x.lo_mhz, 3) + ' MHz');
                 row('sample rate', f(x.sample_rate_mhz, 2) + ' Msps'
                     + (x.channel_khz != null ? ' (' + f(x.channel_khz, 2) + ' kHz/ch)' : ''));
                 if (x.band_mhz) row('band', f(x.band_mhz[0], 2) + ' \u2013 ' + f(x.band_mhz[1], 2) + ' MHz');
                 if (x.fit_window_mhz) row('fit window', f(x.fit_window_mhz[0], 2) + ' \u2013 ' + f(x.fit_window_mhz[1], 2) + ' MHz');
+                if (x.velocity_frame) row('velocity frame', escapeHtml(x.velocity_frame.replace(/^velocity axis: /, '')));
                 row('H I line', f(x.h1_line_mhz, 3) + ' MHz: '
                     + (x.h1_in_band ? '<span style="color:#2ed573;">in band</span>' : '<span style="color:#ff4757;">not in band</span>')
                     + (x.h1_in_fit_window ? ', in fit window' : ', outside fit window')
@@ -419,39 +425,11 @@
             document.getElementById('obsModal').classList.add('active');
         }
 
+        // The tuning is the fixed instrument's (issue #27); the tab shows it
+        // and offers nothing to change. The old per-observation tuning
+        // preview (/api/tuning) went with the boxes it described.
         function refreshObserveTuning() {
-            const params = new URLSearchParams({
-                center_freq_mhz: document.getElementById('obvCenterFreq').value || 1420.405752,
-                bandwidth_mhz: document.getElementById('obvBandwidth').value || 2.4,
-                channels: document.getElementById('obvChannels').value || 4096,
-            });
-            fetch('/api/tuning?' + params).then(r => r.json()).then(p => {
-                const box = document.getElementById('obvTuning');
-                if (!p.success) { box.textContent = p.error || 'Tuning unavailable'; return; }
-                const mhz = v => (v / 1e6).toFixed(6);
-                let html = '<div style="color:#00d4ff; margin-bottom:4px;">The receiver will be tuned to '
-                         + mhz(p.tuned_center_freq_hz) + ' MHz</div>';
-                html += '<div>' + (p.lo_offset_hz / 1e6).toFixed(2) + ' MHz above '
-                     + mhz(p.sky_center_freq_hz) + ' MHz, so the DC artefact lands clear of the line '
-                     + 'instead of on top of it.</div>';
-                if (p.sample_rate_raised) {
-                    html += '<div style="color:#ffa502; margin-top:4px;">Bandwidth raised '
-                         + (p.requested_sample_rate_hz / 1e6).toFixed(2) + ' &rarr; '
-                         + (p.sample_rate_hz / 1e6).toFixed(2) + ' MHz to keep the line in the flat '
-                         + 'part of the band';
-                    if (p.channels !== p.requested_channels) {
-                        html += ', and channels ' + p.requested_channels + ' &rarr; ' + p.channels
-                             + ' to hold ' + (p.channel_width_hz / 1e3).toFixed(2) + ' kHz resolution';
-                    }
-                    html += '.</div>';
-                }
-                box.innerHTML = html;
-            }).catch(() => {});
-        }
-
-        function scheduleObserveTuning() {
-            if (obvTuningTimer) clearTimeout(obvTuningTimer);
-            obvTuningTimer = setTimeout(refreshObserveTuning, 250);
+            showInstrument('obvTuning');
         }
 
         // ---- Solar flux, live -------------------------------------------

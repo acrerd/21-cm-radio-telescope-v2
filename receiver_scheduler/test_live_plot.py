@@ -416,6 +416,11 @@ def test_the_live_recording_can_be_plotted_and_listed(client, no_run, tmp_path, 
     folder = tmp_path / "observations"; folder.mkdir()
     live = str(folder / "20260826_120000_track.h5")
     freq = np.linspace(1419.5e6, 1421.5e6, 64)
+    # The scheduler always hands the receiver its metadata; without it a
+    # file has no coordinate system and is taken for a drift scan, which a
+    # single-product file cannot be plotted as.
+    monkeypatch.setenv("H1_OBS_METADATA",
+                       '{"coord_system": "galactic", "observation_mode": "track"}')
     hf = rx.init_hdf5(live, freq, 64, "demo", 1420.4e6, 2.0e6, 0.0)
     try:
         for i in range(3):
@@ -468,7 +473,10 @@ def test_fit_runs_end_to_end_on_a_real_calibration_field(client, no_run):
         pytest.skip("no bandpass template applies to that file here")
     assert r.status_code == 200, d
     f = d["fit"]
-    assert 1e-6 < f["gain_counts_per_k"] < 1e-3
+    # The counts scale is the flowgraph's - the fixed instrument's sums
+    # linear power, the old graph went through dB - so only its sign is
+    # a property of the fit.
+    assert f["gain_counts_per_k"] > 0
     assert 100 < f["t_sys_k"] < 1000
     assert d["compare"] is None or "gain_ratio" in d["compare"]
     assert client.get("/api/observe/fit/plot").status_code == 200
@@ -518,6 +526,12 @@ def test_a_drift_scan_gets_the_total_power_fit(client, no_run):
     predicted curve: two parameters, the bandpass shape inside the gain. The
     result is drawn and labelled approximate, and cannot be applied as the
     per-channel calibration.
+
+    Since the fixed instrument (issue #27) the continuum is the wide
+    product, and this file - recorded before it, with one product - is not
+    carried: the fit refuses it and says why, rather than improvising a
+    continuum out of a band that holds the line. (It fitted at correlation
+    0.86 with the line in, 0.69 with the line cut out, for the record.)
     """
     here = os.path.dirname(os.path.abspath(__file__))
     path = os.path.join(here, "data", "observations", "Cas A drift scan.h5")
@@ -527,15 +541,8 @@ def test_a_drift_scan_gets_the_total_power_fit(client, no_run):
                               "output_file": path}
     r = client.post("/api/observe/fit")
     d = r.get_json()
-    assert r.status_code == 200, d
-    f = d["fit"]
-    assert f["kind"] == "total_power" and f["applicable"] is False
-    assert f["approximate"]
-    assert 100 < f["t_sys_k"] < 1000 and f["gain_counts_per_k"] > 0
-    assert f["correlation"] > 0.7, "Cas A and the plane should be plainly there"
-    assert client.get("/api/observe/fit/plot").status_code == 200
-    assert client.post("/api/observe/fit/apply").status_code == 400, \
-        "a total-power gain must never become the per-channel calibration"
+    assert r.status_code == 400, d
+    assert "no continuum product" in d["error"]
 
 
 
@@ -550,26 +557,35 @@ def test_recording_details_say_whether_the_line_was_in_band(client):
     assert d["success"], d
     x = d["details"]
     assert x["lo_mhz"] == pytest.approx(1419.8)
-    assert x["h1_in_band"] and x["h1_in_fit_window"]
+    assert x["h1_in_band"]
+    # One product, from before the fixed instrument: no continuum window.
+    assert x["products"] == ["h1"] and x["fit_window_mhz"] is None
+    assert not x["h1_in_fit_window"]
     assert x["h1_offset_from_lo_mhz"] == pytest.approx(0.606, abs=0.01)
     assert x["units"] == "counts" and x["mode"] == "drift"
     assert x["records"] == 73 and x["integration_s"] == pytest.approx(240, abs=1)
     assert client.get("/api/observe/info?file=../secret.h5").status_code == 404
 
 
-def test_the_total_power_band_window_leaves_the_skirts_and_the_lo_out():
-    """80% of the band, centred, less the LO artefact - measured on the Cas A
-    scan the response is 89% at this edge and falls to 41% at the band edge."""
+def test_the_total_power_band_window_is_the_continuum_band_less_the_spur_and_the_line():
+    """The continuum is measured over the recording's own continuum band
+    (fixed instrument, issue #27), never over the H I band, and never on the
+    LO spur."""
     import numpy as np
     import drift_fit
-    freq = np.linspace(1417.55e6, 1422.05e6, 4500)
-    header = {"center_freq_hz": 1419.8e6, "sample_rate_hz": 4.5e6,
-              "dc_artefact_freq_hz": 1419.8e6}
+    import tuning
+    inst = tuning.fixed_instrument()
+    freq = inst["lo_hz"] + np.linspace(-4e6, 4e6, 1024, endpoint=False)
+    header = {"center_freq_hz": inst["lo_hz"], "sample_rate_hz": inst["sample_rate_hz"],
+              "dc_artefact_freq_hz": inst["lo_hz"],
+              "continuum_band_hz": inst["continuum_band_hz"],
+              "h1_band_hz": inst["h1_band_hz"]}
     lo, hi, keep = drift_fit._band_window(header, freq)
-    assert (lo, hi) == pytest.approx((1418.0e6, 1421.6e6))
-    assert not keep[np.abs(freq - 1419.8e6) < 30e3].any(), "the LO artefact is masked"
+    assert (lo, hi) == pytest.approx(tuple(inst["continuum_band_hz"]))
+    assert not keep[np.abs(freq - inst["lo_hz"]) < 30e3].any(), "the LO artefact is masked"
     assert not keep[freq < lo].any() and not keep[freq > hi].any()
-    assert 0.76 < keep.mean() < 0.81
+    assert not keep[(freq >= inst["h1_band_hz"][0]) & (freq <= inst["h1_band_hz"][1])].any()
+    assert keep.sum() == pytest.approx(3.1e6 / (8e6 / 1024), abs=3)
 
 
 def test_the_selected_recording_can_be_downloaded(client):

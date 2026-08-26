@@ -12,6 +12,7 @@
 
         let currentObs = null;
         let statusPolls = 0;   // counts 2 s status polls; every 15th re-reads the schedule list
+        let instrumentText = null;   // the fixed instrument's description, once fetched (shared.js)
 
         const COORD_CONFIG = {
             altaz: {
@@ -39,10 +40,6 @@
             coord2_deg: 180, coord2_min: 0, coord2_sec: 0,
             start_date: "", start_time: "12:00",
             duration_minutes: 30,
-            center_freq_mhz: 1420.405752,
-            bandwidth_mhz: 2.4,
-            gain_db: 40,
-            channels: 4096,
             integration_time_s: 3.0,
             filename: "",
             sdr_type: "b210",

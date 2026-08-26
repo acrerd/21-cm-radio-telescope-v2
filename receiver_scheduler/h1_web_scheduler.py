@@ -119,6 +119,17 @@ _DEFAULT_CONFIG = {
     "observer_lon": SITE_LON_DEG,
     "observer_elevation": 50,
     "min_elevation": 10.0,
+    # The fixed instrument (issue #27): the B210's tuning is not a
+    # per-observation choice. These are the numbers every scheduled
+    # observation records with, and they are normally never touched; the
+    # defaults and the reasoning are in tuning.py. Unset (None) means the
+    # default. Shown read-only on the Settings tab.
+    "receiver_lo_hz": None,
+    "receiver_sample_rate_hz": None,
+    "receiver_gain_db": None,
+    "receiver_wide_channels": None,
+    "receiver_h1_band_hz": None,
+    "receiver_h1_channels": None,
     # `obstruction_sectors` used to live here: a hand-entered
     # [az_min, az_max, min_sun_alt] list, in practice the single blanket entry
     # [[45, 120, 30]] read off one calibration day. It was always a stand-in
@@ -1699,6 +1710,9 @@ horizon_cancel = threading.Event()
 # and their results are small stored artefacts rather than a profile.
 rf_thread: Optional[threading.Thread] = None
 rf_cancel = threading.Event()
+# The receiver a running RF calibration launched, so a scheduler shutdown can
+# terminate it rather than orphan it on the radio (2026-08-26).
+rf_receiver_process = None
 rf_state: dict = {
     "running": False,
     "job": None,
@@ -2059,8 +2073,10 @@ def start_observation(obs: dict, duration_override: int = None) -> bool:
         output_file = generate_filename(obs)
         env = os.environ.copy()
         env['H1_OUTPUT_FILE'] = output_file
-        env['H1_CENTER_FREQ'] = str(obs.get('center_freq_mhz', 1420.405752) * 1e6)
-        env['H1_FFT_SIZE'] = str(obs.get('channels', 4096))
+        # The fixed instrument (issue #27): the tuning is not the entry's to
+        # choose. Whatever an old entry still carries in center_freq_mhz,
+        # bandwidth_mhz, channels or gain_db is ignored.
+        env['H1_INSTRUMENT'] = json.dumps(instrument_in_force())
         env['H1_INTEGRATION_TIME'] = str(obs.get('integration_time_s', 3.0))
         env['H1_OBS_METADATA'] = json.dumps({
             'obs_name': obs.get('name', ''),
@@ -2125,8 +2141,6 @@ def start_observation(obs: dict, duration_override: int = None) -> bool:
             # what it is for.
             '--headless',
             '--sdr', obs.get('sdr_type', 'b210'),
-            '--gain', str(obs.get('gain_db', 40)),
-            '--sample-rate', str(obs.get('bandwidth_mhz', 2.4) * 1e6),
         ]
 
         # Give the receiver its own log file rather than letting it inherit the
@@ -2377,6 +2391,15 @@ def stop_observation() -> bool:
         if SRT_CONTROLLER_URL and current_observation and current_observation.get('calibrator'):
             srt_set_calibrator(False)
 
+        # This booking's slot is finished with, however the run ended -
+        # duration complete or stopped by hand. Without this a slot that was
+        # still due restarted the run within ten seconds of a stop (issue
+        # #25, twice on 2026-08-26), and a run started from the simulator
+        # could not be listed in the schedule at all.
+        key = _slot_key(current_observation)
+        if key:
+            finished_slots.add(key)
+
         # Return telescope to home/stow if requested
         if SRT_CONTROLLER_URL and current_observation:
             end_action = current_observation.get('end_action', 'none')
@@ -2542,6 +2565,20 @@ def _record_start_failure(obs: dict, reason: str):
                     obs.get('name'), reason, count, MAX_START_FAILURES)
 
 
+# Slots whose run has ended - completed or stopped - and must not be started
+# again by the scheduler thread while the slot is still nominally due. Keyed
+# by the booking's identity; pruned to the schedule whenever it changes.
+finished_slots = set()
+
+
+def _slot_key(obs):
+    """(start_date, start_time, name) for a booking, or None for a run that
+    carries no slot (Start Now from the Observe tab)."""
+    if not obs or not obs.get('start_date') or not obs.get('start_time'):
+        return None
+    return (str(obs.get('start_date')), str(obs.get('start_time')), str(obs.get('name', '')))
+
+
 def _same_booking(running, due, running_name=''):
     """Is the observation running the very booking that is due?
 
@@ -2601,6 +2638,10 @@ def scheduler_thread():
                              date or now.strftime('%Y-%m-%d'), at,
                              "" if enabled else " (disabled)")
                 last_schedule_seen = summary
+                # Forget finished slots that are no longer in the schedule -
+                # deleted, or edited into a different booking.
+                finished_slots.intersection_update(
+                    {k for k in (_slot_key(o) for o in schedule) if k})
 
             # Check if current observation should end
             with process_lock:
@@ -2654,6 +2695,9 @@ def scheduler_thread():
             due_remaining = None
             for obs in schedule:
                 if not obs.get('enabled', True):
+                    continue
+                # A slot whose run has already ended is not due again.
+                if _slot_key(obs) in finished_slots:
                     continue
                 obs_date = obs.get('start_date', '')
                 obs_time = obs.get('start_time', '')
@@ -3332,6 +3376,10 @@ def api_observe_fit():
             cal = rf_calibration.calibrate_observation(path, glon, glat)
             cal['source_file'] = os.path.basename(path)
             observation_plot.plot_gain_check(cal, OBSERVE_FIT_PLOT)
+    except KeyError as exc:
+        # A recording without the product the fit needs - one from before
+        # the fixed instrument asked for as continuum.
+        return jsonify({'success': False, 'error': str(exc).strip('"\'')}), 400
     except (ValueError, RuntimeError) as exc:
         return jsonify({'success': False, 'error': str(exc)}), 409
     except Exception as exc:                              # noqa: BLE001
@@ -3511,8 +3559,7 @@ def _rf_observe(name, glon, glat, duration_s, sdr_type="b210",
 
     env = os.environ.copy()
     env["H1_OUTPUT_FILE"] = out
-    env["H1_CENTER_FREQ"] = str(1420.405752e6)
-    env["H1_FFT_SIZE"] = str(channels)
+    env["H1_INSTRUMENT"] = json.dumps(instrument_in_force())
     env["H1_INTEGRATION_TIME"] = str(integration_s)
     env["H1_OBS_METADATA"] = json.dumps({
         "obs_name": name, "coord_system": "galactic",
@@ -3527,20 +3574,38 @@ def _rf_observe(name, glon, glat, duration_s, sdr_type="b210",
     rf_state["stage_ends_utc"] = (
         datetime.now(timezone.utc) + timedelta(seconds=duration_s)
     ).isoformat(timespec="seconds")
+    global rf_receiver_process
+    # Its output goes to a log beside the recording, as an observation's
+    # does: a receiver that could not open the radio says so there, and on
+    # 2026-08-26 that message went to DEVNULL while a demo-noise fit was
+    # stored as the gain.
+    receiver_log = open(os.path.splitext(out)[0] + ".receiver.log", "w")
     proc = subprocess.Popen(
-        [python_exe, RECEIVER_SCRIPT, "--sdr", sdr_type, "--headless",
-         "--sample-rate", str(bandwidth_mhz * 1e6), "--gain", "40"],
+        [python_exe, RECEIVER_SCRIPT, "--sdr", sdr_type, "--headless"],
         env=env, cwd=_SCRIPT_DIR,
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        stdout=receiver_log, stderr=subprocess.STDOUT)
+    receiver_log.close()
+    # Registered so a scheduler shutdown can take it down with it: the one
+    # orphaned by a restart on 2026-08-26 kept the B210 for an hour and
+    # every later run silently got demo noise.
+    rf_receiver_process = proc
     try:
         deadline = time.time() + duration_s
         while time.time() < deadline:
             if rf_cancel.is_set():
                 raise RuntimeError("cancelled while recording")
             if proc.poll() is not None:
-                raise RuntimeError("the receiver exited early (%s)" % proc.returncode)
+                tail = ""
+                try:
+                    with open(os.path.splitext(out)[0] + ".receiver.log") as fh:
+                        tail = " ".join(fh.read().strip().splitlines()[-3:])
+                except OSError:
+                    pass
+                raise RuntimeError("the receiver exited early (%s)%s"
+                                   % (proc.returncode, (": " + tail) if tail else ""))
             time.sleep(0.5)
     finally:
+        rf_receiver_process = None
         if proc.poll() is None:
             proc.terminate()
             try:
@@ -3605,12 +3670,15 @@ def _run_rf_calibration(job, params):
             path = _rf_observe("Bandpass template", float(glon), float(glat),
                                duration_s, sdr_type, slew=False)
             rf_state["stage"] = "fitting the response"
-            template, out = bandpass.fit_from_observation(
+            # Both products from the one recording (issue #27): the H I
+            # template, and the continuum product's own.
+            fitted = bandpass.fit_both_from_observation(
                 path, "l=%.0f b=%+.0f" % (glon, glat))
+            template, out = fitted["h1"]
             rf_state["result"] = {
                 "kind": "bandpass",
                 "degree": template["degree"],
-                "band_mhz": template["u_scale_hz"] / 1e6,
+                "band_mhz": 2 * template["u_scale_hz"] / 1e6,
                 "residual_pct": 100 * template["fit_residual_rms"],
                 "channels": template["n_channels_fitted"],
                 "file": os.path.basename(path),
@@ -3618,8 +3686,18 @@ def _run_rf_calibration(job, params):
                 "glon": float(glon), "glat": float(glat),
                 "alt_deg": status.get("alt"),
             }
-            log.info("RF calibration: bandpass template refitted, residual %.3f%%",
-                     100 * template["fit_residual_rms"])
+            if "wide" in fitted:
+                wide_t, wide_out = fitted["wide"]
+                rf_state["result"]["wide"] = {
+                    "residual_pct": 100 * wide_t["fit_residual_rms"],
+                    "channels": wide_t["n_channels_fitted"],
+                    "band_mhz": 2 * wide_t["u_scale_hz"] / 1e6,
+                    "stored": os.path.basename(wide_out),
+                }
+            log.info("RF calibration: bandpass template refitted, residual %.3f%%%s",
+                     100 * template["fit_residual_rms"],
+                     ("; continuum product %.3f%%" % (100 * fitted["wide"][0]["fit_residual_rms"])
+                      if "wide" in fitted else ""))
 
         elif job == "gain":
             cfg = load_config()
@@ -4050,9 +4128,17 @@ def _live_records(path):
                 continue
             try:
                 rec = json.loads(line)
-                entry["records"].append({"t": float(rec["t"]),
-                                         "tau": float(rec["tau"]),
-                                         "median": float(rec["median"])})
+                item = {"t": float(rec["t"]),
+                        "tau": float(rec["tau"]),
+                        "median": float(rec["median"])}
+                # A fixed-instrument recording also reports the continuum -
+                # the wide product over the continuum band, no hydrogen in
+                # it - and the overflows during the record (issue #27).
+                if rec.get("continuum") is not None:
+                    item["continuum"] = float(rec["continuum"])
+                if rec.get("overflows") is not None:
+                    item["overflows"] = int(rec["overflows"])
+                entry["records"].append(item)
             except (ValueError, KeyError, TypeError):
                 continue
         return list(entry["records"])
@@ -4262,13 +4348,22 @@ def api_observe_live():
     # Binning keeps the whole run on screen and averages down the noise that
     # the short integration cost in the first place.
     group = max(1, int(math.ceil(len(records) / float(limit))))
+    # The live trace is a continuum measurement, so where the recording
+    # reports the continuum product (fixed instrument) that is what is
+    # drawn; a legacy recording's band median stands in for it.
+    value = (lambda r: r.get('continuum', r['median']))
     points = []
+    overflowed = 0
     for start in range(0, len(records), group):
         chunk = records[start:start + group]
-        counts = sum(r['median'] for r in chunk) / len(chunk)
+        counts = sum(value(r) for r in chunk) / len(chunk)
         when = chunk[len(chunk) // 2]['t']
         point = {'t': when, 'tau': sum(r['tau'] for r in chunk),
                  'n': len(chunk), 'counts': counts}
+        lost = sum(r.get('overflows', 0) for r in chunk)
+        if lost:
+            point['overflows'] = lost
+            overflowed += 1
         if cal_ok:
             t_a = counts / cal['gain_counts_per_k'] - cal['t_sys_k']
             point['t_a_k'] = t_a
@@ -4302,22 +4397,33 @@ def api_observe_live():
                         ends_at=obs.get('ends_at')))
 
 
-def obs_header(obs):
-    """The tuning fields calibration_applies_to needs, from a schedule entry.
-
-    The observation's own header is inside the HDF5 and that file is locked
-    while it records, so the same values are rebuilt from the entry that
-    started it - they are what the receiver was told to use.
-    """
+def instrument_in_force():
+    """The fixed instrument the receiver records with: tuning.fixed_instrument
+    with whatever the config overrides (issue #27)."""
     import tuning
+    return tuning.fixed_instrument(load_config())
 
-    plan = tuning.plan_tuning(
-        float(obs.get('center_freq_mhz', 1420.405752)) * 1e6,
-        float(obs.get('bandwidth_mhz', 2.4)) * 1e6,
-        obs.get('channels'))
-    return {'center_freq_hz': plan['tuned_center_freq_hz'],
-            'sample_rate_hz': plan['sample_rate_hz'],
-            'gain_db': obs.get('gain_db')}
+
+def tuning_instrument_keys():
+    import tuning
+    return set(tuning.INSTRUMENT_KEYS)
+
+
+def obs_header(obs=None):
+    """The tuning fields calibration_applies_to needs, for any observation.
+
+    Every scheduled observation records with the fixed instrument, so the
+    header is the same for all of them; the entry is accepted for the callers
+    that still pass one. The observation's own header is inside the HDF5,
+    which can be busy while it records, so the values come from the
+    instrument in force - they are what the receiver was told to use.
+    """
+    inst = instrument_in_force()
+    return {'center_freq_hz': inst['lo_hz'],
+            'sample_rate_hz': inst['sample_rate_hz'],
+            'gain_db': inst['gain_db'],
+            'h1_band_hz': inst['h1_band_hz'],
+            'continuum_band_hz': inst['continuum_band_hz']}
 
 
 def _observation_info(filename):
@@ -4358,6 +4464,25 @@ def _observation_info(filename):
 H1_LINE_HZ = 1420405751.768
 
 
+def _velocity_frame_text(attrs, stamps):
+    """The velocity-frame sentence the spectrum plot carries, for the details
+    table: LSR with the offsets applied at the mid-time, or topocentric."""
+    import observation_plot
+    import rf_calibration
+    try:
+        if len(stamps):
+            mid = datetime.fromtimestamp(float(np.mean([stamps[0], stamps[-1]])),
+                                         tz=timezone.utc)
+        else:
+            mid = None
+        lsr = observation_plot.lsr_offset_km_s(attrs, mid) if mid is not None else None
+        cal, _, _ = rf_calibration.calibration_for(attrs)
+        clock = rf_calibration.trustworthy_velocity_shift(cal) if cal else None
+        return observation_plot.velocity_frame_note(lsr, clock, mid)
+    except Exception as exc:                              # noqa: BLE001
+        return "velocity frame unknown (%s)" % exc
+
+
 def _recording_details(path):
     """The facts about a recording that decide what can be done with it.
 
@@ -4376,11 +4501,21 @@ def _recording_details(path):
         n_rec, n_ch = hf[name].shape
         freq = hf['frequency_hz'][:]
         taus = hf['integration_times'][:] if 'integration_times' in hf else []
+        stamps = hf['timestamps'][:] if 'timestamps' in hf else []
+        # The continuum product, where the file has one (fixed instrument).
+        wide_freq = hf['frequency_hz_wide'][:] if 'frequency_hz_wide' in hf else None
+        wide_units = str(a.get('spectra_wide_units', '')) if wide_freq is not None else ''
+        overflows_total = int(np.asarray(hf['overflows'][:]).sum()) if 'overflows' in hf else None
     f = lambda k, d=None: (float(a[k]) if k in a and a[k] is not None else d)
     lo_hz, sr = f('center_freq_hz'), f('sample_rate_hz')
     sky_hz = f('sky_center_freq_hz', lo_hz)
     band = (float(freq.min()), float(freq.max())) if len(freq) else (None, None)
-    win_lo, win_hi, _ = drift_fit._band_window(a, freq) if len(freq) else (None, None, None)
+    # The continuum window is measured on the wide product; a recording
+    # without one has no continuum window.
+    if wide_freq is not None and a.get('continuum_band_hz') is not None:
+        win_lo, win_hi, _ = drift_fit._band_window(a, wide_freq)
+    else:
+        win_lo = win_hi = None
     line_in_band = band[0] is not None and band[0] <= H1_LINE_HZ <= band[1]
     line_in_window = win_lo is not None and win_lo <= H1_LINE_HZ <= win_hi
     mode = a.get('observation_mode')
@@ -4408,6 +4543,19 @@ def _recording_details(path):
         'h1_line_mhz': H1_LINE_HZ / 1e6,
         'h1_in_band': bool(line_in_band), 'h1_in_fit_window': bool(line_in_window),
         'h1_offset_from_lo_mhz': ((H1_LINE_HZ - lo_hz) / 1e6) if lo_hz else None,
+        # Which frame the spectrum's velocity axis is drawn in, in words.
+        'velocity_frame': _velocity_frame_text(a, stamps),
+        # Fixed-instrument recordings: both products, their bands, and
+        # whether any samples were lost (issue #27).
+        'products': (['h1', 'wide'] if wide_freq is not None else ['h1']),
+        'h1_band_mhz': ([float(a['h1_band_hz'][0]) / 1e6, float(a['h1_band_hz'][1]) / 1e6]
+                        if a.get('h1_band_hz') is not None else None),
+        'continuum_band_mhz': ([float(a['continuum_band_hz'][0]) / 1e6,
+                                float(a['continuum_band_hz'][1]) / 1e6]
+                               if a.get('continuum_band_hz') is not None else None),
+        'wide_channels': (int(len(wide_freq)) if wide_freq is not None else None),
+        'wide_units': wide_units or None,
+        'overflows_total': overflows_total,
         'gain_db': f('gain_db'), 'sdr_type': str(a.get('sdr_type', '')),
         'units': str(a.get('spectra_units', 'K' if name == 'spectra_kelvin' else 'counts')),
         'applied_gain_counts_per_k': f('applied_gain_counts_per_k'),
@@ -4641,6 +4789,10 @@ def get_schedule():
     return jsonify(load_schedule())
 
 
+# Per-entry tuning fields from before the fixed instrument (issue #27).
+_RETIRED_TUNING_KEYS = ('center_freq_mhz', 'bandwidth_mhz', 'channels', 'gain_db')
+
+
 def _store_schedule(schedule):
     """Trim, check for clashes, and save. Returns (notes, clashes).
 
@@ -4657,6 +4809,11 @@ def _store_schedule(schedule):
     # nothing, which is what makes rewriting the stored times safe.
     notes = []
     for obs in schedule if isinstance(schedule, list) else []:
+        # The tuning is the fixed instrument's (issue #27). Entries saved
+        # before it, or posted by a stale tab, still carry their own; strip
+        # them so nothing downstream can mistake them for a choice.
+        for key in _RETIRED_TUNING_KEYS:
+            obs.pop(key, None)
         if not isinstance(obs, dict):
             continue
         before = (obs.get('start_time'), obs.get('duration_minutes'))
@@ -4715,6 +4872,19 @@ def post_schedule():
 SIMULATOR_COMMENT = "Observation set via the Simulator"
 
 
+# A booking from the simulator starts no sooner than this many seconds ahead,
+# rounded up to the whole minute: the scheduler thread polls every 30 s and
+# needs more than a minute of slot left when it looks.
+SIMULATOR_LEAD_S = 45
+SIMULATOR_MIN_SPECTRUM_MIN = 2
+
+
+def _next_whole_minute(when: datetime) -> datetime:
+    """`when` rounded up to the next whole minute (unchanged if already one)."""
+    floored = when.replace(second=0, microsecond=0)
+    return floored if floored == when else floored + timedelta(minutes=1)
+
+
 def _simulator_epoch(stamp):
     """The simulator's clock as naive local time - the schedule's frame.
 
@@ -4770,6 +4940,31 @@ def api_simulator_schedule():
     epoch = _simulator_epoch(body.get('epoch_utc'))
     tau = _clamped('integration_time_s', body.get('integration_time_s'), 3.0)
 
+    # When it starts. The schedule works in whole minutes, so the clock is
+    # rounded *up*, with at least SIMULATOR_LEAD_S in hand: a live clock at
+    # 21:25:57 used to book 21:25, a minute already gone, and a one-minute
+    # spectrum then arrived in the list expired - scheduler_thread will not
+    # take a slot with under a minute left, and the page says so. A pinned
+    # clock in the past cannot be observed at all and is refused rather than
+    # booked dead.
+    now = datetime.now()
+    if epoch < now - timedelta(seconds=60):
+        return jsonify({'success': False,
+                        'error': "the simulator's clock is in the past (%s); set it "
+                                 "ahead, or press Now" % epoch.strftime('%Y-%m-%d %H:%M')}), 409
+    # A live clock means "now", and now is not a booking: booked, the run
+    # waited for the next whole minute, then for the scheduler thread's
+    # 30 s poll, then had its duration trimmed to what was left of the slot
+    # - two minutes gone and a two-minute spectrum recording for one
+    # (22:27-22:29 on 2026-08-26). It starts here instead, the way the
+    # Observe tab's Start Now does, with the full duration, and is not
+    # written to the schedule (a due slot would restart it when it ended).
+    live = abs((epoch - now).total_seconds()) <= 60
+    if live:
+        epoch = now.replace(second=0, microsecond=0)
+    else:
+        epoch = _next_whole_minute(max(epoch, now + timedelta(seconds=SIMULATOR_LEAD_S)))
+
     entry = {
         'name': ('Drift scan' if drift else 'Spectrum')
                 + ' l=%.1f b=%+.1f' % (glon, glat),
@@ -4779,11 +4974,9 @@ def api_simulator_schedule():
         # Decimal degrees in the degrees field; dms_to_decimal sums as given.
         'coord1_deg': round(glon, 4), 'coord1_min': 0, 'coord1_sec': 0,
         'coord2_deg': round(glat, 4), 'coord2_min': 0, 'coord2_sec': 0,
-        'center_freq_mhz': _clamped('center_freq_mhz',
-                                    body.get('center_freq_mhz'), 1420.405752),
-        'bandwidth_mhz': _clamped('bandwidth_mhz', body.get('bandwidth_mhz'), 2.4),
-        'channels': _clamped('channels', body.get('channels'), 4096),
-        'gain_db': 40, 'sdr_type': 'b210', 'calibrator': False,
+        # No tuning: the fixed instrument's (issue #27), whatever the
+        # simulator page was showing.
+        'sdr_type': 'b210', 'calibrator': False,
         'end_action': 'none', 'respect_local_horizon': True,
         'filename': '', 'enabled': True,
         'drift_frame': 'galactic', 'drift_time': '', 'drift_window_min': 30,
@@ -4804,8 +4997,10 @@ def api_simulator_schedule():
     else:
         # tau is the whole integration for a simulated spectrum (see
         # _record_observe_params); the per-spectrum record length is a
-        # granularity the simulation says nothing about.
-        minutes = max(1, int(round(tau / 60.0)))
+        # granularity the simulation says nothing about. Two minutes at
+        # least: a one-minute slot is inside scheduler_thread's own cutoff
+        # from the moment it starts.
+        minutes = max(SIMULATOR_MIN_SPECTRUM_MIN, int(round(tau / 60.0)))
         entry.update(
             start_date=epoch.strftime('%Y-%m-%d'),
             start_time=epoch.strftime('%H:%M'),
@@ -4818,6 +5013,32 @@ def api_simulator_schedule():
     entry['end_date'] = end_dt.strftime('%Y-%m-%d')
     entry['end_time'] = end_dt.strftime('%H:%M')
 
+    if live:
+        with process_lock:
+            busy = (current_process is not None and current_process.poll() is None)
+            running = dict(current_observation) if busy and current_observation else None
+            starting = observation_starting
+        if busy or starting:
+            name = (running or {}).get('name') or starting_observation_name or 'an observation'
+            return jsonify({'success': False,
+                            'error': "'%s' is already recording; stop it first, or pin the "
+                                     "simulator's clock to a later time to book instead"
+                                     % name}), 409
+        # Listed in the schedule as well, so the page shows it running in
+        # its place; the thread sees the same booking already running
+        # (_same_booking) and, once it ends, a finished slot (finished_slots),
+        # so it neither double-starts nor restarts it.
+        schedule = load_schedule()
+        schedule.append(entry)
+        notes, clashes = _store_schedule(schedule)
+        if clashes:
+            return jsonify({'success': False,
+                            'error': 'clashes with the schedule: %s' % clashes}), 409
+        log.info("Simulator: starting now: %s (%d min)", entry['name'], entry['duration_minutes'])
+        ok = start_observation(entry)
+        return jsonify({'success': ok, 'started': True, 'entry': entry, 'horizon_notes': notes,
+                        'error': None if ok else 'Failed to start - see the Log tab'}), (200 if ok else 500)
+
     schedule = load_schedule()
     schedule.append(entry)
     notes, clashes = _store_schedule(schedule)
@@ -4826,7 +5047,7 @@ def api_simulator_schedule():
                         'error': 'clashes with the schedule: %s' % clashes}), 409
     log.info("Simulator scheduled: %s at %s %s (%d min)", entry['name'],
              entry['start_date'], entry['start_time'], entry['duration_minutes'])
-    return jsonify({'success': True, 'entry': entry, 'horizon_notes': notes})
+    return jsonify({'success': True, 'started': False, 'entry': entry, 'horizon_notes': notes})
 
 
 @app.route('/api/status', methods=['GET'])
@@ -5026,6 +5247,38 @@ def api_post_config():
         return jsonify({'success': False,
                         'error': f"Unknown config keys: {', '.join(unknown)}"}), 400
     cfg = load_config()
+    # The instrument (issue #27): an override has to describe a receiver that
+    # can be built - the sub-band inside the decimated rate, channels
+    # positive, the bands ordered - or it is refused whole, before anything
+    # is written. And a change is logged loudly, because every recording
+    # after it is uncalibrated until the bandpass and gain are re-measured.
+    instrument_keys = [k for k in updates if k.startswith('receiver_')
+                       and k[len('receiver_'):] in tuning_instrument_keys()]
+    if instrument_keys:
+        import tuning
+        try:
+            merged = dict(cfg, **updates)
+            inst = tuning.fixed_instrument(merged)
+            tuning.h1_subband_plan(inst)
+            if inst['sample_rate_hz'] <= 0 or inst['gain_db'] < 0:
+                raise ValueError("sample rate and gain must be positive")
+            if inst['h1_band_hz'][0] >= inst['h1_band_hz'][1]:
+                raise ValueError("the H I band's low edge must be below its high edge")
+            half = 0.5 * inst['sample_rate_hz']
+            if (inst['h1_band_hz'][0] < inst['lo_hz'] - half
+                    or inst['h1_band_hz'][1] > inst['lo_hz'] + half):
+                raise ValueError("the H I band lies outside the sampled band")
+            if inst['h1_channels'] < 64 or inst['wide_channels'] < 64:
+                raise ValueError("channel counts must be at least 64")
+        except (TypeError, ValueError, KeyError, IndexError) as exc:
+            return jsonify({'success': False,
+                            'error': 'instrument refused: %s' % exc}), 400
+        before = instrument_in_force()
+        if inst != before:
+            log.warning("INSTRUMENT CHANGED by the Configuration tab: %s -> %s. The "
+                        "bandpass templates and gain calibration belong to the old "
+                        "tuning; re-measure them before trusting any kelvin.",
+                        tuning.describe_instrument(before), tuning.describe_instrument(inst))
     cfg.update(updates)
     save_config(cfg)
     # Apply to running process, as one unit: the scheduler thread must not see
@@ -5539,6 +5792,33 @@ def api_calday_model():
 # Horizon scan
 # =============================================================================
 
+@app.route('/api/instrument', methods=['GET'])
+def api_instrument():
+    """The fixed instrument every scheduled observation records with (issue
+    #27), for the pages to show - read-only by design."""
+    import tuning
+    inst = instrument_in_force()
+    plan = tuning.h1_subband_plan(inst)
+    return jsonify({
+        'success': True,
+        'instrument': inst,
+        'description': tuning.describe_instrument(inst),
+        'lo_mhz': inst['lo_hz'] / 1e6,
+        'sample_rate_mhz': inst['sample_rate_hz'] / 1e6,
+        'gain_db': inst['gain_db'],
+        'h1_band_mhz': [inst['h1_band_hz'][0] / 1e6, inst['h1_band_hz'][1] / 1e6],
+        'h1_channel_khz': plan['channel_width_hz'] / 1e3,
+        'h1_channels': int(round((inst['h1_band_hz'][1] - inst['h1_band_hz'][0])
+                                 / plan['channel_width_hz'])),
+        'continuum_band_mhz': [inst['continuum_band_hz'][0] / 1e6,
+                               inst['continuum_band_hz'][1] / 1e6],
+        'wide_channels': inst['wide_channels'],
+        'wide_channel_khz': inst['sample_rate_hz'] / inst['wide_channels'] / 1e3,
+        'overridden': sorted(k for k in tuning.INSTRUMENT_KEYS
+                             if load_config().get('receiver_' + k) not in (None, '')),
+    })
+
+
 @app.route('/api/tuning', methods=['GET'])
 def api_tuning():
     """What the receiver will actually be tuned to, for a requested setup.
@@ -6031,6 +6311,18 @@ def main():
         if current_process or current_observation:
             stop_observation()
         stop_booted_receiver()
+        # An RF calibration in progress: cancel it and take its receiver
+        # down too. Left alone it outlives the scheduler holding the B210,
+        # and every run after the restart quietly fails to open the radio.
+        rf_cancel.set()
+        proc = rf_receiver_process
+        if proc is not None and proc.poll() is None:
+            log.warning("Shutting down with an RF calibration recording; terminating its receiver")
+            proc.terminate()
+            try:
+                proc.wait(timeout=15)
+            except subprocess.TimeoutExpired:
+                proc.kill()
 
 
 if __name__ == '__main__':

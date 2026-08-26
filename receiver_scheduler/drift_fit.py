@@ -84,21 +84,44 @@ def track_galactic(alt_deg, az_deg, stamps):
     return np.asarray(sky.l.deg, float), np.asarray(sky.b.deg, float)
 
 
+H1_REST_HZ = 1420.405752e6
+
+
 def _band_window(header, freq_hz):
-    """The frequency span the band power is taken over, and the channels in it."""
+    """The frequency span the continuum is taken over, and the channels in it.
+
+    The recording's continuum band (fixed instrument, issue #27), which by
+    construction holds no hydrogen, less the LO spur and anything inside the
+    H I band. A recording that does not name its bands cannot be reduced as
+    continuum.
+    """
+    freq_hz = np.asarray(freq_hz, float)
+    cont = header.get("continuum_band_hz")
+    if cont is None:
+        raise ValueError("the recording names no continuum band: it was made "
+                         "before the fixed instrument")
     fc = float(header.get("center_freq_hz", np.median(freq_hz)))
-    sr = float(header.get("sample_rate_hz", abs(freq_hz[-1] - freq_hz[0])))
-    lo, hi = fc - 0.5 * BAND_FRACTION * sr, fc + 0.5 * BAND_FRACTION * sr
     dc = float(header.get("dc_artefact_freq_hz", fc))
+    lo, hi = float(cont[0]), float(cont[1])
     keep = (freq_hz >= lo) & (freq_hz <= hi) & (np.abs(freq_hz - dc) > DC_MASK_HZ)
+    keep &= ~h1_channels(header, freq_hz)
     return lo, hi, keep
 
 
+def h1_channels(header, freq_hz):
+    """Which channels of this axis carry the H I band the file names."""
+    freq_hz = np.asarray(freq_hz, float)
+    band = header.get("h1_band_hz")
+    if band is None:
+        raise ValueError("the recording names no H I band")
+    return (freq_hz >= float(band[0])) & (freq_hz <= float(band[1]))
+
+
 def band_power(freq_hz, spectra, header):
-    """Mean counts per record over the band window - the total-power series."""
+    """Mean counts per record over the continuum window - the total-power series."""
     _, _, keep = _band_window(header, np.asarray(freq_hz, float))
     if not keep.any():
-        raise ValueError("no channels inside the band window")
+        raise ValueError("no continuum channels: the band is all hydrogen or spur")
     return np.nanmean(np.asarray(spectra, float)[:, keep], axis=1)
 
 
@@ -116,16 +139,21 @@ def predicted_track(header, stamps, freq_hz, sim=None):
     idx = np.unique(np.linspace(0, len(stamps) - 1,
                                 min(MODEL_SAMPLES, len(stamps))).astype(int))
     glon, glat = track_galactic(alt, az, stamps[idx])
-    sim = sim or rf_calibration.load_simulator(
-        bandwidth_hz=float(header.get("sample_rate_hz", 4.5e6)))
+    # The simulator's spectrum has to reach the continuum window, which on a
+    # fixed-instrument file lies below the line: ask for a band wide enough
+    # to cover it from the rest frequency.
+    reach = 2.0 * max(abs(lo - H1_REST_HZ), abs(hi - H1_REST_HZ)) + 0.5e6
+    bandwidth = max(float(header.get("sample_rate_hz", 4.5e6)), reach)
+    sim = sim or rf_calibration.load_simulator(bandwidth_hz=bandwidth)
     model = np.empty(len(idx))
     for k, (l, b, t) in enumerate(zip(glon, glat, stamps[idx])):
         when = datetime.fromtimestamp(float(t), tz=timezone.utc)
         f, ta = rf_calibration.simulated_spectrum(
-            float(l), float(b), when, sim,
-            bandwidth_hz=float(header.get("sample_rate_hz", 4.5e6)))
+            float(l), float(b), when, sim, bandwidth_hz=bandwidth)
         f, ta = np.asarray(f, float), np.asarray(ta, float)
-        inside = (f >= lo) & (f <= hi)
+        # The same channels the data are measured over: the continuum
+        # window with the hydrogen cut out.
+        inside = (f >= lo) & (f <= hi) & ~h1_channels(header, f)
         model[k] = float(np.nanmean(ta[inside])) if inside.any() else float(np.nanmean(ta))
     return np.interp(stamps, stamps[idx], model), (stamps[idx], glon, glat)
 
@@ -139,7 +167,9 @@ def fit_total_power(path, sim=None):
     """
     from observation_plot import read_observation
 
-    freq_hz, spectra, stamps, taus, header = read_observation(path)
+    # The continuum product, with the H I band cut out; a recording without
+    # one raises here and the caller reports it.
+    freq_hz, spectra, stamps, taus, header = read_observation(path, product="wide")
     stamps = np.asarray(stamps, float)
     if stamps.size < 3:
         raise ValueError("too few records to fit (%d)" % stamps.size)

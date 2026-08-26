@@ -30,6 +30,128 @@ and the scheduler can both import it and cannot disagree about the answer.
 
 H1_REST_FREQ_HZ = 1420.405752e6
 
+# ---------------------------------------------------------------------------
+# The fixed instrument (issue #27, decided 2026-08-26)
+#
+# Scheduled observations no longer choose a tuning. The B210 is always at the
+# same LO, sample rate and gain, and every recording carries two products
+# from the one stream: a coarse spectrum across the whole band (continuum,
+# RFI, the calibration comb of #26) and a fine H I sub-band. What kind of
+# observation it is decides only what is plotted and fitted.
+#
+# The numbers, and why:
+#   sample rate 8 Msps  - clean in the 2026-08-26 ladder with margin (one
+#                         overflow in ten minutes; 12 Msps overflowed steadily,
+#                         the host's FFT thread being the limit, not USB), and
+#                         the rate at which the LO fits outside the sub-band.
+#   LO = line - 1.5 MHz - on the positive-velocity edge, where there is no
+#                         emission beyond +300 km/s, so the DC spur can never
+#                         sit on a line and is outside the H I product.
+#   H I sub-band LO+0.1..+3.4 MHz = topocentric -400..+300 km/s: the whole
+#                         disc and every major HVC complex, with the Earth's
+#                         +-50 km/s absorbed. M31 (to -600) is not reachable
+#                         from this tuning; it is the manual GUI's case.
+#   continuum LO-3.2..-0.1 MHz - 3.1 MHz with no hydrogen (v > +330 km/s),
+#                         on the good side of the SAW filter.
+#   gain 40 dB          - has held the Sun at +2000 K.
+#
+# These are config values (scheduler_config.json, receiver_* keys) so they can
+# be changed deliberately, and they are the defaults so that a receiver run by
+# hand with --headless records exactly what a scheduled one does.
+# ---------------------------------------------------------------------------
+
+FIXED_LO_HZ = H1_REST_FREQ_HZ - 1.5e6            # 1418.905752 MHz
+FIXED_SAMPLE_RATE_HZ = 8.0e6
+FIXED_GAIN_DB = 40.0
+WIDE_CHANNELS = 1024                              # 7.8 kHz per channel
+H1_BAND_HZ = (FIXED_LO_HZ + 0.1e6, FIXED_LO_HZ + 3.4e6)
+# Over the decimated 4 Msps: 3.9 kHz = 0.82 km/s, 845 channels kept across
+# the sub-band. Chosen 2026-08-26 over 2048: the narrowest galactic H I is
+# 2-3 km/s wide and the HI4PI model is 1.29 km/s, so 0.8 km/s still
+# Nyquist-samples anything the 5 deg beam can show, at half the file size.
+H1_CHANNELS = 1024
+H1_DECIMATION = 2                                 # 8 -> 4 Msps holds a 3.3 MHz band
+CONTINUUM_BAND_HZ = (FIXED_LO_HZ - 3.2e6, FIXED_LO_HZ - 0.1e6)
+
+INSTRUMENT_KEYS = ("lo_hz", "sample_rate_hz", "gain_db", "wide_channels",
+                   "h1_band_hz", "h1_channels", "h1_decimation", "continuum_band_hz")
+
+
+def fixed_instrument(overrides: dict | None = None) -> dict:
+    """The instrument a scheduled observation records with.
+
+    `overrides` are the scheduler's config values (keys as in INSTRUMENT_KEYS,
+    or prefixed `receiver_`); anything missing takes the fixed default. The
+    result is what the scheduler hands the receiver (H1_INSTRUMENT) and what
+    the receiver writes into the file.
+    """
+    inst = {
+        "lo_hz": FIXED_LO_HZ,
+        "sample_rate_hz": FIXED_SAMPLE_RATE_HZ,
+        "gain_db": FIXED_GAIN_DB,
+        "wide_channels": WIDE_CHANNELS,
+        "h1_band_hz": list(H1_BAND_HZ),
+        "h1_channels": H1_CHANNELS,
+        "h1_decimation": H1_DECIMATION,
+        "continuum_band_hz": list(CONTINUUM_BAND_HZ),
+    }
+    for key in INSTRUMENT_KEYS:
+        for name in (key, "receiver_" + key):
+            if overrides and overrides.get(name) not in (None, ""):
+                inst[key] = overrides[name]
+    inst["lo_hz"] = float(inst["lo_hz"])
+    inst["sample_rate_hz"] = float(inst["sample_rate_hz"])
+    inst["gain_db"] = float(inst["gain_db"])
+    inst["wide_channels"] = int(inst["wide_channels"])
+    inst["h1_channels"] = int(inst["h1_channels"])
+    inst["h1_decimation"] = int(inst["h1_decimation"])
+    inst["h1_band_hz"] = [float(inst["h1_band_hz"][0]), float(inst["h1_band_hz"][1])]
+    inst["continuum_band_hz"] = [float(inst["continuum_band_hz"][0]),
+                                 float(inst["continuum_band_hz"][1])]
+    return inst
+
+
+def h1_subband_plan(inst: dict) -> dict:
+    """How the H I product is cut from the wide stream.
+
+    A frequency-translating decimator centred on the sub-band, so the LO's DC
+    spur (at the band's low edge) is outside it. The decimated stream is
+    wider than the sub-band, so only the channels inside it are kept.
+    """
+    lo, hi = inst["h1_band_hz"]
+    centre = 0.5 * (lo + hi)
+    out_rate = inst["sample_rate_hz"] / inst["h1_decimation"]
+    if (hi - lo) > 0.9 * out_rate:
+        raise ValueError("the H I sub-band (%.2f MHz) does not fit the decimated "
+                         "rate (%.2f Msps)" % ((hi - lo) / 1e6, out_rate / 1e6))
+    return {
+        "centre_hz": centre,
+        "offset_from_lo_hz": centre - inst["lo_hz"],
+        "out_rate_hz": out_rate,
+        "channels": inst["h1_channels"],
+        "channel_width_hz": out_rate / inst["h1_channels"],
+        "band_hz": [lo, hi],
+        # The anti-alias low-pass on the translated stream: flat across the
+        # whole sub-band with 0.2 MHz to spare (the first cut, 0.1 MHz and a
+        # wide transition, rolled the outer 100 kHz of the H I band off by
+        # 20%), and a transition that ends past the decimated Nyquist - what
+        # folds back lands outside the kept channels.
+        "cutoff_hz": 0.5 * (hi - lo) + 0.2e6,
+        "transition_hz": 0.2e6,
+    }
+
+
+def describe_instrument(inst: dict) -> str:
+    """One line for the log: what the fixed instrument is."""
+    plan = h1_subband_plan(inst)
+    return ("LO %.6f MHz, %.1f Msps, gain %.0f dB; H I %.3f-%.3f MHz in %d channels "
+            "(%.2f kHz); continuum %.3f-%.3f MHz in %d channels"
+            % (inst["lo_hz"] / 1e6, inst["sample_rate_hz"] / 1e6, inst["gain_db"],
+               plan["band_hz"][0] / 1e6, plan["band_hz"][1] / 1e6, plan["channels"],
+               plan["channel_width_hz"] / 1e3,
+               inst["continuum_band_hz"][0] / 1e6, inst["continuum_band_hz"][1] / 1e6,
+               inst["wide_channels"]))
+
 # How far the LO sits from the line. 0.8 MHz is 169 km/s at 21 cm, which clears
 # the H I of any ordinary galactic sightline, so the DC artefact never lands in
 # the signal or in the baseline either side of it.

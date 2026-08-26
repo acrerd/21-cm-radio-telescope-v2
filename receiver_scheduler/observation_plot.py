@@ -147,18 +147,40 @@ def open_readonly(path):
                 "has finished (%s)" % first)
 
 
-def read_observation(path):
+def has_wide_product(path):
+    """Whether a recording carries the continuum product (fixed instrument)."""
+    try:
+        with open_readonly(path) as hf:
+            return "frequency_hz_wide" in hf
+    except Exception:                                     # noqa: BLE001
+        return False
+
+
+def read_observation(path, product="h1"):
     """Load the spectra, timestamps and frequency axis from a recording.
 
     Finished or still being written: see open_readonly. A live file gives
     the records so far.
+
+    `product` is "h1" (the fine sub-band, the dataset names every recording
+    has always had) or "wide" (the coarse whole-band continuum product,
+    issue #27). A file without a continuum product cannot be reduced as
+    continuum, and says so: recordings from before the fixed instrument are
+    not carried (the project is still in development).
     """
     if not H5PY_AVAILABLE:
         raise RuntimeError("h5py is not installed, so the file cannot be read")
     if not os.path.exists(path):
         raise FileNotFoundError(f"No such observation file: {path}")
     with open_readonly(path) as hf:
-        freq_hz = np.asarray(hf["frequency_hz"][:], dtype=float)
+        suffix = ""
+        used = "h1"
+        if product == "wide":
+            if "frequency_hz_wide" not in hf:
+                raise KeyError("%s has no continuum product: it was recorded before "
+                               "the fixed instrument" % os.path.basename(path))
+            suffix, used = "_wide", "wide"
+        freq_hz = np.asarray(hf["frequency_hz" + suffix][:], dtype=float)
         # Recordings are stored in kelvin when the instrument was calibrated
         # for their tuning, and in counts when it was not. This always hands
         # back *counts*, reversing the calibration where one was applied.
@@ -168,13 +190,15 @@ def read_observation(path):
         # in counts, because fitting a gain from spectra that a gain has
         # already been applied to would be circular - reduce_for_fit would
         # dutifully return unity and a system temperature of zero.
-        if "spectra_kelvin" in hf:
-            spectra = np.asarray(hf["spectra_kelvin"][:], dtype=float)
-            correction = np.asarray(hf["bandpass_correction"][:], dtype=float)
+        kelvin = "spectra%s_kelvin" % suffix
+        linear = "spectra%s_linear" % suffix
+        if kelvin in hf:
+            spectra = np.asarray(hf[kelvin][:], dtype=float)
+            correction = np.asarray(hf["bandpass_correction" + suffix][:], dtype=float)
             spectra = ((spectra + float(hf.attrs["applied_t_sys_k"]))
                        * float(hf.attrs["applied_gain_counts_per_k"]) * correction)
         else:
-            spectra = np.asarray(hf["spectra_linear"][:], dtype=float)
+            spectra = np.asarray(hf[linear][:], dtype=float)
         stamps = np.asarray(hf["timestamps"][:], dtype=float)
         # How long each record integrated for. Their sum is the total
         # integration, which is what the averaged spectrum's noise corresponds
@@ -184,6 +208,9 @@ def read_observation(path):
         else:
             taus = np.array([], dtype=float)
         header = dict(hf.attrs)
+        header["product_used"] = used
+        if "overflows" in hf:
+            header["overflows_total"] = int(np.asarray(hf["overflows"][:]).sum())
     if spectra.ndim != 2 or spectra.shape[0] == 0:
         raise ValueError("The observation file holds no spectra")
     return freq_hz, spectra, stamps, taus, header
@@ -281,10 +308,18 @@ def plot_observation(path, output_path, name="", mode="spectrum",
     """Render a finished observation to a PNG. Returns the output path."""
     if not MATPLOTLIB_AVAILABLE:
         raise RuntimeError("matplotlib is not installed, so no plot can be drawn")
-    freq_hz, spectra, stamps, taus, header = read_observation(path)
+    # A drift scan is a continuum measurement: the wide product where the
+    # file has one, its single product otherwise, and the H I band cut out
+    # either way (issue #27). A spectrum is the H I product.
+    product = "wide" if mode == "drift" else "h1"
+    freq_hz, spectra, stamps, taus, header = read_observation(path, product=product)
+    continuum_keep = None
+    if mode == "drift":
+        import drift_fit
+        _, _, continuum_keep = drift_fit._band_window(header, freq_hz)
 
     band = requested_band(header)
-    if band is not None:
+    if band is not None and mode != "drift":
         keep = (freq_hz >= band[0]) & (freq_hz <= band[1])
         # Only trim if the request actually lies inside what was recorded; a
         # mismatch means the header is not describing this file and the honest
@@ -297,7 +332,14 @@ def plot_observation(path, output_path, name="", mode="spectrum",
     # raw and can be re-reduced against a better template later; done after the
     # trim so the polynomial is never asked to extrapolate past the band it was
     # fitted over. Refuses itself if the tuning does not match - see bandpass.py.
-    spectra, bandpass_note = bandpass.apply_bandpass(freq_hz, spectra, header)
+    spectra, bandpass_note = bandpass.apply_bandpass(
+        freq_hz, spectra, header,
+        product=("wide" if header.get("product_used") == "wide" else "h1"))
+    if continuum_keep is not None:
+        # Everything outside the continuum window - the H I band, the spur,
+        # the skirts - is dropped from a drift plot before the band mean.
+        spectra = np.where(continuum_keep[None, :], spectra, np.nan)
+        bandpass_note += "; continuum only, H I band excluded"
     spectra, n_patched, patched_at = patch_dc_artefact(freq_hz, spectra, header)
 
     # If a gain calibration applies to this tuning, put the spectrum in kelvin.
@@ -373,6 +415,11 @@ def plot_observation(path, output_path, name="", mode="spectrum",
     # fitted against a weak line is confidently wrong by several km/s, which is
     # worse than leaving it out.
     clock_shift = rf_calibration.trustworthy_velocity_shift(cal) if cal_ok else None
+    # Say which frame the velocity axis is in, in words, in the header - the
+    # axis label carries it too, but a reader asked "what frame is this?"
+    # should not have to find it there (2026-08-26).
+    if mode != "drift":
+        subtitle += "\n" + velocity_frame_note(lsr, clock_shift, mid)
 
     fig, ax = plt.subplots(figsize=figsize, dpi=dpi)
     secax = None
@@ -516,6 +563,25 @@ def _dms(header, prefix):
     seconds = float(header.get(prefix + "_sec", 0) or 0)
     sign = -1.0 if deg < 0 else 1.0
     return sign * (abs(deg) + minutes / 60.0 + seconds / 3600.0)
+
+
+def velocity_frame_note(lsr, clock_shift, mid=None):
+    """One sentence saying what frame a spectrum's velocity axis is in.
+
+    `lsr` is lsr_offset_km_s's result (or None), `clock_shift` the receiver
+    clock's velocity offset applied (or None), `mid` the observation's
+    mid-time the frame was evaluated at.
+    """
+    if not lsr:
+        return ("velocity axis: TOPOCENTRIC - the recording's direction is not "
+                "known, so no LSR correction could be applied")
+    dv, glon, glat = lsr
+    when = (" at the mid-time %s UT" % mid.strftime("%H:%M")) if mid is not None else ""
+    note = ("velocity axis: LSR frame - topocentric %+.2f km/s (Earth's orbit and "
+            "rotation, Sun's motion, towards l=%.1f b=%+.1f)" % (-dv, glon, glat))
+    if clock_shift is not None:
+        note += " and receiver clock %+.2f km/s" % -clock_shift
+    return note + " applied" + when + "; the file itself is recorded topocentric"
 
 
 def lsr_offset_km_s(header, when):
@@ -736,27 +802,39 @@ def plot_bandpass_check(observation_path, output_path, template=None,
     span = max(4.0 * 100 * resid, 1.5)
     ax_flat.set_ylim(-span, span)
 
+    # The fitted span is centred where the template says (the product's own
+    # band since the fixed instrument; the LO before it), and the LO's DC
+    # mask is drawn only where it falls on this axis - with the LO outside
+    # the H I product by design, a red band off the edge of the plot was
+    # more puzzling than informative.
+    centre = float(template.get("u_centre_hz", lo))
+    lo_on_axis = freq_hz.min() <= lo <= freq_hz.max()
     for ax in (ax_raw, ax_flat):
         # What was excluded from the fit, and why it is not a hole in the data.
         ax.axvspan(line_mhz - mask_mhz, line_mhz + mask_mhz,
                    color="#ffa502", alpha=0.10, lw=0)
-        ax.axvspan(lo / 1e6 - dc_mhz, lo / 1e6 + dc_mhz,
-                   color="#ff4757", alpha=0.14, lw=0)
-        for edge in (lo - template["u_scale_hz"], lo + template["u_scale_hz"]):
+        if lo_on_axis:
+            ax.axvspan(lo / 1e6 - dc_mhz, lo / 1e6 + dc_mhz,
+                       color="#ff4757", alpha=0.14, lw=0)
+        for edge in (centre - template["u_scale_hz"], centre + template["u_scale_hz"]):
             ax.axvline(edge / 1e6, color=_PLOT_GRID, lw=1.0, ls=":")
         ax.axvline(line_mhz, color=_MARK, lw=1.0, ls="--", alpha=0.7)
-
-    ax_raw.text(0.005, 0.97,
-                "shaded: H I window masked from the fit (amber) and the LO "
-                "artefact (red); dotted: edges of the fitted band",
-                transform=ax_raw.transAxes, fontsize=8.5, color=_PLOT_FG,
-                alpha=0.75, va="top")
-    ax_flat.text(0.005, 0.03,
-                 "dashed: +-%.3f%% rms, over the channels the template was fitted "
-                 "to \u2014 the LO artefact runs off scale and is excluded"
-                 % (100 * resid),
-                 transform=ax_flat.transAxes, fontsize=9, color=_PLOT_FG,
-                 alpha=0.85)
+    if lo_on_axis:
+        shaded = ("shaded: H I window masked from the fit (amber) and the LO "
+                  "artefact (red); dotted: edges of the fitted band")
+        flat_note = ("dashed: +-%.3f%% rms, over the channels the template was "
+                     "fitted to \u2014 the LO artefact runs off scale and is excluded"
+                     % (100 * resid))
+    else:
+        shaded = ("shaded: H I window masked from the fit (amber); dotted: edges of "
+                  "the fitted band. The LO (%.6f MHz) and its DC artefact lie outside "
+                  "this product, by design" % (lo / 1e6))
+        flat_note = ("dashed: +-%.3f%% rms, over the channels the template was "
+                     "fitted to" % (100 * resid))
+    ax_raw.text(0.005, 0.97, shaded, transform=ax_raw.transAxes, fontsize=8.5,
+                color=_PLOT_FG, alpha=0.75, va="top")
+    ax_flat.text(0.005, 0.03, flat_note, transform=ax_flat.transAxes, fontsize=9,
+                 color=_PLOT_FG, alpha=0.85)
 
     when = (template.get("created_utc") or "")[:19].replace("T", " ")
     fig.suptitle("Bandpass correction check \u2014 template of %s UTC%s, "
