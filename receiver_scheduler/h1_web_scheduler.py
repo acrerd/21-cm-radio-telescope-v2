@@ -4348,6 +4348,11 @@ def instrument_in_force():
     return tuning.fixed_instrument(load_config())
 
 
+def tuning_instrument_keys():
+    import tuning
+    return set(tuning.INSTRUMENT_KEYS)
+
+
 def obs_header(obs=None):
     """The tuning fields calibration_applies_to needs, for any observation.
 
@@ -5100,6 +5105,38 @@ def api_post_config():
         return jsonify({'success': False,
                         'error': f"Unknown config keys: {', '.join(unknown)}"}), 400
     cfg = load_config()
+    # The instrument (issue #27): an override has to describe a receiver that
+    # can be built - the sub-band inside the decimated rate, channels
+    # positive, the bands ordered - or it is refused whole, before anything
+    # is written. And a change is logged loudly, because every recording
+    # after it is uncalibrated until the bandpass and gain are re-measured.
+    instrument_keys = [k for k in updates if k.startswith('receiver_')
+                       and k[len('receiver_'):] in tuning_instrument_keys()]
+    if instrument_keys:
+        import tuning
+        try:
+            merged = dict(cfg, **updates)
+            inst = tuning.fixed_instrument(merged)
+            tuning.h1_subband_plan(inst)
+            if inst['sample_rate_hz'] <= 0 or inst['gain_db'] < 0:
+                raise ValueError("sample rate and gain must be positive")
+            if inst['h1_band_hz'][0] >= inst['h1_band_hz'][1]:
+                raise ValueError("the H I band's low edge must be below its high edge")
+            half = 0.5 * inst['sample_rate_hz']
+            if (inst['h1_band_hz'][0] < inst['lo_hz'] - half
+                    or inst['h1_band_hz'][1] > inst['lo_hz'] + half):
+                raise ValueError("the H I band lies outside the sampled band")
+            if inst['h1_channels'] < 64 or inst['wide_channels'] < 64:
+                raise ValueError("channel counts must be at least 64")
+        except (TypeError, ValueError, KeyError, IndexError) as exc:
+            return jsonify({'success': False,
+                            'error': 'instrument refused: %s' % exc}), 400
+        before = instrument_in_force()
+        if inst != before:
+            log.warning("INSTRUMENT CHANGED by the Configuration tab: %s -> %s. The "
+                        "bandpass templates and gain calibration belong to the old "
+                        "tuning; re-measure them before trusting any kelvin.",
+                        tuning.describe_instrument(before), tuning.describe_instrument(inst))
     cfg.update(updates)
     save_config(cfg)
     # Apply to running process, as one unit: the scheduler thread must not see

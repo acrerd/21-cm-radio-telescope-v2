@@ -100,10 +100,9 @@
                     <div style="color:#666; font-size:12px; margin-bottom:12px; max-width:70ch;">
                         Every scheduled observation records with this tuning, and every
                         recording carries an H I sub-band and a continuum product from it. It
-                        is deliberately not editable here: change the <code>receiver_*</code>
-                        keys in <code>scheduler_config.json</code> and restart, and re-measure the
-                        bandpass and gain afterwards. The settings below apply only to the
-                        Sun scan's power meter and the manual console receiver.
+                        is changed on the Configuration tab, with a warning, and the bandpass and
+                        gain must be re-measured afterwards. The settings below apply only to
+                        the Sun scan's power meter and the manual console receiver.
                     </div>
                     <div class="section-title">Receiver Settings (Sun scan and console receiver)</div>
                     <div class="form-group">
@@ -717,16 +716,51 @@
                     <input autocomplete="off" type="text" id="cfgReceiverPythonPath" placeholder="/home/astro/radioconda/bin/python">
                 </div>
 
-                <div class="section-title">Instrument (fixed)</div>
+                <div class="section-title">Instrument</div>
                 <div id="cfgInstrument" class="mono" style="padding:8px 12px; margin-bottom:6px; background:#0f0f23; border:1px solid #333; border-radius:6px; color:#888; font-size:12px;">
                     Loading&hellip;
                 </div>
-                <div style="color:#666; font-size:12px; margin-bottom:14px; max-width:70ch;">
-                    Every scheduled observation records with this tuning, and every recording
-                    carries an H I sub-band and a continuum product from it. Deliberately not
-                    editable here: change the <code>receiver_*</code> keys in
-                    <code>scheduler_config.json</code> and restart, then re-measure the bandpass
-                    and the gain, which belong to it.
+                <div style="color:#ffa502; font-size:12px; margin-bottom:10px; max-width:70ch;">
+                    &#9888; Every scheduled observation records with this tuning, and the bandpass
+                    templates and the gain calibration belong to it. Changing anything here
+                    makes every recording after it uncalibrated (counts, not kelvin) until the
+                    bandpass and the gain are re-measured on the RF Calibration tab, and puts the
+                    simulator's band out of step until <code>make_web_data.py --meta</code> is
+                    re-run. The defaults are in <code>tuning.py</code> with the reasoning; leave
+                    a box empty to use its default.
+                </div>
+                <div class="form-grid">
+                    <div class="form-group">
+                        <label>LO <span class="unit">(MHz)</span></label>
+                        <input autocomplete="off" type="number" id="cfgInstLo" step="any" placeholder="1418.905752">
+                    </div>
+                    <div class="form-group">
+                        <label>Sample rate <span class="unit">(Msps)</span></label>
+                        <input autocomplete="off" type="number" id="cfgInstRate" step="any" placeholder="8">
+                    </div>
+                    <div class="form-group">
+                        <label>Gain <span class="unit">(dB)</span></label>
+                        <input autocomplete="off" type="number" id="cfgInstGain" step="any" min="0" max="80" placeholder="40">
+                    </div>
+                    <div class="form-group">
+                        <label>H I band low <span class="unit">(MHz)</span></label>
+                        <input autocomplete="off" type="number" id="cfgInstH1Lo" step="any" placeholder="1419.005752">
+                    </div>
+                    <div class="form-group">
+                        <label>H I band high <span class="unit">(MHz)</span></label>
+                        <input autocomplete="off" type="number" id="cfgInstH1Hi" step="any" placeholder="1422.305752">
+                    </div>
+                    <div class="form-group">
+                        <label>H I channels</label>
+                        <input autocomplete="off" type="number" id="cfgInstH1Ch" step="1" min="64" placeholder="2048">
+                    </div>
+                    <div class="form-group">
+                        <label>Continuum channels</label>
+                        <input autocomplete="off" type="number" id="cfgInstWideCh" step="1" min="64" placeholder="1024">
+                    </div>
+                </div>
+                <div style="margin-bottom:14px;">
+                    <button class="btn btn-secondary" title="Clear every instrument override so the defaults in tuning.py apply again" onclick="resetInstrumentConfig()">Instrument defaults</button>
                 </div>
 
                 <div class="section-title">Data Output</div>

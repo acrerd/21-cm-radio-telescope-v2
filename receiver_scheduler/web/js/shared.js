@@ -97,9 +97,9 @@
         function playStopSound()  { playTone([659, 554, 440], 0.4); }
 
         // The fixed instrument (issue #27), written into any element that
-        // wants to show it. Fetched once and remembered: it changes only
-        // with a config edit and a restart.
-        let instrumentText = null;
+        // wants to show it. Fetched once and remembered (instrumentText, in
+        // state.js): it changes only when the Configuration tab saves it,
+        // which clears the memory.
         function showInstrument(elementId) {
             const el = document.getElementById(elementId);
             if (!el) return;

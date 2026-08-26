@@ -159,6 +159,49 @@ class TestContinuumExcludesHydrogen:
         assert not keep[np.abs(f - 1421.2e6) <= 30e3].any()
 
 
+class TestInstrumentConfig:
+    """The instrument is changed on the Configuration tab: an override that
+    cannot be built is refused whole, a valid one takes effect at once."""
+
+    @pytest.fixture
+    def client(self, tmp_path, monkeypatch):
+        import h1_web_scheduler as sched
+        cfg_path = tmp_path / "scheduler_config.json"
+        monkeypatch.setattr(sched, "CONFIG_FILE", str(cfg_path), raising=False)
+        # load_config/save_config may read a module constant; point both at
+        # the temporary file whatever the name.
+        for name in ("CONFIG_FILE", "CONFIG_PATH", "_CONFIG_FILE"):
+            if hasattr(sched, name):
+                monkeypatch.setattr(sched, name, str(cfg_path))
+        monkeypatch.setattr(sched, "sync_observer_from_controller", lambda: None)
+        sched.app.config["TESTING"] = True
+        with sched.app.test_client() as c:
+            yield c
+
+    def test_a_valid_override_takes_effect_and_is_reported(self, client):
+        import h1_web_scheduler as sched
+        r = client.post("/api/config", json={"receiver_gain_db": 35})
+        assert r.status_code == 200, r.get_json()
+        assert sched.instrument_in_force()["gain_db"] == 35.0
+        d = client.get("/api/instrument").get_json()
+        assert d["gain_db"] == 35.0 and "gain_db" in d["overridden"]
+        # cleared again with null
+        assert client.post("/api/config", json={"receiver_gain_db": None}).status_code == 200
+        assert sched.instrument_in_force()["gain_db"] == tuning.FIXED_GAIN_DB
+
+    def test_an_impossible_instrument_is_refused_whole(self, client):
+        import h1_web_scheduler as sched
+        before = sched.instrument_in_force()
+        # a sub-band wider than the decimated rate can hold
+        r = client.post("/api/config", json={"receiver_h1_band_hz": [1419.0e6, 1425.0e6]})
+        assert r.status_code == 400 and "instrument refused" in r.get_json()["error"]
+        assert sched.instrument_in_force() == before
+        # a band outside the sampled span
+        r = client.post("/api/config", json={"receiver_lo_hz": 1400.0e6})
+        assert r.status_code == 400
+        assert sched.instrument_in_force() == before
+
+
 class TestWideTemplate:
     def test_the_wide_template_is_fitted_on_its_own_product_and_normalised_on_the_h1_band(self, tmp_path, monkeypatch):
         import bandpass

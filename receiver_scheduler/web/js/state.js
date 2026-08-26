@@ -12,6 +12,7 @@
 
         let currentObs = null;
         let statusPolls = 0;   // counts 2 s status polls; every 15th re-reads the schedule list
+        let instrumentText = null;   // the fixed instrument's description, once fetched (shared.js)
 
         const COORD_CONFIG = {
             altaz: {
