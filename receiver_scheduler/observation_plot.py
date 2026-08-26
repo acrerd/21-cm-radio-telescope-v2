@@ -464,6 +464,17 @@ def observation_direction(header, when=None):
 
     if system == "galactic":
         return float(c1), float(c2)
+    if system == "drift" and str(header.get("drift_frame", "")).lower() == "object":
+        # The Sun or Moon drifting through a parked beam: its direction at
+        # the given moment. Direction only - never .galactic of get_sun(),
+        # whose barycentric origin makes the Sun's direction meaningless.
+        if when is None:
+            return None
+        from astropy.coordinates import get_body
+        name = str(header.get("object_name", "")).strip().lower() or "sun"
+        body = get_body(name, Time(when))
+        gal = SkyCoord(ra=body.ra, dec=body.dec, frame="icrs").galactic
+        return float(gal.l.deg), float(gal.b.deg)
     if system == "drift" and str(header.get("drift_frame", "")).lower() == "galactic":
         # A drift entry's coordinates are in whichever frame it was typed in.
         # Read as RA/Dec, last night's Cas A scan (l=111.735, b=-2.130,

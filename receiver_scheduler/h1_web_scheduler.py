@@ -436,7 +436,8 @@ def srt_point_telescope(obs: dict) -> bool:
         # Drift scan: park the dish where the source will be at the slot
         # mid-point (the beam-crossing time T) and leave tracking off.
         beam_time = drift_beam_time(obs)
-        pointing = compute_drift_pointing(drift_frame, coord1, coord2, beam_time)
+        pointing = compute_drift_pointing(drift_frame, coord1, coord2, beam_time,
+                                          obs.get('object_name', ''))
         if pointing is None:
             log.error("SRT drift scan requires PyEphem on the scheduler host")
             return False
@@ -961,8 +962,21 @@ def _local_to_ephem_utc(when_local: datetime) -> datetime:
     return when_local.astimezone().astimezone(timezone.utc).replace(tzinfo=None)
 
 
-def _drift_body(frame: str, coord1: float, coord2: float) -> 'ephem.FixedBody':
-    """Build a FixedBody from RA/Dec (decimal hours, degrees) or galactic l/b (degrees)."""
+DRIFT_OBJECTS = {'sun': lambda: ephem.Sun(), 'moon': lambda: ephem.Moon(),
+                 'jupiter': lambda: ephem.Jupiter()} if EPHEM_AVAILABLE else {}
+
+
+def _drift_body(frame: str, coord1: float, coord2: float, object_name: str = ''):
+    """The body a drift scan parks for: a fixed RA/Dec or l/b, or a solar
+    system object by name - the Sun or Moon drifting through a parked beam,
+    which ephem places at the crossing time like any other body. Added
+    2026-08-26 after the Sun's galactic coordinates were computed by hand
+    for a pointing test and came out pointing at the galactic centre."""
+    if frame == 'object':
+        name = str(object_name or '').strip().lower()
+        if name not in DRIFT_OBJECTS:
+            raise ValueError("no drift-scan object called %r (sun, moon, jupiter)" % object_name)
+        return DRIFT_OBJECTS[name]()
     if frame == 'galactic':
         gal = ephem.Galactic(math.radians(coord1), math.radians(coord2),
                              epoch=ephem.J2000)
@@ -1010,7 +1024,8 @@ def observation_altaz_at(obs: dict, when_local: datetime) -> Optional[tuple]:
         if start is None:
             return None
         transit = start + timedelta(minutes=float(obs.get('duration_minutes', 30)) / 2.0)
-        return compute_drift_pointing(drift_frame, coord1, coord2, transit)
+        return compute_drift_pointing(drift_frame, coord1, coord2, transit,
+                                      obs.get('object_name', ''))
 
     observer = _get_observer()
     observer.date = _local_to_ephem_utc(when_local)
@@ -1152,7 +1167,7 @@ def apply_horizon_trim(obs: dict):
 
 
 def compute_drift_pointing(frame: str, coord1: float, coord2: float,
-                           when_local: datetime) -> Optional[tuple]:
+                           when_local: datetime, object_name: str = '') -> Optional[tuple]:
     """Alt/Az (degrees) at which a source will sit at the given local time.
 
     This is the fixed pointing for a drift scan: park the dish there with
@@ -1163,7 +1178,7 @@ def compute_drift_pointing(frame: str, coord1: float, coord2: float,
         return None
     observer = _get_observer()
     observer.date = _local_to_ephem_utc(when_local)
-    body = _drift_body(frame, coord1, coord2)
+    body = _drift_body(frame, coord1, coord2, object_name)
     body.compute(observer)
     return math.degrees(body.alt), math.degrees(body.az)
 
@@ -4766,11 +4781,11 @@ def api_drift_preview():
     if not EPHEM_AVAILABLE:
         return jsonify({'success': False, 'error': 'PyEphem not installed'}), 500
     frame = request.args.get('frame', 'radec')
-    if frame not in ('radec', 'galactic'):
+    if frame not in ('radec', 'galactic', 'object'):
         return jsonify({'success': False, 'error': f"Unknown frame '{frame}'"}), 400
     try:
-        coord1 = float(request.args.get('coord1'))
-        coord2 = float(request.args.get('coord2'))
+        coord1 = float(request.args.get('coord1') or 0.0)
+        coord2 = float(request.args.get('coord2') or 0.0)
         date_str = request.args.get('date') or datetime.now().strftime('%Y-%m-%d')
         when = datetime.strptime(f"{date_str} {request.args.get('time', '')}",
                                  '%Y-%m-%d %H:%M')
@@ -4779,7 +4794,8 @@ def api_drift_preview():
                         'error': 'Need coord1, coord2 and time=HH:MM (local)'}), 400
 
     try:
-        alt, az = compute_drift_pointing(frame, coord1, coord2, when)
+        alt, az = compute_drift_pointing(frame, coord1, coord2, when,
+                                         request.args.get('object', ''))
 
         warnings = []
         reachable = True

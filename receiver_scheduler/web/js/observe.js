@@ -6,8 +6,8 @@
 
         function onObserveModeChange() {
             const mode = document.getElementById('obvMode').value;
-            const drift = mode === 'drift';
-            const solar = mode === 'solar';
+            const drift = mode === 'drift' || mode === 'solardrift';
+            const solar = mode === 'solar' || mode === 'solardrift';
             // In drift mode the duration IS the scan length, and the source
             // transits at its mid-point; saying so beats a tooltip.
             document.getElementById('obvDurationLabel').innerHTML =
@@ -104,8 +104,9 @@
         // Start Now and Send to Scheduler hand over exactly the same document.
         function observeToObs() {
             const mode = document.getElementById('obvMode').value;
-            const drift = mode === 'drift';
-            const solar = mode === 'solar';
+            const solarDrift = mode === 'solardrift';
+            const drift = mode === 'drift' || solarDrift;
+            const solar = mode === 'solar' || solarDrift;
             const num = (id, dflt) => {
                 const v = parseFloat(document.getElementById(id).value);
                 return Number.isFinite(v) ? v : dflt;
@@ -113,9 +114,11 @@
             const l = num('obvL', 0), b = num('obvB', 0);
             const obs = Object.assign({}, DEFAULTS, {
                 name: document.getElementById('obvName').value.trim() || 'Simulator target',
-                coord_system: solar ? 'object' : (drift ? 'drift' : 'galactic'),
+                // A solar drift is a drift entry in the "object" frame: the
+                // scheduler parks for where the Sun will be at the mid-point.
+                coord_system: solarDrift ? 'drift' : solar ? 'object' : (drift ? 'drift' : 'galactic'),
                 object_name: solar ? 'sun' : '',
-                drift_frame: 'galactic',
+                drift_frame: solarDrift ? 'object' : 'galactic',
                 // Decimal degrees in the degrees field, which dms_to_decimal
                 // sums as given; the minutes and seconds boxes are for the
                 // schedule form's benefit, not this one's.

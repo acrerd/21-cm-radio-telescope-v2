@@ -1308,7 +1308,7 @@ class TestDriftPointTelescope:
         assert sched.srt_point_telescope(obs) is True
         mock_api.assert_called_once_with("/direct", {"alt": 45.0, "az": 180.0})
         # RA converted as hours (23h 23m 24s = 23.39h), beam time = slot midpoint
-        frame, coord1, coord2, beam_time = mock_compute.call_args[0]
+        frame, coord1, coord2, beam_time = mock_compute.call_args[0][:4]
         assert frame == "radec"
         assert coord1 == pytest.approx(23.39)
         assert coord2 == pytest.approx(58.8)
@@ -1347,7 +1347,7 @@ class TestDriftPointTelescope:
                         coord1_deg=111, coord1_min=42, coord1_sec=0.0,
                         coord2_deg=-2, coord2_min=6, coord2_sec=0.0)
         assert sched.srt_point_telescope(obs) is True
-        frame, coord1, coord2, _ = mock_compute.call_args[0]
+        frame, coord1, coord2, _ = mock_compute.call_args[0][:4]
         assert frame == "galactic"
         assert coord1 == pytest.approx(111.7)
         assert coord2 == pytest.approx(-2.1)
@@ -2443,3 +2443,37 @@ class TestOneSitePosition:
         body = re.sub(r'"""[\s\S]*?"""', "", body)
         assert not re.search(r"\b5[0-9]\.[0-9]{4}", body), \
             "observatory.py must import the position, not restate it"
+
+
+class TestSolarSystemDrift:
+    """A drift scan can park for the Sun or Moon by name (2026-08-26)."""
+
+    def test_the_sun_is_parked_for_where_it_will_be(self):
+        if not sched.EPHEM_AVAILABLE:
+            pytest.skip("no ephem")
+        from astropy.coordinates import get_sun, AltAz, EarthLocation
+        from astropy.time import Time
+        import astropy.units as u
+        from observatory import SITE_LAT_DEG, SITE_LON_DEG, SITE_HEIGHT_M
+        when = datetime(2026, 8, 26, 13, 55)                      # local
+        alt, az = sched.compute_drift_pointing('object', 0, 0, when, 'sun')
+        site = EarthLocation(lat=SITE_LAT_DEG*u.deg, lon=SITE_LON_DEG*u.deg, height=SITE_HEIGHT_M*u.m)
+        t = Time(sched._local_to_ephem_utc(when))
+        aa = get_sun(t).transform_to(AltAz(obstime=t, location=site))
+        assert alt == pytest.approx(aa.alt.deg, abs=0.05)
+        assert az == pytest.approx(aa.az.deg, abs=0.05)
+
+    def test_an_unknown_object_is_refused(self):
+        if not sched.EPHEM_AVAILABLE:
+            pytest.skip("no ephem")
+        with pytest.raises(ValueError):
+            sched.compute_drift_pointing('object', 0, 0, datetime(2026, 8, 26, 13, 55), 'venus')
+
+    def test_the_horizon_trim_can_place_a_solar_drift(self):
+        if not sched.EPHEM_AVAILABLE:
+            pytest.skip("no ephem")
+        obs = {"coord_system": "drift", "drift_frame": "object", "object_name": "sun",
+               "coord1_deg": 0, "coord2_deg": 0, "start_date": "2026-08-26",
+               "start_time": "13:40", "duration_minutes": 30}
+        alt, az = sched.observation_altaz_at(obs, datetime(2026, 8, 26, 13, 55))
+        assert 40 < alt < 48 and 185 < az < 200, (alt, az)

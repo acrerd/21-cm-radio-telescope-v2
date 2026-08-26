@@ -69,13 +69,13 @@
                 nameBox.value = t[0];
             }
             const modeSel = document.getElementById('obsFamousMode');
+            modeSel.disabled = false;
             if (t[1] === 'object') {
-                // The Sun and Moon are ephemeris objects: the drift-pointing
-                // machinery works in fixed frames, so they are track-only.
-                modeSel.value = 'track';
-                modeSel.disabled = true;
+                // The Sun and Moon are ephemeris objects; a drift scan of one
+                // parks for where ephem puts it at the crossing time.
+                document.getElementById('obsObjectName').value = t[2];
+                document.getElementById('obsDriftFrame').value = 'object';
             } else {
-                modeSel.disabled = false;
                 // Fill the (hidden) coordinate boxes so the drift machinery -
                 // the T/window derivation and the pointing preview - reads the
                 // target exactly as if it had been typed.
@@ -96,8 +96,7 @@
             const t = FAMOUS_TARGETS[parseInt(
                 document.getElementById('obsFamousTarget').value)];
             return document.getElementById('obsCoordSystem').value === 'famous'
-                && t && t[1] !== 'object'
-                && document.getElementById('obsFamousMode').value === 'drift';
+                && t && document.getElementById('obsFamousMode').value === 'drift';
         }
 
         function updateEndTime() {
@@ -182,8 +181,12 @@
             // the boxes filled from the list: it needs the drift block (the
             // beam-crossing time T and window) and the same derived times.
             const isFamousDrift = isFamous && famousDriftChosen();
+            // A drift scan in the "object" frame parks for the Sun or Moon: it
+            // needs the object dropdown, not the coordinate boxes.
+            const driftObject = (isDrift || isFamousDrift)
+                && document.getElementById('obsDriftFrame').value === 'object';
             document.getElementById('famousSelector').style.display = isFamous ? '' : 'none';
-            document.getElementById('objectSelector').style.display = isObject ? '' : 'none';
+            document.getElementById('objectSelector').style.display = (isObject || (driftObject && !isFamous)) ? '' : 'none';
             document.getElementById('satelliteInput').style.display = isSat ? '' : 'none';
             document.getElementById('calibrationInput').style.display = isCal ? '' : 'none';
             document.getElementById('horizonInput').style.display = isHorizon ? '' : 'none';
@@ -192,7 +195,7 @@
             // A horizon scan has no target: it goes to every azimuth in turn.
             // A famous target's coordinates come from the list, not the boxes.
             document.getElementById('coordInputs').style.display =
-                (isObject || isSat || isCal || isHorizon || isFamous) ? 'none' : '';
+                (isObject || isSat || isCal || isHorizon || isFamous || driftObject) ? 'none' : '';
             // Drift scans derive start time and duration from T and the window
             document.getElementById('obsStartTime').disabled = isDrift || isFamousDrift;
             document.getElementById('obsDuration').disabled = isDrift || isFamousDrift;
@@ -202,6 +205,7 @@
             if (isFamousDrift) updateDriftDerived();
             if (isObject || isSat || isCal || isHorizon || isFamous) return;
             if (isDrift) updateDriftDerived();
+            if (driftObject) return;             // no coordinate labels to set
             const cfg = COORD_CONFIG[isDrift ? document.getElementById('obsDriftFrame').value : sys];
             document.getElementById('coord1Label').textContent = cfg.c1;
             document.getElementById('coord2Label').textContent = cfg.c2;
@@ -259,6 +263,7 @@
                                       document.getElementById('coord2Sec').value);
             const params = new URLSearchParams({
                 frame: frame, coord1: c1, coord2: c2,
+                object: document.getElementById('obsObjectName').value,
                 date: localDateStr(Tdt),
                 time: document.getElementById('obsDriftTime').value
             });
@@ -326,6 +331,10 @@
                 const n = obs.cal_grid_n || 5;
                 const interval = obs.cal_interval_min || 30;
                 return `Cal: ${n}x${n} every ${interval}min`;
+            }
+            if (sys === 'drift' && obs.drift_frame === 'object') {
+                const name = obs.object_name || 'sun';
+                return `Drift ${name.charAt(0).toUpperCase() + name.slice(1)} @ ${obs.drift_time} ±${obs.drift_window_min}min`;
             }
             if (sys === 'drift') {
                 const isRA = (obs.drift_frame || 'radec') === 'radec';
@@ -605,7 +614,7 @@
             // from the list. The boxes already hold them (onFamousTargetChange
             // fills them), but the list is used directly for the same reason
             // as the tracked case - it is the copy that cannot be mistyped.
-            const famousDrift = famous && !famousObject
+            const famousDrift = famous
                 && document.getElementById('obsFamousMode').value === 'drift';
             const isDrift = famousDrift
                 || document.getElementById('obsCoordSystem').value === 'drift';
@@ -630,8 +639,8 @@
                 name: document.getElementById('obsName').value
                       || (famous ? famous[0] : ''),
                 comment: document.getElementById('obsComment').value.trim(),
-                coord_system: famousObject ? 'object'
-                              : famousDrift ? 'drift'
+                coord_system: famousDrift ? 'drift'
+                              : famousObject ? 'object'
                               : famous ? 'galactic'
                               : document.getElementById('obsCoordSystem').value,
                 object_name: famousObject ? famous[2]
@@ -713,7 +722,7 @@
             if (frame === 'galactic') { q.set('l', c1); q.set('b', c2); }
             else if (frame === 'radec') { q.set('ra', c1 * 15); q.set('dec', c2); }   // hours -> degrees
             else if (frame === 'altaz') { q.set('alt', c1); q.set('az', c2); }
-            else if (sys === 'object') { q.set('target', o.object_name || 'sun'); }
+            else if (sys === 'object' || frame === 'object') { q.set('target', o.object_name || 'sun'); }
             else { alert('This entry has no sky position to simulate.'); return; }
             const drift = sys === 'drift' || sys === 'altaz';
             const date = o.start_date || localDateStr(new Date());
