@@ -4798,6 +4798,19 @@ def post_schedule():
 SIMULATOR_COMMENT = "Observation set via the Simulator"
 
 
+# A booking from the simulator starts no sooner than this many seconds ahead,
+# rounded up to the whole minute: the scheduler thread polls every 30 s and
+# needs more than a minute of slot left when it looks.
+SIMULATOR_LEAD_S = 45
+SIMULATOR_MIN_SPECTRUM_MIN = 2
+
+
+def _next_whole_minute(when: datetime) -> datetime:
+    """`when` rounded up to the next whole minute (unchanged if already one)."""
+    floored = when.replace(second=0, microsecond=0)
+    return floored if floored == when else floored + timedelta(minutes=1)
+
+
 def _simulator_epoch(stamp):
     """The simulator's clock as naive local time - the schedule's frame.
 
@@ -4853,6 +4866,20 @@ def api_simulator_schedule():
     epoch = _simulator_epoch(body.get('epoch_utc'))
     tau = _clamped('integration_time_s', body.get('integration_time_s'), 3.0)
 
+    # When it starts. The schedule works in whole minutes, so the clock is
+    # rounded *up*, with at least SIMULATOR_LEAD_S in hand: a live clock at
+    # 21:25:57 used to book 21:25, a minute already gone, and a one-minute
+    # spectrum then arrived in the list expired - scheduler_thread will not
+    # take a slot with under a minute left, and the page says so. A pinned
+    # clock in the past cannot be observed at all and is refused rather than
+    # booked dead.
+    now = datetime.now()
+    if epoch < now - timedelta(seconds=60):
+        return jsonify({'success': False,
+                        'error': "the simulator's clock is in the past (%s); set it "
+                                 "ahead, or press Now" % epoch.strftime('%Y-%m-%d %H:%M')}), 409
+    epoch = _next_whole_minute(max(epoch, now + timedelta(seconds=SIMULATOR_LEAD_S)))
+
     entry = {
         'name': ('Drift scan' if drift else 'Spectrum')
                 + ' l=%.1f b=%+.1f' % (glon, glat),
@@ -4885,8 +4912,10 @@ def api_simulator_schedule():
     else:
         # tau is the whole integration for a simulated spectrum (see
         # _record_observe_params); the per-spectrum record length is a
-        # granularity the simulation says nothing about.
-        minutes = max(1, int(round(tau / 60.0)))
+        # granularity the simulation says nothing about. Two minutes at
+        # least: a one-minute slot is inside scheduler_thread's own cutoff
+        # from the moment it starts.
+        minutes = max(SIMULATOR_MIN_SPECTRUM_MIN, int(round(tau / 60.0)))
         entry.update(
             start_date=epoch.strftime('%Y-%m-%d'),
             start_time=epoch.strftime('%H:%M'),

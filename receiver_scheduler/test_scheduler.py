@@ -685,9 +685,12 @@ class TestFlaskAPI:
         2026-08-26 must land as the local equivalent. tau is the simulated
         integration and becomes the duration, as the Observe hand-off did.
         """
+        # A pinned clock a day ahead, on a whole minute: booked as it is.
+        epoch = (datetime.now(timezone.utc) + timedelta(days=1)).replace(
+            hour=12, minute=0, second=0, microsecond=0)
         resp = client.post('/api/simulator/schedule', json={
             'l': 132.0, 'b': -1.0, 'mode': 'hi',
-            'epoch_utc': '2026-08-26T12:00:00Z',
+            'epoch_utc': epoch.strftime('%Y-%m-%dT%H:%M:%SZ'),
             'center_freq_mhz': 1420.405752, 'bandwidth_mhz': 2.0,
             'channels': 327, 'integration_time_s': 600.0})
         d = resp.get_json()
@@ -697,7 +700,7 @@ class TestFlaskAPI:
         assert e['coord1_deg'] == pytest.approx(132.0)
         assert e['coord2_deg'] == pytest.approx(-1.0)
         assert e['comment'] == sched.SIMULATOR_COMMENT
-        local = datetime(2026, 8, 26, 12, 0, tzinfo=timezone.utc).astimezone()
+        local = epoch.astimezone()
         assert e['start_date'] == local.strftime('%Y-%m-%d')
         assert e['start_time'] == local.strftime('%H:%M')
         assert e['duration_minutes'] == 10
@@ -712,9 +715,11 @@ class TestFlaskAPI:
         half a scan in - what the drift panel draws. It is not centred on the
         next meridian transit: that booked tomorrow morning for a scan asked
         for now (2026-08-26), and the drift machinery parks for any T."""
+        epoch = (datetime.now(timezone.utc) + timedelta(days=1)).replace(
+            hour=22, minute=0, second=0, microsecond=0)
         resp = client.post('/api/simulator/schedule', json={
             'l': 111.735, 'b': -2.130, 'mode': 'cont',
-            'epoch_utc': '2026-08-25T22:00:00Z', 'scan_minutes': 300,
+            'epoch_utc': epoch.strftime('%Y-%m-%dT%H:%M:%SZ'), 'scan_minutes': 300,
             'center_freq_mhz': 1420.405752, 'bandwidth_mhz': 2.4,
             'channels': 4096, 'integration_time_s': 240.0})
         d = resp.get_json()
@@ -724,20 +729,51 @@ class TestFlaskAPI:
         assert e['drift_window_min'] == 150 and e['duration_minutes'] == 300
         assert e['integration_time_s'] == 240.0, "tau is the time per sample"
         assert e['comment'] == sched.SIMULATOR_COMMENT
-        start = datetime(2026, 8, 25, 22, 0, tzinfo=timezone.utc).astimezone()
+        start = epoch.astimezone()
         assert e['start_date'] == start.strftime('%Y-%m-%d')
         assert e['start_time'] == start.strftime('%H:%M')
         assert e['drift_time'] == (start + timedelta(minutes=150)).strftime('%H:%M')
+
+    def test_a_live_clock_books_the_next_whole_minute_and_at_least_two(self, client):
+        """Pressed at 21:25:57 with a one-minute spectrum, Schedule used to
+        book 21:25 - a minute already gone - and the entry arrived expired.
+        The start is the next whole minute with 45 s in hand, and a spectrum
+        lasts at least two minutes."""
+        now = datetime.now()
+        resp = client.post('/api/simulator/schedule', json={
+            'l': 42.7, 'b': 1.4, 'mode': 'hi',
+            'epoch_utc': datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
+            'integration_time_s': 60.0})
+        d = resp.get_json()
+        assert resp.status_code == 200 and d['success'], d
+        e = d['entry']
+        start = datetime.strptime(e['start_date'] + ' ' + e['start_time'], '%Y-%m-%d %H:%M')
+        lead = (start - now).total_seconds()
+        assert start.second == 0 and sched.SIMULATOR_LEAD_S <= lead <= sched.SIMULATOR_LEAD_S + 65
+        assert e['duration_minutes'] == sched.SIMULATOR_MIN_SPECTRUM_MIN
+
+    def test_a_clock_in_the_past_is_refused_not_booked_dead(self, client):
+        past = datetime.now(timezone.utc) - timedelta(hours=1)
+        resp = client.post('/api/simulator/schedule', json={
+            'l': 42.7, 'b': 1.4, 'mode': 'hi',
+            'epoch_utc': past.strftime('%Y-%m-%dT%H:%M:%SZ'), 'integration_time_s': 600.0})
+        assert resp.status_code == 409
+        assert 'in the past' in resp.get_json()['error']
+        assert client.get('/api/schedule').get_json() == []
 
     def test_the_simulator_is_refused_a_clash(self, client):
         """Same refusal as any other save: the entry must not be stored."""
         first = client.post('/api/simulator/schedule', json={
             'l': 10.0, 'b': 0.0, 'mode': 'hi',
-            'epoch_utc': '2026-09-01T12:00:00Z', 'integration_time_s': 3600.0})
+            'epoch_utc': (datetime.now(timezone.utc) + timedelta(days=6)).replace(
+                hour=12, minute=0, second=0, microsecond=0).strftime('%Y-%m-%dT%H:%M:%SZ'),
+            'integration_time_s': 3600.0})
         assert first.get_json()['success']
         second = client.post('/api/simulator/schedule', json={
             'l': 20.0, 'b': 0.0, 'mode': 'hi',
-            'epoch_utc': '2026-09-01T12:30:00Z', 'integration_time_s': 600.0})
+            'epoch_utc': (datetime.now(timezone.utc) + timedelta(days=6)).replace(
+                hour=12, minute=30, second=0, microsecond=0).strftime('%Y-%m-%dT%H:%M:%SZ'),
+            'integration_time_s': 600.0})
         assert second.status_code == 409
         assert len(client.get('/api/schedule').get_json()) == 1
 
