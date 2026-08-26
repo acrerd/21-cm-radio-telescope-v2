@@ -376,3 +376,78 @@ def test_a_short_first_record_is_still_dropped(client, tmp_path):
         assert len(d["points"]) == 3
     finally:
         sched.current_observation = saved
+
+
+# ---------------------------------------------------------------------------
+# Fit model: the simulator's sky against the last recording
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def no_run():
+    """Nothing recording, and the last-observation slot under our control."""
+    saved_cur, saved_last, saved_fit = (sched.current_observation,
+                                        sched.last_observation, sched.last_observe_fit)
+    sched.current_observation = None
+    sched.last_observation = None
+    sched.last_observe_fit = None
+    yield
+    sched.current_observation, sched.last_observation, sched.last_observe_fit = (
+        saved_cur, saved_last, saved_fit)
+
+
+def test_fit_refuses_when_there_is_nothing_to_fit(client, no_run):
+    assert client.post("/api/observe/fit").status_code == 404
+    assert client.get("/api/observe/fit/plot").status_code == 404
+    assert client.post("/api/observe/fit/apply").status_code == 404, \
+        "applying a fit that was never made must be impossible"
+
+
+def test_fit_refuses_a_run_still_recording(client, no_run, tmp_path):
+    """The file is locked while the receiver writes it."""
+    sched.current_observation = {"name": "live", "output_file": str(tmp_path / "x.h5")}
+    r = client.post("/api/observe/fit")
+    assert r.status_code == 409
+    assert "still recording" in r.get_json()["error"]
+
+
+@pytest.mark.parametrize("info,why", [
+    ({"coord_system": "drift"}, "drift"),
+    ({"coord_system": "altaz"}, "drift"),
+    ({"coord_system": "object", "object_name": "sun"}, "no H I model"),
+])
+def test_fit_refuses_what_has_no_single_direction_or_model(client, no_run, tmp_path,
+                                                          info, why):
+    path = tmp_path / "f.h5"
+    path.write_bytes(b"")
+    sched.last_observation = dict(info, name="x", output_file=str(path))
+    r = client.post("/api/observe/fit")
+    assert r.status_code == 400, r.get_json()
+    assert why in r.get_json()["error"]
+
+
+def test_fit_runs_end_to_end_on_a_real_calibration_field(client, no_run):
+    """A tracked galactic recording at the standard tuning, fitted for real.
+
+    Uses one of the archived RF-calibration fields, which is exactly the kind
+    of file the button is for. The plot is drawn from the same reduction the
+    fit used, and the fit is held as a proposal until applied - this checks
+    the proposal, and deliberately never applies it.
+    """
+    import glob
+    here = os.path.dirname(os.path.abspath(__file__))
+    files = sorted(glob.glob(os.path.join(here, "data", "rf_gain_calibration_*.h5")))
+    if not files:
+        pytest.skip("no archived calibration field on this machine")
+    sched.last_observation = {"name": "field", "coord_system": "galactic",
+                              "output_file": files[-1]}
+    r = client.post("/api/observe/fit")
+    d = r.get_json()
+    if r.status_code == 409 and "bandpass" in d.get("error", ""):
+        pytest.skip("no bandpass template applies to that file here")
+    assert r.status_code == 200, d
+    f = d["fit"]
+    assert 1e-6 < f["gain_counts_per_k"] < 1e-3
+    assert 100 < f["t_sys_k"] < 1000
+    assert d["compare"] is None or "gain_ratio" in d["compare"]
+    assert client.get("/api/observe/fit/plot").status_code == 200
+    assert sched.last_observe_fit["source_file"] == os.path.basename(files[-1])

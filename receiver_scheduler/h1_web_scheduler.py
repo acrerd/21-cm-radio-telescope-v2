@@ -2949,6 +2949,115 @@ def api_observe_params():
         return jsonify({'available': True, 'params': dict(observe_params)})
 
 
+# The most recent "fit model" result from the Observe tab, kept until it is
+# applied or replaced. In memory only: it is a proposal, and the calibration
+# in force stays in gain_calibration.json until someone applies it.
+last_observe_fit = None
+OBSERVE_FIT_PLOT = os.path.join(_SCRIPT_DIR, 'data', 'observe_fit.png')
+
+
+@app.route('/api/observe/fit', methods=['POST'])
+def api_observe_fit():
+    """Fit the simulator to the last finished observation: gain and T_sys.
+
+    The same fit the RF tab makes from a purpose-taken calibration field,
+    applied to whatever was just observed - so any tracked spectrum of the
+    plane doubles as a check on the calibration in force, and the drift with
+    temperature (2.1% in eight hours on 2026-08-25) can be watched rather
+    than discovered. The result is a proposal: reported, drawn over the data,
+    and compared with the calibration in force; /api/observe/fit/apply makes
+    it the calibration.
+
+    Refused for what cannot be fitted honestly: a run still recording (the
+    file is locked), a drift scan (it sweeps the sky, and the fit needs one
+    direction), and the Sun or Moon (no H I model).
+    """
+    global last_observe_fit
+    import observation_plot
+    import rf_calibration
+
+    if current_observation and current_observation.get('output_file'):
+        return jsonify({'success': False,
+                        'error': 'an observation is still recording; the fit '
+                                 'needs the finished file'}), 409
+    with last_observation_lock:
+        if last_observation is None:
+            return jsonify({'success': False,
+                            'error': 'No observation has finished yet'}), 404
+        info = dict(last_observation)
+    path = info.get('output_file', '')
+    if not os.path.exists(path):
+        return jsonify({'success': False, 'error': 'the recording is missing: %s'
+                        % os.path.basename(path)}), 404
+    if observation_files.observation_mode(info) == 'drift':
+        return jsonify({'success': False,
+                        'error': 'a drift scan sweeps the sky; the fit needs a '
+                                 'tracked spectrum of one direction'}), 400
+    if info.get('coord_system') == 'object':
+        return jsonify({'success': False,
+                        'error': 'no H I model for the %s' % info.get('object_name', 'object')}), 400
+    try:
+        _, _, stamps, _, header = observation_plot.read_observation(path)
+        when = (datetime.fromtimestamp(float(stamps[len(stamps) // 2]), tz=timezone.utc)
+                if len(stamps) else datetime.now(timezone.utc))
+        direction = observation_plot.observation_direction(header, when)
+        if direction is None:
+            return jsonify({'success': False,
+                            'error': 'the recording does not say where it was pointed'}), 400
+        glon, glat = direction
+        cal = rf_calibration.calibrate_observation(path, glon, glat)
+        cal['source_file'] = os.path.basename(path)
+        observation_plot.plot_gain_check(cal, OBSERVE_FIT_PLOT)
+    except (ValueError, RuntimeError) as exc:
+        return jsonify({'success': False, 'error': str(exc)}), 409
+    except Exception as exc:                              # noqa: BLE001
+        log.error("Observe-tab fit failed: %s", exc, exc_info=True)
+        return jsonify({'success': False, 'error': str(exc)}), 500
+    last_observe_fit = cal
+    in_force = rf_calibration.load_calibration() or {}
+    compare = None
+    if in_force.get('gain_counts_per_k'):
+        compare = {
+            'gain_ratio': cal['gain_counts_per_k'] / in_force['gain_counts_per_k'],
+            't_sys_delta_k': cal['t_sys_k'] - in_force.get('t_sys_k', 0.0),
+            'in_force_observed_utc': in_force.get('observed_utc'),
+        }
+    log.info("Observe-tab fit of %s: gain %.4g counts/K, T_sys %.1f K, "
+             "correlation %.3f", os.path.basename(path), cal['gain_counts_per_k'],
+             cal['t_sys_k'], cal.get('correlation', float('nan')))
+    return jsonify({'success': True, 'fit': {
+        'gain_counts_per_k': cal['gain_counts_per_k'],
+        't_sys_k': cal['t_sys_k'],
+        'correlation': cal.get('correlation'),
+        'velocity_shift_km_s': cal.get('velocity_shift_km_s'),
+        'residual_rms_k': cal.get('residual_rms_k'),
+        'glon': glon, 'glat': glat,
+        'source_file': cal['source_file'],
+    }, 'compare': compare,
+       'trustworthy_shift': rf_calibration.trustworthy_velocity_shift(cal) is not None})
+
+
+@app.route('/api/observe/fit/plot', methods=['GET'])
+def api_observe_fit_plot():
+    from flask import send_file
+    if last_observe_fit is None or not os.path.exists(OBSERVE_FIT_PLOT):
+        return jsonify({'success': False, 'error': 'no fit has been made yet'}), 404
+    return send_file(OBSERVE_FIT_PLOT, mimetype='image/png', max_age=0)
+
+
+@app.route('/api/observe/fit/apply', methods=['POST'])
+def api_observe_fit_apply():
+    """Make the last Observe-tab fit the calibration in force."""
+    import rf_calibration
+    if last_observe_fit is None:
+        return jsonify({'success': False, 'error': 'no fit to apply'}), 404
+    rf_calibration.save_calibration(last_observe_fit)
+    log.info("RF calibration: applied the Observe-tab fit of %s (gain %.4g "
+             "counts/K, T_sys %.1f K)", last_observe_fit.get('source_file'),
+             last_observe_fit['gain_counts_per_k'], last_observe_fit['t_sys_k'])
+    return jsonify({'success': True})
+
+
 @app.route('/api/observe/last', methods=['GET'])
 def api_observe_last():
     """Metadata for the observation that most recently finished."""

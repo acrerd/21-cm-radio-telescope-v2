@@ -718,8 +718,11 @@ def plot_gain_check(calibration, output_path, figsize=(16.0, 9.0), dpi=120):
         raise RuntimeError("matplotlib is not installed, so no plot can be drawn")
     import rf_calibration
 
-    src = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data",
-                       calibration.get("source_file", ""))
+    here = os.path.dirname(os.path.abspath(__file__))
+    src = os.path.join(here, "data", calibration.get("source_file", ""))
+    if calibration.get("source_file") and not os.path.exists(src):
+        # Recordings live under data/observations; calibration runs in data.
+        src = os.path.join(here, "data", "observations", calibration["source_file"])
     if not calibration.get("source_file") or not os.path.exists(src):
         raise RuntimeError("the observation this calibration came from is no "
                            "longer in the data folder")

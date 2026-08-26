@@ -64,7 +64,7 @@
             fetch('/api/observe/params').then(r => r.json()).then(d => {
                 const info = document.getElementById('obvSource');
                 if (!d.available) {
-                    if (force) setObserveStatus('Nothing handed over yet - press Realise in the Simulator tab.', '#ffa502');
+                    if (force) setObserveStatus('Nothing handed over from the Simulator tab.', '#ffa502');
                     return;
                 }
                 const p = d.params;
@@ -202,6 +202,58 @@
                                + 'border-radius:8px; border:1px solid #333;">';
             }).catch(e => {
                 host.innerHTML = '<span style="color:#ffa502; font-size:12px;">' + e.message + '</span>';
+            });
+        }
+
+        // ---- Fit model: the simulator's sky against the last recording ----
+        // The RF tab's gain fit, applied to whatever was just observed, so any
+        // tracked spectrum of the plane checks the calibration in force. The
+        // result is a proposal until "Apply as calibration" is pressed.
+        function fitObserveModel() {
+            const info = document.getElementById('obvFitInfo');
+            const host = document.getElementById('obvPlot');
+            const apply = document.getElementById('obvFitApplyBtn');
+            apply.style.display = 'none';
+            info.textContent = 'Fitting the simulator to the recording\u2026';
+            fetch('/api/observe/fit', {method: 'POST'}).then(r => r.json()).then(d => {
+                if (!d.success) { info.textContent = 'Fit: ' + (d.error || 'failed'); return; }
+                const f = d.fit;
+                let text = 'fit of ' + f.source_file + ' at l=' + f.glon.toFixed(2)
+                         + ' b=' + f.glat.toFixed(2) + ': gain ' + f.gain_counts_per_k.toExponential(3)
+                         + ' counts/K \u00b7 T_sys ' + f.t_sys_k.toFixed(1) + ' K \u00b7 correlation '
+                         + (f.correlation != null ? f.correlation.toFixed(3) : '?')
+                         + ' \u00b7 residual ' + (f.residual_rms_k != null ? f.residual_rms_k.toFixed(2) + ' K' : '?');
+                if (f.velocity_shift_km_s != null) {
+                    text += ' \u00b7 clock shift ' + f.velocity_shift_km_s.toFixed(2) + ' km/s'
+                          + (d.trustworthy_shift ? '' : ' (line too weak to trust)');
+                }
+                if (d.compare) {
+                    const pct = 100 * (d.compare.gain_ratio - 1);
+                    text += '\nagainst the calibration in force (' + (d.compare.in_force_observed_utc || '?')
+                          + '): gain ' + (pct >= 0 ? '+' : '') + pct.toFixed(1) + '%, T_sys '
+                          + (d.compare.t_sys_delta_k >= 0 ? '+' : '') + d.compare.t_sys_delta_k.toFixed(1) + ' K';
+                }
+                info.style.whiteSpace = 'pre-wrap';
+                info.textContent = text;
+                apply.style.display = '';
+                host.innerHTML = '<span style="color:#888; font-size:12px;">Drawing&hellip;</span>';
+                fetch('/api/observe/fit/plot?' + Date.now()).then(r => {
+                    if (!r.ok) return r.json().then(x => { throw new Error(x.error || ('HTTP ' + r.status)); });
+                    return r.blob();
+                }).then(b => {
+                    host.innerHTML = '<img src="' + URL.createObjectURL(b) + '" style="width:100%; height:auto; '
+                                   + 'border-radius:8px; border:1px solid #333;">';
+                }).catch(e => { host.innerHTML = '<span style="color:#ffa502; font-size:12px;">' + e.message + '</span>'; });
+            }).catch(e => { info.textContent = 'Fit failed: ' + e; });
+        }
+
+        function applyObserveFit() {
+            if (!confirm('Replace the gain calibration in force with this fit?')) return;
+            fetch('/api/observe/fit/apply', {method: 'POST'}).then(r => r.json()).then(d => {
+                const info = document.getElementById('obvFitInfo');
+                info.textContent = d.success ? 'Applied: this fit is now the calibration in force.'
+                                             : 'Apply failed: ' + (d.error || '');
+                document.getElementById('obvFitApplyBtn').style.display = 'none';
             });
         }
 
