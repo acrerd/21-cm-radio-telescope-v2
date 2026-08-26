@@ -32,6 +32,7 @@
 
         const DEFAULTS = {
             name: "New Observation",
+            comment: "",
             coord_system: "altaz",
             coord1_deg: 45, coord1_min: 0, coord1_sec: 0,
             coord2_deg: 180, coord2_min: 0, coord2_sec: 0,

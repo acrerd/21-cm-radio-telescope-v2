@@ -440,6 +440,7 @@
                     <input autocomplete="off" type="checkbox" class="checkbox" ${obs.enabled ? 'checked' : ''} onchange="toggleEnabled(${i})">
                     <div class="schedule-info">
                         <div class="field"><div class="field-label">Name</div><div class="field-value">${obs.name}${dead ? '<span class="tag-wont-run">' + dead + '</span>' : ''}</div></div>
+                        ${obs.comment ? '<div class="field" style="grid-column:1 / -1;"><div class="field-label">Comment</div><div class="field-value" style="white-space:pre-wrap; color:#aab;">' + escapeHtml(obs.comment) + '</div></div>' : ''}
                         <div class="field"><div class="field-label">Start (local)</div><div class="field-value">${obs.start_date || 'Today'} ${obs.start_time}</div></div>
                         <div class="field"><div class="field-label">End (local)</div><div class="field-value">${formatEndTime(obs)}</div></div>
                         ${obs.horizon_note && !obs.horizon_blocked ? '<div class="field"><div class="field-label">Local horizon</div><div class="field-value" style="color:#ffa502;">' + obs.horizon_note + '</div></div>' : ''}
@@ -495,6 +496,7 @@
 
         function fillForm(obs) {
             document.getElementById('obsName').value = obs.name || DEFAULTS.name;
+            document.getElementById('obsComment').value = obs.comment || '';
             document.getElementById('obsCoordSystem').value = obs.coord_system || DEFAULTS.coord_system;
             document.getElementById('obsObjectName').value = obs.object_name || 'sun';
             document.getElementById('obsTleText').value = obs.tle_text || '';
@@ -603,6 +605,7 @@
             const obs = {
                 name: document.getElementById('obsName').value
                       || (famous ? famous[0] : ''),
+                comment: document.getElementById('obsComment').value.trim(),
                 coord_system: famousObject ? 'object'
                               : famousDrift ? 'drift'
                               : famous ? 'galactic'

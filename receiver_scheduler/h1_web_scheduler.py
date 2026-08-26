@@ -1622,7 +1622,14 @@ def generate_filename(obs: dict) -> str:
     """
     folder = observations_folder()
     if obs.get('filename'):
-        candidate = os.path.realpath(os.path.join(folder, obs['filename']))
+        # An operator's name is a stem, not a full filename: "Cas A drift
+        # scan" typed into the box produced a recording with no extension at
+        # all (2026-08-26), invisible to every *.h5 listing - the notebook,
+        # the Observe tab - while sitting right there in the folder.
+        name = obs['filename'].strip()
+        if not name.lower().endswith(('.h5', '.hdf5')):
+            name += '.h5'
+        candidate = os.path.realpath(os.path.join(folder, name))
         if candidate != folder and candidate.startswith(folder + os.sep):
             os.makedirs(os.path.dirname(candidate), exist_ok=True)
             return candidate
@@ -1801,6 +1808,10 @@ def start_observation(obs: dict, duration_override: int = None) -> bool:
         env['H1_INTEGRATION_TIME'] = str(obs.get('integration_time_s', 3.0))
         env['H1_OBS_METADATA'] = json.dumps({
             'obs_name': obs.get('name', ''),
+            # Free text from the schedule form. Lands as the `comment`
+            # attribute - the receiver skips empty strings, so a recording
+            # without one simply has no such attribute.
+            'comment': obs.get('comment', ''),
             'coord_system': obs.get('coord_system', ''),
             # The same word the filename carries, so a renamed file still says
             # whether the mount was tracking. The name is a handle; this is the

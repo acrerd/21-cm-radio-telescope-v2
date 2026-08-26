@@ -489,6 +489,53 @@ class TestGenerateFilename:
             os.remove(first)
 
     @patch.object(sched, 'get_config_value', return_value="/tmp/test_data")
+    def test_an_explicit_name_without_an_extension_gets_one(self, mock_config):
+        """A typed name is a stem. "Cas A drift scan" produced a recording
+        with no extension on 2026-08-26 - present in the folder and invisible
+        to every *.h5 listing the notebook and the Observe tab use."""
+        result = sched.generate_filename({"name": "x", "filename": "Cas A drift scan"})
+        assert result.endswith("Cas A drift scan.h5")
+        assert sched.generate_filename({"name": "x", "filename": "keep.HDF5"}).endswith("keep.HDF5")
+
+    def test_the_comment_travels_to_the_recording(self, tmp_path, monkeypatch):
+        """Free text from the schedule form must reach H1_OBS_METADATA.
+
+        The receiver writes every non-empty metadata value as an HDF5
+        attribute, so this is the whole path: form -> entry -> environment
+        -> file. A comment that stops at the schedule is a comment the file
+        does not remember.
+        """
+        captured = {}
+
+        proc = MagicMock()
+        proc.poll.return_value = None
+
+        def fake_popen(cmd, env=None, **kw):
+            captured.update(json.loads(env["H1_OBS_METADATA"]))
+            return proc
+
+        monkeypatch.setattr(sched, "LAST_OBSERVATION_FILE",
+                            str(tmp_path / "last_observation.json"))
+        obs = {"name": "Commented", "coord_system": "altaz",
+               "coord1_deg": 45, "coord1_min": 0, "coord1_sec": 0,
+               "coord2_deg": 180, "coord2_min": 0, "coord2_sec": 0,
+               "center_freq_mhz": 1420.405, "channels": 1024,
+               "integration_time_s": 3.0, "sdr_type": "demo", "gain_db": 40,
+               "bandwidth_mhz": 2.4, "duration_minutes": 5,
+               "comment": "Cas A drift, checking A_e off the plane"}
+        with patch.object(sched, "SRT_CONTROLLER_URL", None), \
+             patch("subprocess.Popen", side_effect=fake_popen), \
+             patch.object(sched, "generate_filename",
+                          return_value=str(tmp_path / "c.h5")):
+            assert sched.start_observation(dict(obs)) is True
+        try:
+            assert captured.get("comment") == obs["comment"]
+        finally:
+            proc.poll.return_value = 0
+            with patch.object(sched, "SRT_CONTROLLER_URL", None):
+                sched.stop_observation()
+
+    @patch.object(sched, 'get_config_value', return_value="/tmp/test_data")
     def test_explicit_filename(self, mock_config):
         obs = {"name": "Test", "filename": "my_file.h5"}
         result = sched.generate_filename(obs)

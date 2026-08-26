@@ -5,6 +5,14 @@
 // Loaded as a classic script: everything here shares one global scope,
 // exactly as it did before the split.
 
+        // For the one free-text field an operator types that is then put
+        // into the page as HTML (the observation comment).
+        function escapeHtml(s) {
+            const d = document.createElement('div');
+            d.textContent = String(s);
+            return d.innerHTML;
+        }
+
         function updateClock() {
             const now = new Date();
             const date = now.toLocaleDateString('en-US', {weekday:'long', year:'numeric', month:'long', day:'numeric'});

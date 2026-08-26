@@ -525,6 +525,7 @@ When launched from the scheduler, additional observation metadata is included:
 | `drift_window_min` | Drift scans: half-window W in minutes |
 | `drift_beam_time` | Drift scans: beam-crossing time T (local) |
 | `drift_alt` / `drift_az` | Drift scans: the fixed pointing commanded (degrees) |
+| `comment` | Free text typed into the schedule form; absent when none was given |
 
 ### Reading Data in Python
 
