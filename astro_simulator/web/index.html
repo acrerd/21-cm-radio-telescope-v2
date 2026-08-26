@@ -128,9 +128,13 @@
     <div class="pgroup"><label>b (°)</label><input id="p-b"></div>
     <div class="spacer"></div>
     <div class="pgroup"><label>beam (°)</label><input id="p-fw"></div>
-    <div class="pgroup"><label>BW (MHz)</label><input id="p-bw"></div>
-    <div class="pgroup"><label>f_c (MHz)</label><input id="p-fc"></div>
-    <div class="pgroup"><label>channels</label><input id="p-nc"></div>
+    <!-- The band is the fixed instrument's (scheduler issue #27): the H I
+         sub-band for a spectrum, the continuum band for a drift scan, both
+         from meta.json. The boxes stay in the DOM for the parameter plumbing
+         but are not offered. -->
+    <div class="pgroup" hidden><label>BW (MHz)</label><input id="p-bw"></div>
+    <div class="pgroup" hidden><label>f_c (MHz)</label><input id="p-fc"></div>
+    <div class="pgroup" hidden><label>channels</label><input id="p-nc"></div>
     <div class="spacer"></div>
     <div class="pgroup"><label>T_sys (K)</label><input id="p-ts"></div>
     <div class="pgroup"><label>τ (s)</label><input id="p-ti"></div>

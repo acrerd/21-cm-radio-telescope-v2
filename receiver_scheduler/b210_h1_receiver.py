@@ -16,15 +16,17 @@ import threading
 import time
 import json
 import os
+import re
 import sys
 from datetime import datetime, timezone
 from collections import deque
 
-from gnuradio import gr, fft, blocks, analog
+from gnuradio import gr, fft, blocks, analog, filter
 from gnuradio.fft import window
 
 from tuning import (ANALOG_BW_FACTOR as DEFAULT_ANALOG_BW_FACTOR,
-                    DEFAULT_LO_OFFSET_HZ, describe_tuning, plan_tuning)
+                    DEFAULT_LO_OFFSET_HZ, describe_tuning, plan_tuning,
+                    fixed_instrument, h1_subband_plan, describe_instrument)
 import observation_files
 
 # Qt is for the console display only. --headless runs the whole acquisition
@@ -284,14 +286,268 @@ class GNURadioFlowgraph(gr.top_block):
         return np.array(self.probe.level())
 
 
+class _VectorAccumulator(gr.sync_block):
+    """A sink that sums the power spectra it is given, exactly.
+
+    The recorder reads and resets it once per integration period, so every
+    spectrum the flowgraph computed goes into the record and none is counted
+    twice - unlike the GUI path's probe, which samples a running mean at
+    10 Hz. Fed by integrate_ff, which pre-sums a few dozen spectra in C++ so
+    this Python block is called a few times a second, not thousands.
+    """
+
+    def __init__(self, vlen, presum):
+        gr.sync_block.__init__(self, name="accumulate", in_sig=[(np.float32, vlen)],
+                               out_sig=None)
+        self.vlen = int(vlen)
+        self.presum = int(presum)          # spectra already summed per input vector
+        self._lock = threading.Lock()
+        self._sum = np.zeros(self.vlen, dtype=np.float64)
+        self._n = 0
+
+    def work(self, input_items, output_items):
+        block = input_items[0]
+        with self._lock:
+            self._sum += block.sum(axis=0, dtype=np.float64)
+            self._n += block.shape[0]
+        return block.shape[0]
+
+    def take(self):
+        """(mean spectrum, number of spectra) since the last call; (None, 0) if none."""
+        with self._lock:
+            if not self._n:
+                return None, 0
+            mean = self._sum / (self._n * self.presum)
+            self._sum = np.zeros(self.vlen, dtype=np.float64)
+            n, self._n = self._n * self.presum, 0
+        return mean, n
+
+
+class TwoProductFlowgraph(gr.top_block):
+    """The fixed instrument's flowgraph: one stream, two spectra (issue #27).
+
+    The wide product is a coarse FFT of the whole band - continuum, RFI and
+    the calibration comb live there. The H I product is a frequency-
+    translating decimator centred on the sub-band, so the LO's DC spur at the
+    band's low edge is outside it, followed by a fine FFT. Both branches sum
+    their power spectra inside GNU Radio (integrate_ff, then an accumulating
+    sink) and the recorder takes the mean once per integration period, in
+    linear power - no dB round trip, no sampling of a running average.
+
+    Decimating before the fine FFT is what keeps the cost down: the 2048-point
+    transform runs at 4 Msps rather than 8, and the wide 1024-point one is
+    cheap. The first version used moving_average_ff for the half-second
+    smoothing the GUI path has, and profiled at a full core per branch - a
+    3906-vector history over 1024-wide vectors - overflowing at 8 Msps where
+    the old single graph did not. Summing is what was wanted anyway.
+    """
+
+    SINK_RATE_HZ = 50.0                # how often the Python sink is called
+
+    def __init__(self, sdr_type, instrument):
+        gr.top_block.__init__(self, "H1 two-product processor", catch_exceptions=True)
+        self.instrument = dict(instrument)
+        self.sdr_type = sdr_type
+        self.sample_rate = float(instrument["sample_rate_hz"])
+        self.center_freq = float(instrument["lo_hz"])
+        self.gain = float(instrument["gain_db"])
+        self.wide_channels = int(instrument["wide_channels"])
+        self.subband = h1_subband_plan(instrument)
+        self._build_blocks()
+        self._connect_blocks()
+
+    def _build_blocks(self):
+        print(f"Initializing {self.sdr_type.upper()} (fixed instrument)...")
+        try:
+            self.sdr_source, self.throttle, actual_rate, actual_freq = \
+                create_sdr_source(self.sdr_type, self.sample_rate,
+                                  self.center_freq, self.gain)
+            self.sample_rate = actual_rate
+            self.center_freq = actual_freq
+        except Exception as e:
+            print(f"  Failed to initialize {self.sdr_type.upper()}: {e}")
+            print("  Falling back to demo mode...")
+            self.sdr_type = 'demo'
+            self.sdr_source, self.throttle, actual_rate = create_demo_source(self.sample_rate)
+            self.sample_rate = actual_rate
+
+        # --- wide product: the whole band, coarsely ---
+        nw = self.wide_channels
+        self.wide_s2v = blocks.stream_to_vector(gr.sizeof_gr_complex, nw)
+        self.wide_fft = fft.fft_vcc(nw, True, window.blackmanharris(nw), True, 1)
+        self.wide_mag = blocks.complex_to_mag_squared(nw)
+        wide_presum = max(1, int(self.sample_rate / nw / self.SINK_RATE_HZ))
+        self.wide_sum = blocks.integrate_ff(wide_presum, nw)
+        self.wide_acc = _VectorAccumulator(nw, wide_presum)
+
+        # --- H I product: translate, decimate, then a fine FFT ---
+        sb = self.subband
+        decim = int(self.instrument["h1_decimation"])
+        taps = filter.firdes.low_pass(1.0, self.sample_rate, sb["cutoff_hz"],
+                                      sb["transition_hz"])
+        self.h1_xlate = filter.freq_xlating_fir_filter_ccf(
+            decim, taps, sb["offset_from_lo_hz"], self.sample_rate)
+        nh = int(sb["channels"])
+        self.h1_s2v = blocks.stream_to_vector(gr.sizeof_gr_complex, nh)
+        self.h1_fft = fft.fft_vcc(nh, True, window.blackmanharris(nh), True, 1)
+        self.h1_mag = blocks.complex_to_mag_squared(nh)
+        h1_presum = max(1, int(sb["out_rate_hz"] / nh / self.SINK_RATE_HZ))
+        self.h1_sum = blocks.integrate_ff(h1_presum, nh)
+        self.h1_acc = _VectorAccumulator(nh, h1_presum)
+        print("  H I sub-band: %.3f-%.3f MHz, %d taps, decimate by %d to %.1f Msps, "
+              "%d channels of %.2f kHz" % (sb["band_hz"][0] / 1e6, sb["band_hz"][1] / 1e6,
+                                          len(taps), decim, sb["out_rate_hz"] / 1e6,
+                                          nh, sb["channel_width_hz"] / 1e3))
+
+    def _connect_blocks(self):
+        src = self.sdr_source
+        if self.throttle is not None:
+            self.connect((self.sdr_source, 0), (self.throttle, 0))
+            src = self.throttle
+        self.connect((src, 0), (self.wide_s2v, 0))
+        self.connect((self.wide_s2v, 0), (self.wide_fft, 0))
+        self.connect((self.wide_fft, 0), (self.wide_mag, 0))
+        self.connect((self.wide_mag, 0), (self.wide_sum, 0))
+        self.connect((self.wide_sum, 0), (self.wide_acc, 0))
+        self.connect((src, 0), (self.h1_xlate, 0))
+        self.connect((self.h1_xlate, 0), (self.h1_s2v, 0))
+        self.connect((self.h1_s2v, 0), (self.h1_fft, 0))
+        self.connect((self.h1_fft, 0), (self.h1_mag, 0))
+        self.connect((self.h1_mag, 0), (self.h1_sum, 0))
+        self.connect((self.h1_sum, 0), (self.h1_acc, 0))
+
+    # Frequency axes, in true sky frequency, fftshifted like the probes.
+    def wide_freq_axis(self):
+        return self.center_freq + np.fft.fftshift(
+            np.fft.fftfreq(self.wide_channels, 1.0 / self.sample_rate))
+
+    def h1_freq_axis(self):
+        sb = self.subband
+        return sb["centre_hz"] + np.fft.fftshift(
+            np.fft.fftfreq(int(sb["channels"]), 1.0 / sb["out_rate_hz"]))
+
+    def h1_keep(self):
+        """Which fine channels lie inside the H I sub-band (the rest are the
+        decimator's transition band and are not recorded)."""
+        f = self.h1_freq_axis()
+        lo, hi = self.subband["band_hz"]
+        return (f >= lo) & (f <= hi)
+
+    def take_wide(self):
+        """(mean wide spectrum, spectra counted) since the last call."""
+        return self.wide_acc.take()
+
+    def take_h1(self):
+        return self.h1_acc.take()
+
+
+class _OverflowCounter:
+    """Count UHD's overflow marks so the recording can say when samples were lost.
+
+    UHD writes a bare `O` to the terminal for every overflow and nothing else
+    reaches Python - gr-uhd exposes no counter. The 2026-08-26 ladder showed
+    why that matters: at 16 Msps most of the stream was dropped and the file
+    still held tidy 3 s records with nothing in them to say so. So the
+    process's stdout and stderr are routed through a pipe, copied on to
+    where they were going, and the lone capital O's counted on the way -
+    lone, because the receiver's own messages contain the letter.
+    """
+
+    def __init__(self):
+        self.count = 0
+        self._lock = threading.Lock()
+        self._orig = {}
+        self._thread = None
+        self._read_fd = None
+
+    def start(self):
+        try:
+            r, w = os.pipe()
+            for fd in (1, 2):
+                self._orig[fd] = os.dup(fd)
+                os.dup2(w, fd)
+            os.close(w)
+            self._read_fd = r
+            self._thread = threading.Thread(target=self._pump, daemon=True)
+            self._thread.start()
+        except OSError:
+            self._read_fd = None
+
+    _MESSAGE = re.compile(rb"(\d+) overflows? occurred")
+
+    def _pump(self):
+        carry = b""
+        while True:
+            try:
+                chunk = os.read(self._read_fd, 4096)
+            except OSError:
+                break
+            if not chunk:
+                break
+            try:
+                os.write(self._orig[1], chunk)
+            except OSError:
+                pass
+            # gr-uhd follows its run of O's with "In the last N ms, M
+            # overflows occurred", which is the exact count; the O's are
+            # only a picture of it. The tail is carried over so a message
+            # split across two reads is still seen whole.
+            data = carry + chunk
+            n = sum(int(m.group(1)) for m in self._MESSAGE.finditer(data))
+            cut = data.rfind(b"\n")
+            carry = data[cut + 1:] if cut >= 0 else data[-64:]
+            if n:
+                with self._lock:
+                    self.count += n
+
+    def take(self):
+        """Overflows since the last call."""
+        with self._lock:
+            n, self.count = self.count, 0
+        return n
+
+    def stop(self):
+        # Put the descriptors back first: that closes the pipe's last writer,
+        # the pump sees EOF, and everything still in the pipe - the final
+        # "Total spectra saved" line included - is copied through before
+        # the read end is closed.
+        try:
+            sys.stdout.flush()
+            sys.stderr.flush()
+        except Exception:                                 # noqa: BLE001
+            pass
+        for fd, orig in self._orig.items():
+            try:
+                os.dup2(orig, fd)
+                os.close(orig)
+            except OSError:
+                pass
+        if self._thread is not None:
+            self._thread.join(timeout=2.0)
+        if self._read_fd is not None:
+            try:
+                os.close(self._read_fd)
+            except OSError:
+                pass
+
+
 def init_hdf5(filename, freq_axis_hz, fft_size, sdr_type, center_freq,
-              sample_rate, gain, tuning_plan=None, segment=0, segment_reason=''):
+              sample_rate, gain, tuning_plan=None, segment=0, segment_reason='',
+              wide=None, instrument=None):
     """Create the observation file and its datasets.
 
     Module level and Qt-free so the window and the headless recorder write
     byte-identical files - the layout, the attributes and the scheduler
     metadata are the thing downstream code reads, and two copies of it would
     drift apart.
+
+    `freq_axis_hz`/`fft_size` describe the H I product, which keeps the
+    original dataset names (`frequency_hz`, `spectra_*`) so every existing
+    reader sees a new file as it saw an old one. `wide`, when given as
+    {'freq_axis_hz': ..., 'channels': n}, adds the continuum product under
+    `frequency_hz_wide` / `spectra_wide_*`, and `instrument` (the fixed
+    instrument dict, tuning.fixed_instrument) is recorded whole. A file with
+    a wide product also carries `overflows`, one count per record.
     """
     # The recordings folder may not exist yet - on a fresh checkout, or the
     # first time a hand-started receiver runs. Creating it here covers every
@@ -364,9 +620,36 @@ def init_hdf5(filename, freq_axis_hz, fft_size, sdr_type, center_freq,
         hf.attrs['sky_center_freq_hz'] = tuning_plan['sky_center_freq_hz']
         hf.attrs['dc_artefact_freq_hz'] = tuning_plan['tuned_center_freq_hz']
         hf.attrs['sample_rate_requested_hz'] = tuning_plan['requested_sample_rate_hz']
+    if instrument:
+        # The fixed instrument, whole, and the two bands it defines - what
+        # every consumer needs to cut continuum from hydrogen.
+        import json as _json
+        hf.attrs['instrument'] = _json.dumps(instrument)
+        hf.attrs['h1_band_hz'] = [float(x) for x in instrument['h1_band_hz']]
+        hf.attrs['continuum_band_hz'] = [float(x) for x in instrument['continuum_band_hz']]
+        hf.attrs['dc_artefact_freq_hz'] = float(instrument['lo_hz'])
+        hf.attrs['sky_center_freq_hz'] = float(np.mean(instrument['h1_band_hz']))
+        hf.attrs['sample_rate_requested_hz'] = float(
+            instrument['h1_band_hz'][1] - instrument['h1_band_hz'][0])
+        hf.attrs['product'] = 'h1'
     hf.attrs['created'] = datetime.now(timezone.utc).isoformat()
 
     _embed_calibration(hf)
+
+    if wide is not None:
+        # The continuum product: its own axis and per-channel correction (the
+        # wide template, when there is one that applies), and counts unless
+        # both that template and the gain apply. Same unit-in-the-name rule.
+        wide_axis = np.asarray(wide['freq_axis_hz'], dtype=float)
+        nw = int(wide['channels'])
+        hf.create_dataset('frequency_hz_wide', data=wide_axis)
+        w_corr, w_valid = _bandpass_correction(
+            wide_axis, {'center_freq_hz': center_freq,
+                        'sample_rate_hz': sample_rate, 'gain_db': gain},
+            product='wide')
+        hf.create_dataset('bandpass_correction_wide', data=w_corr.astype('float32'))
+        hf.create_dataset('bandpass_valid_wide', data=w_valid)
+        hf.create_dataset('overflows', shape=(0,), maxshape=(None,), dtype='int32')
 
     # Spectra are stored in kelvin when the instrument is calibrated for this
     # tuning, and in raw counts when it is not. The dataset *name* carries the
@@ -391,6 +674,16 @@ def init_hdf5(filename, freq_axis_hz, fft_size, sdr_type, center_freq,
                       chunks=(1, fft_size),
                       compression='gzip',
                       compression_opts=4)
+    if wide is not None:
+        nw = int(wide['channels'])
+        # Kelvin only when the wide template applies too; the gain is the
+        # same scale for both products because the wide template is
+        # normalised over the H I band (bandpass.fit_bandpass).
+        wide_cal = bool(cal_gain) and bool(hf['bandpass_valid_wide'][:].any())
+        hf.attrs['spectra_wide_units'] = 'K' if wide_cal else 'counts'
+        hf.create_dataset('spectra_wide_kelvin' if wide_cal else 'spectra_wide_linear',
+                          shape=(0, nw), maxshape=(None, nw), dtype='float32',
+                          chunks=(1, nw), compression='gzip', compression_opts=4)
 
     # Observation metadata from scheduler
     import json as _json
@@ -454,6 +747,7 @@ def _embed_calibration(hf):
 
     here = os.path.dirname(os.path.abspath(__file__))
     for name, attr in (("bandpass_template.json", "bandpass_template"),
+                       ("bandpass_template_wide.json", "bandpass_template_wide"),
                        ("gain_calibration.json", "gain_calibration")):
         try:
             with open(os.path.join(here, name)) as fh:
@@ -509,8 +803,12 @@ def _calibration_for_writing(hf):
         return None, None
 
 
-def _bandpass_correction(freq_axis_hz, header=None):
+def _bandpass_correction(freq_axis_hz, header=None, product='h1'):
     """(correction, valid) for this frequency axis, from the template in force.
+
+    `product` picks the template: the H I one (bandpass_template.json) or
+    the wide one (bandpass_template_wide.json), each fitted on its own
+    product's channels.
 
     The correction is what the spectrum is divided by. Where the template has
     nothing to say the correction is 1.0 and valid is False, so the channel is
@@ -535,7 +833,7 @@ def _bandpass_correction(freq_axis_hz, header=None):
         if here not in _sys.path:
             _sys.path.insert(0, here)
         import bandpass as _bp
-        template = _bp.load_bandpass()
+        template = _bp.load_bandpass(product=product)
         if not template:
             return ones, novalid
         if header is not None and not _bp.applies_to(template, header)[0]:
@@ -549,8 +847,13 @@ def _bandpass_correction(freq_axis_hz, header=None):
         return ones, novalid
 
 
-def append_spectrum(hf, avg_linear, timestamp, integration_time, fft_size):
-    """Append one integrated spectrum, flushing so a reader sees it promptly."""
+def append_spectrum(hf, avg_linear, timestamp, integration_time, fft_size,
+                    wide_linear=None, overflows=0):
+    """Append one integrated spectrum, flushing so a reader sees it promptly.
+
+    `wide_linear` is the continuum product's record for a file that has one;
+    `overflows` the UHD overflow count during this record.
+    """
     name = 'spectra_kelvin' if 'spectra_kelvin' in hf else 'spectra_linear'
     values = avg_linear
     if name == 'spectra_kelvin':
@@ -566,12 +869,49 @@ def append_spectrum(hf, avg_linear, timestamp, integration_time, fft_size):
     hf[name][n, :] = np.asarray(values, dtype=np.float32)
     hf['timestamps'][n] = timestamp
     hf['integration_times'][n] = integration_time
+    if wide_linear is not None and 'frequency_hz_wide' in hf:
+        wname = 'spectra_wide_kelvin' if 'spectra_wide_kelvin' in hf else 'spectra_wide_linear'
+        wvalues = np.asarray(wide_linear, dtype=float)
+        if wname == 'spectra_wide_kelvin':
+            wvalues = (wvalues / hf['bandpass_correction_wide'][:]
+                       / hf.attrs['applied_gain_counts_per_k']
+                       - hf.attrs['applied_t_sys_k'])
+        nw = hf[wname].shape[1]
+        hf[wname].resize((n + 1, nw))
+        hf[wname][n, :] = wvalues.astype(np.float32)
+    if 'overflows' in hf:
+        hf['overflows'].resize((n + 1,))
+        hf['overflows'][n] = int(overflows)
     hf.flush()
-    _append_live_summary(hf, avg_linear, timestamp, integration_time, n + 1)
+    _append_live_summary(hf, avg_linear, timestamp, integration_time, n + 1,
+                         wide_linear=wide_linear, overflows=overflows)
     return n + 1
 
 
-def _append_live_summary(hf, avg_linear, timestamp, integration_time, count):
+def _continuum_channels(hf, freq_axis_hz):
+    """The wide-product channels the continuum is measured over: inside the
+    continuum band, outside the H I band, clear of the LO spur."""
+    f = np.asarray(freq_axis_hz, float)
+    keep = np.ones(f.shape, dtype=bool)
+    try:
+        lo, hi = [float(x) for x in hf.attrs['continuum_band_hz']]
+        keep &= (f >= lo) & (f <= hi)
+    except Exception:                                     # noqa: BLE001
+        pass
+    try:
+        h_lo, h_hi = [float(x) for x in hf.attrs['h1_band_hz']]
+        keep &= ~((f >= h_lo) & (f <= h_hi))
+    except Exception:                                     # noqa: BLE001
+        pass
+    try:
+        keep &= np.abs(f - float(hf.attrs['dc_artefact_freq_hz'])) > 60e3
+    except Exception:                                     # noqa: BLE001
+        pass
+    return keep
+
+
+def _append_live_summary(hf, avg_linear, timestamp, integration_time, count,
+                         wide_linear=None, overflows=0):
     """One line per record in a plain text file beside the HDF5.
 
     So something can watch an observation while it runs. The HDF5 itself cannot
@@ -610,10 +950,27 @@ def _append_live_summary(hf, avg_linear, timestamp, integration_time, count):
         except Exception:                                 # noqa: BLE001
             pass
         path = os.path.splitext(hf.filename)[0] + ".live.jsonl"
-        line = json.dumps({"t": float(timestamp),
-                           "tau": float(integration_time),
-                           "n": int(count),
-                           "median": float(np.median(values))})
+        record = {"t": float(timestamp),
+                  "tau": float(integration_time),
+                  "n": int(count),
+                  "median": float(np.median(values))}
+        if wide_linear is not None and 'frequency_hz_wide' in hf:
+            # The continuum: the wide product over the continuum band with
+            # the H I band and the spur cut out, bandpass-corrected where
+            # the wide template speaks, on the same gain scale as `median`.
+            w = np.asarray(wide_linear, dtype=float)
+            keep = _continuum_channels(hf, hf['frequency_hz_wide'][:])
+            try:
+                w_valid = hf['bandpass_valid_wide'][:]
+                if w_valid.any():
+                    w = w / hf['bandpass_correction_wide'][:]
+                    keep &= w_valid
+            except Exception:                             # noqa: BLE001
+                pass
+            if keep.any():
+                record["continuum"] = float(np.median(w[keep]))
+            record["overflows"] = int(overflows)
+        line = json.dumps(record)
         with open(path, "a") as fh:
             fh.write(line + "\n")
     except Exception:                                     # noqa: BLE001
@@ -640,85 +997,91 @@ class HeadlessRecorder:
     TICK_S = 0.1                      # 10 Hz, matching the GUI's accumulation
 
     def __init__(self, sdr_type='b210', sample_rate=None, gain=None,
-                 output_file=None):
-        defaults = SDR_DEFAULTS.get(sdr_type, SDR_DEFAULTS['demo'])
-        requested_rate = sample_rate if sample_rate else defaults['sample_rate']
-        self.gain = gain if gain else defaults['gain']
+                 output_file=None, instrument=None):
+        # The fixed instrument (issue #27): the scheduler passes it as
+        # H1_INSTRUMENT, a hand-started headless receiver takes the defaults,
+        # and either way the file records exactly what a scheduled one does.
+        # --sample-rate and --gain belong to the GUI; here they are noted and
+        # ignored, so a stale launcher cannot retune a scheduled observation.
+        if instrument is None:
+            try:
+                instrument = fixed_instrument(json.loads(os.environ.get('H1_INSTRUMENT') or '{}'))
+            except ValueError:
+                instrument = fixed_instrument()
+        if sample_rate or gain:
+            print("  NOTE: --sample-rate/--gain are ignored in headless mode; the "
+                  "fixed instrument decides (issue #27)", flush=True)
+        self.instrument = instrument
         self.integration_time = INTEGRATION_TIME
         self.output_file = output_file or OUTPUT_FILE
+        print("  " + describe_instrument(instrument))
 
-        # Put the line away from DC. The hardware is tuned above it, the
-        # spectra are still recorded against true sky frequency, and the
-        # sample rate rises if it must to keep the line in the flat band.
-        self.tuning = plan_tuning(CENTER_FREQ, requested_rate, FFT_SIZE,
-                                  LO_OFFSET_HZ)
-        self.sky_center_freq = self.tuning['sky_center_freq_hz']
-        self.center_freq = self.tuning['tuned_center_freq_hz']
-        self.sample_rate = self.tuning['sample_rate_hz']
-        self.fft_size = self.tuning['channels']
-        print("  " + describe_tuning(self.tuning))
-
-        self.flowgraph = GNURadioFlowgraph(
-            sdr_type, self.sample_rate, self.center_freq, self.gain,
-            self.fft_size)
+        self.flowgraph = TwoProductFlowgraph(sdr_type, instrument)
         self.sdr_type = self.flowgraph.sdr_type
         self.sample_rate = self.flowgraph.sample_rate
+        self.center_freq = self.flowgraph.center_freq
+        self.gain = self.flowgraph.gain
 
-        freq_offset = np.fft.fftshift(
-            np.fft.fftfreq(self.fft_size, 1.0 / self.sample_rate))
-        self.freq_axis_hz = self.center_freq + freq_offset
+        # The H I product keeps the legacy names and axis; only the channels
+        # inside the sub-band are recorded.
+        self.h1_keep = self.flowgraph.h1_keep()
+        self.freq_axis_hz = self.flowgraph.h1_freq_axis()[self.h1_keep]
+        self.fft_size = int(self.h1_keep.sum())
+        self.wide_axis_hz = self.flowgraph.wide_freq_axis()
+        self.wide_channels = int(self.flowgraph.wide_channels)
 
         self.hf = init_hdf5(self.output_file, self.freq_axis_hz, self.fft_size,
                             sdr_type=self.sdr_type,
                             center_freq=self.center_freq,
                             sample_rate=self.sample_rate, gain=self.gain,
-                            tuning_plan=self.tuning)
+                            wide={'freq_axis_hz': self.wide_axis_hz,
+                                  'channels': self.wide_channels},
+                            instrument=instrument)
         self.spectrum_count = 0
         self._stop = threading.Event()
+        self.overflows = _OverflowCounter()
 
     def request_stop(self, *_args):
         """Signal handler and API: finish the current tick and shut down."""
         self._stop.set()
 
     def run(self):
-        """Acquire until stopped, writing one spectrum per integration time."""
+        """Acquire until stopped, writing one record per integration time."""
         print(f"Recording to {self.output_file}", flush=True)
-        print(f"  {self.sdr_type}, {self.sample_rate/1e6:.3f} Msps, "
+        print(f"  {self.sdr_type}, {self.sample_rate/1e6:.3f} Msps, LO "
               f"{self.center_freq/1e6:.6f} MHz, gain {self.gain}, "
-              f"{self.fft_size} channels, tau {self.integration_time}s",
-              flush=True)
+              f"H I {self.fft_size} channels + continuum {self.wide_channels}, "
+              f"tau {self.integration_time}s", flush=True)
+        self.overflows.start()
         self.flowgraph.start()
-        accumulator = None
-        count = 0
         period_start = time.time()
         try:
             while not self._stop.is_set():
                 self._stop.wait(self.TICK_S)
+                now = time.time()
+                if now - period_start < self.integration_time:
+                    continue
+                # The sinks have been summing every spectrum since the last
+                # take; the record is their mean over the period.
                 try:
-                    spectrum_db = self.flowgraph.get_spectrum()
+                    h1, n_h1 = self.flowgraph.take_h1()
+                    wide, n_wide = self.flowgraph.take_wide()
                 except Exception as exc:
                     print(f"Error reading the flowgraph: {exc}", flush=True)
                     break
-                if len(spectrum_db) == self.fft_size:
-                    # The probe reports dB; averaging has to happen in linear
-                    # power or the mean is wrong, which is what the GUI does
-                    # too.
-                    linear = 10 ** (np.asarray(spectrum_db) / 10)
-                    accumulator = linear.copy() if accumulator is None \
-                        else accumulator + linear
-                    count += 1
-
-                now = time.time()
-                if now - period_start >= self.integration_time and count:
-                    avg = accumulator / count
-                    self.spectrum_count = append_spectrum(
-                        self.hf, avg, now, now - period_start, self.fft_size)
-                    accumulator, count = None, 0
-                    period_start = now
+                if h1 is None or wide is None:
+                    continue
+                self.spectrum_count = append_spectrum(
+                    self.hf, np.asarray(h1, dtype=float)[self.h1_keep], now,
+                    now - period_start, self.fft_size,
+                    wide_linear=np.asarray(wide, dtype=float),
+                    overflows=self.overflows.take())
+                period_start = now
         finally:
             self.flowgraph.stop()
             self.flowgraph.wait()
             self.hf.close()
+            self.overflows.stop()
             print(f"Total spectra saved: {self.spectrum_count}", flush=True)
             print(f"Data written to: {self.output_file}", flush=True)
 

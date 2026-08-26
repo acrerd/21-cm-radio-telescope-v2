@@ -148,7 +148,15 @@ export class SkyData {
     this.rng = makeRng((Math.random() * 2 ** 32) >>> 0);
     this.setBeam(meta.defaults.fwhm ??
         (BEAM_FWHM_COEFF * (C_LIGHT / F_HI) / meta.defaults.dish_m) / D2R);
-    this.setBand(meta.defaults.bw_mhz * 1e6, F_HI);
+    // The fixed instrument's H I sub-band, when meta.json carries it
+    // (scheduler issue #27); the old default band about the line otherwise.
+    this.instrument = meta.instrument || null;
+    if (this.instrument && this.instrument.h1_band_hz) {
+      const [lo, hi] = this.instrument.h1_band_hz;
+      this.setBand(hi - lo, 0.5 * (lo + hi));
+    } else {
+      this.setBand(meta.defaults.bw_mhz * 1e6, F_HI);
+    }
   }
 
   setSources(list) { this.sources = list; }

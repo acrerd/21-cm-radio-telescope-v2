@@ -183,10 +183,36 @@ def write_meta():
         # No controller address: the web build cannot command the telescope
         # (see README - mixed content, no CORS, and the controller is on a
         # private link). astro_simulator.py --controller does that instead.
+        # The fixed instrument (scheduler issue #27): what a scheduled
+        # observation records, so the simulator draws the band it will get -
+        # the H I sub-band for a spectrum, the continuum band for a drift
+        # scan. From receiver_scheduler/tuning.py, the one definition.
+        "instrument": _fixed_instrument(),
     }
     with open(os.path.join(DATA, "meta.json"), "w") as f:
         json.dump(meta, f, indent=2)
     print("meta.json written")
+
+
+def _fixed_instrument():
+    """tuning.fixed_instrument() from the scheduler folder, with the H I
+    sub-band's channel width worked out, as plain numbers for meta.json."""
+    here = os.path.dirname(os.path.abspath(__file__))
+    sched = os.path.join(os.path.dirname(os.path.dirname(here)), "receiver_scheduler")
+    if sched not in sys.path:
+        sys.path.insert(0, sched)
+    import tuning
+    inst = tuning.fixed_instrument()
+    plan = tuning.h1_subband_plan(inst)
+    return {
+        "lo_hz": inst["lo_hz"],
+        "sample_rate_hz": inst["sample_rate_hz"],
+        "gain_db": inst["gain_db"],
+        "h1_band_hz": inst["h1_band_hz"],
+        "h1_channel_hz": plan["channel_width_hz"],
+        "continuum_band_hz": inst["continuum_band_hz"],
+        "wide_channel_hz": inst["sample_rate_hz"] / inst["wide_channels"],
+    }
 
 
 if __name__ == "__main__":

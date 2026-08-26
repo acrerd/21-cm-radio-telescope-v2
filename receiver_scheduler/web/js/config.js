@@ -6,6 +6,7 @@
 
         // ---- Configuration ----
         function loadConfig() {
+            showInstrument('cfgInstrument');
             fetch('/api/config').then(r => r.json()).then(cfg => {
                 document.getElementById('cfgBannerName').value = cfg.banner_name || '';
                 document.getElementById('cfgBannerSubtitle').value = cfg.banner_subtitle || '';

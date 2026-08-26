@@ -147,18 +147,41 @@ def open_readonly(path):
                 "has finished (%s)" % first)
 
 
-def read_observation(path):
+def has_wide_product(path):
+    """Whether a recording carries the continuum product (fixed instrument)."""
+    try:
+        with open_readonly(path) as hf:
+            return "frequency_hz_wide" in hf
+    except Exception:                                     # noqa: BLE001
+        return False
+
+
+def read_observation(path, product="h1"):
     """Load the spectra, timestamps and frequency axis from a recording.
 
     Finished or still being written: see open_readonly. A live file gives
     the records so far.
+
+    `product` is "h1" (the fine sub-band, the dataset names every recording
+    has always had) or "wide" (the coarse whole-band continuum product a
+    fixed-instrument recording adds, issue #27). Asked for "wide" on a file
+    without one, the single product it has is returned instead - a legacy
+    recording is its own continuum product - and the header says so in
+    `product_used`, so a consumer cutting the H I band out can still do so.
     """
     if not H5PY_AVAILABLE:
         raise RuntimeError("h5py is not installed, so the file cannot be read")
     if not os.path.exists(path):
         raise FileNotFoundError(f"No such observation file: {path}")
     with open_readonly(path) as hf:
-        freq_hz = np.asarray(hf["frequency_hz"][:], dtype=float)
+        suffix = ""
+        used = "h1"
+        if product == "wide":
+            if "frequency_hz_wide" in hf:
+                suffix, used = "_wide", "wide"
+            else:
+                used = "legacy"
+        freq_hz = np.asarray(hf["frequency_hz" + suffix][:], dtype=float)
         # Recordings are stored in kelvin when the instrument was calibrated
         # for their tuning, and in counts when it was not. This always hands
         # back *counts*, reversing the calibration where one was applied.
@@ -168,13 +191,15 @@ def read_observation(path):
         # in counts, because fitting a gain from spectra that a gain has
         # already been applied to would be circular - reduce_for_fit would
         # dutifully return unity and a system temperature of zero.
-        if "spectra_kelvin" in hf:
-            spectra = np.asarray(hf["spectra_kelvin"][:], dtype=float)
-            correction = np.asarray(hf["bandpass_correction"][:], dtype=float)
+        kelvin = "spectra%s_kelvin" % suffix
+        linear = "spectra%s_linear" % suffix
+        if kelvin in hf:
+            spectra = np.asarray(hf[kelvin][:], dtype=float)
+            correction = np.asarray(hf["bandpass_correction" + suffix][:], dtype=float)
             spectra = ((spectra + float(hf.attrs["applied_t_sys_k"]))
                        * float(hf.attrs["applied_gain_counts_per_k"]) * correction)
         else:
-            spectra = np.asarray(hf["spectra_linear"][:], dtype=float)
+            spectra = np.asarray(hf[linear][:], dtype=float)
         stamps = np.asarray(hf["timestamps"][:], dtype=float)
         # How long each record integrated for. Their sum is the total
         # integration, which is what the averaged spectrum's noise corresponds
@@ -184,6 +209,9 @@ def read_observation(path):
         else:
             taus = np.array([], dtype=float)
         header = dict(hf.attrs)
+        header["product_used"] = used
+        if "overflows" in hf:
+            header["overflows_total"] = int(np.asarray(hf["overflows"][:]).sum())
     if spectra.ndim != 2 or spectra.shape[0] == 0:
         raise ValueError("The observation file holds no spectra")
     return freq_hz, spectra, stamps, taus, header
@@ -281,10 +309,18 @@ def plot_observation(path, output_path, name="", mode="spectrum",
     """Render a finished observation to a PNG. Returns the output path."""
     if not MATPLOTLIB_AVAILABLE:
         raise RuntimeError("matplotlib is not installed, so no plot can be drawn")
-    freq_hz, spectra, stamps, taus, header = read_observation(path)
+    # A drift scan is a continuum measurement: the wide product where the
+    # file has one, its single product otherwise, and the H I band cut out
+    # either way (issue #27). A spectrum is the H I product.
+    product = "wide" if mode == "drift" else "h1"
+    freq_hz, spectra, stamps, taus, header = read_observation(path, product=product)
+    continuum_keep = None
+    if mode == "drift":
+        import drift_fit
+        _, _, continuum_keep = drift_fit._band_window(header, freq_hz)
 
     band = requested_band(header)
-    if band is not None:
+    if band is not None and mode != "drift":
         keep = (freq_hz >= band[0]) & (freq_hz <= band[1])
         # Only trim if the request actually lies inside what was recorded; a
         # mismatch means the header is not describing this file and the honest
@@ -297,7 +333,19 @@ def plot_observation(path, output_path, name="", mode="spectrum",
     # raw and can be re-reduced against a better template later; done after the
     # trim so the polynomial is never asked to extrapolate past the band it was
     # fitted over. Refuses itself if the tuning does not match - see bandpass.py.
-    spectra, bandpass_note = bandpass.apply_bandpass(freq_hz, spectra, header)
+    spectra, bandpass_note = bandpass.apply_bandpass(
+        freq_hz, spectra, header,
+        product=("wide" if header.get("product_used") == "wide" else "h1"))
+    if continuum_keep is not None:
+        # Everything outside the continuum window - the H I band, the spur,
+        # the skirts - is dropped from a drift plot before the band mean.
+        import drift_fit
+        spectra = np.where(continuum_keep[None, :], spectra, np.nan)
+        if drift_fit.continuum_is_clean(header, freq_hz, continuum_keep):
+            bandpass_note += "; continuum only, H I band excluded"
+        else:
+            bandpass_note += ("; NOTE: the recorded band lies inside the H I "
+                              "exclusion, so the line is in this total power")
     spectra, n_patched, patched_at = patch_dc_artefact(freq_hz, spectra, header)
 
     # If a gain calibration applies to this tuning, put the spectrum in kelvin.

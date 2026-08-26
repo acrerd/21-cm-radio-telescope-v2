@@ -51,7 +51,9 @@ export function setupUI(cfg) {
     l: els.l, b: els.b, fw: els.fw, bw: els.bw, fc: els.fc,
     nc: els.nc, ts: els.ts, ti: els.ti, sd: els.sd,
   };
-  let fcShown = (F_HI / 1e6).toFixed(2);
+  // What the (hidden) f_c box shows: the band centre the sky was built with -
+  // the fixed instrument's H I sub-band centre, not the line itself.
+  let fcShown = (sky.fc / 1e6).toFixed(2);
 
   function nativeChannels() {
     return sky.k1 > sky.k0 + 1 ? sky.k1 - sky.k0
@@ -291,6 +293,29 @@ export function setupUI(cfg) {
     if (state.last && state.mode !== "cont") render();
   });
 
+  // The band follows the mode, from the fixed instrument (scheduler issue
+  // #27): the H I sub-band for a spectrum, the continuum band - which holds
+  // no hydrogen - for a drift scan. So the simulated drift scan is the
+  // continuum product a scheduled one will record, line excluded.
+  function bandForMode(mode) {
+    const inst = sky.instrument;
+    if (!inst) return null;
+    const band = mode === "cont" ? inst.continuum_band_hz : inst.h1_band_hz;
+    if (!band) return null;
+    return { bwHz: band[1] - band[0], fcHz: 0.5 * (band[0] + band[1]) };
+  }
+
+  function applyModeBand(mode) {
+    const b = bandForMode(mode);
+    if (!b) return;
+    if (Math.abs(b.bwHz - sky.bwHz) > 1 || Math.abs(b.fcHz - sky.fc) > 1) {
+      sky.setBand(b.bwHz, b.fcHz);
+    }
+    fcShown = (sky.fc / 1e6).toFixed(2);
+    boxes.bw.value = `${sky.bwHz / 1e6}`;
+    boxes.fc.value = fcShown;
+  }
+
   els.mapBtn.addEventListener("click", () => {
     state.mode = state.mode === "hi" ? "cont" : "hi";
     const cont = state.mode === "cont";
@@ -298,6 +323,7 @@ export function setupUI(cfg) {
     els.frameBtn.disabled = cont;
     boxes.sd.disabled = !cont;
     map.setMode(cont ? "cont" : "hi");
+    applyModeBand(state.mode);
     updateMapTitle();
     if (state.last) {
       if (cont) renderDrift();
@@ -442,8 +468,8 @@ export function setupUI(cfg) {
   // which reset the boxes only, and the Save button (2026-08-26).
   els.homeBtn.addEventListener("click", () => {
     const keep = state.last ? { glon: state.last.glon, glat: state.last.glat } : null;
-    // Instrument boxes and the frequency shown.
-    fcShown = (F_HI / 1e6).toFixed(2);
+    // Instrument boxes; the band itself is the fixed instrument's for the
+    // mode, set once the mode is back to H I below.
     initBoxes();
     if (keep) { boxes.l.value = keep.glon.toFixed(3); boxes.b.value = keep.glat.toFixed(3); }
     // Site, as the page was opened with (the site boxes edit `site` in
@@ -459,6 +485,7 @@ export function setupUI(cfg) {
     state.frame = "lsr";
     els.frameBtn.textContent = "Frame: LSR";
     if (state.mode === "cont") els.mapBtn.click();
+    applyModeBand("hi");
     // Rotation and the horizon overlay.
     if (map.l0 !== 0) map.rotate(-map.l0);
     if (map.horizon && els.horizonBtn && !map.showHorizon) els.horizonBtn.click();

@@ -56,6 +56,12 @@ import numpy as np
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 BANDPASS_FILE = os.path.join(HERE, "bandpass_template.json")
+# The continuum product's template (issue #27): the wide spectrum has its
+# own channels and its own shape - the whole 8 MHz, the decimator playing no
+# part - so it gets its own fit, stored beside the H I one. Normalised over
+# the H I band (see fit_bandpass) so the one gain serves both products.
+BANDPASS_WIDE_FILE = os.path.join(HERE, "bandpass_template_wide.json")
+TEMPLATE_FILES = {"h1": BANDPASS_FILE, "wide": BANDPASS_WIDE_FILE}
 
 H1_REST_FREQ_HZ = 1420.405752e6
 
@@ -113,17 +119,48 @@ def _needed_band_fraction(header, margin=1.03):
     return margin * reach / rate
 
 
+def _product_band(header, freq_hz, product):
+    """(low, high) the template should span for this product, or None.
+
+    A fixed-instrument recording (issue #27) says where each product lives:
+    the H I sub-band and the continuum band are attributes. The wide product
+    spans the whole recorded axis, not only the continuum band, so the
+    template can correct the H I channels of the wide spectrum too.
+    """
+    if product == "wide" and header.get("frequency_hz_wide_span") is not None:
+        lo, hi = header["frequency_hz_wide_span"]
+        return float(lo), float(hi)
+    if product == "wide":
+        f = np.asarray(freq_hz, float)
+        if f.size:
+            return float(f.min()), float(f.max())
+        return None
+    band = header.get("h1_band_hz")
+    if band is not None:
+        return float(band[0]), float(band[1])
+    return None
+
+
 def fit_bandpass(freq_hz, spectra, header, degree=DEFAULT_DEGREE,
                  band_fraction=DEFAULT_BAND_FRACTION,
                  line_mask_hz=DEFAULT_LINE_MASK_HZ,
                  dc_mask_hz=DEFAULT_DC_MASK_HZ,
-                 source_name="", source_file=""):
+                 source_name="", source_file="", product="h1",
+                 normalise_band_hz=None):
     """Fit the instrument response from an observation of empty sky.
 
     Returns a template dict ready for save_bandpass(). The polynomial is
     normalised to unit median across the fitted band, so dividing by it flattens
     the spectrum without moving its overall level - the counts-to-kelvin scale is
     a separate matter, deliberately not folded in here.
+
+    Two ways of choosing the fitted span. A recording that names its product
+    bands (`h1_band_hz`, fixed instrument) is fitted over that product's own
+    span, centred on it. Anything older is fitted symmetrically about the LO
+    over `band_fraction` of the sample rate, as before. `normalise_band_hz`
+    fixes the unit-median span - the wide template is normalised over the H I
+    band so that the one gain, fitted on the H I product, is the right scale
+    for the continuum product as well.
     """
     freq_hz = np.asarray(freq_hz, float)
     spectra = np.asarray(spectra, float)
@@ -133,21 +170,28 @@ def fit_bandpass(freq_hz, spectra, header, degree=DEFAULT_DEGREE,
                          "so a template fitted from it could never be matched "
                          "to anything")
 
-    # Cover what this tuning will actually ask for. The plot is trimmed to the
-    # requested bandwidth about the *sky* centre, and the LO sits an offset away
-    # from that, so the far edge is (offset + bandwidth/2) from the LO - further
-    # on one side than the other. Fitting a band symmetric about the LO and
-    # narrower than that silently drops the low end of every plot, which is
-    # exactly what the first version of this did.
-    band_fraction = max(band_fraction, _needed_band_fraction(header))
-    band_fraction = min(band_fraction, MAX_BAND_FRACTION)
+    span = _product_band(header, freq_hz, product)
+    if span is not None:
+        centre = 0.5 * (span[0] + span[1])
+        scale = 0.5 * (span[1] - span[0])
+        band_fraction = scale / cfg["sample_rate_hz"]
+    else:
+        # Cover what this tuning will actually ask for. The plot is trimmed to
+        # the requested bandwidth about the *sky* centre, and the LO sits an
+        # offset away from that, so the far edge is (offset + bandwidth/2)
+        # from the LO - further on one side than the other. Fitting a band
+        # symmetric about the LO and narrower than that silently drops the low
+        # end of every plot, which is exactly what the first version did.
+        band_fraction = max(band_fraction, _needed_band_fraction(header))
+        band_fraction = min(band_fraction, MAX_BAND_FRACTION)
+        centre = cfg["lo_hz"]
+        scale = band_fraction * cfg["sample_rate_hz"]
 
-    nu = freq_hz - cfg["lo_hz"]
-    scale = band_fraction * cfg["sample_rate_hz"]
+    nu = freq_hz - centre
     inside = np.abs(nu) <= scale
     keep = (inside
             & (np.abs(freq_hz - H1_REST_FREQ_HZ) > line_mask_hz)
-            & (np.abs(nu) > dc_mask_hz))
+            & (np.abs(freq_hz - cfg["lo_hz"]) > dc_mask_hz))
     if keep.sum() < 10 * (degree + 1):
         raise ValueError("too few unmasked channels (%d) to fit order %d"
                          % (keep.sum(), degree))
@@ -160,7 +204,12 @@ def fit_bandpass(freq_hz, spectra, header, degree=DEFAULT_DEGREE,
     # The masked line sits off-centre in a tilted band, so normalising on what
     # survived the mask makes the overall scale depend on how much was masked -
     # measured at 4% here, which would then land in the counts-to-kelvin factor.
-    level = float(np.median(model[inside]))
+    norm = inside
+    if normalise_band_hz is not None:
+        norm = inside & (freq_hz >= normalise_band_hz[0]) & (freq_hz <= normalise_band_hz[1])
+        if not norm.any():
+            norm = inside
+    level = float(np.median(model[norm]))
     coef = np.asarray(coef, float) / level
 
     residual = mean[keep] / (model[keep]) - 1.0
@@ -172,24 +221,32 @@ def fit_bandpass(freq_hz, spectra, header, degree=DEFAULT_DEGREE,
         "degree": int(degree),
         "coefficients": [float(c) for c in coef],
         "u_scale_hz": float(scale),
+        "u_centre_hz": float(centre),
+        "product": product,
         "band_fraction": float(band_fraction),
         "config": cfg,
         "n_records": int(spectra.shape[0]) if spectra.ndim == 2 else 1,
         "n_channels_fitted": int(keep.sum()),
         "line_mask_hz": float(line_mask_hz),
         "dc_mask_hz": float(dc_mask_hz),
+        "normalise_band_hz": (list(map(float, normalise_band_hz))
+                              if normalise_band_hz is not None else None),
         "fit_residual_rms": float(np.std(residual)),
     }
 
 
-def save_bandpass(template, path=BANDPASS_FILE):
+def save_bandpass(template, path=None, product=None):
+    if path is None:
+        path = TEMPLATE_FILES.get(product or template.get("product") or "h1", BANDPASS_FILE)
     with open(path, "w") as fh:
         json.dump(template, fh, indent=2)
     return path
 
 
-def load_bandpass(path=BANDPASS_FILE):
-    """The stored template, or None if there isn't one."""
+def load_bandpass(path=None, product="h1"):
+    """The stored template for a product, or None if there isn't one."""
+    if path is None:
+        path = TEMPLATE_FILES.get(product, BANDPASS_FILE)
     if not os.path.exists(path):
         return None
     try:
@@ -229,13 +286,16 @@ def evaluate(template, freq_hz):
     tail would invent structure at exactly the band edges where the roll-off is
     steepest.
     """
-    nu = np.asarray(freq_hz, float) - template["config"]["lo_hz"]
+    # Templates fitted before the fixed instrument were centred on the LO;
+    # a product template records its own centre.
+    centre = template.get("u_centre_hz", template["config"]["lo_hz"])
+    nu = np.asarray(freq_hz, float) - float(centre)
     u = nu / template["u_scale_hz"]
     model = np.polyval(np.asarray(template["coefficients"], float), u)
     return np.where(np.abs(u) <= 1.0, model, np.nan)
 
 
-def embedded_template(header):
+def embedded_template(header, product="h1"):
     """The bandpass template carried in an observation's own header, or None.
 
     Recordings written from 2026-08-25 carry the template and the gain that
@@ -243,7 +303,8 @@ def embedded_template(header):
     machine that made it and long after the calibration has moved on. Older
     files have no such attribute and simply return None.
     """
-    raw = (header or {}).get("bandpass_template")
+    raw = (header or {}).get("bandpass_template_wide" if product == "wide"
+                             else "bandpass_template")
     if not raw:
         return None
     try:
@@ -252,7 +313,7 @@ def embedded_template(header):
         return None
 
 
-def apply_bandpass(freq_hz, spectra, header, template=None, path=BANDPASS_FILE):
+def apply_bandpass(freq_hz, spectra, header, template=None, path=None, product="h1"):
     """Divide out the instrument response.
 
     Returns (corrected, note). `corrected` is a new array - the caller's data is
@@ -261,7 +322,7 @@ def apply_bandpass(freq_hz, spectra, header, template=None, path=BANDPASS_FILE):
     """
     spectra = np.asarray(spectra, float)
     if template is None:
-        template = load_bandpass(path)
+        template = load_bandpass(path, product=product)
     ok, why = applies_to(template, header)
     if not ok:
         # Fall back to the template the observation was recorded under, which
@@ -271,7 +332,7 @@ def apply_bandpass(freq_hz, spectra, header, template=None, path=BANDPASS_FILE):
         # apply the choice is between the file's own template and no correction
         # at all, and an archived observation should not become unreducible
         # merely because the receiver was retuned afterwards.
-        embedded = embedded_template(header)
+        embedded = embedded_template(header, product=product)
         if embedded is not None:
             ok_e, why_e = applies_to(embedded, header)
             if ok_e:
@@ -299,16 +360,34 @@ def apply_bandpass(freq_hz, spectra, header, template=None, path=BANDPASS_FILE):
     return corrected, note
 
 
-def fit_from_observation(path, name="", degree=DEFAULT_DEGREE, out=BANDPASS_FILE):
+def fit_from_observation(path, name="", degree=DEFAULT_DEGREE, out=None,
+                         product="h1"):
     """Fit and store a template from a recorded observation of empty sky."""
     from observation_plot import read_observation
 
-    freq_hz, spectra, _stamps, _taus, header = read_observation(path)
+    freq_hz, spectra, _stamps, _taus, header = read_observation(path, product=product)
+    normalise = None
+    if product == "wide" and header.get("h1_band_hz") is not None:
+        # Unit median over the H I band, so the gain fitted on the H I
+        # product is the right scale for the continuum product too.
+        normalise = [float(x) for x in header["h1_band_hz"]]
     template = fit_bandpass(freq_hz, spectra, header, degree=degree,
                             source_name=name or header.get("obs_name", ""),
-                            source_file=path)
-    save_bandpass(template, out)
+                            source_file=path, product=product,
+                            normalise_band_hz=normalise)
+    out = save_bandpass(template, out, product=product)
     return template, out
+
+
+def fit_both_from_observation(path, name="", degree=DEFAULT_DEGREE):
+    """The H I template, and the wide one too when the recording has a
+    continuum product (fixed instrument). Returns {product: (template, path)}."""
+    from observation_plot import has_wide_product
+
+    result = {"h1": fit_from_observation(path, name, degree, product="h1")}
+    if has_wide_product(path):
+        result["wide"] = fit_from_observation(path, name, degree, product="wide")
+    return result
 
 
 def main():

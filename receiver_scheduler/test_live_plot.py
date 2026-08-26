@@ -518,6 +518,12 @@ def test_a_drift_scan_gets_the_total_power_fit(client, no_run):
     predicted curve: two parameters, the bandpass shape inside the gain. The
     result is drawn and labelled approximate, and cannot be applied as the
     per-channel calibration.
+
+    Since the fixed instrument (issue #27) the continuum excludes the H I
+    band always, so this legacy file is fitted on the ~1 MHz of its band
+    outside the line: the correlation drops from 0.86 (the line was most of
+    the model's structure) to ~0.7, which is what the diffuse continuum map
+    alone was known to give.
     """
     here = os.path.dirname(os.path.abspath(__file__))
     path = os.path.join(here, "data", "observations", "Cas A drift scan.h5")
@@ -532,7 +538,7 @@ def test_a_drift_scan_gets_the_total_power_fit(client, no_run):
     assert f["kind"] == "total_power" and f["applicable"] is False
     assert f["approximate"]
     assert 100 < f["t_sys_k"] < 1000 and f["gain_counts_per_k"] > 0
-    assert f["correlation"] > 0.7, "Cas A and the plane should be plainly there"
+    assert f["correlation"] > 0.6, "Cas A and the plane's continuum should still be there"
     assert client.get("/api/observe/fit/plot").status_code == 200
     assert client.post("/api/observe/fit/apply").status_code == 400, \
         "a total-power gain must never become the per-channel calibration"
@@ -557,9 +563,12 @@ def test_recording_details_say_whether_the_line_was_in_band(client):
     assert client.get("/api/observe/info?file=../secret.h5").status_code == 404
 
 
-def test_the_total_power_band_window_leaves_the_skirts_and_the_lo_out():
+def test_the_total_power_band_window_leaves_the_skirts_the_lo_and_the_line_out():
     """80% of the band, centred, less the LO artefact - measured on the Cas A
-    scan the response is 89% at this edge and falls to 41% at the band edge."""
+    scan the response is 89% at this edge and falls to 41% at the band edge -
+    and, since the fixed instrument (issue #27), less the H I band: the
+    continuum never includes the line. On this legacy tuning that leaves the
+    0.9 MHz below the exclusion."""
     import numpy as np
     import drift_fit
     freq = np.linspace(1417.55e6, 1422.05e6, 4500)
@@ -569,7 +578,9 @@ def test_the_total_power_band_window_leaves_the_skirts_and_the_lo_out():
     assert (lo, hi) == pytest.approx((1418.0e6, 1421.6e6))
     assert not keep[np.abs(freq - 1419.8e6) < 30e3].any(), "the LO artefact is masked"
     assert not keep[freq < lo].any() and not keep[freq > hi].any()
-    assert 0.76 < keep.mean() < 0.81
+    assert not keep[np.abs(freq - 1420.405752e6) <= 1.5e6].any(), "the line is out"
+    assert 0.18 < keep.mean() < 0.22
+    assert drift_fit.continuum_is_clean(header, freq, keep)
 
 
 def test_the_selected_recording_can_be_downloaded(client):

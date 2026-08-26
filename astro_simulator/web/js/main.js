@@ -114,8 +114,9 @@ async function boot() {
 
     // deep link: the parameter boxes, then a pointing in whichever frame
     // the caller has - the scheduler's entries come in all four.
-    for (const [k, el] of [["beam", els.fw], ["bw", els.bw], ["fc", els.fc],
-                           ["nc", els.nc], ["tint", els.ti], ["sd", els.sd]]) {
+    // bw/fc/nc are no longer taken from the link: the band is the fixed
+    // instrument's (scheduler issue #27).
+    for (const [k, el] of [["beam", els.fw], ["tint", els.ti], ["sd", els.sd]]) {
       if (params.has(k)) el.value = params.get(k);
     }
     let lb = null;

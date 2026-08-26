@@ -477,10 +477,8 @@
                         <div class="field"><div class="field-label">End (local)</div><div class="field-value">${formatEndTime(obs)}</div></div>
                         ${obs.horizon_note && !obs.horizon_blocked ? '<div class="field"><div class="field-label">Local horizon</div><div class="field-value" style="color:#ffa502;">' + obs.horizon_note + '</div></div>' : ''}
                         <div class="field"><div class="field-label">Coordinates</div><div class="field-value">${formatCoordDisplay(obs)}</div></div>
-                        <div class="field"><div class="field-label">Frequency</div><div class="field-value">${obs.center_freq_mhz} MHz</div></div>
-                        <div class="field"><div class="field-label">BW / Gain</div><div class="field-value">${obs.bandwidth_mhz} MHz / ${obs.gain_db} dB</div></div>
+                        <div class="field"><div class="field-label">Instrument</div><div class="field-value">fixed · H I + continuum</div></div>
                         <div class="field"><div class="field-label">Cal / End</div><div class="field-value">${obs.calibrator ? 'CAL' : '-'} / ${({home:'Home',stow:'Stow'})[obs.end_action] || '-'}${obs.home_first ? ' · homes first' : ''}</div></div>
-                        <div class="field"><div class="field-label">Channels</div><div class="field-value">${obs.channels}</div></div>
                         <div class="field"><div class="field-label">Integration</div><div class="field-value">${obs.integration_time_s}s</div></div>
                     </div>
                     <div class="schedule-actions">
@@ -542,10 +540,9 @@
             document.getElementById('obsStartDate').value = obs.start_date || '';
             document.getElementById('obsStartTime').value = obs.start_time || DEFAULTS.start_time;
             document.getElementById('obsDuration').value = obs.duration_minutes ?? DEFAULTS.duration_minutes;
-            document.getElementById('obsCenterFreq').value = obs.center_freq_mhz ?? DEFAULTS.center_freq_mhz;
-            document.getElementById('obsBandwidth').value = obs.bandwidth_mhz ?? DEFAULTS.bandwidth_mhz;
-            document.getElementById('obsGain').value = obs.gain_db ?? DEFAULTS.gain_db;
-            document.getElementById('obsChannels').value = obs.channels || DEFAULTS.channels;
+            // The tuning is the fixed instrument's, not the entry's (issue
+            // #27); the form only shows what it is.
+            showInstrument('obsInstrumentNote');
             document.getElementById('obsIntegration').value = obs.integration_time_s ?? DEFAULTS.integration_time_s;
             document.getElementById('obsSdrType').value = obs.sdr_type || DEFAULTS.sdr_type;
             document.getElementById('obsCalibrator').value = obs.calibrator ? 'on' : 'off';
@@ -666,10 +663,6 @@
                 end_date: endDate,
                 end_time: endTime,
                 duration_minutes: duration,
-                center_freq_mhz: parseFloat(document.getElementById('obsCenterFreq').value),
-                bandwidth_mhz: parseFloat(document.getElementById('obsBandwidth').value),
-                gain_db: parseFloat(document.getElementById('obsGain').value),
-                channels: parseInt(document.getElementById('obsChannels').value),
                 integration_time_s: parseFloat(document.getElementById('obsIntegration').value),
                 sdr_type: document.getElementById('obsSdrType').value,
                 calibrator: document.getElementById('obsCalibrator').value === 'on',
@@ -744,9 +737,8 @@
                 q.set('tint', (o.duration_minutes || 30) * 60);
             }
             if (!isNaN(when)) q.set('time', when.toISOString());
-            if (o.bandwidth_mhz) q.set('bw', o.bandwidth_mhz);
-            if (o.center_freq_mhz) q.set('fc', o.center_freq_mhz);
-            if (o.channels) q.set('nc', o.channels);
+            // No tuning in the link: the simulator's band is the fixed
+            // instrument's, as the observation's will be.
             showSimulator('/simulator/?' + q.toString());
             switchTab('simulator');
         }

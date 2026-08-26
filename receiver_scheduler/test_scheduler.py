@@ -701,7 +701,9 @@ class TestFlaskAPI:
         assert e['start_date'] == local.strftime('%Y-%m-%d')
         assert e['start_time'] == local.strftime('%H:%M')
         assert e['duration_minutes'] == 10
-        assert e['channels'] == 327 and e['bandwidth_mhz'] == 2.0
+        # The tuning is the fixed instrument's (issue #27): whatever the page
+        # sent is not carried into the entry.
+        assert 'channels' not in e and 'bandwidth_mhz' not in e and 'center_freq_mhz' not in e
         stored = client.get('/api/schedule').get_json()
         assert [o['name'] for o in stored] == [e['name']]
 
@@ -2615,6 +2617,15 @@ class TestOneSitePosition:
             instrument.beam_fwhm_deg(instrument.DISH_M), abs=5e-4)
         assert meta["defaults"]["dish_m"] == instrument.DISH_M
         assert meta["site"]["name"] == instrument.SITE_NAME
+        # The fixed instrument (issue #27): the simulator draws the band a
+        # scheduled observation will record, so the bundle must carry the
+        # same one tuning.py defines.
+        import tuning
+        inst = tuning.fixed_instrument()
+        assert meta["instrument"]["lo_hz"] == pytest.approx(inst["lo_hz"])
+        assert meta["instrument"]["sample_rate_hz"] == pytest.approx(inst["sample_rate_hz"])
+        assert meta["instrument"]["h1_band_hz"] == pytest.approx(inst["h1_band_hz"])
+        assert meta["instrument"]["continuum_band_hz"] == pytest.approx(inst["continuum_band_hz"])
         assert meta["site"]["lat"] == pytest.approx(instrument.SITE_LAT_DEG)
         assert meta["site"]["lon"] == pytest.approx(instrument.SITE_LON_DEG)
         assert meta["site"]["height"] == pytest.approx(instrument.SITE_HEIGHT_M)
