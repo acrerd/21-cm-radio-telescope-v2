@@ -91,6 +91,11 @@
         .tab-content { display: none; }
         .tab-content.active { display: block; }
         .config-form { background: #0f0f23; border: 1px solid #333; border-radius: 8px; padding: 20px; max-width: 700px; }
+        /* The Observe tab holds plots, a recordings list and a details table
+           as well as its form; the 700px column that suits a settings page
+           squeezed those. It gets the whole 1400px container, which is also
+           the width the .rf-wide pull-out was sized for. */
+        .config-form.observe-form { max-width: 1400px; }
         .config-form .form-group { margin-bottom: 15px; }
         .config-form input { width: 100%; }
         .config-saved { color: #00ff88; font-size: 13px; display: none; margin-left: 10px; }
