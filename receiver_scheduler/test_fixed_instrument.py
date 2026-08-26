@@ -169,6 +169,30 @@ class TestContinuumExcludesHydrogen:
             drift_fit._band_window(header, f)
 
 
+class TestCountsScale:
+    """The counts scale must not depend on the channel count: the gain is in
+    counts per kelvin, and halving the H I channels on 2026-08-26 halved
+    every count until the per-bin normalisation was restored."""
+
+    def _level(self, channels):
+        import time
+        import b210_h1_receiver as rx
+        inst = tuning.fixed_instrument({"h1_channels": channels})
+        fg = rx.TwoProductFlowgraph("demo", inst)
+        fg.start()
+        try:
+            time.sleep(1.5)
+            mean, n = fg.take_h1()
+        finally:
+            fg.stop(); fg.wait()
+        assert n > 0
+        return float(np.median(mean))
+
+    def test_the_per_bin_level_is_independent_of_the_channel_count(self):
+        a, b = self._level(512), self._level(2048)
+        assert a == pytest.approx(b, rel=0.05), (a, b)
+
+
 class TestNoSilentDemoFallback:
     """A headless recording that cannot open its radio must fail, not
     record synthetic noise: on 2026-08-26 a gain calibration did exactly

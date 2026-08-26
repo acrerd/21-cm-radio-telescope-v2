@@ -388,6 +388,13 @@ class TwoProductFlowgraph(gr.top_block):
         self.wide_s2v = blocks.stream_to_vector(gr.sizeof_gr_complex, nw)
         self.wide_fft = fft.fft_vcc(nw, True, window.blackmanharris(nw), True, 1)
         self.wide_mag = blocks.complex_to_mag_squared(nw)
+        # Per-bin power normalised by the transform length, so the counts
+        # scale - and the gain in counts/K - does not depend on how many
+        # channels the band is cut into. The old graph did this inside its
+        # dB stage (-10 log10 N); the first version of this one dropped it,
+        # and halving the H I channel count on 2026-08-26 halved every
+        # count and silently invalidated the stored gain.
+        self.wide_norm = blocks.multiply_const_vff([1.0 / nw] * nw)
         wide_presum = max(1, int(self.sample_rate / nw / self.SINK_RATE_HZ))
         self.wide_sum = blocks.integrate_ff(wide_presum, nw)
         self.wide_acc = _VectorAccumulator(nw, wide_presum)
@@ -403,6 +410,7 @@ class TwoProductFlowgraph(gr.top_block):
         self.h1_s2v = blocks.stream_to_vector(gr.sizeof_gr_complex, nh)
         self.h1_fft = fft.fft_vcc(nh, True, window.blackmanharris(nh), True, 1)
         self.h1_mag = blocks.complex_to_mag_squared(nh)
+        self.h1_norm = blocks.multiply_const_vff([1.0 / nh] * nh)
         h1_presum = max(1, int(sb["out_rate_hz"] / nh / self.SINK_RATE_HZ))
         self.h1_sum = blocks.integrate_ff(h1_presum, nh)
         self.h1_acc = _VectorAccumulator(nh, h1_presum)
@@ -419,13 +427,15 @@ class TwoProductFlowgraph(gr.top_block):
         self.connect((src, 0), (self.wide_s2v, 0))
         self.connect((self.wide_s2v, 0), (self.wide_fft, 0))
         self.connect((self.wide_fft, 0), (self.wide_mag, 0))
-        self.connect((self.wide_mag, 0), (self.wide_sum, 0))
+        self.connect((self.wide_mag, 0), (self.wide_norm, 0))
+        self.connect((self.wide_norm, 0), (self.wide_sum, 0))
         self.connect((self.wide_sum, 0), (self.wide_acc, 0))
         self.connect((src, 0), (self.h1_xlate, 0))
         self.connect((self.h1_xlate, 0), (self.h1_s2v, 0))
         self.connect((self.h1_s2v, 0), (self.h1_fft, 0))
         self.connect((self.h1_fft, 0), (self.h1_mag, 0))
-        self.connect((self.h1_mag, 0), (self.h1_sum, 0))
+        self.connect((self.h1_mag, 0), (self.h1_norm, 0))
+        self.connect((self.h1_norm, 0), (self.h1_sum, 0))
         self.connect((self.h1_sum, 0), (self.h1_acc, 0))
 
     # Frequency axes, in true sky frequency, fftshifted like the probes.
