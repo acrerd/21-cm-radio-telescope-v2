@@ -2618,6 +2618,18 @@ def _run_horizon_scan(params: dict):
         )
         save_horizon_profile(profile)
         horizon_state["profile"] = profile
+        # The partial written after every strip is superseded by the archived
+        # profile the moment the scan completes; leaving it behind is what
+        # made the data folder read as if every scan had been abandoned.
+        try:
+            from horizon_scan import _partial_path
+            started = datetime.fromisoformat(
+                str(profile.get("started_utc", "")).replace("Z", "+00:00"))
+            partial = _partial_path(started)
+            if os.path.exists(partial):
+                os.remove(partial)
+        except (ValueError, OSError):
+            pass
         data_folder = get_config_value("data_output_folder")
         os.makedirs(data_folder, exist_ok=True)
         try:

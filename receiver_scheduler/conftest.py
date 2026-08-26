@@ -54,3 +54,26 @@ def _keep_tests_out_of_the_last_observation_pointer(tmp_path_factory):
         tmp_path_factory.mktemp("pointer") / "last_observation.json")
     yield
     scheduler.LAST_OBSERVATION_FILE = real
+
+
+@pytest.fixture(autouse=True, scope="session")
+def _keep_tests_out_of_the_horizon_partials(tmp_path_factory):
+    """Redirect the horizon scan's partial saves for the whole session.
+
+    A scan writes a partial profile after every strip, and the demo and
+    stubbed scans in the tests do exactly what a real one does - so every
+    pytest run left one or two horizon_partial_*.json in the real data
+    folder. By 2026-08-26 there were 149, of which one came from the
+    telescope. Same reasoning as the two fixtures above: the tests that write
+    them do so through the scan, not by touching a file.
+    """
+    import horizon_scan
+
+    # _partial_path builds its folder from horizon_scan._SCRIPT_DIR at call
+    # time, and that name feeds nothing else after import - so pointing it at
+    # a temporary folder moves the partials and nothing more. Tests that set
+    # it themselves (monkeypatch) still win, since theirs is applied later.
+    real = horizon_scan._SCRIPT_DIR
+    horizon_scan._SCRIPT_DIR = str(tmp_path_factory.mktemp("horizon_partials"))
+    yield
+    horizon_scan._SCRIPT_DIR = real

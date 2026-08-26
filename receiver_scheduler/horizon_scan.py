@@ -764,7 +764,10 @@ def _partial_path(started):
     Under data/, with the observations, rather than beside the source. A partial
     is written after every strip and again on any failure, so a demo run or a
     test leaves one behind too - sixteen of them accumulated in the source tree
-    within an hour of the saving being added.
+    within an hour of the saving being added, and 148 in the data folder by
+    2026-08-26, one per pytest run. conftest.py now redirects this function
+    for the test session, and a scan that completes removes its own partial,
+    since the archived profile supersedes it.
     """
     folder = os.path.join(_SCRIPT_DIR, "data")
     try:

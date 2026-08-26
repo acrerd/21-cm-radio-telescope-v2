@@ -358,3 +358,17 @@ def test_a_scan_does_not_litter_the_source_tree(tmp_path, monkeypatch):
     assert not list(tmp_path.glob("horizon_partial_*.json")), \
         "a partial was written beside the source"
     assert list((tmp_path / "data").glob("horizon_partial_*.json"))
+
+
+def test_partial_profiles_do_not_land_in_the_observatory_data_folder():
+    """The leak that left 148 test partials beside one real one.
+
+    conftest.py redirects _partial_path for the session; this pins that the
+    redirect is in force, so a test running a scan cannot write into data/.
+    """
+    import os
+    from datetime import datetime, timezone
+    import horizon_scan
+    path = horizon_scan._partial_path(datetime.now(timezone.utc))
+    here = os.path.dirname(os.path.abspath(horizon_scan.__file__))
+    assert not os.path.abspath(path).startswith(os.path.join(here, "data")), path
