@@ -16,7 +16,15 @@
         });
         document.getElementById('obsForm').addEventListener('submit', e => {
             e.preventDefault();
-            saveObservation();
+            // A save that throws used to do nothing visible at all - the
+            // error went to a console nobody had open, and the operator saw a
+            // button that ignored them (2026-08-26). Say what went wrong.
+            try {
+                saveObservation();
+            } catch (err) {
+                alert('Save failed: ' + (err && err.message ? err.message : err));
+                throw err;
+            }
         });
         // A hidden tab keeps its timers in some browsers and throttles them in
         // others; neither should leave the camera streaming, so pause outright

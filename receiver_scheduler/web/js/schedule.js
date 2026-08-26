@@ -640,7 +640,21 @@
                 startTime = String(driftStart.getHours()).padStart(2,'0') + ':' + String(driftStart.getMinutes()).padStart(2,'0');
                 duration = 2 * w;
             }
+            // Our own checks, in place of the browser's (the form is
+            // novalidate): each failure says what and where.
+            if (!startTime) {
+                alert(isDrift ? 'Set the beam-crossing time T.' : 'Set a start time.');
+                return;
+            }
+            if (!(duration >= 1)) {
+                alert(isDrift ? 'The window must be at least 1 minute.' : 'Set a duration of at least 1 minute.');
+                return;
+            }
             const startDt = new Date(`${startDate}T${startTime}`);
+            if (isNaN(startDt.getTime())) {
+                alert('The start date/time could not be read: ' + startDate + ' ' + startTime);
+                return;
+            }
             const endDt = new Date(startDt.getTime() + duration * 60000);
             const endDate = localDateStr(endDt);
             const endTime = String(endDt.getHours()).padStart(2,'0') + ':' + String(endDt.getMinutes()).padStart(2,'0');

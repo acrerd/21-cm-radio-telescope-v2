@@ -809,7 +809,12 @@
                 <h2 class="modal-title" id="modalTitle">Add Observation</h2>
                 <button title="Close without saving." class="close-btn" onclick="closeModal()">&times;</button>
             </div>
-            <form id="obsForm">
+            <!-- novalidate: the browser's own constraint validation blocks a
+                 submit with a tooltip on the offending field - or with no
+                 message at all when that field is hidden, as several of these
+                 are depending on the coordinate system. saveObservation does
+                 the checking and says what is wrong. -->
+            <form id="obsForm" novalidate>
                 <input autocomplete="off" type="hidden" id="obsIndex" value="-1">
 
                 <div class="form-grid">

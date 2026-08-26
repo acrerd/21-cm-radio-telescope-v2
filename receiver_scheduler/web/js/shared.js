@@ -38,10 +38,8 @@
             });
         });
 
-        document.getElementById('obsForm').addEventListener('submit', e => {
-            e.preventDefault();
-            saveObservation();
-        });
+        // The form's submit listener lives in boot.js; a second copy here made
+        // every Save run twice (idempotent, so harmless, but pointless).
 
         function localDateStr(d) {
             return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
