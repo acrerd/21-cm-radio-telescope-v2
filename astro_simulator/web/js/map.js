@@ -399,8 +399,8 @@ export class SkyMap {
     const iso = new Date((jd - 2440587.5) * 86400e3).toISOString();
     legend.push({ color: "#ffffff", dash: true,
                   text: isFixed()
-                    ? `horizon at ${iso.slice(0, 10)} ${iso.slice(11, 16)} UT`
-                    : `horizon at ${iso.slice(11, 16)} UT` });
+                    ? `alt 0 at ${iso.slice(0, 10)} ${iso.slice(11, 16)} UT`
+                    : `alt 0 at ${iso.slice(11, 16)} UT` });
 
     // ...and above it, the horizon we actually measured. alt=0 is where the
     // sky would end if the observatory stood on a billiard table; the trees,
