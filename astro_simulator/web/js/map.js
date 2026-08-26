@@ -182,6 +182,7 @@ export class SkyMap {
   }
 
   buildImage() {
+    this._shade = null;                          // the shading is of this image
     const W = this.canvas.width, H = this.canvas.height;
     const c = this.sky.cmap;
     const img = this.ctx.createImageData(W, H);
@@ -273,12 +274,64 @@ export class SkyMap {
     return { lArr, bArr, dec };
   }
 
+  // The sky as seen from the site at this moment: everything below alt 0 is
+  // greyed out and darkened, and - when the measured horizon is shown -
+  // everything up but behind the trees, the roofline and the towers is
+  // dimmed. Computed per pixel: the pixel's galactic direction as a unit
+  // vector, dotted with the zenith for altitude and with the north and east
+  // horizon points for azimuth, so it is three dot products per pixel and
+  // no trig beyond the projection inverse. Cached by the minute, since the
+  // map is redrawn far more often than the sky moves.
+  _shaded(jd) {
+    const key = `${Math.round(jd * 1440)}|${this.showHorizon ? 1 : 0}|`
+              + `${this.horizon ? this.horizon.floors.length : 0}|`
+              + `${this.site.lat},${this.site.lon}`;
+    if (this._shade && this._shade.key === key) return this._shade.image;
+    const W = this.canvas.width, H = this.canvas.height;
+    const img = new ImageData(new Uint8ClampedArray(this.baseImage.data), W, H);
+    const d = img.data;
+    const vec = (g) => {
+      const l = g.l * D2R, b = g.b * D2R, cb = Math.cos(b);
+      return [cb * Math.cos(l), cb * Math.sin(l), Math.sin(b)];
+    };
+    const z = vec(altAzToGal(90, 0, this.site.lat, this.site.lon, jd));
+    const n = vec(altAzToGal(0, 0, this.site.lat, this.site.lon, jd));
+    const e = [z[1] * n[2] - z[2] * n[1], z[2] * n[0] - z[0] * n[2],
+               z[0] * n[1] - z[1] * n[0]];
+    const floors = (this.horizon && this.showHorizon) ? this.horizon.floors : null;
+    for (let py = 0; py < H; py++) {
+      for (let px = 0; px < W; px++) {
+        const g = this.invert(px, py);
+        if (!g) continue;
+        const p = vec(g);
+        const alt = Math.asin(Math.max(-1, Math.min(1,
+          p[0] * z[0] + p[1] * z[1] + p[2] * z[2]))) * R2D;
+        const i = (py * W + px) * 4;
+        if (alt < 0) {
+          // below the horizon: greyscale, and half as bright
+          const y = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
+          d[i] = d[i + 1] = d[i + 2] = y * 0.5;
+        } else if (floors) {
+          const az = ((Math.atan2(p[0] * e[0] + p[1] * e[1] + p[2] * e[2],
+                                  p[0] * n[0] + p[1] * n[1] + p[2] * n[2]) * R2D)
+                      % 360 + 360) % 360;
+          if (alt < horizonFloor(floors, az)) {
+            // up, but behind what actually ends the sky here: dimmed
+            d[i] *= 0.6; d[i + 1] *= 0.6; d[i + 2] *= 0.6;
+          }
+        }
+      }
+    }
+    this._shade = { key, image: img };
+    return img;
+  }
+
   draw(jd) {
     const ctx = this.ctx;
     const W = this.canvas.width, H = this.canvas.height;
     if (!this.baseImage) return;
-    ctx.putImageData(this.baseImage, 0, 0);
     jd = jd ?? jdFromDate(simDate());
+    ctx.putImageData(this._shaded(jd), 0, 0);
 
     // graticule
     ctx.save();
@@ -341,6 +394,10 @@ export class SkyMap {
     // Live time is unambiguous from HH:MM alone; a pinned clock may be on
     // another date entirely, so the legend then carries the date too.
     const iso = new Date((jd - 2440587.5) * 86400e3).toISOString();
+    legend.push({ color: "#5a5a5a", dash: false,
+                  text: this.horizon && this.showHorizon
+                    ? "grey: below the horizon;  dim: up but behind the measured horizon"
+                    : "grey: below the horizon" });
     legend.push({ color: "#ffffff", dash: true,
                   text: isFixed()
                     ? `horizon at ${iso.slice(0, 10)} ${iso.slice(11, 16)} UT`
