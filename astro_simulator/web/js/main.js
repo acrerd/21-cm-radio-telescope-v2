@@ -1,14 +1,20 @@
 // Bootstrap: fetch + gunzip the data bundles, build the engine, wire
 // the UI.  URL parameters replace the desktop CLI flags:
 //   ?site=Name&lat=..&lon=..&height=..
+// and deep-link a pointing, the way the scheduler's per-entry button does:
+//   ?l=..&b=..  |  ?ra=..&dec=..  |  ?alt=..&az=..  |  ?target=sun|moon
+//   [&time=<ISO UTC>]   pin the clock there first (alt/az and the Sun and
+//                       Moon are only a direction at a given moment)
+//   [&mode=cont]        continuum map and the drift-scan panel
+//   [&bw=..&fc=..&nc=..&tint=..&sd=..&beam=..]   the parameter boxes
 
 import { SkyData } from "./skydata.js";
 import { SkyMap } from "./map.js";
 import { Plot } from "./plot.js";
 import { setupUI } from "./ui.js";
-import { jdFromDate, decimalYear } from "./coordinates.js";
+import { jdFromDate, decimalYear, eqToGal, altAzToGal } from "./coordinates.js";
 import { continuumSources } from "./ephemeris.js";
-import { simDate } from "./clock.js";
+import { simDate, setFixedTime } from "./clock.js";
 
 const status = document.getElementById("load-status");
 
@@ -33,6 +39,10 @@ async function fetchGunzip(url, onProgress) {
 async function boot() {
   try {
     const params = new URLSearchParams(location.search);
+    // The clock goes first: the sources, the horizon and any alt/az or
+    // Sun/Moon pointing below are all computed at it.
+    const pinned = params.has("time") ? new Date(params.get("time")) : null;
+    if (pinned && !isNaN(pinned)) setFixedTime(pinned);
     status.textContent = "loading sky data...";
 
     const [meta, contBuf, cubeBuf] = await Promise.all([
@@ -90,6 +100,7 @@ async function boot() {
       nowBtn: document.getElementById("btn-now"),
     };
     els.sd.disabled = true;                       // until continuum mode
+    if (pinned && !isNaN(pinned)) els.timeBox.value = pinned.toISOString().slice(0, 16);
 
     status.textContent = "building map...";
     await new Promise((r) => setTimeout(r));
@@ -100,11 +111,30 @@ async function boot() {
     const ui = setupUI({ sky, map, plot, els, site });
     setInterval(() => map.draw(), 60000);         // horizon drifts
 
-    // deep link: ?l=..&b=..[&beam=..][&mode=cont] points at startup
-    if (params.has("beam")) els.fw.value = params.get("beam");
+    // deep link: the parameter boxes, then a pointing in whichever frame
+    // the caller has - the scheduler's entries come in all four.
+    for (const [k, el] of [["beam", els.fw], ["bw", els.bw], ["fc", els.fc],
+                           ["nc", els.nc], ["tint", els.ti], ["sd", els.sd]]) {
+      if (params.has(k)) el.value = params.get(k);
+    }
+    let lb = null;
     if (params.has("l") && params.has("b")) {
-      els.l.value = params.get("l");
-      els.b.value = params.get("b");
+      lb = [+params.get("l"), +params.get("b")];
+    } else if (params.has("ra") && params.has("dec")) {
+      const g = eqToGal(+params.get("ra"), +params.get("dec"));
+      lb = [g.l, g.b];
+    } else if (params.has("alt") && params.has("az")) {
+      const g = altAzToGal(+params.get("alt"), +params.get("az"),
+                           site.lat, site.lon, jdFromDate(simDate()));
+      lb = [g.l, g.b];
+    } else if (params.has("target")) {
+      const want = params.get("target").toLowerCase();
+      const s = sky.sources.find((x) => x.name.toLowerCase() === want);
+      if (s) lb = [s.l, s.b];
+    }
+    if (lb && lb.every(Number.isFinite)) {
+      els.l.value = lb[0].toFixed(3);
+      els.b.value = lb[1].toFixed(3);
       if (params.get("mode") === "cont") els.mapBtn.click();
       const p = ui.applyParams();
       if (p) ui.point(p.glon, p.glat);

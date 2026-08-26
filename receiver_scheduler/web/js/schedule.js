@@ -479,6 +479,7 @@
                         <button class="btn btn-secondary btn-icon" onclick="cloneObs(${i})" title="Open a copy of this entry with the times cleared, to book it again.">⧉</button>
                         <button class="btn btn-secondary btn-icon" onclick="editObs(${i})" title="Edit this entry. Not while it is running.">✎</button>
                         <button class="btn btn-danger btn-icon" onclick="deleteObs(${i})" title="Remove this entry from the schedule. Not while it is running.">✕</button>
+                        ${simulatable(obs) ? `<button class="btn btn-secondary btn-icon" onclick="simulateObs(${i})" title="Open this entry in the Simulator: its pointing, band and settings, with the clock pinned to its start (a drift scan, to its beam-crossing time).">🔭</button>` : ''}
                     </div>
                 </div>
               `;
@@ -687,6 +688,54 @@
             closeModal();
             renderSchedule();
             autoSave();
+        }
+
+        // Which entries have a sky position the simulator can show. Satellites,
+        // calibration days and horizon scans do not.
+        function simulatable(obs) {
+            return ['galactic', 'radec', 'altaz', 'drift', 'object'].includes(obs.coord_system);
+        }
+
+        // The mirror of the simulator's Schedule button: hand an entry to the
+        // simulator as a deep link, in whatever frame the entry is in - the
+        // simulator does the astronomy - with the clock pinned to the entry's
+        // moment, so the horizon, the Sun and the Moon are drawn as they will
+        // be then. A drift scan is pinned to its beam-crossing time T and
+        // opens in continuum mode with the drift panel; anything else to its
+        // start, with tau as the whole integration.
+        function simulateObs(i) {
+            const o = schedule[i];
+            const q = new URLSearchParams();
+            const sys = o.coord_system;
+            const c1 = dmsToDecimalJs(o.coord1_deg, o.coord1_min, o.coord1_sec);
+            const c2 = dmsToDecimalJs(o.coord2_deg, o.coord2_min, o.coord2_sec);
+            const frame = sys === 'drift' ? (o.drift_frame || 'radec') : sys;
+            if (frame === 'galactic') { q.set('l', c1); q.set('b', c2); }
+            else if (frame === 'radec') { q.set('ra', c1 * 15); q.set('dec', c2); }   // hours -> degrees
+            else if (frame === 'altaz') { q.set('alt', c1); q.set('az', c2); }
+            else if (sys === 'object') { q.set('target', o.object_name || 'sun'); }
+            else { alert('This entry has no sky position to simulate.'); return; }
+            const drift = sys === 'drift' || sys === 'altaz';
+            const date = o.start_date || localDateStr(new Date());
+            let when = new Date(`${date}T${o.start_time || '12:00'}`);
+            if (drift) {
+                q.set('mode', 'cont');
+                q.set('sd', o.duration_minutes || 240);
+                if (o.integration_time_s) q.set('tint', o.integration_time_s);
+                if (o.drift_time) {
+                    let T = new Date(`${date}T${o.drift_time}`);
+                    if (T < when) T = new Date(T.getTime() + 86400000);   // T past midnight
+                    when = T;
+                }
+            } else {
+                q.set('tint', (o.duration_minutes || 30) * 60);
+            }
+            if (!isNaN(when)) q.set('time', when.toISOString());
+            if (o.bandwidth_mhz) q.set('bw', o.bandwidth_mhz);
+            if (o.center_freq_mhz) q.set('fc', o.center_freq_mhz);
+            if (o.channels) q.set('nc', o.channels);
+            showSimulator('/simulator/?' + q.toString());
+            switchTab('simulator');
         }
 
         function deleteObs(i) {
