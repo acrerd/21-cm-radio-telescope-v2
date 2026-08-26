@@ -4300,10 +4300,24 @@ def _store_schedule(schedule):
             log.info("Local horizon: %s %s", obs.get('name'),
                      obs.get('horizon_note'))
 
+    # Stored in chronological order, so every reader - the page, the log at
+    # startup, anyone opening the JSON - sees the bookings in the order they
+    # will run. Undated or untimed entries go last, in the order given.
+    if isinstance(schedule, list):
+        schedule.sort(key=_schedule_order)
     clashes = find_clashes(schedule)
     if not clashes:
         save_schedule(schedule)
     return notes, clashes
+
+
+def _schedule_order(obs):
+    """Sort key: start datetime, with entries that have none at the end."""
+    try:
+        return (0, datetime.strptime('%s %s' % (obs.get('start_date'), obs.get('start_time')),
+                                     '%Y-%m-%d %H:%M'))
+    except (TypeError, ValueError):
+        return (1, datetime.max)
 
 
 @app.route('/api/schedule', methods=['POST'])

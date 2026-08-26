@@ -113,6 +113,20 @@
             checkClash();
         }
 
+        // Chronological, always: the server stores the schedule that way and
+        // the page re-sorts whatever it holds before drawing, so a list loaded
+        // from an older file or edited in place never shows out of order.
+        // Undated or untimed entries go last. Sorted in place, since the row
+        // buttons address entries by index into this same array.
+        function sortSchedule() {
+            const key = obs => {
+                if (!obs.start_time) return Infinity;
+                const t = new Date(`${obs.start_date || localDateStr(new Date())}T${obs.start_time}`).getTime();
+                return Number.isFinite(t) ? t : Infinity;
+            };
+            schedule.sort((a, b) => key(a) - key(b));
+        }
+
         function getObsInterval(obs) {
             const date = obs.start_date || localDateStr(new Date());
             const start = new Date(`${date}T${obs.start_time}`);
@@ -428,6 +442,7 @@
         }
 
         function renderSchedule() {
+            sortSchedule();
             const list = document.getElementById('scheduleList');
             if (schedule.length === 0) {
                 list.innerHTML = '<div class="empty-state">No observations scheduled.</div>';

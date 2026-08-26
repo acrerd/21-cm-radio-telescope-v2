@@ -738,6 +738,18 @@ class TestFlaskAPI:
         assert second.status_code == 409
         assert len(client.get('/api/schedule').get_json()) == 1
 
+    def test_the_schedule_is_stored_in_chronological_order(self, client):
+        """Whatever order entries arrive in, they are kept and returned by
+        start time; entries without one go last."""
+        late = _make_obs("Late", "15:00", 30); late["start_date"] = "2026-09-02"
+        early = _make_obs("Early", "09:00", 30); early["start_date"] = "2026-09-01"
+        undated = _make_obs("Undated", "", 30); undated["start_date"] = ""
+        resp = client.post('/api/schedule', data=json.dumps([late, undated, early]),
+                           content_type='application/json')
+        assert resp.get_json()["success"] is True
+        names = [o["name"] for o in client.get('/api/schedule').get_json()]
+        assert names == ["Early", "Late", "Undated"]
+
     def test_post_schedule_with_clash(self, client):
         obs_list = [
             _make_obs("A", "10:00", 60),
