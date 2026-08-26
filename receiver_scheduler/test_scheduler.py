@@ -12,7 +12,7 @@ import re
 import sys
 import threading
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from unittest.mock import patch, MagicMock
 
 import pytest
@@ -676,6 +676,72 @@ class TestFlaskAPI:
         assert body["schedule"] == client.get('/api/schedule').get_json(), (
             "the POST response must be the stored schedule, or the browser "
             "keeps showing times the server has rewritten")
+
+    def test_the_simulator_books_a_tracked_spectrum(self, client):
+        """The Schedule button: a tracked spectrum starts at the page's clock.
+
+        The clock is sent as UTC; the schedule keeps local time, so 12:00Z on
+        2026-08-26 must land as the local equivalent. tau is the simulated
+        integration and becomes the duration, as the Observe hand-off did.
+        """
+        resp = client.post('/api/simulator/schedule', json={
+            'l': 132.0, 'b': -1.0, 'mode': 'hi',
+            'epoch_utc': '2026-08-26T12:00:00Z',
+            'center_freq_mhz': 1420.405752, 'bandwidth_mhz': 2.0,
+            'channels': 327, 'integration_time_s': 600.0})
+        d = resp.get_json()
+        assert resp.status_code == 200 and d['success'], d
+        e = d['entry']
+        assert e['coord_system'] == 'galactic'
+        assert e['coord1_deg'] == pytest.approx(132.0)
+        assert e['coord2_deg'] == pytest.approx(-1.0)
+        assert e['comment'] == sched.SIMULATOR_COMMENT
+        local = datetime(2026, 8, 26, 12, 0, tzinfo=timezone.utc).astimezone()
+        assert e['start_date'] == local.strftime('%Y-%m-%d')
+        assert e['start_time'] == local.strftime('%H:%M')
+        assert e['duration_minutes'] == 10
+        assert e['channels'] == 327 and e['bandwidth_mhz'] == 2.0
+        stored = client.get('/api/schedule').get_json()
+        assert [o['name'] for o in stored] == [e['name']]
+
+    def test_the_simulator_books_a_drift_scan_centred_on_transit(self, client):
+        """A drift scan is what the simulator's drift panel draws: centred on
+        the target's meridian transit, the scan length as the window."""
+        if not sched.EPHEM_AVAILABLE:
+            pytest.skip("no ephem")
+        resp = client.post('/api/simulator/schedule', json={
+            'l': 111.735, 'b': -2.130, 'mode': 'cont',
+            'epoch_utc': '2026-08-25T22:00:00Z', 'scan_minutes': 300,
+            'center_freq_mhz': 1420.405752, 'bandwidth_mhz': 2.4,
+            'channels': 4096, 'integration_time_s': 240.0})
+        d = resp.get_json()
+        assert resp.status_code == 200 and d['success'], d
+        e = d['entry']
+        assert e['coord_system'] == 'drift' and e['drift_frame'] == 'galactic'
+        assert e['drift_window_min'] == 150 and e['duration_minutes'] == 300
+        assert e['integration_time_s'] == 240.0, "tau is the time per sample"
+        assert e['comment'] == sched.SIMULATOR_COMMENT
+        # Cas A transits at 01:24:36 UTC on the 26th (the night it was
+        # observed); the entry's T is that in local time, and the start is
+        # one window earlier.
+        import ephem
+        expected = ephem.localtime(ephem.Date('2026/8/26 01:24:36'))
+        assert e['drift_time'] == expected.strftime('%H:%M')
+        start = expected - timedelta(minutes=150)
+        assert e['start_time'] == start.strftime('%H:%M')
+        assert e['start_date'] == start.strftime('%Y-%m-%d')
+
+    def test_the_simulator_is_refused_a_clash(self, client):
+        """Same refusal as any other save: the entry must not be stored."""
+        first = client.post('/api/simulator/schedule', json={
+            'l': 10.0, 'b': 0.0, 'mode': 'hi',
+            'epoch_utc': '2026-09-01T12:00:00Z', 'integration_time_s': 3600.0})
+        assert first.get_json()['success']
+        second = client.post('/api/simulator/schedule', json={
+            'l': 20.0, 'b': 0.0, 'mode': 'hi',
+            'epoch_utc': '2026-09-01T12:30:00Z', 'integration_time_s': 600.0})
+        assert second.status_code == 409
+        assert len(client.get('/api/schedule').get_json()) == 1
 
     def test_post_schedule_with_clash(self, client):
         obs_list = [

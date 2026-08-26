@@ -472,37 +472,32 @@ export function setupUI(cfg) {
   // parking position depends on the real site, and the site boxes here are
   // free text and settable from the URL, so a page parameter must not be what
   // decides where a telescope points.
-  async function realise() {
+  async function scheduleEntry() {
     const p = applyParams();
     if (!p) return;
-    // The telescope lives at real time whatever the page's clock says: the
-    // scheduler computes the pointing astronomy at actual now. Realising a
-    // sky pinned to another moment is usually a mistake, so say so - but do
-    // not refuse, since l/b tracking is epoch-free and still valid.
-    if (isFixed())
-      message("Note: the clock is pinned, but the telescope tracks at real "
-              + "time - the sky on screen is not tonight's.");
     const drift = state.mode === "cont";
     const scan = parseFloat(boxes.sd.value);
-    els.realiseBtn.disabled = true;
+    els.scheduleBtn.disabled = true;
     message(drift
-      ? `Realise: parking for a drift scan of l=${p.glon.toFixed(2)}°, ` +
+      ? `Schedule: booking a drift scan of l=${p.glon.toFixed(2)}°, ` +
         `b=${p.glat.toFixed(2)}°...`
-      : `Realise: asking the SRT to track l=${p.glon.toFixed(2)}°, ` +
+      : `Schedule: booking a tracked spectrum of l=${p.glon.toFixed(2)}°, ` +
         `b=${p.glat.toFixed(2)}°...`);
     try {
-      const resp = await fetch("/api/simulator/realise", {
+      const resp = await fetch("/api/simulator/schedule", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           l: p.glon, b: p.glat, mode: drift ? "cont" : "hi",
           scan_minutes: Number.isFinite(scan) ? scan : 240,
-          // The receiver settings the simulation is using, for the Observe
-          // tab. Read from sky rather than from the boxes: applyParams has
-          // just clamped, snapped f_c to the rest frequency where the display
+          // The page's clock, pinned or live: a spectrum starts then, a
+          // drift scan is centred on the next transit after it.
+          epoch_utc: simDate().toISOString(),
+          // Read from sky rather than from the boxes: applyParams has just
+          // clamped, snapped f_c to the rest frequency where the display
           // precision says it should, and resolved an empty channels box to
-          // the band's native count, so these are the numbers the spectrum on
-          // screen was actually computed with.
+          // the band's native count, so these are the numbers the spectrum
+          // on screen was actually computed with.
           center_freq_mhz: sky.fc / 1e6,
           bandwidth_mhz: sky.bwHz / 1e6,
           channels: sky.nchan ?? nativeChannels(),
@@ -511,29 +506,30 @@ export function setupUI(cfg) {
       });
       const d = await resp.json().catch(() => ({}));
       if (!resp.ok || !d.success) {
-        message(`Realise failed: ${d.error || "HTTP " + resp.status}`);
-      } else if (d.action === "drift") {
-        message(`  parked at alt ${d.alt.toFixed(1)}°, az ${d.az.toFixed(1)}°; ` +
-                `transit in ${d.transit_minutes.toFixed(0)} min`);
-      } else {
-        message(`  tracking l=${d.l.toFixed(2)}°, b=${d.b.toFixed(2)}°`);
+        message(`Schedule failed: ${d.error || "HTTP " + resp.status}`);
+        return;
       }
-      // Reported from the server's own flag, not from whether the pointing
-      // succeeded: a target below the horizon right now is refused, and its
-      // settings are still exactly what the Observe tab wants in order to book
-      // it for a time when it is up.
-      if (d.params_copied) {
-        message("  receiver settings copied to the scheduler's Observe tab");
-      }
+      const e = d.entry;
+      message(drift
+        ? `  scheduled "${e.name}": transit ${e.drift_time} local, ` +
+          `${e.start_date} ${e.start_time} for ${e.duration_minutes} min`
+        : `  scheduled "${e.name}": ${e.start_date} ${e.start_time} local ` +
+          `for ${e.duration_minutes} min`);
+      for (const n of d.horizon_notes || []) message(`  local horizon: ${n}`);
+      // The schedule list lives in the page that embeds this one; ask it to
+      // reload so the new entry appears without a tab round-trip.
+      try {
+        if (window.parent && window.parent !== window
+            && typeof window.parent.loadSchedule === "function")
+          window.parent.loadSchedule();
+      } catch (_) { /* cross-origin or not embedded: nothing to refresh */ }
     } catch (e) {
-      message(`Realise failed: ${e}`);
+      message(`Schedule failed: ${e}`);
     } finally {
-      els.realiseBtn.disabled = false;
+      els.scheduleBtn.disabled = false;
     }
   }
-  // Guarded because a deployment is free to drop the button from its own copy
-  // of index.html; that should lose Realise, not the whole UI.
-  if (els.realiseBtn) els.realiseBtn.addEventListener("click", realise);
+  if (els.scheduleBtn) els.scheduleBtn.addEventListener("click", scheduleEntry);
 
   // pointing readout
   function updateInfo() {

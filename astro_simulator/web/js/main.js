@@ -78,7 +78,7 @@ async function boot() {
       targetsBtn: document.getElementById("btn-targets"),
       homeBtn: document.getElementById("btn-home"),
       saveBtn: document.getElementById("btn-save"),
-      realiseBtn: document.getElementById("btn-realise"),
+      scheduleBtn: document.getElementById("btn-schedule"),
       targetsMenu: document.getElementById("targets-menu"),
       readout: document.getElementById("readout"),
       console: document.getElementById("console"),
@@ -110,16 +110,16 @@ async function boot() {
       if (p) ui.point(p.glon, p.glat);
     }
 
-    // Realise exists exactly when it can work. Served from the scheduler, this
-    // page is same origin with its API and the button commands the telescope
-    // through it; opened any other way - a static host, file:// - there is no
-    // API to reach and the button stays hidden rather than failing on click.
-    // Asking is also the check that matters: it is the scheduler's presence at
-    // this origin, not the URL, that decides.
+    // Schedule exists exactly when it can work. Served from the scheduler,
+    // this page is same origin with its API and the button books an
+    // observation through it; opened any other way - a static host, file:// -
+    // there is no API to reach and the button stays hidden rather than
+    // failing on click. Asking is also the check that matters: it is the
+    // scheduler's presence at this origin, not the URL, that decides.
     fetch("/api/telescope", { method: "GET" })
       .then((r) => (r.ok ? r.json() : null))
       .then((d) => {
-        if (d && "configured" in d && els.realiseBtn) els.realiseBtn.hidden = false;
+        if (d && "configured" in d && els.scheduleBtn) els.scheduleBtn.hidden = false;
       })
       .catch(() => {});
 

@@ -3930,9 +3930,13 @@ def get_schedule():
     return jsonify(load_schedule())
 
 
-@app.route('/api/schedule', methods=['POST'])
-def post_schedule():
-    schedule = request.json
+def _store_schedule(schedule):
+    """Trim, check for clashes, and save. Returns (notes, clashes).
+
+    Saves only when there are no clashes. Shared by POST /api/schedule and by
+    the simulator's Schedule button, so an entry arriving by either route
+    gets the same horizon trim and the same refusal.
+    """
     # Trim each window to the part where the target clears the measured
     # horizon, before the clash check - two observations that no longer
     # overlap once trimmed are not a clash, and one that has been trimmed into
@@ -3962,18 +3966,144 @@ def post_schedule():
             log.info("Local horizon: %s %s", obs.get('name'),
                      obs.get('horizon_note'))
 
-    # Server-side clash validation
     clashes = find_clashes(schedule)
+    if not clashes:
+        save_schedule(schedule)
+    return notes, clashes
+
+
+@app.route('/api/schedule', methods=['POST'])
+def post_schedule():
+    schedule = request.json
+    notes, clashes = _store_schedule(schedule)
     if clashes:
         return jsonify({'success': False, 'error': f'Schedule has clashing observations: {clashes}'}), 400
-    save_schedule(schedule)
-    # Hand back what was actually stored. The trim above may have moved the
-    # times just posted, and a client that keeps showing what it *sent* is
-    # showing a schedule that will not run - which is exactly what happened:
-    # the alert announced a trim while the list and the edit window went on
-    # displaying 06:00 for an entry stored as 09:42.
+    # Hand back what was actually stored. The trim may have moved the times
+    # just posted, and a client that keeps showing what it *sent* is showing a
+    # schedule that will not run - which is exactly what happened: the alert
+    # announced a trim while the list and the edit window went on displaying
+    # 06:00 for an entry stored as 09:42.
     return jsonify({'success': True, 'horizon_notes': notes,
                     'schedule': schedule})
+
+
+SIMULATOR_COMMENT = "Observation set via the Simulator"
+
+
+def _simulator_epoch(stamp):
+    """The simulator's clock as naive local time - the schedule's frame.
+
+    The page sends its clock as UTC ISO (pinned or live). Missing or
+    unparseable means now.
+    """
+    try:
+        when = datetime.fromisoformat(str(stamp).replace('Z', '+00:00'))
+        if when.tzinfo is None:
+            when = when.replace(tzinfo=timezone.utc)
+        return when.astimezone().replace(tzinfo=None)
+    except (TypeError, ValueError):
+        return datetime.now()
+
+
+@app.route('/api/simulator/schedule', methods=['POST'])
+def api_simulator_schedule():
+    """Turn what the simulator is showing into a schedule entry.
+
+    The page's Schedule button. Where Realise commanded the telescope now,
+    this books the observation: the pointing, the receiver settings and the
+    mode become an entry exactly as the schedule form would have made it,
+    with the comment saying where it came from. Nothing moves.
+
+    Times come from the simulator's own clock, which may be pinned to another
+    moment - that is the point of pinning it. A tracked spectrum starts at
+    that moment and runs for the simulator's integration time; a drift scan
+    is centred on the target's next meridian transit after it, the classical
+    geometry and what the simulator's drift panel draws, with the scan length
+    as the window. The entry then goes through the same trim and clash check
+    as any other save.
+    """
+    body = request.json or {}
+    try:
+        glon = float(body.get('l'))
+        glat = float(body.get('b'))
+    except (TypeError, ValueError):
+        return jsonify({'success': False, 'error': 'l and b must be numbers'}), 400
+    if not (math.isfinite(glon) and math.isfinite(glat)):
+        return jsonify({'success': False, 'error': 'l and b must be finite'}), 400
+    mode = body.get('mode', 'hi')
+    if mode not in ('hi', 'cont'):
+        return jsonify({'success': False, 'error': f'unknown mode {mode!r}'}), 400
+    glon = glon % 360.0
+    glat = max(-90.0, min(90.0, glat))
+    drift = mode == 'cont'
+    epoch = _simulator_epoch(body.get('epoch_utc'))
+    tau = _clamped('integration_time_s', body.get('integration_time_s'), 3.0)
+
+    entry = {
+        'name': ('Drift scan' if drift else 'Spectrum')
+                + ' l=%.1f b=%+.1f' % (glon, glat),
+        'comment': SIMULATOR_COMMENT,
+        'coord_system': 'drift' if drift else 'galactic',
+        'object_name': '', 'tle_text': '',
+        # Decimal degrees in the degrees field; dms_to_decimal sums as given.
+        'coord1_deg': round(glon, 4), 'coord1_min': 0, 'coord1_sec': 0,
+        'coord2_deg': round(glat, 4), 'coord2_min': 0, 'coord2_sec': 0,
+        'center_freq_mhz': _clamped('center_freq_mhz',
+                                    body.get('center_freq_mhz'), 1420.405752),
+        'bandwidth_mhz': _clamped('bandwidth_mhz', body.get('bandwidth_mhz'), 2.4),
+        'channels': _clamped('channels', body.get('channels'), 4096),
+        'gain_db': 40, 'sdr_type': 'b210', 'calibrator': False,
+        'end_action': 'none', 'respect_local_horizon': True,
+        'filename': '', 'enabled': True,
+        'drift_frame': 'galactic', 'drift_time': '', 'drift_window_min': 30,
+    }
+    if drift:
+        if not EPHEM_AVAILABLE:
+            return jsonify({'success': False,
+                            'error': 'PyEphem is unavailable, so the transit '
+                                     'cannot be computed'}), 501
+        scan = _clamped('duration_minutes', body.get('scan_minutes'), 240.0)
+        window = max(1, int(round(scan / 2.0)))
+        observer = _get_observer()
+        observer.date = datetime.fromtimestamp(epoch.timestamp(),
+                                               timezone.utc).replace(tzinfo=None)
+        transit = ephem.localtime(observer.next_transit(
+            _drift_body('galactic', glon, glat)))
+        start = transit - timedelta(minutes=window)
+        entry.update(
+            drift_time=transit.strftime('%H:%M'),
+            drift_window_min=window,
+            start_date=start.strftime('%Y-%m-%d'),
+            start_time=start.strftime('%H:%M'),
+            duration_minutes=2 * window,
+            integration_time_s=tau,          # time per sample
+        )
+    else:
+        # tau is the whole integration for a simulated spectrum (see
+        # _record_observe_params); the per-spectrum record length is a
+        # granularity the simulation says nothing about.
+        minutes = max(1, int(round(tau / 60.0)))
+        entry.update(
+            start_date=epoch.strftime('%Y-%m-%d'),
+            start_time=epoch.strftime('%H:%M'),
+            duration_minutes=minutes,
+            integration_time_s=3.0,
+        )
+    start_dt = datetime.strptime(entry['start_date'] + ' ' + entry['start_time'],
+                                 '%Y-%m-%d %H:%M')
+    end_dt = start_dt + timedelta(minutes=entry['duration_minutes'])
+    entry['end_date'] = end_dt.strftime('%Y-%m-%d')
+    entry['end_time'] = end_dt.strftime('%H:%M')
+
+    schedule = load_schedule()
+    schedule.append(entry)
+    notes, clashes = _store_schedule(schedule)
+    if clashes:
+        return jsonify({'success': False,
+                        'error': 'clashes with the schedule: %s' % clashes}), 409
+    log.info("Simulator scheduled: %s at %s %s (%d min)", entry['name'],
+             entry['start_date'], entry['start_time'], entry['duration_minutes'])
+    return jsonify({'success': True, 'entry': entry, 'horizon_notes': notes})
 
 
 @app.route('/api/status', methods=['GET'])
