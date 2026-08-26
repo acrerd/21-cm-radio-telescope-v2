@@ -87,6 +87,7 @@ async function boot() {
       mapBtn: document.getElementById("btn-map"),
       targetsBtn: document.getElementById("btn-targets"),
       homeBtn: document.getElementById("btn-home"),
+      rotateBtn: document.getElementById("btn-rotate"),
       saveBtn: document.getElementById("btn-save"),
       scheduleBtn: document.getElementById("btn-schedule"),
       targetsMenu: document.getElementById("targets-menu"),

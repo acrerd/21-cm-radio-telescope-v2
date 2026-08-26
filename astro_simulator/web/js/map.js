@@ -90,9 +90,12 @@ function smoothToBeam(grid, latArr, stepDeg, fwhmDeg, nlat, nlon) {
 }
 
 // forward Mollweide: l,b (deg) -> normalized X in [-1,1], Y in [-1,1]
-// with the desktop's flipped-longitude convention (x = -wrapped l)
-function project(lDeg, bDeg) {
-  const lam = -(((lDeg + 180) % 360 + 360) % 360 - 180) * D2R;
+// with the desktop's flipped-longitude convention (x = -wrapped l). l0 is
+// the longitude at the centre of the map; the Rotate button steps it, so
+// the galactic centre can be moved to the edge when something near the
+// anticentre - or the seam - is what matters.
+function project(lDeg, bDeg, l0 = 0) {
+  const lam = -(((lDeg - l0 + 180) % 360 + 360) % 360 - 180) * D2R;
   const bR = bDeg * D2R;
   let th = bR;
   for (let i = 0; i < 8; i++) {
@@ -115,6 +118,7 @@ export class SkyMap {
     this.track = null;                    // {lArr, bArr}
     this.sources = [];
     this.lut = null;
+    this.l0 = 0;                          // longitude at the map's centre
     this.baseImage = null;
     this.displayFwhm = sky.fwhm;          // beam the display is blurred to
     this._smoothCache = new Map();
@@ -138,7 +142,14 @@ export class SkyMap {
     if (cosT < 1e-9) return { l: 0, b: b * R2D };
     const lam = Math.PI * X / cosT;
     if (Math.abs(lam) > Math.PI) return null;
-    return { l: ((-lam * R2D) % 360 + 360) % 360, b: b * R2D };
+    return { l: ((-lam * R2D + this.l0) % 360 + 360) % 360, b: b * R2D };
+  }
+
+  // Turn the map by deg in longitude: the pixel-to-grid table and the base
+  // image depend on the projection, so both are rebuilt.
+  rotate(deg) {
+    this.l0 = ((this.l0 + deg) % 360 + 360) % 360;
+    this.resize();
   }
 
   // white label with a dark halo: readable inside the ellipse and
@@ -156,7 +167,7 @@ export class SkyMap {
   }
 
   toCanvas(lDeg, bDeg) {
-    const p = project(lDeg, bDeg);
+    const p = project(lDeg, bDeg, this.l0);
     return { x: this.canvas.width / 2 + p.x * this.canvas.width / 2,
              y: this.canvas.height / 2 - p.y * this.canvas.height / 2 };
   }

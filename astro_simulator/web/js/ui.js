@@ -427,6 +427,12 @@ export function setupUI(cfg) {
   });
 
   // home / save
+  els.rotateBtn.addEventListener("click", () => {
+    map.rotate(90);
+    map.draw();
+    message(`Map centred on l=${map.l0}°` + (map.l0 === 180 ? " (galactic centre at the edge)" : ""));
+  });
+
   els.homeBtn.addEventListener("click", () => {
     initBoxes();
     state.frame = "lsr";
