@@ -622,7 +622,8 @@ def fit_gain(observed_counts, model_k, min_t_sys_k=MIN_T_SYS_K):
     }
 
 
-def reduce_for_fit(path, glon, glat, sim=None, bandwidth_hz=None):
+def reduce_for_fit(path, glon, glat, sim=None, bandwidth_hz=None,
+                   record_window=None):
     """Everything the fit sees, so a plot of the fit can see exactly the same.
 
     Returns the simulator's frequency grid, its antenna temperature, the
@@ -641,11 +642,22 @@ def reduce_for_fit(path, glon, glat, sim=None, bandwidth_hz=None):
     from observation_plot import read_observation
 
     freq_hz, spectra, stamps, taus, header = read_observation(path)
+    # record_window=(t0, t1), unix seconds: use only the records inside it.
+    # For a drift scan that is the beam crossing - the stretch where the
+    # model direction is actually in the beam - and the fit is honest only
+    # on those. Falls back to everything if the window selects nothing.
+    if record_window is not None and np.size(stamps):
+        t0, t1 = record_window
+        keep = (np.asarray(stamps, float) >= t0) & (np.asarray(stamps, float) <= t1)
+        if keep.any():
+            spectra = spectra[keep]
+            stamps = np.asarray(stamps)[keep]
+            taus = np.asarray(taus)[keep] if taus is not None and np.size(taus) else taus
     corrected, note = bandpass.apply_bandpass(freq_hz, spectra, header)
     if "not bandpass corrected" in note:
         raise ValueError("cannot calibrate an uncorrected spectrum: " + note)
 
-    obstime = (datetime.fromtimestamp(float(stamps[0]), tz=timezone.utc)
+    obstime = (datetime.fromtimestamp(float(stamps[len(stamps) // 2]), tz=timezone.utc)
                if np.size(stamps) else datetime.now(timezone.utc))
     if bandwidth_hz is None:
         bandwidth_hz = float(header.get("sample_rate_requested_hz")
@@ -692,6 +704,7 @@ def reduce_for_fit(path, glon, glat, sim=None, bandwidth_hz=None):
         # per-record times, not the record count times the nominal: a run that
         # was stopped early or whose records ran long must not be credited with
         # noise it never averaged down.
+        "n_records": int(spectra.shape[0]),
         "tau_total_s": (float(np.nansum(taus)) if taus is not None and taus.size
                         else float(spectra.shape[0])
                         * float(header.get("nominal_integration_time", 0.0))),
@@ -820,9 +833,9 @@ def fit_gain_with_shift(freq_hz, counts, model_freq_hz, model_k,
 
 
 def calibrate_observation(path, glon, glat, sim=None, min_t_sys_k=MIN_T_SYS_K,
-                          bandwidth_hz=None):
+                          bandwidth_hz=None, record_window=None):
     """Fit gain and T_sys from a recorded observation of the plane."""
-    red = reduce_for_fit(path, glon, glat, sim, bandwidth_hz)
+    red = reduce_for_fit(path, glon, glat, sim, bandwidth_hz, record_window)
     usable = red["usable"]
     obstime, header, note = red["obstime"], red["header"], red["bandpass_note"]
     result, _model_used = fit_gain_with_shift(
@@ -836,6 +849,7 @@ def calibrate_observation(path, glon, glat, sim=None, min_t_sys_k=MIN_T_SYS_K,
         "observed_utc": obstime.isoformat(timespec="seconds"),
         "source_file": os.path.basename(path),
         "glon": float(glon), "glat": float(glat),
+        "records_used": int(red["n_records"]) if "n_records" in red else None,
         "bandpass_note": note,
         "config": {
             "lo_hz": float(header.get("center_freq_hz", 0.0)),

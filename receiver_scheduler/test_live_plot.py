@@ -418,9 +418,8 @@ def test_fit_refuses_the_file_still_being_recorded(client, no_run, tmp_path):
 
 
 @pytest.mark.parametrize("info,why", [
-    ({"coord_system": "drift"}, "drift"),
-    ({"coord_system": "altaz"}, "drift"),
     ({"coord_system": "object", "object_name": "sun"}, "no H I model"),
+    ({"coord_system": "object", "object_name": "moon"}, "no H I model"),
 ])
 def test_fit_refuses_what_has_no_single_direction_or_model(client, no_run, tmp_path,
                                                           info, why):
@@ -493,3 +492,35 @@ def test_a_file_parameter_cannot_leave_the_observations_folder(client, tmp_path,
     for bad in ("../secret.h5", "/etc/passwd", "nope.h5"):
         r = client.get("/api/observe/plot?file=" + bad)
         assert r.status_code == 404, bad
+
+
+def test_a_drift_scan_is_fitted_on_its_beam_crossing_and_says_approximate(client, no_run):
+    """Last night's Cas A drift scan, if it is on this machine.
+
+    The beam sweeps the sky, so the fit uses only the records within one beam
+    crossing at the mid-point and is labelled approximate. It was recorded at
+    1419 MHz, where no template applies, so the honest outcome here is a
+    refusal for *that* reason - never for being a drift scan.
+    """
+    here = os.path.dirname(os.path.abspath(__file__))
+    path = os.path.join(here, "data", "observations", "Cas A drift scan.h5")
+    if not os.path.exists(path):
+        pytest.skip("no Cas A drift scan on this machine")
+    sched.last_observation = {"name": "Cas A", "coord_system": "drift",
+                              "output_file": path}
+    r = client.post("/api/observe/fit")
+    d = r.get_json()
+    assert "drift" not in (d.get("error") or ""), "a drift scan is fitted, not refused"
+    if r.status_code == 200:
+        assert d["fit"]["approximate"], "a drift fit must say it is approximate"
+        assert d["fit"]["records_used"] < 73, "only the beam crossing, not the whole run"
+
+
+def test_the_beam_crossing_window_scales_with_declination():
+    """A source near the pole drifts slowly through the beam."""
+    import numpy as np
+    stamps = np.arange(0, 3600 * 5, 240.0)
+    t0, t1 = sched._beam_crossing_window(stamps, glon=111.735, glat=-2.130)   # Cas A, dec +58.8
+    assert (t1 - t0) / 60 == pytest.approx(39.8, abs=1.0)
+    t0, t1 = sched._beam_crossing_window(stamps, glon=184.56, glat=-5.78)     # Tau A, dec +22
+    assert (t1 - t0) / 60 == pytest.approx(22.2, abs=1.0)

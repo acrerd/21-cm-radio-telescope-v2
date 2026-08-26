@@ -267,7 +267,10 @@
                    body: JSON.stringify({file: obvSelectedFile()})}).then(r => r.json()).then(d => {
                 if (!d.success) { info.textContent = 'Fit: ' + (d.error || 'failed'); return; }
                 const f = d.fit;
-                let text = 'fit of ' + f.source_file + ' at l=' + f.glon.toFixed(2)
+                obvFitApproximate = f.approximate || '';
+                let text = (f.approximate ? 'APPROXIMATE \u2014 ' + f.approximate + '\n' : '')
+                         + 'fit of ' + f.source_file
+                         + (f.records_used ? ' (' + f.records_used + ' records)' : '') + ' at l=' + f.glon.toFixed(2)
                          + ' b=' + f.glat.toFixed(2) + ': gain ' + f.gain_counts_per_k.toExponential(3)
                          + ' counts/K \u00b7 T_sys ' + f.t_sys_k.toFixed(1) + ' K \u00b7 correlation '
                          + (f.correlation != null ? f.correlation.toFixed(3) : '?')
@@ -296,8 +299,11 @@
             }).catch(e => { info.textContent = 'Fit failed: ' + e; });
         }
 
+        let obvFitApproximate = '';
+
         function applyObserveFit() {
-            if (!confirm('Replace the gain calibration in force with this fit?')) return;
+            if (!confirm((obvFitApproximate ? 'This fit is APPROXIMATE (' + obvFitApproximate + ').\n\n' : '')
+                         + 'Replace the gain calibration in force with this fit?')) return;
             fetch('/api/observe/fit/apply', {method: 'POST'}).then(r => r.json()).then(d => {
                 const info = document.getElementById('obvFitInfo');
                 info.textContent = d.success ? 'Applied: this fit is now the calibration in force.'

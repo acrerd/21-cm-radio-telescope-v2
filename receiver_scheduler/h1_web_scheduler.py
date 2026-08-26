@@ -2956,6 +2956,28 @@ last_observe_fit = None
 OBSERVE_FIT_PLOT = os.path.join(_SCRIPT_DIR, 'data', 'observe_fit.png')
 
 
+def _beam_crossing_window(stamps, glon, glat):
+    """(t0, t1) around the mid-point of a drift scan: one beam crossing.
+
+    The scan is laid out so the source crosses beam centre at the mid-point;
+    the crossing lasts FWHM / (15.041 cos(dec)) hours, with dec from the
+    target's galactic coordinates. Half a crossing either side of the middle
+    is where the model direction is inside the beam at all.
+    """
+    from astropy.coordinates import SkyCoord
+    import astropy.units as u
+    from observatory import beam_fwhm_deg
+
+    n = len(stamps)
+    if n == 0:
+        return None
+    mid = float(stamps[n // 2])
+    dec = float(SkyCoord(l=glon * u.deg, b=glat * u.deg, frame='galactic').icrs.dec.deg)
+    hours = beam_fwhm_deg() / (15.041 * max(0.05, math.cos(math.radians(dec))))
+    half = 0.5 * hours * 3600.0
+    return (mid - half, mid + half)
+
+
 @app.route('/api/observe/fit', methods=['POST'])
 def api_observe_fit():
     """Fit the simulator to the last finished observation: gain and T_sys.
@@ -2998,10 +3020,7 @@ def api_observe_fit():
     if not os.path.exists(path):
         return jsonify({'success': False, 'error': 'the recording is missing: %s'
                         % os.path.basename(path)}), 404
-    if observation_files.observation_mode(info) == 'drift':
-        return jsonify({'success': False,
-                        'error': 'a drift scan sweeps the sky; the fit needs a '
-                                 'tracked spectrum of one direction'}), 400
+    drift = observation_files.observation_mode(info) == 'drift'
     if info.get('coord_system') == 'object':
         return jsonify({'success': False,
                         'error': 'no H I model for the %s' % info.get('object_name', 'object')}), 400
@@ -3014,8 +3033,22 @@ def api_observe_fit():
             return jsonify({'success': False,
                             'error': 'the recording does not say where it was pointed'}), 400
         glon, glat = direction
-        cal = rf_calibration.calibrate_observation(path, glon, glat)
+        window, approx = None, None
+        if drift:
+            # The beam sweeps the sky, so the model direction is only in the
+            # beam for the crossing around the mid-point. Fit those records
+            # alone; the result is still approximate - the direction moves by
+            # a beamwidth across them - and is labelled so.
+            window = _beam_crossing_window(stamps, glon=glon, glat=glat)
+            approx = ('drift scan: fitted on the records within the beam '
+                      'crossing at the mid-point, against the model at the '
+                      'transit direction; the beam moved a beamwidth across '
+                      'them, so gain and T_sys are approximate')
+        cal = rf_calibration.calibrate_observation(path, glon, glat,
+                                                   record_window=window)
         cal['source_file'] = os.path.basename(path)
+        if approx:
+            cal['approximate'] = approx
         observation_plot.plot_gain_check(cal, OBSERVE_FIT_PLOT)
     except (ValueError, RuntimeError) as exc:
         return jsonify({'success': False, 'error': str(exc)}), 409
@@ -3042,6 +3075,8 @@ def api_observe_fit():
         'residual_rms_k': cal.get('residual_rms_k'),
         'glon': glon, 'glat': glat,
         'source_file': cal['source_file'],
+        'records_used': cal.get('records_used'),
+        'approximate': cal.get('approximate'),
     }, 'compare': compare,
        'trustworthy_shift': rf_calibration.trustworthy_velocity_shift(cal) is not None})
 

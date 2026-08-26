@@ -441,6 +441,11 @@ def observation_direction(header, when=None):
 
     if system == "galactic":
         return float(c1), float(c2)
+    if system == "drift" and str(header.get("drift_frame", "")).lower() == "galactic":
+        # A drift entry's coordinates are in whichever frame it was typed in.
+        # Read as RA/Dec, last night's Cas A scan (l=111.735, b=-2.130,
+        # galactic frame) would have become RA 111.7 hours.
+        return float(c1), float(c2)
     if system in ("radec", "drift"):
         # coord1 is in hours for an RA, per the schedule form.
         sky = SkyCoord(ra=float(c1) * 15.0 * u.deg, dec=float(c2) * u.deg,

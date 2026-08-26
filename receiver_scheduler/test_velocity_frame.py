@@ -194,3 +194,14 @@ def test_the_clock_term_is_subtracted_like_the_frame_term():
     measured_centroid, survey_centroid = 1.785, 2.543
     assert abs((measured_centroid - shift) - survey_centroid) < 0.05
     assert abs((measured_centroid + shift) - survey_centroid) > 1.0
+
+
+def test_a_galactic_drift_entry_is_read_in_its_own_frame():
+    """A drift entry carries drift_frame; reading every drift as RA/Dec turned
+    last night's Cas A scan (l=111.735, galactic) into RA 111.7 hours."""
+    head = header("drift", 111.735, -2.130)
+    head["drift_frame"] = "galactic"
+    assert op.observation_direction(head, WHEN) == pytest.approx((111.735, -2.130))
+    head["drift_frame"] = "radec"
+    l, b = op.observation_direction(dict(head, coord1_deg=23.39, coord2_deg=58.8), WHEN)
+    assert l == pytest.approx(111.7, abs=0.5), "an RA/Dec drift entry still converts"
