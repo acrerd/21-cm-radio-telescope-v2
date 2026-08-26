@@ -216,6 +216,13 @@
             }).catch(() => {});
         }
 
+        function downloadObserveFile() {
+            const file = obvSelectedFile();
+            if (!file) return;
+            // A navigation, not a fetch: the browser saves the attachment.
+            window.location.href = '/api/observe/download?file=' + encodeURIComponent(file);
+        }
+
         function obvSelectedFile() {
             return document.getElementById('obvFileSelect').value || '';
         }

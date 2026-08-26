@@ -41,9 +41,14 @@ from datetime import datetime, timezone
 import numpy as np
 
 # Fraction of the recorded band, centred, that goes into the band power. The
-# outer 20% either side is the filter skirt, where the receiver's response
-# is falling and any narrow interference at the band edge is loudest.
-BAND_FRACTION = 0.6
+# outer tenth either side is the filter skirt: measured on the 2026-08-26 Cas A
+# scan the response is flat to +-1 MHz, 89% at +-1.8 MHz (this edge, at 4.5
+# Msps), 78% at +-2.0 and 41% at the band edge. The skirt is where a small LO
+# or filter drift moves the mean most, and where band-edge interference lives;
+# the channels given up cost nothing measurable, since total power is
+# instability-limited rather than thermal. Was 60% until the operator chose to
+# keep more of the flat band.
+BAND_FRACTION = 0.8
 # Channels within this of the tuned centre are the LO artefact.
 DC_MASK_HZ = 30_000.0
 # Model samples along the track; the sky through a 5-degree beam changes

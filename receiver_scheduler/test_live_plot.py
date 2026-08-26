@@ -539,3 +539,29 @@ def test_recording_details_say_whether_the_line_was_in_band(client):
     assert x["units"] == "counts" and x["mode"] == "drift"
     assert x["records"] == 73 and x["integration_s"] == pytest.approx(240, abs=1)
     assert client.get("/api/observe/info?file=../secret.h5").status_code == 404
+
+
+def test_the_total_power_band_window_leaves_the_skirts_and_the_lo_out():
+    """80% of the band, centred, less the LO artefact - measured on the Cas A
+    scan the response is 89% at this edge and falls to 41% at the band edge."""
+    import numpy as np
+    import drift_fit
+    freq = np.linspace(1417.55e6, 1422.05e6, 4500)
+    header = {"center_freq_hz": 1419.8e6, "sample_rate_hz": 4.5e6,
+              "dc_artefact_freq_hz": 1419.8e6}
+    lo, hi, keep = drift_fit._band_window(header, freq)
+    assert (lo, hi) == pytest.approx((1418.0e6, 1421.6e6))
+    assert not keep[np.abs(freq - 1419.8e6) < 30e3].any(), "the LO artefact is masked"
+    assert not keep[freq < lo].any() and not keep[freq > hi].any()
+    assert 0.76 < keep.mean() < 0.81
+
+
+def test_the_selected_recording_can_be_downloaded(client):
+    here = os.path.dirname(os.path.abspath(__file__))
+    if not os.path.exists(os.path.join(here, "data", "observations", "Cas A drift scan.h5")):
+        pytest.skip("no Cas A drift scan on this machine")
+    r = client.get("/api/observe/download?file=Cas%20A%20drift%20scan.h5")
+    assert r.status_code == 200
+    assert "attachment" in r.headers.get("Content-Disposition", "")
+    assert r.data[:8] == b"\x89HDF\r\n\x1a\n", "an HDF5 file, byte for byte"
+    assert client.get("/api/observe/download?file=../h1_schedule.json").status_code == 404

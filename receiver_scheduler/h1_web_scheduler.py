@@ -4041,6 +4041,20 @@ def api_observe_info():
                         'being written?): %s' % exc}), 409
 
 
+@app.route('/api/observe/download', methods=['GET'])
+def api_observe_download():
+    """The chosen recording, as a file. Same containment as everything else
+    that takes ?file=: a basename inside the observations folder, or 404."""
+    from flask import send_file
+    try:
+        info = _observation_info(request.args.get('file'))
+    except ValueError as exc:
+        return jsonify({'success': False, 'error': str(exc)}), 404
+    return send_file(info['output_file'], as_attachment=True,
+                     download_name=os.path.basename(info['output_file']),
+                     mimetype='application/x-hdf5', max_age=0)
+
+
 @app.route('/api/observations', methods=['GET'])
 def api_observations():
     """Every recording in the observations folder, newest first.
