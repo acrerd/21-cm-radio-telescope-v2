@@ -2976,15 +2976,24 @@ def api_observe_fit():
     import observation_plot
     import rf_calibration
 
-    if current_observation and current_observation.get('output_file'):
+    chosen = (request.get_json(silent=True) or {}).get('file') or request.args.get('file')
+    if chosen:
+        try:
+            info = _observation_info(chosen)
+        except ValueError as exc:
+            return jsonify({'success': False, 'error': str(exc)}), 404
+    else:
+        with last_observation_lock:
+            if last_observation is None:
+                return jsonify({'success': False,
+                                'error': 'No observation has finished yet'}), 404
+            info = dict(last_observation)
+    if (current_observation and current_observation.get('output_file')
+            and os.path.realpath(current_observation['output_file'])
+                == os.path.realpath(info.get('output_file', ''))):
         return jsonify({'success': False,
-                        'error': 'an observation is still recording; the fit '
+                        'error': 'that observation is still recording; the fit '
                                  'needs the finished file'}), 409
-    with last_observation_lock:
-        if last_observation is None:
-            return jsonify({'success': False,
-                            'error': 'No observation has finished yet'}), 404
-        info = dict(last_observation)
     path = info.get('output_file', '')
     if not os.path.exists(path):
         return jsonify({'success': False, 'error': 'the recording is missing: %s'
@@ -3906,6 +3915,89 @@ def obs_header(obs):
             'gain_db': obs.get('gain_db')}
 
 
+def _observation_info(filename):
+    """What the plot and the fit need to know about one recording, from the
+    file itself rather than from the session's memory of it.
+
+    `filename` is a basename inside the observations folder; anything else
+    is refused, so a URL cannot reach outside it. The recording's own
+    attributes supply the name, the coordinate system and the mode - the
+    same facts last_observation carries for the run that just finished, so
+    either source can drive the same code.
+    """
+    import h5py
+    folder = observations_folder()
+    path = os.path.realpath(os.path.join(folder, os.path.basename(filename or '')))
+    if not filename or os.path.dirname(path) != folder or not os.path.isfile(path):
+        raise ValueError('no such recording: %s' % filename)
+    with h5py.File(path, 'r') as hf:
+        a = dict(hf.attrs)
+    info = {'output_file': path,
+            'name': str(a.get('obs_name', os.path.basename(path))),
+            'coord_system': str(a.get('coord_system', '')),
+            'object_name': str(a.get('object_name', '')),
+            'comment': str(a.get('comment', '')),
+            'duration_minutes': a.get('duration_minutes')}
+    mode = a.get('observation_mode')
+    if mode is None:
+        mode = observation_files.observation_mode(info)
+    info['mode'] = 'drift' if str(mode) == 'drift' else 'spectrum'
+    try:
+        info['transit_minutes'] = (float(a['duration_minutes']) / 2.0
+                                   if info['mode'] == 'drift' else None)
+    except (KeyError, TypeError, ValueError):
+        info['transit_minutes'] = None
+    return info
+
+
+@app.route('/api/observations', methods=['GET'])
+def api_observations():
+    """Every recording in the observations folder, newest first.
+
+    Read from the files' own attributes so what is listed is what is there -
+    the session's last_observation is one entry among them, marked so the
+    page can select it by default. A file the receiver is still writing
+    cannot be opened (the HDF5 lock) and is listed as recording.
+    """
+    import h5py
+    folder = observations_folder()
+    rows = []
+    for name in os.listdir(folder):
+        if not name.lower().endswith(('.h5', '.hdf5')):
+            continue
+        path = os.path.join(folder, name)
+        try:
+            st = os.stat(path)
+        except OSError:
+            continue
+        row = {'filename': name, 'size_bytes': st.st_size,
+               'mtime': datetime.fromtimestamp(st.st_mtime).isoformat(timespec='seconds'),
+               'recording': False}
+        try:
+            with h5py.File(path, 'r') as hf:
+                a = dict(hf.attrs)
+            row.update(name=str(a.get('obs_name', '')),
+                       comment=str(a.get('comment', '')),
+                       coord_system=str(a.get('coord_system', '')),
+                       created=str(a.get('created', '')),
+                       units=str(a.get('spectra_units', '')))
+            mode = a.get('observation_mode')
+            row['mode'] = str(mode) if mode is not None else \
+                observation_files.observation_mode(row)
+        except (OSError, BlockingIOError):
+            row.update(name='', comment='', coord_system='', created='',
+                       units='', mode='', recording=True)
+        rows.append(row)
+    # By the recording's own creation stamp where it has one - it survives a
+    # rename or a copy, and two files written in the same second tie on
+    # mtime - falling back to the file's modification time.
+    rows.sort(key=lambda r: r.get('created') or r['mtime'], reverse=True)
+    with last_observation_lock:
+        last = (os.path.basename(last_observation['output_file'])
+                if last_observation and last_observation.get('output_file') else None)
+    return jsonify({'success': True, 'observations': rows, 'last': last})
+
+
 @app.route('/api/observe/plot', methods=['GET'])
 def api_observe_plot():
     """Render the last finished observation to a PNG.
@@ -3915,11 +4007,20 @@ def api_observe_plot():
     in step with the file.
     """
     import observation_plot
-    with last_observation_lock:
-        if last_observation is None:
-            return jsonify({'success': False,
-                            'error': 'No observation has finished yet'}), 404
-        info = dict(last_observation)
+    # ?file=<basename> picks any recording in the folder; without it, the
+    # run that most recently finished.
+    chosen = request.args.get('file')
+    if chosen:
+        try:
+            info = _observation_info(chosen)
+        except ValueError as exc:
+            return jsonify({'success': False, 'error': str(exc)}), 404
+    else:
+        with last_observation_lock:
+            if last_observation is None:
+                return jsonify({'success': False,
+                                'error': 'No observation has finished yet'}), 404
+            info = dict(last_observation)
     out = os.path.join(_SCRIPT_DIR, 'data', 'last_observation.png')
     os.makedirs(os.path.dirname(out), exist_ok=True)
     try:

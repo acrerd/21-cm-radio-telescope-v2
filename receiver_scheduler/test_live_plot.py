@@ -402,9 +402,16 @@ def test_fit_refuses_when_there_is_nothing_to_fit(client, no_run):
         "applying a fit that was never made must be impossible"
 
 
-def test_fit_refuses_a_run_still_recording(client, no_run, tmp_path):
-    """The file is locked while the receiver writes it."""
-    sched.current_observation = {"name": "live", "output_file": str(tmp_path / "x.h5")}
+def test_fit_refuses_the_file_still_being_recorded(client, no_run, tmp_path):
+    """The file is locked while the receiver writes it - but only that file.
+
+    An older recording can be fitted while a new one records; what is refused
+    is the one the receiver still holds open.
+    """
+    live = str(tmp_path / "x.h5")
+    sched.current_observation = {"name": "live", "output_file": live}
+    sched.last_observation = {"name": "live", "coord_system": "galactic",
+                              "output_file": live}
     r = client.post("/api/observe/fit")
     assert r.status_code == 409
     assert "still recording" in r.get_json()["error"]
@@ -451,3 +458,38 @@ def test_fit_runs_end_to_end_on_a_real_calibration_field(client, no_run):
     assert d["compare"] is None or "gain_ratio" in d["compare"]
     assert client.get("/api/observe/fit/plot").status_code == 200
     assert sched.last_observe_fit["source_file"] == os.path.basename(files[-1])
+
+
+# ---------------------------------------------------------------------------
+# The recordings catalogue
+# ---------------------------------------------------------------------------
+
+def test_the_catalogue_lists_recordings_from_their_own_attributes(client, tmp_path, monkeypatch):
+    """Date, filename and comment, read from the files, newest first."""
+    import h5py
+    monkeypatch.setattr(sched, "get_config_value",
+                        lambda k, *a, **kw: str(tmp_path) if k == "data_output_folder" else None)
+    folder = tmp_path / "observations"; folder.mkdir()
+    for name, comment, created in (("20260826_100000_track.h5", "first", "2026-08-26T09:00:00"),
+                                   ("20260826_110000_drift.h5", "second", "2026-08-26T10:00:00")):
+        with h5py.File(folder / name, "w") as hf:
+            hf.attrs["obs_name"] = "T"; hf.attrs["comment"] = comment
+            hf.attrs["created"] = created; hf.attrs["coord_system"] = "galactic"
+            hf.attrs["observation_mode"] = "track" if "track" in name else "drift"
+    (folder / "notes.txt").write_text("not a recording")
+    d = client.get("/api/observations").get_json()
+    rows = d["observations"]
+    assert [r["filename"] for r in rows] == ["20260826_110000_drift.h5", "20260826_100000_track.h5"], \
+        "newest first, and only HDF5 files"
+    assert rows[0]["comment"] == "second" and rows[0]["mode"] == "drift"
+    assert rows[1]["created"] == "2026-08-26T09:00:00"
+
+
+def test_a_file_parameter_cannot_leave_the_observations_folder(client, tmp_path, monkeypatch):
+    monkeypatch.setattr(sched, "get_config_value",
+                        lambda k, *a, **kw: str(tmp_path) if k == "data_output_folder" else None)
+    (tmp_path / "observations").mkdir()
+    (tmp_path / "secret.h5").write_bytes(b"")
+    for bad in ("../secret.h5", "/etc/passwd", "nope.h5"):
+        r = client.get("/api/observe/plot?file=" + bad)
+        assert r.status_code == 404, bad

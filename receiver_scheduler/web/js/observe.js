@@ -171,20 +171,68 @@
               .finally(() => { btn.disabled = false; });
         }
 
+        // The recordings list: every file in data/observations, newest
+        // first, described from its own attributes. Kept under the old name
+        // because shared.js calls it on every visit to the tab; the session's
+        // last-finished run is selected by default, which is what "last
+        // observation" used to mean, but any recording can be chosen.
+        let obvObservations = [];
+
         function loadObserveLast() {
-            fetch('/api/observe/last').then(r => r.json()).then(d => {
-                const el = document.getElementById('obvLastInfo');
-                if (!d.available) {
-                    el.textContent = 'Nothing has finished yet this session.';
+            fetch('/api/observations').then(r => r.json()).then(d => {
+                const sel = document.getElementById('obvFileSelect');
+                const current = sel.value;
+                obvObservations = d.observations || [];
+                sel.innerHTML = '';
+                if (!obvObservations.length) {
+                    const o = document.createElement('option');
+                    o.value = ''; o.textContent = 'no recordings yet';
+                    sel.appendChild(o);
+                    onObserveFileChange();
                     return;
                 }
-                const kind = d.mode === 'drift' ? 'Drift scan' : 'Spectrum';
-                const size = d.size_bytes ? ' &mdash; ' + (d.size_bytes / 1e6).toFixed(1) + ' MB' : '';
-                el.innerHTML = kind + ' &ldquo;' + d.name + '&rdquo;, ended ' +
-                    new Date(d.ended_at).toLocaleTimeString() + ' local' +
-                    ' &mdash; <code>' + d.filename + '</code>' + size +
-                    (d.exists ? '' : ' <span style="color:#ff4757;">(file missing)</span>');
+                obvObservations.forEach(r => {
+                    const o = document.createElement('option');
+                    o.value = r.filename;
+                    // Date from the file's own creation stamp (UTC) where it has
+                    // one, else the file's modification time (local, and says so).
+                    const when = r.created ? r.created.slice(0, 16).replace('T', ' ') + ' UTC'
+                                           : r.mtime.slice(0, 16).replace('T', ' ') + ' local';
+                    let text = when + '  ' + r.filename;
+                    if (r.recording) text += '  (recording)';
+                    else if (r.name) text += '  \u2014 ' + r.name;
+                    if (r.comment) text += '  \u2014 ' + r.comment;
+                    o.textContent = text;
+                    o.disabled = !!r.recording;
+                    sel.appendChild(o);
+                });
+                // Keep the operator's choice across refreshes; otherwise the
+                // run that most recently finished, else the newest file.
+                const want = obvObservations.some(r => r.filename === current) ? current
+                           : (d.last && obvObservations.some(r => r.filename === d.last)) ? d.last
+                           : obvObservations.find(r => !r.recording)?.filename || '';
+                sel.value = want;
+                onObserveFileChange();
             }).catch(() => {});
+        }
+
+        function obvSelectedFile() {
+            return document.getElementById('obvFileSelect').value || '';
+        }
+
+        function onObserveFileChange() {
+            const el = document.getElementById('obvLastInfo');
+            const r = obvObservations.find(x => x.filename === obvSelectedFile());
+            if (!r) { el.textContent = 'Nothing recorded yet.'; return; }
+            const kind = r.mode === 'drift' ? 'Drift scan' : r.mode === 'manual' ? 'Console recording' : 'Spectrum';
+            const size = r.size_bytes ? (r.size_bytes / 1e6).toFixed(1) + ' MB' : '';
+            const units = r.units === 'K' ? 'calibrated (kelvin)' : r.units === 'counts' ? 'uncalibrated (counts)' : '';
+            el.textContent = [kind + (r.coord_system ? ' \u00b7 ' + r.coord_system : ''),
+                              size, units,
+                              r.comment ? '\u201c' + r.comment + '\u201d' : ''].filter(Boolean).join(' \u00b7 ');
+            // A fit belongs to one file; changing the file retires its proposal.
+            document.getElementById('obvFitApplyBtn').style.display = 'none';
+            document.getElementById('obvFitInfo').textContent = '';
         }
 
         function showObservePlot() {
@@ -193,7 +241,7 @@
             // Fetched rather than dropped straight into an img src: a refusal
             // comes back as JSON with a reason - still recording, no spectra -
             // and a broken image icon would throw that away.
-            fetch('/api/observe/plot?' + Date.now()).then(r => {
+            fetch('/api/observe/plot?file=' + encodeURIComponent(obvSelectedFile()) + '&' + Date.now()).then(r => {
                 if (!r.ok) return r.json().then(d => { throw new Error(d.error || ('HTTP ' + r.status)); });
                 return r.blob();
             }).then(b => {
@@ -215,7 +263,8 @@
             const apply = document.getElementById('obvFitApplyBtn');
             apply.style.display = 'none';
             info.textContent = 'Fitting the simulator to the recording\u2026';
-            fetch('/api/observe/fit', {method: 'POST'}).then(r => r.json()).then(d => {
+            fetch('/api/observe/fit', {method: 'POST', headers: {'Content-Type': 'application/json'},
+                   body: JSON.stringify({file: obvSelectedFile()})}).then(r => r.json()).then(d => {
                 if (!d.success) { info.textContent = 'Fit: ' + (d.error || 'failed'); return; }
                 const f = d.fit;
                 let text = 'fit of ' + f.source_file + ' at l=' + f.glon.toFixed(2)

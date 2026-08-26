@@ -593,8 +593,12 @@
                             style="background:#16162e; border-radius:8px;"></canvas>
                     <div id="obvLiveInfo" class="mono" style="color:#888; font-size:12px; margin-top:8px;"></div>
                 </div>
-                <div class="section-title" style="margin-top:20px;">Last Observation</div>
+                <div class="section-title" style="margin-top:20px;">Recordings</div>
                 <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
+                    <!-- Every recording in data/observations, newest first, from the
+                         files' own attributes: date, filename, and the comment. -->
+                    <select autocomplete="off" id="obvFileSelect" onchange="onObserveFileChange()"
+                            style="max-width:100%; min-width:320px;" title="which recording to plot or fit"></select>
                     <button class="btn btn-secondary" onclick="showObservePlot()">Plot Result</button>
                     <button class="btn btn-secondary" onclick="fitObserveModel()"
                             title="fit the simulator's sky to this recording: gain and system temperature">Fit model</button>
