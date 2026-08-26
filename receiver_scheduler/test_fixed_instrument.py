@@ -169,6 +169,26 @@ class TestContinuumExcludesHydrogen:
             drift_fit._band_window(header, f)
 
 
+class TestNoSilentDemoFallback:
+    """A headless recording that cannot open its radio must fail, not
+    record synthetic noise: on 2026-08-26 a gain calibration did exactly
+    that behind an orphaned receiver and stored a demo fit as the gain."""
+
+    def test_the_two_product_flowgraph_refuses_to_fall_back(self, monkeypatch):
+        import b210_h1_receiver as rx
+
+        def no_device(*a, **k):
+            raise LookupError("No devices found")
+        monkeypatch.setattr(rx, "create_sdr_source", no_device)
+        with pytest.raises(RuntimeError, match="refusing to record synthetic noise"):
+            rx.TwoProductFlowgraph("b210", tuning.fixed_instrument())
+
+    def test_demo_asked_for_is_still_demo(self):
+        import b210_h1_receiver as rx
+        fg = rx.TwoProductFlowgraph("demo", tuning.fixed_instrument())
+        assert fg.sdr_type == "demo"
+
+
 class TestInstrumentConfig:
     """The instrument is changed on the Configuration tab: an override that
     cannot be built is refused whole, a valid one takes effect at once."""

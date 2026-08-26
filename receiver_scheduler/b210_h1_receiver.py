@@ -344,10 +344,17 @@ class TwoProductFlowgraph(gr.top_block):
 
     SINK_RATE_HZ = 50.0                # how often the Python sink is called
 
-    def __init__(self, sdr_type, instrument):
+    def __init__(self, sdr_type, instrument, strict=True):
         gr.top_block.__init__(self, "H1 two-product processor", catch_exceptions=True)
         self.instrument = dict(instrument)
         self.sdr_type = sdr_type
+        # No falling back to demo mode in a recording. On 2026-08-26 a gain
+        # calibration could not open the B210 - an orphaned receiver still
+        # held it - and recorded three minutes of synthetic noise instead,
+        # which the fit then took for the sky: T_sys on its floor, a negative
+        # correlation, and a bad calibration stored. A receiver that cannot
+        # open the radio it was asked for must fail loudly.
+        self.strict = strict
         self.sample_rate = float(instrument["sample_rate_hz"])
         self.center_freq = float(instrument["lo_hz"])
         self.gain = float(instrument["gain_db"])
@@ -365,7 +372,12 @@ class TwoProductFlowgraph(gr.top_block):
             self.sample_rate = actual_rate
             self.center_freq = actual_freq
         except Exception as e:
-            print(f"  Failed to initialize {self.sdr_type.upper()}: {e}")
+            print(f"  Failed to initialize {self.sdr_type.upper()}: {e}", flush=True)
+            if self.strict and self.sdr_type != 'demo':
+                raise RuntimeError(
+                    "could not open the %s (%s); refusing to record synthetic noise "
+                    "in its place - is another receiver holding it?"
+                    % (self.sdr_type.upper(), e))
             print("  Falling back to demo mode...")
             self.sdr_type = 'demo'
             self.sdr_source, self.throttle, actual_rate = create_demo_source(self.sample_rate)

@@ -1710,6 +1710,9 @@ horizon_cancel = threading.Event()
 # and their results are small stored artefacts rather than a profile.
 rf_thread: Optional[threading.Thread] = None
 rf_cancel = threading.Event()
+# The receiver a running RF calibration launched, so a scheduler shutdown can
+# terminate it rather than orphan it on the radio (2026-08-26).
+rf_receiver_process = None
 rf_state: dict = {
     "running": False,
     "job": None,
@@ -3541,19 +3544,38 @@ def _rf_observe(name, glon, glat, duration_s, sdr_type="b210",
     rf_state["stage_ends_utc"] = (
         datetime.now(timezone.utc) + timedelta(seconds=duration_s)
     ).isoformat(timespec="seconds")
+    global rf_receiver_process
+    # Its output goes to a log beside the recording, as an observation's
+    # does: a receiver that could not open the radio says so there, and on
+    # 2026-08-26 that message went to DEVNULL while a demo-noise fit was
+    # stored as the gain.
+    receiver_log = open(os.path.splitext(out)[0] + ".receiver.log", "w")
     proc = subprocess.Popen(
         [python_exe, RECEIVER_SCRIPT, "--sdr", sdr_type, "--headless"],
         env=env, cwd=_SCRIPT_DIR,
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        stdout=receiver_log, stderr=subprocess.STDOUT)
+    receiver_log.close()
+    # Registered so a scheduler shutdown can take it down with it: the one
+    # orphaned by a restart on 2026-08-26 kept the B210 for an hour and
+    # every later run silently got demo noise.
+    rf_receiver_process = proc
     try:
         deadline = time.time() + duration_s
         while time.time() < deadline:
             if rf_cancel.is_set():
                 raise RuntimeError("cancelled while recording")
             if proc.poll() is not None:
-                raise RuntimeError("the receiver exited early (%s)" % proc.returncode)
+                tail = ""
+                try:
+                    with open(os.path.splitext(out)[0] + ".receiver.log") as fh:
+                        tail = " ".join(fh.read().strip().splitlines()[-3:])
+                except OSError:
+                    pass
+                raise RuntimeError("the receiver exited early (%s)%s"
+                                   % (proc.returncode, (": " + tail) if tail else ""))
             time.sleep(0.5)
     finally:
+        rf_receiver_process = None
         if proc.poll() is None:
             proc.terminate()
             try:
@@ -6200,6 +6222,18 @@ def main():
         if current_process or current_observation:
             stop_observation()
         stop_booted_receiver()
+        # An RF calibration in progress: cancel it and take its receiver
+        # down too. Left alone it outlives the scheduler holding the B210,
+        # and every run after the restart quietly fails to open the radio.
+        rf_cancel.set()
+        proc = rf_receiver_process
+        if proc is not None and proc.poll() is None:
+            log.warning("Shutting down with an RF calibration recording; terminating its receiver")
+            proc.terminate()
+            try:
+                proc.wait(timeout=15)
+            except subprocess.TimeoutExpired:
+                proc.kill()
 
 
 if __name__ == '__main__':
