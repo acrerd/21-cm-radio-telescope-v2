@@ -479,7 +479,7 @@
                         <button class="btn btn-secondary btn-icon" onclick="cloneObs(${i})" title="Open a copy of this entry with the times cleared, to book it again.">⧉</button>
                         <button class="btn btn-secondary btn-icon" onclick="editObs(${i})" title="Edit this entry. Not while it is running.">✎</button>
                         <button class="btn btn-danger btn-icon" onclick="deleteObs(${i})" title="Remove this entry from the schedule. Not while it is running.">✕</button>
-                        ${simulatable(obs) ? `<button class="btn btn-secondary btn-icon" onclick="simulateObs(${i})" title="Open this entry in the Simulator: its pointing, band and settings, with the clock pinned to its start (a drift scan, to its beam-crossing time).">🔭</button>` : ''}
+                        ${simulatable(obs) ? `<button class="btn btn-secondary btn-icon" onclick="simulateObs(${i})" title="View in the Simulator: the sky as it will be at this entry's time, the dish pointed as booked, with its band and settings. A drift scan opens at its beam-crossing time with the drift panel.">👁</button>` : ''}
                     </div>
                 </div>
               `;
