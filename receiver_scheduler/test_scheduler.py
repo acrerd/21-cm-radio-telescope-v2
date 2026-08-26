@@ -12,6 +12,7 @@ import re
 import sys
 import threading
 import time
+import logging
 from datetime import datetime, timedelta, timezone
 from unittest.mock import patch, MagicMock
 
@@ -1306,7 +1307,11 @@ class TestDriftPointTelescope:
     def test_sends_direct_with_computed_pointing(self, mock_compute, mock_api):
         obs = self._obs()
         assert sched.srt_point_telescope(obs) is True
-        mock_api.assert_called_once_with("/direct", {"alt": 45.0, "az": 180.0})
+        # /pointing is asked for the model first; with none readable (the
+        # stub answers {"ok": True} to everything) the dish is parked at the
+        # source's position at T, as before.
+        mock_api.assert_called_with("/direct", {"alt": 45.0, "az": 180.0})
+        assert "drift_crossing_time" not in obs
         # RA converted as hours (23h 23m 24s = 23.39h), beam time = slot midpoint
         frame, coord1, coord2, beam_time = mock_compute.call_args[0][:4]
         assert frame == "radec"
@@ -1351,6 +1356,78 @@ class TestDriftPointTelescope:
         assert frame == "galactic"
         assert coord1 == pytest.approx(111.7)
         assert coord2 == pytest.approx(-2.1)
+
+
+# The controller's model on 2026-08-26, and a source drifting west across it.
+_TERMS = {"IE": -0.50832, "IA": 1.68546, "AN": -0.46401, "AE": -0.90160,
+          "CA": -1.04381, "NPAE": 0.0, "TF": 0.0, "AZSCALE": 0.000673}
+_T = datetime(2026, 8, 10, 22, 30)
+
+
+def _moving_source(frame, c1, c2, when, object_name=''):
+    """True alt/az of something crossing alt 43.9 at 0.25 deg of azimuth a minute."""
+    return 43.9, 192.2 + 0.25 * (when - _T).total_seconds() / 60.0
+
+
+class TestDriftParksOnTheGrid:
+    """The mount rounds to 0.5 deg; park on the grid point the track passes
+    closest to, sent as that point's true position, and record the crossing."""
+
+    def _obs(self):
+        return {"coord_system": "drift", "drift_frame": "radec",
+                "coord1_deg": 23, "coord1_min": 23, "coord1_sec": 24.0,
+                "coord2_deg": 58, "coord2_min": 48, "coord2_sec": 0.0,
+                "start_date": "2026-08-10", "start_time": "22:00",
+                "duration_minutes": 60}
+
+    @staticmethod
+    def _controller(endpoint, params=None, **kw):
+        if endpoint == "/pointing":
+            return {"loaded": True, "terms": dict(_TERMS)}
+        return {"ok": True}
+
+    @patch.object(sched, 'SRT_CONTROLLER_URL', "http://test")
+    @patch.object(sched, 'srt_api_call', side_effect=_controller.__func__)
+    @patch.object(sched, 'compute_drift_pointing', side_effect=_moving_source)
+    def test_parks_on_a_grid_point_and_records_the_crossing(self, _compute, mock_api):
+        import drift_park
+        obs = self._obs()
+        assert sched.srt_point_telescope(obs) is True
+        assert obs["drift_drive_alt"] % 0.5 == 0 and obs["drift_drive_az"] % 0.5 == 0
+        endpoint, params = mock_api.call_args[0][:2]
+        assert endpoint == "/direct"
+        # What was sent is the true position of that grid point, so the
+        # controller's own rounding lands on it exactly.
+        d_alt, d_az = drift_park.true_to_drive(params["alt"], params["az"], _TERMS)
+        assert (d_alt, d_az) == pytest.approx((obs["drift_drive_alt"], obs["drift_drive_az"]), abs=1e-4)
+        assert obs["drift_alt"] == pytest.approx(params["alt"], abs=1e-3)
+        crossing = datetime.strptime(obs["drift_crossing_time"], "%Y-%m-%d %H:%M:%S")
+        assert abs((crossing - _T).total_seconds()) <= 240
+        assert 0.0 <= obs["drift_crossing_offset_deg"] <= 0.36
+        # The slot's mid-point is still recorded as what was asked for.
+        assert obs["drift_beam_time"] == "2026-08-10 22:30"
+
+    @patch.object(sched, 'srt_get_status', return_value={
+        "alt": 44.0, "az": 192.0, "true_alt": 43.84, "true_az": 192.38})
+    @patch.object(sched, 'compute_drift_pointing', side_effect=_moving_source)
+    def test_confirm_uses_the_position_the_controller_reports(self, _compute, _status):
+        obs = dict(self._obs(), drift_drive_alt=44.0, drift_drive_az=192.0)
+        sched.confirm_drift_parking(obs)
+        # 192.38 is 0.18 deg of azimuth past 192.2: 43 s after T.
+        crossing = datetime.strptime(obs["drift_crossing_time"], "%Y-%m-%d %H:%M:%S")
+        assert (crossing - _T).total_seconds() == pytest.approx(43, abs=1.5)
+        # The miss is the 0.06 deg of altitude the track never reaches.
+        assert obs["drift_crossing_offset_deg"] == pytest.approx(0.06, abs=0.005)
+
+    @patch.object(sched, 'srt_get_status', return_value={
+        "alt": 44.5, "az": 192.0, "true_alt": 44.34, "true_az": 192.38})
+    @patch.object(sched, 'compute_drift_pointing', side_effect=_moving_source)
+    def test_confirm_warns_when_the_mount_parked_elsewhere(self, _compute, _status, caplog):
+        obs = dict(self._obs(), drift_drive_alt=44.0, drift_drive_az=192.0)
+        with caplog.at_level(logging.WARNING, logger="scheduler"):
+            sched.confirm_drift_parking(obs)
+        assert any("disagrees with the controller" in r.message for r in caplog.records)
+        assert obs["drift_drive_alt"] == 44.5
 
 
 @pytest.mark.skipif(not sched.EPHEM_AVAILABLE, reason="PyEphem not installed")
@@ -1640,6 +1717,116 @@ class TestObservationLifecycle:
             sched.maybe_reexec_scheduler_under_receiver_python()
 
         assert mock_execvpe.call_args.args[0] == '/tmp/radioconda/bin/python'
+
+
+# =============================================================================
+# Home the mount first
+# =============================================================================
+
+class TestHomingCounters:
+    """The Due keeps reporting its position while driving into the stops, so
+    the last position line before each 'limit reached' is the counter at the
+    stall: first approach = count error since the last homing, re-approach =
+    repeatability."""
+
+    LINES = [
+        "Homing: Drive to limits...",
+        "Alt:12.0 Az:40.5 Ialt:1.2A Iaz:1.3A Status:HOMING -> Alt:0.0 Az:0.0 Cal:OFF",
+        "Alt:0.5 Az:20.0 Ialt:1.2A Iaz:1.3A Status:HOMING -> Alt:0.0 Az:0.0 Cal:OFF",
+        "Homing: Altitude limit reached",
+        "Alt:0.5 Az:-1.5 Ialt:0.0A Iaz:1.3A Status:HOMING -> Alt:0.0 Az:0.0 Cal:OFF",
+        "Homing: Azimuth limit reached",
+        "Homing: Backing off limits...",
+        "Alt:5.0 Az:5.0 Ialt:1.2A Iaz:1.3A Status:HOMING -> Alt:0.0 Az:0.0 Cal:OFF",
+        "Homing: Re-approach limits...",
+        "Alt:0.0 Az:0.5 Ialt:1.0A Iaz:1.0A Status:HOMING -> Alt:0.0 Az:0.0 Cal:OFF",
+        "Homing: Altitude limit reached",
+        "Alt:0.0 Az:0.0 Ialt:0.0A Iaz:1.0A Status:HOMING -> Alt:0.0 Az:0.0 Cal:OFF",
+        "Homing: Azimuth limit reached",
+        "Homing: Moving to home position...",
+    ]
+
+    def test_reads_the_counter_at_each_stop(self):
+        c = sched._homing_counters(self.LINES)
+        assert c["first"] == {"alt": 0.5, "az": -1.5}
+        assert c["second"] == {"alt": 0.0, "az": 0.0}
+
+    def test_missing_lines_leave_the_axis_out_rather_than_inventing_it(self):
+        assert sched._homing_counters([]) == {"first": {}, "second": {}}
+        assert sched._homing_counters(["Homing: Azimuth limit reached"]) == {"first": {}, "second": {}}
+
+
+class TestHomeFirst:
+    """An entry with home_first runs the physical homing before pointing, and
+    a homing that fails is a reason not to observe."""
+
+    OBS = {"name": "HomeFirst", "coord_system": "altaz",
+           "coord1_deg": 45, "coord1_min": 0, "coord1_sec": 0,
+           "coord2_deg": 180, "coord2_min": 0, "coord2_sec": 0,
+           "center_freq_mhz": 1420.405, "channels": 4096,
+           "integration_time_s": 3.0, "sdr_type": "demo",
+           "gain_db": 40, "bandwidth_mhz": 2.4,
+           "calibrator": False, "duration_minutes": 10, "home_first": True}
+
+    def setup_method(self):
+        sched.current_process = None
+        sched.current_observation = None
+        sched.observation_end_time = None
+        sched.receiver_boot_process = None
+        sched.observation_starting = False
+        sched.start_abort.clear()
+
+    teardown_method = setup_method
+
+    @patch.object(sched, 'SRT_CONTROLLER_URL', 'http://controller')
+    @patch('subprocess.Popen')
+    def test_homes_before_pointing_and_records_the_count_error(self, mock_popen):
+        mock_proc = MagicMock()
+        mock_proc.poll.return_value = None
+        mock_popen.return_value = mock_proc
+        order = []
+        report = {"alt": 0.0, "az": 0.0, "status": "Ready",
+                  "counters": {"first": {"alt": 0.5, "az": -1.5}, "second": {"alt": 0.0, "az": 0.0}}}
+        with patch.object(sched, 'srt_home_with_report',
+                          side_effect=lambda **kw: (order.append('home'), report)[1]), \
+             patch.object(sched, 'srt_point_telescope',
+                          side_effect=lambda obs: (order.append('point'), True)[1]), \
+             patch.object(sched, 'srt_wait_for_slew', return_value=True), \
+             patch.object(sched, 'srt_set_calibrator', return_value=True), \
+             patch.object(sched, 'generate_filename', return_value='/tmp/h.h5'):
+            assert sched.start_observation(dict(self.OBS)) is True
+        assert order == ['home', 'point']
+        meta = json.loads(mock_popen.call_args.kwargs['env']['H1_OBS_METADATA'])
+        assert meta['homed_first'] is True
+        assert meta['homing_count_error_alt_deg'] == 0.5
+        assert meta['homing_count_error_az_deg'] == -1.5
+
+    @patch.object(sched, 'SRT_CONTROLLER_URL', 'http://controller')
+    @patch('subprocess.Popen')
+    def test_a_failed_homing_aborts_the_observation(self, mock_popen):
+        with patch.object(sched, 'srt_home_with_report',
+                          side_effect=RuntimeError("Telescope homing failed: Az stall")), \
+             patch.object(sched, 'srt_point_telescope', return_value=True) as point:
+            assert sched.start_observation(dict(self.OBS)) is False
+        point.assert_not_called()
+        mock_popen.assert_not_called()
+
+    @patch.object(sched, 'SRT_CONTROLLER_URL', 'http://controller')
+    @patch('subprocess.Popen')
+    def test_without_the_flag_nothing_is_homed(self, mock_popen):
+        mock_proc = MagicMock()
+        mock_proc.poll.return_value = None
+        mock_popen.return_value = mock_proc
+        obs = dict(self.OBS, home_first=False)
+        with patch.object(sched, 'srt_home_with_report') as home, \
+             patch.object(sched, 'srt_point_telescope', return_value=True), \
+             patch.object(sched, 'srt_wait_for_slew', return_value=True), \
+             patch.object(sched, 'srt_set_calibrator', return_value=True), \
+             patch.object(sched, 'generate_filename', return_value='/tmp/h.h5'):
+            assert sched.start_observation(obs) is True
+        home.assert_not_called()
+        meta = json.loads(mock_popen.call_args.kwargs['env']['H1_OBS_METADATA'])
+        assert meta['homed_first'] is False
 
 
 # =============================================================================

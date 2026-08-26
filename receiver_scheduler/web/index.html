@@ -1034,6 +1034,20 @@
                             treeline. Advisory &mdash; it never stops the run.
                         </span>
                     </div>
+                    <div class="form-group wide">
+                        <label style="display:flex; align-items:center; gap:8px; cursor:pointer;">
+                            <input autocomplete="off" type="checkbox" id="obsHomeFirst">
+                            Home the mount first
+                        </label>
+                        <span style="color:#888; font-size:12px;">
+                            Runs the physical homing sequence (both axes into their limit
+                            switches, about three minutes) before pointing, resetting the
+                            encoder counts. What the counters read at the stops &mdash; the
+                            count error accumulated since the last homing &mdash; goes in
+                            the log and the recording. Use it before anything that depends
+                            on absolute pointing, such as a drift scan.
+                        </span>
+                    </div>
                 </div>
 
                 <div class="section-title">Output</div>

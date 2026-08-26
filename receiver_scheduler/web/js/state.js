@@ -11,6 +11,7 @@
         let schedule = [];
 
         let currentObs = null;
+        let statusPolls = 0;   // counts 2 s status polls; every 15th re-reads the schedule list
 
         const COORD_CONFIG = {
             altaz: {

@@ -377,7 +377,16 @@ def plot_observation(path, output_path, name="", mode="spectrum",
     fig, ax = plt.subplots(figsize=figsize, dpi=dpi)
     secax = None
     if mode == "drift":
-        _plot_drift(ax, spectra, stamps, transit_minutes)
+        # The crossing recorded in the file - computed at the start from
+        # where the mount actually parked - beats the caller's "middle of
+        # the slot" assumption when the file has one.
+        recorded = recorded_crossing_minutes(header, stamps)
+        _plot_drift(ax, spectra, stamps,
+                    recorded if recorded is not None else transit_minutes,
+                    ylabel=("Antenna temperature (K)" if cal_ok
+                            else "Band power (counts, uncalibrated)"),
+                    transit_label=("beam crossing (recorded)" if recorded is not None
+                                   else "expected transit"))
     else:
         secax = _plot_spectrum(ax, freq_hz, spectra, lsr=lsr,
                                clock_shift=clock_shift)
@@ -613,8 +622,14 @@ def _plot_spectrum(ax, freq_hz, spectra, lsr=None, clock_shift=None):
     return secax
 
 
-def _plot_drift(ax, spectra, stamps, transit_minutes):
-    power = spectra.mean(axis=1)
+def _plot_drift(ax, spectra, stamps, transit_minutes, ylabel="Band power (counts)",
+                transit_label="expected transit"):
+    # nanmean, not mean: the bandpass step marks channels outside the
+    # measured band as NaN ("62 channels outside the measured band dropped"),
+    # and a plain mean then made every record NaN and drew nothing at all -
+    # the 2026-08-26 Sun drift scans, at the standard tuning, came out as
+    # empty axes and read as a broken live view.
+    power = np.nanmean(spectra, axis=1)
     if stamps.size == spectra.shape[0] and stamps.size > 1:
         minutes = (stamps - stamps[0]) / 60.0
     else:
@@ -624,14 +639,34 @@ def _plot_drift(ax, spectra, stamps, transit_minutes):
     ax.plot(minutes, power, color=_ACCENT, lw=1.2, drawstyle="steps-mid")
     _robust_ylim(ax, power)
     ax.set_xlabel("Time since start (min)")
-    ax.set_ylabel("Band power (linear, arb.)")
+    ax.set_ylabel(ylabel)
     # Where the source was meant to cross the beam centre. A peak away from
     # this line is the pointing or the clock, not the source.
     if transit_minutes is not None and math.isfinite(transit_minutes):
         if minutes.min() <= transit_minutes <= minutes.max():
             ax.axvline(transit_minutes, color=_MARK, lw=1.0, ls="--",
-                       label="expected transit")
+                       label=transit_label)
             ax.legend(fontsize=8, loc="best")
+
+
+def recorded_crossing_minutes(header, stamps):
+    """Minutes from the first record to the beam crossing recorded in the file.
+
+    A drift scan parked on the drive grid (drift_park) carries the moment
+    its source actually crosses the parked beam, as a local naive timestamp;
+    this puts it on the plot's time axis. None if the file has no such
+    attribute, or has no records yet.
+    """
+    raw = header.get("drift_crossing_time") if header else None
+    if raw is None or not stamps.size:
+        return None
+    if isinstance(raw, bytes):
+        raw = raw.decode("utf-8", "replace")
+    try:
+        crossing = datetime.fromisoformat(str(raw)).timestamp()
+    except (TypeError, ValueError):
+        return None
+    return (crossing - float(stamps[0])) / 60.0
 
 
 def plot_bandpass_check(observation_path, output_path, template=None,

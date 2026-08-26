@@ -479,7 +479,7 @@
                         <div class="field"><div class="field-label">Coordinates</div><div class="field-value">${formatCoordDisplay(obs)}</div></div>
                         <div class="field"><div class="field-label">Frequency</div><div class="field-value">${obs.center_freq_mhz} MHz</div></div>
                         <div class="field"><div class="field-label">BW / Gain</div><div class="field-value">${obs.bandwidth_mhz} MHz / ${obs.gain_db} dB</div></div>
-                        <div class="field"><div class="field-label">Cal / End</div><div class="field-value">${obs.calibrator ? 'CAL' : '-'} / ${({home:'Home',stow:'Stow'})[obs.end_action] || '-'}</div></div>
+                        <div class="field"><div class="field-label">Cal / End</div><div class="field-value">${obs.calibrator ? 'CAL' : '-'} / ${({home:'Home',stow:'Stow'})[obs.end_action] || '-'}${obs.home_first ? ' · homes first' : ''}</div></div>
                         <div class="field"><div class="field-label">Channels</div><div class="field-value">${obs.channels}</div></div>
                         <div class="field"><div class="field-label">Integration</div><div class="field-value">${obs.integration_time_s}s</div></div>
                     </div>
@@ -554,6 +554,9 @@
             // default to on - safe because the check only ever warns.
             document.getElementById('obsRespectHorizon').checked =
                 obs.respect_local_horizon !== false;
+            // Off unless asked for: a homing costs three minutes of the slot
+            // and drives both axes into their stops.
+            document.getElementById('obsHomeFirst').checked = obs.home_first === true;
             document.getElementById('obsFilename').value = obs.filename || '';
             document.getElementById('obsCalGridN').value = obs.cal_grid_n || 5;
             document.getElementById('obsCalSpacing').value = obs.cal_spacing_deg || 1.5;
@@ -673,6 +676,7 @@
                 end_action: document.getElementById('obsEndAction').value,
                 respect_local_horizon:
                     document.getElementById('obsRespectHorizon').checked,
+                home_first: document.getElementById('obsHomeFirst').checked,
                 filename: document.getElementById('obsFilename').value,
                 cal_grid_n: parseInt(document.getElementById('obsCalGridN').value) || 5,
                 cal_spacing_deg: parseFloat(document.getElementById('obsCalSpacing').value) || 1.5,

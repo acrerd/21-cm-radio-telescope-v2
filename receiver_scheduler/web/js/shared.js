@@ -116,7 +116,13 @@
                     currentObs = null;
                 }
                 wasRunning = data.running;
-                renderSchedule();
+                // The list itself is re-read every 30 s (15 of these 2 s
+                // polls): it used to be fetched once at load, so an entry
+                // booked from another tab, the simulator or the API - or a
+                // scheduler restarted with a changed file - never appeared
+                // until the page was reloaded by hand (2026-08-26).
+                if (++statusPolls % 15 === 0) loadSchedule();
+                else renderSchedule();
             });
         }
 

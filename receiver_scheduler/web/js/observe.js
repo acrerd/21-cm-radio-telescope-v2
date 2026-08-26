@@ -293,7 +293,15 @@
                 if (x.name) row('target', escapeHtml(x.name));
                 row('mode', escapeHtml(x.mode) + (x.coord_system ? ' \u00b7 ' + escapeHtml(x.coord_system) : ''));
                 if (x.mode === 'drift' && x.drift_alt != null) {
-                    row('parked at', 'alt ' + f(x.drift_alt, 2) + '\u00b0, az ' + f(x.drift_az, 2) + '\u00b0');
+                    row('parked at', 'alt ' + f(x.drift_alt, 2) + '\u00b0, az ' + f(x.drift_az, 2) + '\u00b0'
+                        + (x.drift_drive_alt != null ? ' (drive ' + f(x.drift_drive_alt, 1) + ' / ' + f(x.drift_drive_az, 1) + ')' : ''));
+                }
+                if (x.mode === 'drift' && x.drift_crossing_time) {
+                    // The moment the source crosses the parked beam, computed at
+                    // the start from where the mount actually parked - not the
+                    // slot's mid-point - and how far it misses beam centre.
+                    row('beam crossing', escapeHtml(x.drift_crossing_time) + ' local'
+                        + (x.drift_crossing_offset_deg != null ? ', ' + f(x.drift_crossing_offset_deg, 3) + '\u00b0 off centre' : ''));
                 }
                 if (x.coord1_deg != null && x.coord_system !== 'object') {
                     row('coords', f(x.coord1_deg, 3) + ', ' + f(x.coord2_deg, 3)
@@ -585,10 +593,18 @@
                 ctx.fillText(v.toFixed(cal ? (drift ? 2 : 1) : 5), L - 8, y);
             }
             ctx.textAlign = 'center'; ctx.textBaseline = 'top';
-            const fine = span < 1200;            // under 20 minutes, show seconds
-            for (let i = 0; i <= 5; i++) {
-                const v = tStart + span * i / 5;
-                ctx.fillText(utc(v, fine), X(v), H - B + 10);
+            // Ticks on round clock times - whole minutes, five minutes, the
+            // hour - at multiples of a step chosen to give five to eight of
+            // them, rather than at fifths of a window that starts at 14:00:09.
+            // Epoch seconds are UTC-aligned, so a multiple of the step is a
+            // round UTC time.
+            const STEPS = [10, 15, 30, 60, 120, 300, 600, 900, 1200, 1800, 3600, 7200, 10800, 21600];
+            const step = STEPS.find(s => span / s <= 8) || STEPS[STEPS.length - 1];
+            const fine = step < 60;              // show seconds only when the step needs them
+            for (let v = Math.ceil(tStart / step) * step; v <= tEnd; v += step) {
+                const x = X(v);
+                ctx.beginPath(); ctx.moveTo(x, H - B); ctx.lineTo(x, H - B + 6); ctx.stroke();
+                ctx.fillText(utc(v, fine), x, H - B + 10);
             }
             ctx.font = '22px sans-serif';
             ctx.fillText('UTC on ' + new Date(tStart * 1000).toISOString().slice(0, 10)

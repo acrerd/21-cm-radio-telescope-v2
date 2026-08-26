@@ -11,6 +11,7 @@ point-to-point Ethernet link between the observatory computer and the controller
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -446,6 +447,27 @@ def srt_point_telescope(obs: dict) -> bool:
             log.error("SRT drift pointing unreachable: Alt=%.2f° Az=%.2f° at %s",
                       alt, az, beam_time.strftime('%Y-%m-%d %H:%M'))
             return False
+        # The mount parks on a 0.5 deg drive grid, so "where the source is at
+        # T" is not somewhere it can park. Park instead on the grid point the
+        # source's track passes closest to, and record when it does: the
+        # crossing is then exact in time and the miss is only across the
+        # drift. Needs the controller's model to place the grid on the sky.
+        park = plan_drift_parking(obs, beam_time, srt_pointing_terms())
+        if park is not None:
+            alt, az = park['true_alt'], park['true_az']
+            obs['drift_drive_alt'] = park['drive_alt']
+            obs['drift_drive_az'] = park['drive_az']
+            obs['drift_crossing_time'] = _crossing_time_str(park['crossing'])
+            obs['drift_crossing_offset_deg'] = round(park['offset_deg'], 3)
+            log.info("SRT drift scan: parking on drive grid Alt=%.1f Az=%.1f; the source "
+                     "crosses it at %s, %.3f deg off beam centre (%+.0f s from T)",
+                     park['drive_alt'], park['drive_az'],
+                     park['crossing'].strftime('%H:%M:%S'), park['offset_deg'],
+                     (park['crossing'] - beam_time).total_seconds())
+        else:
+            log.warning("SRT drift scan: controller pointing model not readable - parking "
+                        "at the source's position at T; the controller will round it "
+                        "by up to a quarter of a degree per axis")
         # Stash the computed pointing so it lands in the observation metadata
         obs['drift_beam_time'] = beam_time.strftime('%Y-%m-%d %H:%M')
         obs['drift_alt'] = round(alt, 3)
@@ -809,6 +831,115 @@ def srt_home_and_wait(timeout: int = 300,
                 log.info("Calibration: physical homing complete at drive Alt=%.2f° Az=%.2f°",
                          float(status.get("alt", 0.0)), float(status.get("az", 0.0)))
                 return status
+        if not started and time.time() - started_at >= 10:
+            raise RuntimeError(
+                "Telescope did not begin the physical homing sequence; "
+                f"last controller status was {last_status}")
+        time.sleep(0.5)
+
+    raise RuntimeError(
+        f"Telescope homing timed out after {timeout}s; last status was {last_status}")
+
+
+_HOMING_LIMIT_MESSAGES = {"Homing: Azimuth limit reached": "az",
+                          "Homing: Altitude limit reached": "alt"}
+_HOMING_POSITION_RE = re.compile(r"Alt:(-?\d+(?:\.\d+)?)\s+Az:(-?\d+(?:\.\d+)?)")
+
+
+def _homing_counters(messages: list) -> dict:
+    """What the encoder counters read as each axis hit its stop, per approach.
+
+    `messages` are the Due's lines in order. The Due keeps reporting its
+    position while `driveToLimits` runs, so the last position line before
+    "Homing: <axis> limit reached" is the counter at the stall. Each axis
+    reaches its stop twice - the first approach, from wherever the mount was,
+    and the re-approach after backing off 5 degrees - so the first reading is
+    the count error accumulated since the previous homing (the stop is the
+    true zero) and the second is the repeatability of the stop itself.
+    Returns {'first': {'alt': x, 'az': y}, 'second': {...}}, with an axis
+    missing where its lines were not captured.
+    """
+    out = {"first": {}, "second": {}}
+    last_pos = None
+    for msg in messages:
+        m = _HOMING_POSITION_RE.search(msg)
+        if m:
+            last_pos = (float(m.group(1)), float(m.group(2)))
+            continue
+        axis = _HOMING_LIMIT_MESSAGES.get(msg.strip())
+        if axis and last_pos is not None:
+            reading = last_pos[0] if axis == "alt" else last_pos[1]
+            phase = "first" if axis not in out["first"] else "second"
+            out[phase][axis] = reading
+    return out
+
+
+def srt_home_with_report(timeout: int = 300,
+                         cancel_event: Optional[threading.Event] = None) -> dict:
+    """Run the physical homing and report what the counters read at the stops.
+
+    The wait is srt_home_and_wait's; on top of it the controller's serial
+    log is polled while the homing runs, because that buffer holds only the
+    last 30 lines - fifteen seconds of status - and the reading at the stall
+    is gone by the time the sequence finishes (learned the hard way on
+    2026-08-26, when a homing run without this capture lost the one
+    measurement it was for). Issue #24 is the Due printing the number itself.
+
+    Returns the final /status plus a 'counters' entry from _homing_counters.
+    """
+    result = srt_api_call("/home")
+    if not (result and result.get("ok")):
+        raise RuntimeError(f"SRT controller rejected the homing command: {result}")
+    log.info("Physical homing sequence requested (both axes into their stops)")
+
+    seen = set()
+    messages = []
+
+    def poll_serial():
+        entries = srt_api_call("/serial/log")
+        if not isinstance(entries, list):
+            return
+        for e in entries:
+            if not isinstance(e, dict) or e.get("dir") != "RX":
+                continue
+            key = (e.get("time"), e.get("msg"))
+            if key in seen:
+                continue
+            seen.add(key)
+            messages.append(str(e.get("msg", "")))
+
+    started = False
+    started_at = time.time()
+    last_status = None
+    while time.time() - started_at < timeout:
+        if cancel_event is not None and cancel_event.is_set():
+            raise RuntimeError("cancelled during telescope homing")
+        poll_serial()
+        status = srt_get_status()
+        if status:
+            last_status = status
+            state = str(status.get("status", "")).strip().lower()
+            if status.get("fault_active") or state == "fault":
+                detail = status.get("fault") or status.get("status") or "unknown fault"
+                raise RuntimeError(f"Telescope homing failed: {detail}")
+            if state == "homing":
+                started = True
+            elif started and state == "ready" and not status.get("is_slewing", False):
+                poll_serial()
+                counters = _homing_counters(messages)
+                first, second = counters["first"], counters["second"]
+                fmt = lambda d: ("Alt=%s Az=%s" % (
+                    ("%.1f" % d["alt"]) if "alt" in d else "?",
+                    ("%.1f" % d["az"]) if "az" in d else "?"))
+                log.info("Homing complete at drive Alt=%.2f Az=%.2f. Counters at the stops: "
+                         "first approach %s (count error accumulated since the last homing), "
+                         "re-approach %s (repeatability)",
+                         float(status.get("alt", 0.0)), float(status.get("az", 0.0)),
+                         fmt(first), fmt(second))
+                if not first:
+                    log.warning("Homing: the Due's limit messages were not captured from "
+                                "/serial/log, so the count error is unknown")
+                return dict(status, counters=counters)
         if not started and time.time() - started_at >= 10:
             raise RuntimeError(
                 "Telescope did not begin the physical homing sequence; "
@@ -1199,6 +1330,98 @@ def drift_beam_time(obs: dict, now: Optional[datetime] = None) -> datetime:
     except ValueError:
         start = now
     return start + timedelta(minutes=obs.get('duration_minutes', 30) / 2.0)
+
+
+def _drift_track(obs: dict):
+    """The source's true (alt, az) as a function of local time, for a drift entry."""
+    drift_frame = obs.get('drift_frame', 'radec')
+    coord1 = dms_to_decimal(obs.get('coord1_deg', 0), obs.get('coord1_min', 0),
+                            obs.get('coord1_sec', 0.0), is_ra=(drift_frame == 'radec'))
+    coord2 = dms_to_decimal(obs.get('coord2_deg', 0), obs.get('coord2_min', 0),
+                            obs.get('coord2_sec', 0.0), is_ra=False)
+    object_name = obs.get('object_name', '')
+
+    def track(when_local: datetime):
+        return compute_drift_pointing(drift_frame, coord1, coord2, when_local, object_name)
+    return track
+
+
+def srt_pointing_terms() -> Optional[dict]:
+    """The pointing model the controller is applying, from its /pointing endpoint.
+
+    Returns the term dict ({} for a controller with no model loaded, which
+    still applies refraction), or None if it cannot be read - in which case
+    the drive frame is unknown here and nothing may be assumed about it.
+    """
+    result = srt_api_call("/pointing")
+    if not result or 'terms' not in result:
+        return None
+    if not result.get('loaded'):
+        return {}
+    try:
+        return {k: float(v) for k, v in result['terms'].items()}
+    except (TypeError, ValueError):
+        return None
+
+
+def plan_drift_parking(obs: dict, beam_time: datetime, terms: Optional[dict]) -> Optional[dict]:
+    """Park a drift scan on the drive grid point its source passes closest to.
+
+    Without the controller's model (`terms` None) the grid cannot be placed on
+    the sky from here, so the answer is None and the caller parks at the
+    source's position at T as before - the controller then rounds by up to a
+    quarter of a degree per axis and the crossing time is only approximate.
+    """
+    if terms is None:
+        return None
+    import drift_park
+    track = _drift_track(obs)
+    if track(beam_time) is None:
+        return None
+    return drift_park.choose_parking(track, beam_time, terms)
+
+
+def _crossing_time_str(when: datetime) -> str:
+    return when.strftime('%Y-%m-%d %H:%M:%S')
+
+
+def confirm_drift_parking(obs: dict) -> None:
+    """After the slew: where the mount actually parked, and when the source crosses it.
+
+    The drive position reported by /status is compared with the grid point
+    chosen at the start - a disagreement means the model copied into
+    drift_park no longer matches the controller's, and is logged. The
+    crossing time is then recomputed, model-free, from the true position the
+    controller itself reports for the parked mount, so what goes in the file
+    depends on the controller's transform and not on the copy.
+    """
+    status = srt_get_status()
+    if not status or status.get('true_alt') is None or status.get('true_az') is None:
+        return
+    import drift_park
+    planned = (obs.get('drift_drive_alt'), obs.get('drift_drive_az'))
+    got = (status.get('alt'), status.get('az'))
+    if planned[0] is not None and planned[1] is not None and None not in got:
+        if abs(float(got[0]) - float(planned[0])) > 1e-6 or abs(float(got[1]) - float(planned[1])) > 1e-6:
+            log.warning("SRT drift scan: parked at drive Alt=%.1f Az=%.1f, not the planned "
+                        "Alt=%.1f Az=%.1f - the scheduler's copy of the pointing model "
+                        "disagrees with the controller's", got[0], got[1], planned[0], planned[1])
+    try:
+        when, sep = drift_park.crossing_at(_drift_track(obs),
+                                           float(status['true_alt']), float(status['true_az']),
+                                           drift_beam_time(obs))
+    except Exception as e:  # ephem quirks; the planned values stand
+        log.warning("SRT drift scan: could not recompute the crossing from the parked "
+                    "position: %s", e)
+        return
+    obs['drift_drive_alt'] = got[0]
+    obs['drift_drive_az'] = got[1]
+    obs['drift_crossing_time'] = _crossing_time_str(when)
+    obs['drift_crossing_offset_deg'] = round(sep, 3)
+    log.info("SRT drift scan: parked at drive Alt=%s Az=%s (true %.2f/%.2f); source crosses "
+             "at %s, %.3f deg off beam centre", got[0], got[1],
+             float(status['true_alt']), float(status['true_az']),
+             when.strftime('%H:%M:%S'), sep)
 
 
 def parse_tle(tle_text: str) -> tuple:
@@ -1774,6 +1997,21 @@ def start_observation(obs: dict, duration_override: int = None) -> bool:
                 time.sleep(1)
             log.info("Sun scan/calibration stopped; continuing with the observation")
 
+        # Home first if the entry asks for it: the encoder counts are only as
+        # good as the last homing, and a scan that depends on absolute
+        # pointing (a drift scan) is worth the three minutes. A homing that
+        # fails or faults is a reason not to observe, not to carry on.
+        if SRT_CONTROLLER_URL and obs.get('home_first'):
+            try:
+                report = srt_home_with_report(cancel_event=start_abort)
+            except RuntimeError as e:
+                if start_abort.is_set():
+                    log.info("Observation start aborted during homing")
+                else:
+                    log.error("Homing before the observation failed: %s - aborting", e)
+                return False
+            obs['homing_counters'] = report.get('counters', {})
+
         # Point telescope at target and wait for slew before recording
         if SRT_CONTROLLER_URL:
             if not srt_point_telescope(obs):
@@ -1794,6 +2032,8 @@ def start_observation(obs: dict, duration_override: int = None) -> bool:
                     log.info("Observation start aborted during slew")
                     return False
                 log.warning("SRT slew timeout - starting observation at current position")
+            elif obs.get('coord_system') == 'drift':
+                confirm_drift_parking(obs)
 
         # Where the dish actually ended up, against the measured horizon. For
         # everything except a scheduled observation this only ever warns: the
@@ -1850,6 +2090,24 @@ def start_observation(obs: dict, duration_override: int = None) -> bool:
             'drift_beam_time': obs.get('drift_beam_time', ''),
             'drift_alt': obs.get('drift_alt', ''),
             'drift_az': obs.get('drift_az', ''),
+            # The grid point the mount was parked on, when the source crosses
+            # it, and by how much it misses beam centre - the crossing time
+            # the plot marks and the fit should use, rather than the slot's
+            # mid-point. Absent when the controller's model could not be
+            # read at the start.
+            'drift_drive_alt': obs.get('drift_drive_alt', ''),
+            'drift_drive_az': obs.get('drift_drive_az', ''),
+            'drift_crossing_time': obs.get('drift_crossing_time', ''),
+            'drift_crossing_offset_deg': obs.get('drift_crossing_offset_deg', ''),
+            # Whether the mount was homed just before this recording, and
+            # what the counters read at the stops on the first approach -
+            # the count error accumulated since the previous homing, in
+            # drive degrees. Absent unless the entry asked for a homing.
+            'homed_first': bool(obs.get('home_first', False)),
+            'homing_count_error_alt_deg':
+                (obs.get('homing_counters') or {}).get('first', {}).get('alt', ''),
+            'homing_count_error_az_deg':
+                (obs.get('homing_counters') or {}).get('first', {}).get('az', ''),
         })
 
         python_exe = receiver_python_path()
@@ -2033,6 +2291,8 @@ def _record_finished_observation(obs: Optional[dict]):
             # The scan is laid out so the source crosses beam centre at the
             # mid-point; the plot marks it there.
             'transit_minutes': (duration / 2.0) if drift else None,
+            'drift_crossing_time': obs.get('drift_crossing_time', ''),
+            'drift_crossing_offset_deg': obs.get('drift_crossing_offset_deg', ''),
             'started_at': obs.get('started_at'),
             # The end that was *planned*, kept alongside the one that happened.
             # A drift plot's time axis is the observation's window, and it must
@@ -3875,10 +4135,14 @@ def api_observe_live():
         t_end = _epoch(obs.get('ended_at'))
     window = {'kind': kind, 't_start': t_start, 't_end': t_end}
     if kind == 'drift' and t_start is not None and t_end is not None and t_end > t_start:
-        # The scan is laid out so the source crosses beam centre at the
-        # mid-point - that is what drift_beam_time computes and what the mount
-        # was pointed at - so the plot marks it there.
-        window['t_transit'] = t_start + (t_end - t_start) / 2.0
+        # The moment the source crosses the parked beam. Computed at the start
+        # from the grid point the mount was actually parked on, when the
+        # controller's model was readable; otherwise the slot's mid-point,
+        # which is what the pointing was laid out for and is right to within
+        # the mount's quarter-degree rounding.
+        crossing = _epoch(obs.get('drift_crossing_time'))
+        window['t_transit'] = crossing if crossing is not None else t_start + (t_end - t_start) / 2.0
+        window['crossing_offset_deg'] = obs.get('drift_crossing_offset_deg') or None
 
     # Whether the calibration applies is a property of the tuning, not of the
     # data, so it is decided before the records branch. It used to be hardcoded
@@ -4055,6 +4319,9 @@ def _recording_details(path):
         'coord1_deg': f('coord1_deg'), 'coord2_deg': f('coord2_deg'),
         'drift_frame': str(a.get('drift_frame', '')),
         'drift_alt': f('drift_alt'), 'drift_az': f('drift_az'),
+        'drift_drive_alt': f('drift_drive_alt'), 'drift_drive_az': f('drift_drive_az'),
+        'drift_crossing_time': str(a.get('drift_crossing_time', '')),
+        'drift_crossing_offset_deg': f('drift_crossing_offset_deg'),
         'created': str(a.get('created', '')),
         'records': int(n_rec), 'channels': int(n_ch),
         'integration_s': (float(np.median(taus)) if len(taus) else f('nominal_integration_time')),
