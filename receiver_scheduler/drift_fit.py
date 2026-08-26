@@ -20,10 +20,18 @@ one carries the band-mean of the bandpass shape and belongs to the band it was
 fitted on - which is why a total-power fit is reported and drawn, never applied
 as the per-channel calibration.
 
-What is approximate about it is the model, not the fit: the beam is 5 degrees
-and the prediction is the compact cube through a Gaussian beam at ~200 sample
-points along the track, interpolated to every record. Good to the level of the
-continuum sources and the plane; not a substitute for a calibration field.
+What is approximate about it, learned on the first real run (Cas A, 2026-08-26):
+the "constant factor" is only constant for a flat sky. The band mean sums
+channels with different gains, and the H I line - which dominated the model
+curve on the plane - sits on channels 12% hotter than the continuum ones. So
+the fitted G is a band-weighted mixture, and a point source read on that scale
+came out 1.5-2x, depending on which channels anchored the gain. Anchoring the
+gain on the H I line alone (its slope against the model, 1.43e-5 counts/K)
+agreed with the per-channel calibration to 5%, which is what the 1.4 MHz LO
+shift predicts - so the H I cube through the beam is right, the point-source
+arithmetic is right by hand, and what is left is Cas A itself: 1.46x the model
+on that scale and a 29-minute crossing against 40 predicted. Both point at the
+beam, not the code. See CLAUDE.md.
 """
 
 import math
@@ -172,7 +180,10 @@ def fit_total_power(path, sim=None):
         },
         "approximate": ("total-power fit: two parameters (gain, T_sys) against the "
                         "simulator's predicted drift curve through the measured "
-                        "beam; the bandpass shape is absorbed into the gain, which "
-                        "is why no template is needed and why this gain is not the "
-                        "per-channel calibration"),
+                        "beam. The bandpass shape is absorbed into the gain - which "
+                        "is why no template is needed - but only as a band average: "
+                        "the H I line and the continuum sit on channels with "
+                        "different gain (12% apart on the 2026-08-26 Cas A scan), "
+                        "so the kelvin scale is a mixture where the model has line "
+                        "structure. Not the per-channel calibration."),
     }
