@@ -455,8 +455,11 @@
             }
             list.innerHTML = schedule.map((obs, i) => {
               const dead = neverRunsReason(obs);
+              const running = currentObs?.name === obs.name;
+              // Queued: enabled, still to come, and not the one running now.
+              const queued = obs.enabled && !dead && !running;
               return `
-                <div class="schedule-item ${obs.enabled ? '' : 'disabled'} ${dead ? 'wont-run' : ''} ${currentObs?.name === obs.name ? 'current-obs' : ''}">
+                <div class="schedule-item ${obs.enabled ? '' : 'disabled'} ${dead ? 'wont-run' : ''} ${running ? 'current-obs' : queued ? 'queued' : ''}">
                     <input autocomplete="off" type="checkbox" class="checkbox" ${obs.enabled ? 'checked' : ''} onchange="toggleEnabled(${i})">
                     <div class="schedule-info">
                         <div class="field"><div class="field-label">Name</div><div class="field-value">${obs.name}${dead ? '<span class="tag-wont-run">' + dead + '</span>' : ''}</div></div>
