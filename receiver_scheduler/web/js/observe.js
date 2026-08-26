@@ -320,6 +320,7 @@
                     + (x.channel_khz != null ? ' (' + f(x.channel_khz, 2) + ' kHz/ch)' : ''));
                 if (x.band_mhz) row('band', f(x.band_mhz[0], 2) + ' \u2013 ' + f(x.band_mhz[1], 2) + ' MHz');
                 if (x.fit_window_mhz) row('fit window', f(x.fit_window_mhz[0], 2) + ' \u2013 ' + f(x.fit_window_mhz[1], 2) + ' MHz');
+                if (x.velocity_frame) row('velocity frame', escapeHtml(x.velocity_frame.replace(/^velocity axis: /, '')));
                 row('H I line', f(x.h1_line_mhz, 3) + ' MHz: '
                     + (x.h1_in_band ? '<span style="color:#2ed573;">in band</span>' : '<span style="color:#ff4757;">not in band</span>')
                     + (x.h1_in_fit_window ? ', in fit window' : ', outside fit window')

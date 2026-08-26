@@ -4464,6 +4464,25 @@ def _observation_info(filename):
 H1_LINE_HZ = 1420405751.768
 
 
+def _velocity_frame_text(attrs, stamps):
+    """The velocity-frame sentence the spectrum plot carries, for the details
+    table: LSR with the offsets applied at the mid-time, or topocentric."""
+    import observation_plot
+    import rf_calibration
+    try:
+        if len(stamps):
+            mid = datetime.fromtimestamp(float(np.mean([stamps[0], stamps[-1]])),
+                                         tz=timezone.utc)
+        else:
+            mid = None
+        lsr = observation_plot.lsr_offset_km_s(attrs, mid) if mid is not None else None
+        cal, _, _ = rf_calibration.calibration_for(attrs)
+        clock = rf_calibration.trustworthy_velocity_shift(cal) if cal else None
+        return observation_plot.velocity_frame_note(lsr, clock, mid)
+    except Exception as exc:                              # noqa: BLE001
+        return "velocity frame unknown (%s)" % exc
+
+
 def _recording_details(path):
     """The facts about a recording that decide what can be done with it.
 
@@ -4482,6 +4501,7 @@ def _recording_details(path):
         n_rec, n_ch = hf[name].shape
         freq = hf['frequency_hz'][:]
         taus = hf['integration_times'][:] if 'integration_times' in hf else []
+        stamps = hf['timestamps'][:] if 'timestamps' in hf else []
         # The continuum product, where the file has one (fixed instrument).
         wide_freq = hf['frequency_hz_wide'][:] if 'frequency_hz_wide' in hf else None
         wide_units = str(a.get('spectra_wide_units', '')) if wide_freq is not None else ''
@@ -4523,6 +4543,8 @@ def _recording_details(path):
         'h1_line_mhz': H1_LINE_HZ / 1e6,
         'h1_in_band': bool(line_in_band), 'h1_in_fit_window': bool(line_in_window),
         'h1_offset_from_lo_mhz': ((H1_LINE_HZ - lo_hz) / 1e6) if lo_hz else None,
+        # Which frame the spectrum's velocity axis is drawn in, in words.
+        'velocity_frame': _velocity_frame_text(a, stamps),
         # Fixed-instrument recordings: both products, their bands, and
         # whether any samples were lost (issue #27).
         'products': (['h1', 'wide'] if wide_freq is not None else ['h1']),

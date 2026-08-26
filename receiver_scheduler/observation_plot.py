@@ -415,6 +415,11 @@ def plot_observation(path, output_path, name="", mode="spectrum",
     # fitted against a weak line is confidently wrong by several km/s, which is
     # worse than leaving it out.
     clock_shift = rf_calibration.trustworthy_velocity_shift(cal) if cal_ok else None
+    # Say which frame the velocity axis is in, in words, in the header - the
+    # axis label carries it too, but a reader asked "what frame is this?"
+    # should not have to find it there (2026-08-26).
+    if mode != "drift":
+        subtitle += "\n" + velocity_frame_note(lsr, clock_shift, mid)
 
     fig, ax = plt.subplots(figsize=figsize, dpi=dpi)
     secax = None
@@ -558,6 +563,25 @@ def _dms(header, prefix):
     seconds = float(header.get(prefix + "_sec", 0) or 0)
     sign = -1.0 if deg < 0 else 1.0
     return sign * (abs(deg) + minutes / 60.0 + seconds / 3600.0)
+
+
+def velocity_frame_note(lsr, clock_shift, mid=None):
+    """One sentence saying what frame a spectrum's velocity axis is in.
+
+    `lsr` is lsr_offset_km_s's result (or None), `clock_shift` the receiver
+    clock's velocity offset applied (or None), `mid` the observation's
+    mid-time the frame was evaluated at.
+    """
+    if not lsr:
+        return ("velocity axis: TOPOCENTRIC - the recording's direction is not "
+                "known, so no LSR correction could be applied")
+    dv, glon, glat = lsr
+    when = (" at the mid-time %s UT" % mid.strftime("%H:%M")) if mid is not None else ""
+    note = ("velocity axis: LSR frame - topocentric %+.2f km/s (Earth's orbit and "
+            "rotation, Sun's motion, towards l=%.1f b=%+.1f)" % (-dv, glon, glat))
+    if clock_shift is not None:
+        note += " and receiver clock %+.2f km/s" % -clock_shift
+    return note + " applied" + when + "; the file itself is recorded topocentric"
 
 
 def lsr_offset_km_s(header, when):
