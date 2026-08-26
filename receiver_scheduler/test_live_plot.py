@@ -494,13 +494,14 @@ def test_a_file_parameter_cannot_leave_the_observations_folder(client, tmp_path,
         assert r.status_code == 404, bad
 
 
-def test_a_drift_scan_is_fitted_on_its_beam_crossing_and_says_approximate(client, no_run):
+def test_a_drift_scan_gets_the_total_power_fit(client, no_run):
     """Last night's Cas A drift scan, if it is on this machine.
 
-    The beam sweeps the sky, so the fit uses only the records within one beam
-    crossing at the mid-point and is labelled approximate. It was recorded at
-    1419 MHz, where no template applies, so the honest outcome here is a
-    refusal for *that* reason - never for being a drift scan.
+    Recorded at 1419 MHz, where no bandpass template applies - and fitted
+    anyway, because a drift scan is total power against the simulator's
+    predicted curve: two parameters, the bandpass shape inside the gain. The
+    result is drawn and labelled approximate, and cannot be applied as the
+    per-channel calibration.
     """
     here = os.path.dirname(os.path.abspath(__file__))
     path = os.path.join(here, "data", "observations", "Cas A drift scan.h5")
@@ -510,17 +511,15 @@ def test_a_drift_scan_is_fitted_on_its_beam_crossing_and_says_approximate(client
                               "output_file": path}
     r = client.post("/api/observe/fit")
     d = r.get_json()
-    assert "drift" not in (d.get("error") or ""), "a drift scan is fitted, not refused"
-    if r.status_code == 200:
-        assert d["fit"]["approximate"], "a drift fit must say it is approximate"
-        assert d["fit"]["records_used"] < 73, "only the beam crossing, not the whole run"
+    assert r.status_code == 200, d
+    f = d["fit"]
+    assert f["kind"] == "total_power" and f["applicable"] is False
+    assert f["approximate"]
+    assert 100 < f["t_sys_k"] < 1000 and f["gain_counts_per_k"] > 0
+    assert f["correlation"] > 0.7, "Cas A and the plane should be plainly there"
+    assert client.get("/api/observe/fit/plot").status_code == 200
+    assert client.post("/api/observe/fit/apply").status_code == 400, \
+        "a total-power gain must never become the per-channel calibration"
 
 
-def test_the_beam_crossing_window_scales_with_declination():
-    """A source near the pole drifts slowly through the beam."""
-    import numpy as np
-    stamps = np.arange(0, 3600 * 5, 240.0)
-    t0, t1 = sched._beam_crossing_window(stamps, glon=111.735, glat=-2.130)   # Cas A, dec +58.8
-    assert (t1 - t0) / 60 == pytest.approx(39.8, abs=1.0)
-    t0, t1 = sched._beam_crossing_window(stamps, glon=184.56, glat=-5.78)     # Tau A, dec +22
-    assert (t1 - t0) / 60 == pytest.approx(22.2, abs=1.0)
+

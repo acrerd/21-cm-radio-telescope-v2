@@ -879,3 +879,49 @@ def plot_gain_check(calibration, output_path, figsize=(16.0, 9.0), dpi=120):
     fig.savefig(output_path, facecolor=fig.get_facecolor())
     plt.close(fig)
     return output_path
+
+
+def plot_drift_fit(fit, output_path, figsize=(16.0, 9.0), dpi=120):
+    """The recorded drift scan over the simulator's prediction, after the fit.
+
+    Two panels: the measured band power in kelvin (counts through the fitted
+    gain, T_sys subtracted) as a staircase - each record a level held over its
+    integration, as every plot here draws a measurement - with the predicted
+    curve through it; and the residual beneath, which is where the fit is
+    wrong in a way a correlation coefficient cannot show. Both against UTC.
+    """
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    import matplotlib.dates as mdates
+    from datetime import datetime, timezone
+
+    t = [datetime.fromtimestamp(s, tz=timezone.utc) for s in fit["stamps"]]
+    meas = np.asarray(fit["measured_k"], float)
+    model = np.asarray(fit["model_k"], float)
+    fig, (ax, axr) = plt.subplots(2, 1, figsize=figsize, dpi=dpi, sharex=True,
+                                  gridspec_kw={"height_ratios": [3, 1]})
+    ax.step(t, meas, where="mid", color="#ffa502", lw=1.6, label="recorded (fitted gain, T_sys subtracted)")
+    ax.plot(t, model, color="#00d4ff", lw=2.0, label="simulator: predicted drift curve")
+    ax.set_ylabel("band-mean antenna temperature (K)")
+    tr = fit.get("track", {})
+    ax.set_title(
+        "%s  -  total-power fit: gain %.3g counts/K, T_sys %.0f K, correlation %.3f, "
+        "residual %.2f K (%d records)\nparked at alt %.1f az %.1f;  track l %.1f -> %.1f, b %.1f -> %.1f"
+        % (fit.get("source_file", ""), fit["gain_counts_per_k"], fit["t_sys_k"],
+           fit["correlation"], fit["residual_rms_k"], fit["records_used"],
+           fit["pointing"]["alt_deg"], fit["pointing"]["az_deg"],
+           tr.get("glon", [0])[0], tr.get("glon", [0])[-1],
+           tr.get("glat", [0])[0], tr.get("glat", [0])[-1]))
+    ax.legend(loc="upper left")
+    ax.grid(alpha=0.3)
+    axr.step(t, meas - model, where="mid", color="#c8c8d8", lw=1.2)
+    axr.axhline(0, color="#555", lw=0.8)
+    axr.set_ylabel("residual (K)")
+    axr.set_xlabel("UTC")
+    axr.grid(alpha=0.3)
+    axr.xaxis.set_major_formatter(mdates.DateFormatter("%H:%M"))
+    fig.tight_layout()
+    fig.savefig(output_path, facecolor="white")
+    plt.close(fig)
+    return output_path

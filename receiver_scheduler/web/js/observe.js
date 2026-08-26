@@ -285,9 +285,13 @@
                           + '): gain ' + (pct >= 0 ? '+' : '') + pct.toFixed(1) + '%, T_sys '
                           + (d.compare.t_sys_delta_k >= 0 ? '+' : '') + d.compare.t_sys_delta_k.toFixed(1) + ' K';
                 }
+                if (f.applicable === false) {
+                    text += '\n(reported and drawn only: a total-power gain is not the '
+                          + 'per-channel calibration, so there is nothing to apply)';
+                }
                 info.style.whiteSpace = 'pre-wrap';
                 info.textContent = text;
-                apply.style.display = '';
+                apply.style.display = f.applicable === false ? 'none' : '';
                 host.innerHTML = '<span style="color:#888; font-size:12px;">Drawing&hellip;</span>';
                 fetch('/api/observe/fit/plot?' + Date.now()).then(r => {
                     if (!r.ok) return r.json().then(x => { throw new Error(x.error || ('HTTP ' + r.status)); });
