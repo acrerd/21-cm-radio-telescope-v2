@@ -119,12 +119,17 @@
         // Undated or untimed entries go last. Sorted in place, since the row
         // buttons address entries by index into this same array.
         function sortSchedule() {
-            const key = obs => {
+            // Two tiers: what can still run, in start order, then what has
+            // expired, also in start order - the past is history, not the
+            // first thing on the list. Expiry is judged now, so an entry
+            // moves down the moment its slot dies, without a reload.
+            const when = obs => {
                 if (!obs.start_time) return Infinity;
                 const t = new Date(`${obs.start_date || localDateStr(new Date())}T${obs.start_time}`).getTime();
                 return Number.isFinite(t) ? t : Infinity;
             };
-            schedule.sort((a, b) => key(a) - key(b));
+            const key = obs => (isExpired(obs) ? 1 : 0);
+            schedule.sort((a, b) => (key(a) - key(b)) || (when(a) - when(b)));
         }
 
         function getObsInterval(obs) {
