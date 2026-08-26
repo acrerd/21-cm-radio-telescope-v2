@@ -173,3 +173,21 @@ def test_the_state_names_are_all_present(idle):
         assert hasattr(sched, name), (
             "%s has gone. If the state moved, this test should move with it - "
             "not be deleted." % name)
+
+
+def test_a_due_booking_is_not_mistaken_for_its_running_namesake():
+    """The scheduler thread's "already running" test, by identity.
+
+    The simulator names entries by target, so a scan started now and one due
+    later share a name. Matched by name, the due one was taken to be already
+    running and never started.
+    """
+    running = {"name": "Drift scan l=184.6 b=-5.8",
+               "start_date": "2026-08-26", "start_time": "11:39"}
+    twin = {"name": "Drift scan l=184.6 b=-5.8",
+            "start_date": "2026-08-27", "start_time": "06:31"}
+    assert sched._same_booking(running, running) is True
+    assert sched._same_booking(running, twin) is False, "a different booking"
+    assert sched._same_booking(dict(running, start_date="", start_time=""), twin) is True, \
+        "a run that recorded no start can only be matched by name"
+    assert sched._same_booking(running, {"name": "Other"}) is False

@@ -2267,6 +2267,26 @@ def _record_start_failure(obs: dict, reason: str):
                     obs.get('name'), reason, count, MAX_START_FAILURES)
 
 
+def _same_booking(running, due, running_name=''):
+    """Is the observation running the very booking that is due?
+
+    By identity, not by name. Two bookings can share a name - the simulator
+    names entries by target, so a scan started now and one due later are both
+    "Drift scan l=184.6 b=-5.8" - and a name match here meant the second was
+    taken to be already running and never started. Where both sides carry a
+    start date and time they must agree; a run without them (Start Now from
+    the Observe tab records none) can only be matched by name.
+    """
+    name = (running or {}).get('name', running_name)
+    if name != due.get('name', ''):
+        return False
+    for key in ('start_date', 'start_time'):
+        a, b = (running or {}).get(key), due.get(key)
+        if a and b and a != b:
+            return False
+    return True
+
+
 def scheduler_thread():
     """Background thread that checks schedule and starts/stops observations."""
     global scheduler_running
@@ -2399,7 +2419,8 @@ def scheduler_thread():
                 is_running = horizon_state["running"] or bool(horizon_state["profile"])
 
             if due_obs:
-                if is_running and running_name == due_obs.get('name', ''):
+                if is_running and _same_booking(current_observation, due_obs,
+                                                running_name):
                     # Already running the correct observation
                     pass
                 elif is_running:
