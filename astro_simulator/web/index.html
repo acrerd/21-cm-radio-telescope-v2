@@ -95,8 +95,6 @@
       <!-- Like Schedule, shown only when the scheduler is at this origin: the
            measured horizon comes from its API. See main.js. -->
       <button id="btn-horizon" hidden title="the measured horizon, above alt 0">Horizon: measured</button>
-      <label>scan (min)</label>
-      <input id="p-sd" value="240">
       <!-- Shown only when this page is served by the scheduler, which is the
            only context where it can reach the schedule. See main.js. -->
       <button id="btn-schedule" hidden title="add this observation to the schedule">Schedule</button>
@@ -128,13 +126,18 @@
     <div class="pgroup"><label>b (°)</label><input id="p-b"></div>
     <div class="spacer"></div>
     <div class="pgroup"><label>beam (°)</label><input id="p-fw"></div>
-    <!-- The band is the fixed instrument's (scheduler issue #27): the H I
-         sub-band for a spectrum, the continuum band for a drift scan, both
-         from meta.json. The boxes stay in the DOM for the parameter plumbing
-         but are not offered. -->
-    <div class="pgroup" hidden><label>BW (MHz)</label><input id="p-bw"></div>
-    <div class="pgroup" hidden><label>f_c (MHz)</label><input id="p-fc"></div>
-    <div class="pgroup" hidden><label>channels</label><input id="p-nc"></div>
+    <div class="spacer"></div>
+    <!-- The band is the fixed instrument's (scheduler issue #27) and follows
+         the map type: the H I sub-band with the H I map, the continuum band
+         with the continuum map. It is shown, not set. What *is* set depends
+         on the mode: channels for a spectrum, scan length for a drift scan. -->
+    <div class="pgroup" id="grp-band" style="flex:2; min-width:200px;">
+      <label id="band-label">H I band</label>
+      <div id="band-text" style="font-size:13px; padding:6px 4px; text-align:center;
+                                  color:#444; white-space:nowrap;"></div>
+    </div>
+    <div class="pgroup" id="grp-nc"><label>channels</label><input id="p-nc"></div>
+    <div class="pgroup" id="grp-sd" hidden><label>scan (min)</label><input id="p-sd" value="240"></div>
     <div class="spacer"></div>
     <div class="pgroup"><label>T_sys (K)</label><input id="p-ts"></div>
     <div class="pgroup"><label>τ (s)</label><input id="p-ti"></div>

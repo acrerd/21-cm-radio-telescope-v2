@@ -77,9 +77,11 @@ async function boot() {
       l: document.getElementById("p-l"),
       b: document.getElementById("p-b"),
       fw: document.getElementById("p-fw"),
-      bw: document.getElementById("p-bw"),
-      fc: document.getElementById("p-fc"),
       nc: document.getElementById("p-nc"),
+      ncGroup: document.getElementById("grp-nc"),
+      sdGroup: document.getElementById("grp-sd"),
+      bandLabel: document.getElementById("band-label"),
+      bandText: document.getElementById("band-text"),
       ts: document.getElementById("p-ts"),
       ti: document.getElementById("p-ti"),
       sd: document.getElementById("p-sd"),
@@ -100,7 +102,6 @@ async function boot() {
       timeBox: document.getElementById("p-time"),
       nowBtn: document.getElementById("btn-now"),
     };
-    els.sd.disabled = true;                       // until continuum mode
     if (pinned && !isNaN(pinned)) els.timeBox.value = pinned.toISOString().slice(0, 16);
 
     status.textContent = "building map...";

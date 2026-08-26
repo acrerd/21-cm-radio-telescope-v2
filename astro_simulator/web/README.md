@@ -51,9 +51,11 @@ and the simulator draws what a scheduled observation will get: the
 **continuum band** (1415.7–1418.8 MHz, no hydrogen in it) with the map
 on continuum — so the drift scan it draws is the continuum product,
 line excluded. Both come from `data/meta.json`'s `instrument` block,
-written by `make_web_data.py --meta` from `receiver_scheduler/tuning.py`.
-The BW / f_c / channels boxes and the `bw`/`fc`/`nc` link parameters
-are gone with it.
+written by `make_web_data.py --meta` from `receiver_scheduler/tuning.py`,
+and the band in force is read out beside the beam box. The BW and f_c
+boxes and the `bw`/`fc`/`nc` link parameters are gone; what is offered
+depends on the map type — **channels** (pre-filled with the instrument's
+own count) for a spectrum, **scan (min)** for a drift scan.
 
 Known divergences from the desktop app, all deliberate:
 - compact data only — the minimum beam is the compact floor (~1.54°),
