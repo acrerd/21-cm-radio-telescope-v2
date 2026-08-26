@@ -82,12 +82,9 @@ export function setupUI(cfg) {
   function showBand() {
     const cont = state.mode === "cont";
     els.bandLabel.textContent = cont ? "continuum band" : "H I band";
-    const lo = (sky.fc - sky.bwHz / 2) / 1e6, hi = (sky.fc + sky.bwHz / 2) / 1e6;
-    const n = nativeChannels();
-    const chan = sky.bwHz / n;
+    // Centre and width, nothing else: the channel count has its own box.
     els.bandText.textContent =
-      `${lo.toFixed(1)}–${hi.toFixed(1)} MHz · ${n} ch × ${(chan / 1e3).toFixed(2)} kHz`
-      + (cont ? " · H I excluded" : "");
+      `${(sky.fc / 1e6).toFixed(3)} MHz, BW ${(sky.bwHz / 1e6).toFixed(1)} MHz`;
     els.ncGroup.hidden = cont;
     els.sdGroup.hidden = !cont;
   }
