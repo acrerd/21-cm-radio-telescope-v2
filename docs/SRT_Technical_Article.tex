@@ -1265,6 +1265,29 @@ Reduced $\chi^2$ & $\le 4$ & Residuals far above the scan uncertainties mean som
 
 The last two are checked again at \emph{apply} time, not just at fit time, and a saved model that predates those checks is rejected rather than pushed.
 
+\subsubsection{The model in force}
+\index{pointing model!in force}
+
+The four-term description above is the minimum the fit accepts. The model applied on 23 August 2026 carries six terms --- IE $-0.508$, IA $+1.685$, AN $-0.464$, AE $-0.902$, CA $-1.044$ and an azimuth scale of $0.000673$ --- fitted to 49 version-2 scans over three days. Its quality is judged by \emph{prediction}, not by the size of any term: a blind fit to two days' scans predicts the third day's to $0.027^\circ$, and the pointing parameters are not measurements of anything mechanical --- judge a model by leave-one-out prediction, never by whether an individual term looks plausible.
+
+\subsection{Drift scans on the drive grid}
+\label{sec:driftgrid}
+\index{drift scan!drive grid}\index{encoder quantum}
+
+The mount parks on a grid: the Due rounds every target to the nearest encoder pulse, $0.5^\circ$ in each axis, \emph{after} the controller has applied refraction and the model. So ``park where the source will be at $T$'' in fact parks up to $0.25^\circ$ per axis away --- a crossing up to a couple of minutes off $T$ plus a cross-drift miss of up to $0.35^\circ$, which is what the first comparisons of Cas~A, Crab and Sun drift scans against the planned $T$ were partly seeing.
+
+Since 26 August the scheduler reads the controller's terms from \texttt{/pointing}, reproduces \texttt{trueToDrive} in Python (\texttt{drift\_park.py}, validated in its tests against (drive, true) pairs the controller itself reported, to better than $0.006^\circ$), samples the source's track $\pm 4$ minutes about $T$, and parks on the grid point the track passes \emph{closest} to, sending \texttt{/direct} the true position of that point so the controller's own rounding lands on it exactly. The crossing time is then known in advance, to the second, and the miss is cross-drift only; both are written into the file (\texttt{drift\_crossing\_time}, \texttt{drift\_crossing\_offset\_deg}) and the live plot marks the recorded crossing rather than the slot's mid-point. After the slew the crossing is recomputed, model-free, from the true position the controller reports for the parked mount, and a drive position other than the planned one is logged --- so the file never depends on the Python copy agreeing with the firmware. One thing learned writing it: the controller's three-pass fixed-point inverse leaves $0.1^\circ$ of azimuth at altitude $85^\circ$, where the $\sec h$ term is clamped; the copy here iterates to convergence, because the \emph{forward} transform of what is sent must land on the grid point.
+
+The first run was the Sun, parked on drive $39.5^\circ/218.0^\circ$ with the crossing predicted for 15:14:54 local: a Gaussian fit to the 355 records peaked $+0.11 \pm 0.01$ minutes later --- 7 seconds, $0.028^\circ$ along the drift --- with a 5.10$^\circ$ FWHM on the sky. Two hours earlier, before the homing described next, the same scan had crossed 2.5 minutes late.
+
+\subsection{Homing first, and the encoder count check}
+\label{sec:homefirst}
+\index{homing!before an observation}\index{encoder counts, lost}
+
+The encoder counts are only as good as the last homing, and they can be lost. On 21 August 2026 the altitude axis lost counts during a horizon scan that moved it thousands of times: the sky level stayed rock steady while the \emph{ground} signal faded across an azimuth sweep, a fixed tower dropped from a 0.0065 excess to 0.0009, and an azimuth measured three hours earlier disagreed with itself. The dish was physically nowhere near where the controller believed, having driven past $90^\circ$ altitude, which the drives permit. Nothing in software reported it; the tell was the baseline staying constant while the antenna contribution collapsed, which separates a pointing fault from a signal-path fault, since a lossy cable would drag both.
+
+So a schedule entry may ask for a \emph{physical homing before the observation} (Section~\ref{sec:receiver}). It re-references both axes against their limit switches and, while it runs, the scheduler polls the controller's serial log --- a 30-line ring buffer, about fifteen seconds --- and reads the Due's last reported position before each ``limit reached''. The first approach's reading is the count error accumulated since the previous homing (the stop is the true zero); the re-approach's is the repeatability. Both go in the log, and the first-approach values into the recording. A homing that faults or times out aborts the observation. The belt-and-braces version, in which the Due prints its counter at the stall so nothing depends on the 15-second buffer, is issue \#24.
+
 \subsection{Wire format and application}
 \index{pointing model!wire format}
 
@@ -1496,6 +1519,14 @@ T_\text{A} \simeq \eta_\text{mb}\,T_\text{b}\,\frac{\Omega_\text{s}}{\Omega_\tex
 \end{equation}
 with $\eta_\text{mb} \approx 0.7$ a typical main-beam efficiency for a dish of this kind. Equation~\eqref{eq:dilution} is why the Sun is usable as a pointing calibrator: its $0.53^\circ$ disc is only $\Omega_\text{s}/\Omega_\text{b} \approx 0.008$ of the beam, but its 21\,cm brightness temperature is of order $10^5$\,K, so it still arrives as an antenna temperature of order $10^3$\,K --- far above everything else in the sky and unmistakable in a raster. That is the figure the receiver's on-Sun power-bar ceiling (\texttt{CAL\_BAR\_SUN\_K}) is set from.
 
+\subsubsection{The measured beam, and how well it is known}
+\label{sec:beamwidth}
+\index{beam!measured}\index{beam!degeneracy with gain}
+
+The $1.22\lambda/D = 4.9^\circ$ above is the aperture ideal. The value the code carries --- in \texttt{instrument.py}, shipped to both simulators and the scheduler so nothing can disagree about it --- is the measured $5.164^\circ$ from the Sun-scan rasters. On 26 August 2026 three independent measurements put the beam \emph{narrower} than that: a Sun drift scan gave $4.64^\circ$ along the drift; the Cassiopeia~A drift's amplitude and width wanted $\sim 3.8^\circ$; and scanning the beam as a free parameter in the gain fit of Section~\ref{sec:gainfit} minimised the residual near $4.0^\circ$ on two plane fields. The Sun rasters' points sit on the $0.5^\circ$ drive grid, which broadens a fitted raster width in a way a continuous drift does not, which may be the discrepancy.
+
+It matters because the beam is degenerate with the gain in exactly the damaging direction: a wider beam dilutes the model's H\,\textsc{i} peak and the fit compensates with gain, so moving the assumed beam from $4.0^\circ$ to $5.16^\circ$ shifts the fitted gain by 6\% and $T_\text{sys}$ by 22\,K, at a correlation of 0.995 either way. The assumed beam is thus the largest silent systematic in the temperature scale. Settling it needs a measurement independent of the H\,\textsc{i} model and the drive grid --- continuous drift scans of Cyg~A and Tau~A at their transit elevations and the Sun at several --- after which the gain is refit and the Cas~A excess re-examined. Until then the value stands and the uncertainty is stated.
+
 \subsection{System temperature}
 \index{system temperature}\index{noise figure}\index{low-noise amplifier}
 
@@ -1542,6 +1573,17 @@ As a worked example, at the default settings --- 2.4\,MHz of bandwidth over 4096
 \end{equation}
 Galactic H\,\textsc{i} at low latitude reaches tens of kelvin, so the line is visible in a single minute; a high-latitude profile of a few kelvin needs tens of minutes, and Equation~\eqref{eq:radiometer} is how that observation is planned.
 
+\subsubsection{Total-power instability}
+\label{sec:instability}
+\index{gain instability}\index{radiometer equation!practical form}\index{Dicke switching}
+
+Equation~\eqref{eq:radiometer} is the ideal. The practical form carries a second term for gain fluctuation,
+\begin{equation}
+\frac{\Delta T}{T_\text{sys}} = \sqrt{\frac{1}{\Delta\nu\,\tau} + \left(\frac{\Delta G}{G}\right)^2},
+\label{eq:instability}
+\end{equation}
+and it is why Dicke switching exists. It is normally absent from H\,\textsc{i} tooling because line work is either per-channel, where the thermal term dominates, or switched, where the common mode cancels. An unswitched \emph{band-integrated} drift scan is the one regime where neither escape applies: the thermal term divides by the number of channels while the gain term does not, so at $\Delta\nu\,\tau \approx 2\times10^8$ the common-mode wobble sits well above the band-mean thermal floor even while the per-channel scatter is still thermal. Measured on a settled run --- second differences of the band mean over 99 records, stationary across halves --- it is $\Delta G/G = 2.3\times10^{-4}$, or 0.079\,K per 60\,s record. Both simulators add it in quadrature to drift-scan samples only; in a spectrum it is a flat common-mode offset seven times under the per-channel thermal noise and removed exactly by any baseline handling, so modelling it there would add noise the science cannot see. It was first installed ten times too large, from first differences on a freshly started receiver, where a warm-up transient and real sky drift were read as instability; second differences on a settled run are the measurement. The practical corollary is an Allan minimum for band power of about 5\,s at this bandwidth --- beyond that, more samples beat longer samples --- and the upgrade path, if band-integrated continuum ever becomes a science goal, is Dicke-style switching of the existing noise diode.
+
 \subsection{Temperature calibration}
 \index{temperature calibration}
 
@@ -1573,7 +1615,29 @@ T_\text{A} = T_\text{sys}\left(\frac{P_\text{source}}{P_\text{off}} - 1\right).
 
 Because the diode fires ahead of the low-noise amplifier, the same measurement tracks gain drift through the observation, which the blank-sky method cannot. Interleaving on and off spectra is therefore the upgrade path for absolute work; the metadata needed to do it offline is already being written to every file.
 
-\subsection{Velocity frames --- and the LSR correction the system does not apply}
+\subsubsection{The automated gain fit against the survey}
+\label{sec:gainfit}
+\index{gain calibration}\index{bandpass template}\index{Lockman Hole}
+
+The calibration actually in force is fitted, on the RF calibration tab, in two measurements. First the \textbf{bandpass template}: the receiver points at empty sky --- the Lockman Hole, $l=150$, $b=+52$, the emptiest hydrogen field in the north, reached by the tab's \emph{Go to Lockman Hole} button --- and a polynomial is fitted to the mean spectrum with the H\,\textsc{i} line masked and bridged, giving the instrument's spectral shape. Since the fixed instrument there are two templates, one per product, the continuum one normalised over the H\,\textsc{i} band so that the single gain serves both; dividing a recording by its template flattens it without moving its level. The template is refused at any tuning it was not fitted at.
+
+Then the \textbf{gain and system temperature}: the receiver records a plane field, the recorded spectrum is bandpass-corrected and binned onto the survey model's grid, and a straight line
+\begin{equation}
+\text{counts}(\nu) = G\,\bigl(T_\text{sys} + T_\text{A}^\text{model}(\nu)\bigr)
+\end{equation}
+is fitted by least squares, $G$ the slope and $T_\text{sys}$ the intercept over slope. $T_\text{A}^\text{model}$ is the simulator's beam-weighted H\,\textsc{i} prediction for that direction and time, shifted into the recording's topocentric frame. A bound holds $T_\text{sys}$ above 50\,K during the fit, not after: a fit driven onto that bound (as one was, behind an orphaned receiver recording demo noise) is against the bound, not a measurement, and is not a calibration. The last such gain in force, on $l=72$, $b=0$ (26 August 2026), was $1.197\times10^{-5}$ counts\,K$^{-1}$ at $T_\text{sys} = 347$\,K, correlation 0.998.
+
+Two things are worth stating plainly about this scheme. It calibrates H\,\textsc{i} against an H\,\textsc{i} model, which is circular for line science and separates $G$ from $T_\text{sys}$ only through the line's contrast --- a field with a weak line gives a confident but wrong split. And it assumes the beam, which is the largest systematic in the scale (Section~\ref{sec:beamwidth}). The way past both --- a receiver-generated pseudorandom comb, radiated from a vertex antenna and recovered by cross-correlation, giving gain, passband and $T_\text{sys}$ per record with no sky model --- is recorded as issue \#26.
+
+\subsubsection{Fitting a drift scan: total power against the model curve}
+\label{sec:liveplot}
+\index{drift scan!total-power fit}\index{live plot}
+
+A drift scan is a total-power measurement, and it is fitted differently. As the parked beam drifts, the band-integrated power traces $G\,(T_\text{sys} + \bar{T}_\text{model}(t))$, with $\bar{T}_\text{model}(t)$ the simulator's band-mean sky --- the H\,\textsc{i} cube, the diffuse continuum and the bright sources, through the measured beam --- at the fixed alt/az as it drifts. Two parameters, $G$ and $T_\text{sys}$, follow by least squares. This needs \emph{no} bandpass template: the band-integrated power is the spectrum summed over channels, and the bandpass shape is the same constant factor on every record, absorbed into $G$. So a drift scan at any tuning can be compared with the simulator, where the per-channel fit rightly refuses a tuning it has no template for. The two gains are not the same number --- this one carries the band-mean of the bandpass shape --- so a total-power fit is drawn and reported, never adopted as the per-channel calibration. It is measured over the \textbf{continuum band only}, the H\,\textsc{i} line excluded, so that the ``constant factor'' really is constant: the line sits on channels with a different gain, and a fit that included it came out a band-weighted mixture.
+
+The same total power feeds a \textbf{live trace} while a drift scan or solar-flux track runs, read from the text sidecar so the HDF5 need not be reopened per record. Its time axis is the observation's own window, fixed from the start with the beam-crossing time marked, so the plot fills in towards a known crossing rather than autoscaling; a tracked spectrum gets no such trace, because its band power is meant to be flat and an autoscaled picture of it is a picture of the noise. The solar-flux monitor turns the band median into flux above the atmosphere via the antenna theorem and the measured beam, and read 112\,SFU on 25 August against RSTN's 88 (Learmonth) and 108 (San Vito) --- agreement within the reference network's own spread, and the first end-to-end check of bandpass, gain, $T_\text{sys}$, beam and the antenna theorem against an external standard.
+
+\subsection{Velocity frames --- what is recorded, and what the plots draw}
 \label{sec:lsr}
 \index{velocity frames}\index{LSR (Local Standard of Rest)}\index{barycentric correction}\index{radio velocity convention}\index{topocentric velocity}
 
@@ -1585,7 +1649,7 @@ v = c\,\frac{\nu_0 - \nu}{\nu_0}, \qquad \nu_0 = 1420.405752\ \text{MHz},
 
 equivalently $1\ \text{km\,s}^{-1} \equiv 4.74$\,kHz at this frequency.
 
-\textbf{That axis is topocentric.} No correction to the Local Standard of Rest is applied, and this is deliberate rather than an oversight: the correction depends on the pointing direction, and the receiver process does not know where the dish is looking. The consequence must be understood by anyone using the data, because it is not small:
+\textbf{The recorded axis is topocentric.} The file holds sky frequency exactly as observed, with no correction to the Local Standard of Rest, and that is deliberate: the receiver process does not know where the dish is looking, and a recording must re-reduce correctly whatever is later learned about the direction or the clock. \textbf{The plots, since 25 August 2026, draw an LSR axis} whenever the direction and epoch are known --- which is every scheduled observation --- and state in their header exactly what was applied, for example \emph{``LSR frame --- topocentric $+14.00$\,km\,s$^{-1}$ (Earth's orbit and rotation, Sun's motion, towards $l=76.2$, $b=+5.8$) and receiver clock $+1.09$\,km\,s$^{-1}$ applied at the mid-time 17:56\,UT; the file itself is recorded topocentric''}. The Observe tab's details table carries the same sentence. A recording with no known direction (a console recording) keeps a topocentric axis and says so. The consequence of the frames must still be understood by anyone reducing the files themselves, because the offset is not small:
 
 \begin{table}[H]
 \centering
@@ -1612,7 +1676,14 @@ The correction is applied in analysis. Writing $v_\text{topo}$ for the axis as r
 v_\text{LSR} = v_\text{topo} + v_\text{bary} + \mathbf{U}\cdot\hat{n},
 \end{equation}
 
-where $\mathbf{U}$ is the kinematic solar motion, which defines LSRK as 20.0\,km\,s$^{-1}$ towards RA $18^\text{h}$, Dec $+30^\circ$ (B1900). Every quantity needed is in the HDF5 file: the UTC timestamps, the target coordinates and the observer position. In practice $v_\text{bary}$ comes from \texttt{astropy}'s \texttt{SkyCoord.radial\_velocity\_correction("barycentric", \ldots)}, and the apex projection is a single dot product. The reference implementation is \texttt{frame\_offset()} in \texttt{astro\_simulator/astro\_simulator.py}, which converts between the LSR, barycentric and topocentric frames in exactly this way; anything written to correct the observed data should agree with it.
+where $\mathbf{U}$ is the kinematic solar motion, which defines LSRK as 20.0\,km\,s$^{-1}$ towards RA $18^\text{h}$, Dec $+30^\circ$ (B1900). Every quantity needed is in the HDF5 file: the UTC timestamps, the target coordinates and the observer position. In practice $v_\text{bary}$ comes from \texttt{astropy}'s \texttt{SkyCoord.radial\_velocity\_correction("barycentric", \ldots)}, and the apex projection is a single dot product. The reference implementation is \texttt{frame\_offset()} in \texttt{astro\_simulator/astro\_simulator.py}, which converts between the LSR, barycentric and topocentric frames in exactly this way; the plots use it in one direction (\texttt{lsr\_offset\_km\_s} in \texttt{observation\_plot.py}) and the gain fit of Section~\ref{sec:gainfit} in the other, shifting the LSR-frame survey model into the recording's topocentric frame before comparing.
+
+The conversion is evaluated at the observation's own mid-time and epoch, never ``now'': the barycentric term moves by 1.95\,km\,s$^{-1}$ in a week. It was validated at the galactic anticentre, where rotation contributes nothing along the line of sight: the $l=184$, $b=0$ observation of 25 August 2026 peaked at $-11.17$\,km\,s$^{-1}$ topocentric and lands at $+3.75$\,km\,s$^{-1}$ corrected, against HI4PI's $+3.97$ --- agreement to 0.22\,km\,s$^{-1}$, from 15\,km\,s$^{-1}$ before.
+
+\subsubsection{The receiver clock}
+\index{clock offset}\index{B210!clock}
+
+A third term is the B210's own reference oscillator. Its error scales the whole frequency axis, which across a few MHz is a pure velocity shift; the constrained gain fits (those whose H\,\textsc{i} line was strong enough to hold the shift, correlation $\ge 0.99$) give $-2.36 \pm 0.27$\,ppm over 18 hours --- $\pm 0.08$\,km\,s$^{-1}$, well inside the $\pm 2$\,ppm the part is specified at --- and that stored value is applied to the plotted axis as well. The scatter of the unconstrained fits, $-6.6$ to $+18.4$\,ppm, tracks line strength and not time: a shift with no line to hold it slides onto whatever is nearby and reports a confident number. Hence \texttt{trustworthy\_velocity\_shift}: the clock is stable, and only a fit that could measure it is believed.
 
 %==============================================================================
 \section{H1 receiver and observation scheduler}
@@ -1623,7 +1694,27 @@ where $\mathbf{U}$ is the kinematic solar motion, which defines LSRK as 20.0\,km
 \subsection{Receiver overview}
 \index{GNU Radio}\index{SDR}\index{Ettus B210}\index{RTL-SDR}
 
-\texttt{b210\_h1\_receiver.py} is a GNU~Radio spectrum analyser for 21\,cm observations, offering real-time FFT with configurable integration, a live spectrum and waterfall display (PyQtGraph), and continuous logging to HDF5.
+\texttt{b210\_h1\_receiver.py} is a GNU~Radio spectrum analyser for 21\,cm observations, offering real-time FFT with configurable integration, a live spectrum and waterfall display (PyQtGraph), and continuous logging to HDF5. It has two front ends on one flowgraph: the console window, for warm-up and bench work, and a \emph{headless} recorder\index{receiver!headless} (\texttt{-{}-headless}) that imports no Qt at all and is the only path a scheduled observation uses --- the observatory is worked over \texttt{ssh}, and an observation must not depend on a display.
+
+\subsubsection{The fixed instrument}
+\label{sec:instrument}
+\index{fixed instrument}\index{tuning}\index{two products}
+
+Since 26 August 2026 the receiver's tuning is \textbf{not a per-observation choice}. \texttt{tuning.fixed\_instrument()} defines it once --- LO 1418.905752\,MHz (the line minus 1.5\,MHz), 8\,Msps, 40\,dB of gain --- the scheduler hands it to every headless receiver as the \texttt{H1\_INSTRUMENT} environment variable, and the \texttt{receiver\_*} configuration keys override it deliberately, from the Configuration tab, which warns before saving a change: the bandpass templates and the gain calibration belong to the tuning, and every recording after a change is in counts until they are re-measured. From the one 8\,MHz stream the recorder computes \textbf{two products}:
+
+\begin{description}[style=nextline]
+    \item[H\,\textsc{i} sub-band] 1419.006--1422.306\,MHz --- topocentric $-400$ to $+300$\,km\,s$^{-1}$, the whole disc and every major high-velocity-cloud complex with the Earth's $\pm 50$\,km\,s$^{-1}$ absorbed --- cut from the stream by a frequency-translating decimator to 4\,Msps and a 1024-point FFT: 3.91\,kHz (0.82\,km\,s$^{-1}$) channels, 845 of them inside the band. The narrowest galactic H\,\textsc{i} is 2--3\,km\,s$^{-1}$ wide and the HI4PI model 1.29\,km\,s$^{-1}$, so this Nyquist-samples anything a $5^\circ$ beam can show.
+    \item[Continuum product] the whole 8\,MHz in 1024 channels of 7.8\,kHz, of which the \textbf{continuum band} 1415.706--1418.806\,MHz --- 3.1\,MHz with no hydrogen in it, on the good side of the SAW filter --- is what every continuum measurement uses. Continuum \emph{always} excludes the H\,\textsc{i} band.
+\end{description}
+
+The LO sits on the positive-velocity edge of the sub-band, where there is no emission beyond $+300$\,km\,s$^{-1}$, so its DC artefact can never touch a line and is outside the H\,\textsc{i} product altogether; it falls inside the continuum product and is masked there. The 8\,Msps came from a sample-rate ladder run on the observatory host that day: 4.5, 8 and 10\,Msps ran with no UHD overflows, 12\,Msps overflowed steadily and 16 and 20 lost most of the stream --- the host's FFT thread, not USB, being the limit (a single thread of the i7-4790 does 60\,Msps of 2048-point FFTs; the old flowgraph spent most of it elsewhere). M31, whose approaching half reaches $-600$\,km\,s$^{-1}$, lies past the 8\,Msps edge and remains a console-window case with free tuning.
+
+Two consequences for anyone reading counts. The per-bin power is normalised by the transform length, so the counts scale --- and the gain in counts per kelvin --- does not depend on how many channels the band is cut into (the first two-product flowgraph dropped that normalisation and halving the channel count silently halved every count). And a headless receiver that cannot open the radio it was asked for \textbf{fails}, rather than falling back to the demo noise source as the window does: on 26 August a gain calibration recorded three minutes of Gaussian noise behind an orphaned receiver that still held the B210, and the fit took it for the sky.
+
+\subsubsection{Overflows}
+\index{overflow}
+
+UHD reports a dropped block of samples by printing a bare \texttt{O}; nothing reaches the flowgraph. The recorder therefore routes its own standard streams through a pipe, counts UHD's ``$N$ overflows occurred'' messages, and writes the count per record into the file. At 16\,Msps a file looked perfect --- tidy 3\,s records --- while most of the samples had been dropped; the count is what tells that file from a good one, and the Observe tab flags any record with one.
 
 \begin{table}[H]
 \centering
@@ -1640,47 +1731,65 @@ Demo & --- & --- & Simulated data, no hardware \\
 \end{table}
 
 \begin{lstlisting}[language=bash,caption={Receiver command line}]
-python b210_h1_receiver.py --sdr b210 --gain 40 --sample-rate 2.4e6
-python b210_h1_receiver.py --sdr rtlsdr --gain 45
+python b210_h1_receiver.py --headless --sdr b210     # as the scheduler runs it: the fixed instrument
+python b210_h1_receiver.py --sdr b210 --gain 40 --sample-rate 2.4e6   # console window, free tuning
 python b210_h1_receiver.py --sdr demo
 \end{lstlisting}
 
-Two receiver instances conflict\index{file lock} over the default \texttt{h1\_data.h5} file lock, which is the usual cause of a receiver that exits immediately.
+In headless mode \texttt{-{}-sample-rate} and \texttt{-{}-gain} are noted and ignored: the fixed instrument decides, so a stale launcher cannot retune a scheduled observation. Two receiver instances contend for the one B210, which is the usual cause of a receiver that exits immediately --- and, since the fixed instrument, of one that refuses to start rather than silently recording demo noise.
+
+\subsection{Recordings: where they go and what they are called}
+\index{recordings!naming}\index{observations folder}
+
+Every recording lands in \texttt{data/observations/}, named \texttt{YYYYMMDD\_HHMMSS\_<mode>.h5} and nothing more. The name carries only what the file cannot: the time, which the name cannot be wrong about, and the mode --- \texttt{track} if the mount followed the sky, \texttt{drift} if it was parked and the sky moved through the beam (an alt/az entry is a drift scan), \texttt{manual} for a console recording, where nobody commanded the mount. Target, comment and calibrator state are attributes, not filename parts: a second copy in the name was free to disagree with the first after any rename. \texttt{data/} itself stays the general working folder for plots, horizon partials and calibration fits; it once held 248 files of which 11 were observations. A mid-run change of spectral geometry rolls to a fresh timestamped file with the reason recorded as \texttt{segment}/\texttt{segment\_reason} attributes.
 
 \subsection{HDF5 output format}
-\index{HDF5}\index{HDF5!datasets}\index{HDF5!attributes}
+\index{HDF5}\index{HDF5!datasets}\index{HDF5!attributes}\index{HDF5!SWMR}
 
 \begin{table}[H]
 \centering
-\caption{HDF5 dataset structure}
-\begin{tabular}{lll}
+\caption{HDF5 datasets. The H\,\textsc{i} product keeps the names every recording has always had; the continuum product is beside it.}
+\small
+\begin{tabular}{llp{6.6cm}}
 \toprule
 \textbf{Dataset} & \textbf{Shape} & \textbf{Description} \\
 \midrule
-\texttt{frequency\_hz} & $(N_\text{fft},)$ & Frequency axis in Hz \\
-\texttt{spectra\_linear} & $(N_\text{spectra}, N_\text{fft})$ & Power spectra, linear units \\
-\texttt{timestamps} & $(N_\text{spectra},)$ & Unix timestamps \\
-\texttt{integration\_times} & $(N_\text{spectra},)$ & Actual integration per spectrum \\
+\texttt{frequency\_hz} & $(N_\text{ch},)$ & H\,\textsc{i} product axis, sky frequency in Hz (845 channels) \\
+\texttt{spectra\_kelvin} \emph{or} \texttt{spectra\_linear} & $(N_\text{rec}, N_\text{ch})$ & H\,\textsc{i} product, one record per integration \\
+\texttt{bandpass\_correction}, \texttt{bandpass\_valid} & $(N_\text{ch},)$ & The per-channel correction applied at write time, and where the template speaks \\
+\texttt{frequency\_hz\_wide} & $(N_\text{wide},)$ & Continuum product axis (1024 channels over 8\,MHz) \\
+\texttt{spectra\_wide\_kelvin} \emph{or} \texttt{spectra\_wide\_linear} & $(N_\text{rec}, N_\text{wide})$ & Continuum product \\
+\texttt{bandpass\_correction\_wide}, \texttt{bandpass\_valid\_wide} & $(N_\text{wide},)$ & Its correction \\
+\texttt{timestamps} & $(N_\text{rec},)$ & Unix time at the end of each record \\
+\texttt{integration\_times} & $(N_\text{rec},)$ & Actual integration per record \\
+\texttt{overflows} & $(N_\text{rec},)$ & UHD overflows during the record (Section~\ref{sec:instrument}) \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-Spectra are stored in linear power, not dB, to preserve radiometric accuracy for calibration. Each file has a fixed frequency axis and FFT width; if the frequency, sample rate or FFT size changes during operation the current file is closed and a new timestamped segment started, so the datasets remain internally consistent.
+\textbf{The units are in the dataset name.}\index{units in the dataset name} \texttt{spectra\_kelvin} means the bandpass template and gain in force applied to this tuning and were applied at write time; \texttt{spectra\_linear} means they did not and the data are raw counts. An attribute (\texttt{spectra\_units}) says the same, but the name is the guard: asking for the wrong one raises \texttt{KeyError} rather than silently returning the other scale. Writing in kelvin is safe only because it is exactly reversible --- \texttt{bandpass\_correction}, \texttt{applied\_gain\_counts\_per\_k} and \texttt{applied\_t\_sys\_k} all travel in the file, and \texttt{observation\_plot.read\_observation} reverses it so the fitting code is always handed counts. That is not a wasted round trip: fitting a gain from spectra a gain has already been applied to is circular, and would return unity and a system temperature of zero while looking like a perfect calibration.
+
+\textbf{A recording can be read while it is being written.}\index{SWMR} Files are opened with \texttt{libver='latest'} and switched to HDF5's single-writer/multiple-reader mode once every dataset and attribute exists --- the constraints (nothing created afterwards, anything extended chunked) were already met by the layout. Readers go through \texttt{open\_readonly}: a plain open, and on the lock the SWMR open, seeing the file as of the writer's last flush, which is per record. This is what lets the Observe tab plot and fit a live recording, and a notebook open one with \texttt{h5py.File(path, 'r', swmr=True)}. A one-line-per-record text sidecar, \texttt{<name>.live.jsonl}, still feeds the live band-power plots: one number per record from a text file is cheaper to poll than reopening an HDF5, and immune to a torn read. It carries the H\,\textsc{i}-band median, the continuum-band median and the overflow count.
 
 \begin{table}[H]
 \centering
-\caption{HDF5 root attributes (always present)}
-\begin{tabular}{ll}
+\caption{HDF5 root attributes}
+\small
+\begin{tabular}{lp{9.4cm}}
 \toprule
 \textbf{Attribute} & \textbf{Description} \\
 \midrule
 \texttt{sdr\_type} & \texttt{b210}, \texttt{rtlsdr} or \texttt{demo} \\
-\texttt{center\_freq\_hz} & Centre frequency in Hz \\
-\texttt{sample\_rate\_hz} & Sample rate in Hz \\
-\texttt{fft\_size} & Number of FFT bins \\
-\texttt{gain\_db} & RF gain in dB \\
-\texttt{nominal\_integration\_time} & Target integration time in seconds \\
-\texttt{created} & ISO\,8601 UTC file creation timestamp \\
+\texttt{center\_freq\_hz}, \texttt{sample\_rate\_hz}, \texttt{gain\_db} & The LO, rate and gain --- the fixed instrument's \\
+\texttt{instrument} & The whole fixed-instrument document, as JSON \\
+\texttt{h1\_band\_hz}, \texttt{continuum\_band\_hz} & The two bands, \texttt{[low, high]} in Hz \\
+\texttt{dc\_artefact\_freq\_hz} & Where the LO's DC artefact lies (outside the H\,\textsc{i} product) \\
+\texttt{spectra\_units}, \texttt{spectra\_wide\_units} & \texttt{K} or \texttt{counts}, per product \\
+\texttt{applied\_gain\_counts\_per\_k}, \texttt{applied\_t\_sys\_k} & The calibration applied at write time, when in kelvin \\
+\texttt{bandpass\_template}, \texttt{bandpass\_template\_wide}, \texttt{gain\_calibration} & The calibration documents in force when the file was made, as JSON, whether or not they applied --- so a file is reducible away from the machine that made it \\
+\texttt{beam\_fwhm\_deg}, \texttt{effective\_area\_m2}, \texttt{site\_lat\_deg}, \texttt{site\_lon\_deg}, \texttt{site\_height\_m} & The measured beam and the surveyed site \\
+\texttt{nominal\_integration\_time}, \texttt{created} & Target integration; ISO\,8601 UTC creation time \\
+\texttt{segment}, \texttt{segment\_reason} & Present on a file that continues a rolled run \\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -1688,19 +1797,24 @@ Spectra are stored in linear power, not dB, to preserve radiometric accuracy for
 \begin{table}[H]
 \centering
 \caption{HDF5 observation metadata (added when launched by the scheduler)}
-\begin{tabular}{ll}
+\small
+\begin{tabular}{lp{8.6cm}}
 \toprule
 \textbf{Attribute} & \textbf{Description} \\
 \midrule
-\texttt{obs\_name} & Observation name from the schedule \\
-\texttt{coord\_system} & \texttt{altaz}, \texttt{radec}, \texttt{galactic}, \texttt{object}, \texttt{satellite} \\
+\texttt{obs\_name}, \texttt{comment} & Name, and the free text typed into the schedule form (absent when none) \\
+\texttt{observation\_mode} & \texttt{track}, \texttt{drift} or \texttt{manual} --- the word in the filename \\
+\texttt{coord\_system} & \texttt{altaz}, \texttt{radec}, \texttt{galactic}, \texttt{object}, \texttt{drift}, \texttt{satellite} \\
 \texttt{object\_name} & Solar-system object if applicable \\
-\texttt{coord1\_deg/min/sec} & Target coordinate 1 (Alt, RA or $l$) \\
-\texttt{coord2\_deg/min/sec} & Target coordinate 2 (Az, Dec or $b$) \\
+\texttt{coord1\_deg/min/sec}, \texttt{coord2\_deg/min/sec} & Target coordinates \\
 \texttt{calibrator} & 1 if the noise source was on \\
-\texttt{duration\_minutes} & Scheduled duration \\
-\texttt{start\_date}, \texttt{start\_time} & Scheduled start \\
+\texttt{duration\_minutes}, \texttt{start\_date}, \texttt{start\_time} & The scheduled slot \\
 \texttt{tle\_text} & TLE data for satellite observations \\
+\texttt{drift\_frame}, \texttt{drift\_window\_min}, \texttt{drift\_beam\_time} & Drift scans: the source frame, the half-window and the planned crossing time $T$ \\
+\texttt{drift\_alt}, \texttt{drift\_az} & The true alt/az the dish was sent to \\
+\texttt{drift\_drive\_alt}, \texttt{drift\_drive\_az} & The drive-grid point it parked on (Section~\ref{sec:driftgrid}) \\
+\texttt{drift\_crossing\_time}, \texttt{drift\_crossing\_offset\_deg} & When the source actually crosses the parked beam, to the second, and how far it misses centre \\
+\texttt{homed\_first}, \texttt{homing\_count\_error\_alt\_deg}, \texttt{homing\_count\_error\_az\_deg} & Whether the mount was homed just before the run, and what the counters read at the stops (Section~\ref{sec:homefirst}) \\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -1716,11 +1830,17 @@ Spectra are stored in linear power, not dB, to preserve radiometric accuracy for
 \index{scheduler!web interface}
 
 \begin{description}[style=nextline]
-    \item[Scheduler tab] Add, edit, clone and delete observations, with clash prevention, late-start recovery, preemption, a countdown to the next slot, audio notification, JSON import/export and a ``Clear Past'' action. Running observations are protected from editing.
-    \item[Configuration tab] Controller URL and fallbacks, observer location, slew and homing timeouts, Python and PlatformIO paths, receiver interpreter, data folder, minimum elevation, banner text and sound.
-    \item[Calibration tab] Single Sun scan, calibration day, model fit, plot and apply --- the workflow of Section~\ref{sec:calday}.
-    \item[Log tab] Last $N$ lines of \texttt{scheduler.log} with auto-refresh. The file captures DEBUG including periodic schedule dumps; the console is filtered to INFO.
+    \item[Scheduler tab] Add, edit, clone and delete observations, with clash prevention, late-start recovery, preemption, a countdown to the next slot, audio notification, JSON import/export and a ``Clear Past'' action. The list is always chronological with expired entries at the bottom; the running entry is green and queued ones amber, matched by identity (date, time and name) rather than by name, because the simulator names entries by target and two can share one. Every row has an eye button that opens the entry in the simulator with the clock pinned to its moment; every button on the page has hover text. Running observations are protected from editing. The form's validation is its own (the modal is \texttt{novalidate}): the browser's constraint validation used to block a save silently when the offending field was one hidden by the chosen coordinate system.
+    \item[Observe tab] Start an observation now --- a tracked spectrum, a drift scan or a solar-flux track --- and look at any recording: a dropdown of everything in \texttt{data/observations/} (date, filename, comment), the plot, a details table beside it (tuning, bands, whether the line was in band, calibration state, velocity frame, samples lost), \emph{Fit model} (Section~\ref{sec:gainfit}), \emph{Download file}, and \emph{View live recording}, which selects the file being written and re-plots it every 30\,s. Drift scans and solar tracks get a live band-power trace while they run (Section~\ref{sec:liveplot}); it comes down when the run ends and the recording's own plot takes its place.
+    \item[RF calibration tab] The bandpass template and the counts-per-kelvin gain (Section~\ref{sec:gainfit}), with suggested fields screened against the measured horizon, and a \emph{Go to Lockman Hole} button for the empty field the bandpass wants.
+    \item[Sun scan tab] Single Sun scan, calibration day, model fit, plot and apply --- the workflow of Section~\ref{sec:calday}.
+    \item[Horizon tab] The horizon scan of Section~\ref{sec:horizon}, and the archive of past scans with the one in force chosen explicitly.
+    \item[Simulator tab] The browser simulator of Section~\ref{sec:simulator}, embedded, with its \emph{Schedule} button.
+    \item[Configuration tab] Controller URL and fallbacks, observer location, slew and homing timeouts, Python and PlatformIO paths, receiver interpreter, data folder, minimum elevation, banner text and sound --- and the fixed instrument (Section~\ref{sec:instrument}), editable here only, with a warning.
+    \item[Log tab] Last $N$ lines of \texttt{scheduler.log} with auto-refresh. The file captures DEBUG including periodic schedule dumps; the console is filtered to INFO. The log is the operational record of what the telescope did: the test suite detaches the loggers so that no test ever writes into it.
 \end{description}
+
+The page is plain static files --- \texttt{web/index.html}, \texttt{web/app.css} and a dozen scripts under \texttt{web/js/} --- served per request, so a change to it needs a browser refresh, not a scheduler restart. Until 25 August 2026 it was a 3184-line Python string inside the scheduler module, and a Python string applies Python's escapes to the JavaScript before the browser sees it, which silently killed every handler on the page twice in two days. \texttt{test\_page\_structure.py} guards the arrangement: every element the scripts look up exists, every inline handler names something callable, every \texttt{fetch} path is a real route, nothing in a blessed baseline has been lost, and every script parses (a syntax slip in one classic script kills its handlers with no message at all).
 
 \subsubsection{Runtime behaviour}
 \index{radioconda}\index{process lock}\index{CORS}
@@ -1734,6 +1854,9 @@ Spectra are stored in linear power, not dB, to preserve radiometric accuracy for
     \item Failed or short-lived starts back off after \texttt{MAX\_START\_FAILURES} (3) attempts per schedule slot.
     \item CORS is restricted to the configured controller origins, so the scheduler buttons embedded in the controller's own page work only if \texttt{srt\_controller\_url} and its fallbacks match the origin that page is served from.
     \item \texttt{POST /api/config} accepts only keys already present in the default configuration, and observation filenames are constrained to stay inside the data folder.
+    \item \textbf{One owner of the SDR and the mount.} Six things can claim the hardware --- a scheduled observation, a Sun scan, a calibration day, a horizon scan, an RF calibration and the hand-started receiver window --- and one function, \texttt{hardware\_in\_use()}, is the list of them. Each start path used to carry its own list and they had drifted; \texttt{test\_exclusion.py} tests the matrix as a matrix, every pair both ways. A scheduled observation is deliberately outside the check, because it preempts rather than defers.
+    \item \textbf{A finished slot is not started again.} Stopping a booked run, or running it to the end, retires its slot: the thread skips it while the slot is still nominally due. Without this a stopped observation restarted within ten seconds, twice in one day.
+    \item A run started from the simulator with a live clock starts at once, through the same path as the Observe tab's Start Now, with its full duration, and is written to the schedule so the page shows it in its place. Booked, it waited for the next whole minute, then for the thread's 30\,s poll, and then had its duration trimmed to what was left of the slot.
 \end{itemize}
 
 \subsubsection{Coordinate systems and drift scans}
@@ -1746,19 +1869,36 @@ Spectra are stored in linear power, not dB, to preserve radiometric accuracy for
 \toprule
 \textbf{System} & \textbf{Description} & \textbf{Tracking} \\
 \midrule
-Alt/Az & Direct horizontal pointing & Fixed position \\
+Alt/Az & Direct horizontal pointing & Fixed position (a drift scan) \\
 RA/Dec (J2000) & Equatorial & Sidereal tracking \\
 Galactic ($l$, $b$) & Galactic & Sidereal tracking \\
 Solar-system object & Sun or Moon & Ephemeris tracking \\
+Famous targets & A picker: H\,\textsc{i} fields, Cyg~A, Cas~A, Tau~A, the Sun, the Moon & Track, or drift \\
 Satellite (TLE) & Two-line element set & SGP4, 1\,Hz updates \\
 Drift & Fixed alt/az, source transits the beam & None, by design \\
+Calibration day, horizon scan & Schedulable measurements & Own threads \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-A drift scan parks the dish at the alt/az a source will occupy at a chosen beam-crossing time $T$ and lets the sky carry the source through the beam. \texttt{GET /api/drift\_preview} returns the resulting pointing, reachability warnings against the horizon and the azimuth dead zone, and the source's next meridian transit --- the classical choice of $T$, because the source moves slowest in altitude there and the crossing is symmetric.
+A drift scan parks the dish at the alt/az a source will occupy at a chosen beam-crossing time $T$ and lets the sky carry the source through the beam. \texttt{GET /api/drift\_preview} returns the resulting pointing, reachability warnings against the horizon and the azimuth dead zone, and the source's next meridian transit --- the classical choice of $T$, because the source moves slowest in altitude there and the crossing is symmetric. The source may be a fixed RA/Dec or $l$/$b$, or a solar-system object (Sun, Moon, Jupiter) placed by the ephemeris at the crossing time; the Sun's galactic coordinates were once computed by hand for a pointing test and came out pointing at the galactic centre, which is why the object path exists. The entry is stored as $T$ and a half-window $W$; start $= T - W$ and duration $= 2W$ are derived, and because the pointing is recomputed for each day's $T$ an entry that repeats daily stays centred. Since 26 August the dish parks on the \emph{drive grid} point the source's track passes closest to, and the moment it does is recorded (Section~\ref{sec:driftgrid}).
+
+\subsubsection{The measured horizon, in the schedule}
+\index{respect local horizon}
+
+Every entry carries \emph{respect local horizon}, on by default. Almost everywhere the measured horizon of Section~\ref{sec:horizon} is \emph{advisory}: a profile can be months old, and stopping an observation on the word of a stale measurement is worse than knowingly taking a contaminated one, so the check reads the true alt/az from the controller after the slew and notes in the log if the beam is into the trees. Clearance asks for the full beamwidth above the measured floor, not the half --- foliage at 1420\,MHz is a $\sim$290\,K source, so a beam clipping it gains signal rather than losing it. Two exceptions act rather than warn. A \textbf{scheduled observation is trimmed} to the longest stretch with the target clear (the longest clear \emph{run}, not merely clear at both ends: a circumpolar target can pass behind a tower between), idempotently, so rewriting the stored entry is safe; one with no clear stretch is marked and skipped. And a \textbf{Sun raster is refused} if any of its points is obstructed, because a contaminated point puts a ramp under the single Gaussian and pulls the centroid. Satellites, calibration days and horizon scans are exempt --- the last necessarily, or it could never re-measure where the sky was last found blocked.
 
 For satellites, PyEphem propagates the TLE\index{PyEphem}\index{SGP4} with SGP4 \cite{sgp4} and the scheduler sends \texttt{/direct} updates every second. TLEs can be pasted, loaded from file, or fetched from CelesTrak\index{CelesTrak} by name or NORAD number.
+
+\subsubsection{The horizon scan}
+\label{sec:horizon}
+\index{horizon scan}\index{horizon!measured profile}\index{horizon!archive}
+
+The measured horizon the checks above rely on is mapped radiometrically, because trees, the roofline and the two dome towers are $\sim$290\,K sources at 1420\,MHz: lowering the beam through them is a step in total power of order the system temperature, not a marginal excess. Not everything is --- a metal-clad building has very low emissivity and reflects cold sky, showing only 2.3\% of sky where the treeline gives 59\% --- so the scan judges an azimuth blocked by \emph{significance} against radiometric noise, not by a fixed percentage, or it would call a building open sky, which is the unsafe direction.
+
+The pattern is a \textbf{strip scan} (\texttt{horizon\_strip\_scan}): sweep azimuth at constant altitude, climbing in $5^\circ$ steps from $5^\circ$. This moves the altitude axis once per strip, where an earlier per-azimuth cut scan moved it thousands of times and repeatedly into its lower limit --- and lost the encoder counts of Section~\ref{sec:homefirst}. Three defences come with it: the mount re-homes every second strip, bounding any count loss to one strip; a sky reference at a fixed high position is measured after each homing as a health check; and an azimuth found clear is dropped from every higher strip, because the horizon is monotonic, so the work peels away (70 azimuths to 24 to 7 to none) and the whole sky costs about 26 minutes. The clearing threshold is judged against three control azimuths that cleared on the first strip and are re-measured at every altitude, because clear sky low down is genuinely warmer through airmass and spillover, so neither the zenith nor the strip's own distribution is a fair reference.
+
+The horizon is seasonal --- trees leaf out and are cut back --- so scans are kept by date and never overwritten, under \texttt{horizon\_profiles/}, with one named as in force. A finished scan is archived but \emph{not} adopted automatically: choosing is a separate act, because a pruning genuinely opens the sky, so a fresh scan reads lower, and one taking effect on its own would drop the horizon with nobody having agreed the new measurement is the better record. The rule that decides whether a target is blocked samples the profile between its measured azimuths and takes the worse of the two, so the orange line drawn on the simulator is stepped, not smoothed --- it claims no precision the $5^\circ$ sampling does not have. With no profile measured, nothing is excluded: inventing a default would claim knowledge of a skyline nobody has surveyed. A horizon scan is itself a schedulable observation, so the twice-yearly measurement can be booked for a dark night.
 
 \subsubsection{Observation parameters}
 \index{observation parameters}
@@ -1770,35 +1910,37 @@ For satellites, PyEphem propagates the TLE\index{PyEphem}\index{SGP4} with SGP4 
 \toprule
 \textbf{Parameter} & \textbf{Description} \\
 \midrule
-Name & Descriptive name \\
-Start date/time & Local time; end time computed from the duration \\
+Name & Descriptive name (a famous target supplies its own) \\
+Comment & Free text, stored as the \texttt{comment} attribute of the recording \\
+Start date/time & Local time; end time computed from the duration. Derived from $T$ and $W$ for a drift scan \\
 Duration & Minutes \\
 Coordinates & Target position in one of the systems above \\
-Centre frequency & Default 1420.405\,MHz \\
-Bandwidth & Sample rate in MHz \\
-Gain & RF gain in dB \\
-Channels & FFT size \\
-Integration time & Seconds per averaged spectrum \\
+Instrument & Shown, not set: the fixed instrument of Section~\ref{sec:instrument} \\
+Integration time & Seconds per record \\
 SDR type & B210, RTL-SDR or demo \\
-Calibrator & Noise source on/off (\texttt{\_cal} filename suffix when on) \\
+Calibrator & Noise source on/off \\
+Respect local horizon & Advisory check against the measured horizon; trims a scheduled entry \\
+Home the mount first & Run the physical homing before pointing, and record the count error (Section~\ref{sec:homefirst}) \\
 When done & Stay, Home (run the physical homing sequence), or Stow (Alt\,90, Az\,180) \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-Note that ``Home'' here runs the Due's homing sequence --- a mechanical re-reference --- while ``Stow'' parks at the drive position of Section~\ref{sec:esp32}. They are different operations and take different lengths of time.
+The tuning fields --- centre frequency, bandwidth, gain, channels --- were removed from the form with the fixed instrument; entries saved before it, or posted by a stale tab, are stripped of them on save. Note that ``Home'' here runs the Due's homing sequence --- a mechanical re-reference --- while ``Stow'' parks at the drive position of Section~\ref{sec:esp32}. They are different operations and take different lengths of time.
 
 \subsubsection{Automated workflow}
 
 \begin{enumerate}
-    \item The user creates an observation in the web interface.
-    \item At the scheduled time the scheduler sends the pointing command to the controller.
-    \item It polls \texttt{/status} and waits for \texttt{is\_slewing} to clear, comparing drive against drive.
-    \item The calibrator noise source is set as configured.
+    \item The user creates an observation in the web interface (or the simulator's \emph{Schedule} button does).
+    \item At the scheduled time --- or at once, for a manual start --- the scheduler first stops a hand-started receiver window, and cancels and waits for any Sun scan, calibration day, horizon scan or RF calibration holding the SDR.
+    \item If the entry asks for it, the mount is homed, with the counters read at the stops (Section~\ref{sec:homefirst}); a homing that fails aborts the observation.
+    \item The pointing command goes to the controller. For a drift scan the parking point is chosen on the drive grid (Section~\ref{sec:driftgrid}).
+    \item It polls \texttt{/status} every 0.2\,s and waits for the reported drive position to match the drive target the controller holds, for two consecutive polls --- not merely for \texttt{is\_slewing} to clear, which is false for the first couple of seconds after any command. For a drift scan the true position the controller reports for the parked mount is then used to recompute the crossing time, model-free.
+    \item The measured horizon is consulted for the position actually reached; the calibrator noise source is set as configured.
     \item For satellites, a background thread begins 1\,Hz position updates.
-    \item The receiver is launched under the radioconda interpreter.
-    \item Data is written to HDF5 in linear power with the observation metadata attached.
-    \item On completion the calibrator is turned off and the ``when done'' action is carried out.
+    \item The headless receiver is launched under the radioconda interpreter with the fixed instrument and the observation metadata in its environment, and its output goes to a log file beside the recording.
+    \item Both products are written to HDF5, in kelvin when the calibration applies, with a live sidecar for the plots.
+    \item On completion the calibrator is turned off, the slot is retired, and the ``when done'' action is carried out.
 \end{enumerate}
 
 \subsubsection{Tests}
@@ -1807,10 +1949,12 @@ Note that ``Home'' here runs the Due's homing sequence --- a mechanical re-refer
 The scheduler and calibration code are covered by \texttt{pytest}:
 
 \begin{lstlisting}[language=bash]
-python -m pytest receiver_scheduler/test_scheduler.py receiver_scheduler/test_sun_scan.py
+cd receiver_scheduler && python -m pytest      # ~490 tests, ~15 s, radioconda's Python
 \end{lstlisting}
 
 One known false failure: \texttt{TestFlaskAPI::test\_post\_config} fails on the observatory host because it makes a real HTTP call, reaches the live controller, and the controller then syncs the observer location back over the value the test just set. It is a test-isolation problem, unrelated to whatever is being changed; check it against a clean tree before chasing it.
+
+Three rules the suite enforces on itself, each learned the hard way. \textbf{No test may open the radio}: one that stubbed the measurement but not the B210 session took the SDR from a running observation. \textbf{No test writes into the operational log or the last-observation pointer}: \texttt{conftest.py} detaches the file handlers and redirects the pointer for the session, after tests' demo azimuths were once read as measurements. And \textbf{no test leaks files into the data folders}: horizon partials and recordings go to temporary directories.
 
 %==============================================================================
 \section{Sky simulator}
@@ -1850,30 +1994,37 @@ The simulator computes the natural beam from the aperture exactly as in Section~
 \texttt{-{}-tsys} & 200 & K & System temperature \\
 \texttt{-{}-tint} & 60 & s & Integration time \\
 \texttt{-{}-npol} & 1 & --- & Polarisations summed \\
-\texttt{-{}-controller} & \texttt{http://192.168.50.120} & --- & Target for \emph{Realise} \\
+\texttt{-{}-controller} & \texttt{http://192.168.50.120} & --- & Target for \emph{Realise} (desktop only) \\
 \bottomrule
 \end{tabular}
 \end{table}
 
+The beam is not $1.22\lambda/D$ any more but the measured $5.164^\circ$ of Section~\ref{sec:beam}, shipped from \texttt{instrument.py} so the two simulators and the scheduler cannot disagree about it, and the drift-scan noise carries the measured total-power instability of Section~\ref{sec:instability} in quadrature with the radiometer floor --- without it the simulated drift scan was thirteen times quieter than the receiver.
+
 \subsection{Velocity frames}
 
-The velocity axis can be expressed in the LSR, barycentric or topocentric frame, and \texttt{frame\_offset()} is the reference implementation of the transformation discussed in Section~\ref{sec:lsr}. Since the receiver records topocentric velocities and the simulator works natively in LSR, comparing a real spectrum with a simulated one \emph{requires} the correction --- which makes the simulator a practical check that it has been applied correctly.
+The velocity axis can be expressed in the LSR, barycentric or topocentric frame, and \texttt{frame\_offset()} is the reference implementation of the transformation discussed in Section~\ref{sec:lsr}. The receiver records topocentric frequencies and the simulator works natively in LSR; the plots and the gain fit both go through this one function, so the simulator is a practical check that the correction has been applied correctly.
 
 \subsection{Modes}
 
 The lower panel is modal, following the sky map selected above it.
 
 \begin{description}[style=nextline]
-    \item[Spectrum] With the H\,\textsc{i} map, clicking anywhere on the sky gives the dish spectrum for that direction, with editable pointing, beam, $T_\text{sys}$, integration time, bandwidth, band centre, channel count and velocity frame. A target list covers the standard H\,\textsc{i} pointings plus the continuum sources and the Sun and Moon; site horizon and visibility overlays and a live RA/Dec and alt/az readout show whether the direction is reachable from Glasgow at all.
-    \item[Drift scan] With the continuum map, the panel shows band-averaged $T_\text{A}$ for the sky drifting through a beam parked on the current target --- centred on beam-centre transit, over the duration set in the scan box, with per-sample noise. This is the planning tool for the drift observations of Section~\ref{sec:receiver}.
+    \item[H\,\textsc{i} spectrum] With the H\,\textsc{i} map, clicking anywhere on the sky gives the dish spectrum for that direction, with editable pointing, beam, $T_\text{sys}$, integration time, channel count and velocity frame. A target list covers the standard H\,\textsc{i} pointings plus the continuum sources and the Sun and Moon; site horizon and visibility overlays and a live RA/Dec and alt/az readout show whether the direction is reachable from Glasgow at all.
+    \item[Continuum drift scan] With the continuum map, the panel shows band-averaged $T_\text{A}$ for the sky drifting through a beam parked on the current target --- centred on beam-centre transit, over the duration set in the scan box, drawn as stepped measurements with per-sample noise. This is the planning tool for the drift observations of Section~\ref{sec:receiver}.
 \end{description}
 
-\subsection{Realise}
-\index{Realise button}
+In the browser version the \textbf{band is not a parameter}: it follows the map type from the fixed instrument of Section~\ref{sec:instrument} --- the H\,\textsc{i} sub-band with the H\,\textsc{i} map, the continuum band (no hydrogen in it) with the continuum map --- so the drift scan it draws is the continuum product a scheduled one will record, and the spectrum has the same 845 channels. A read-out beside the beam box states the band in force; what is offered depends on the mode, channels for a spectrum and scan length for a drift scan. The instrument block comes from \texttt{data/meta.json}, regenerated by \texttt{make\_web\_data.py -{}-meta}, and a test checks the bundle against \texttt{tuning.py} so it cannot go stale silently.
 
-The \emph{Realise} button hands the simulation to the telescope\index{Realise button}. In spectrum mode it starts galactic tracking of the current pointing (\texttt{/track/galactic}); in drift mode it cancels tracking and parks the dish at the drift-scan start position (\texttt{/direct}), so that the target transits the beam centre half a scan later. It refuses if the resulting position is below the horizon.
+\subsection{The clock, the horizon and the map}
+\index{sky simulator!clock}\index{sky simulator!measured horizon}
 
-This is the only path by which the simulator commands hardware, and it uses the ordinary controller API described in Appendix~\ref{app:api} --- there is no private channel.
+The browser version has a pinnable clock: set a UTC time and the Sun, Moon, alt-0 loop, visibility loops and velocity frame are drawn for that moment; clear it and the sky runs live. The map greys out the sky below alt 0 and dims what lies behind the measured horizon of Section~\ref{sec:horizon} when the scheduler serves the page, draws that horizon as the stepped orange line that \emph{is} the rule deciding whether a target is blocked, marks the cardinal points on the alt-0 loop, and can be rotated by $90^\circ$ in longitude to put the galactic centre at the edge. A \emph{Reset} button returns every parameter to its default, keeping the pointing. Deep links carry the pointing in any frame (\texttt{l}/\texttt{b}, \texttt{ra}/\texttt{dec}, \texttt{alt}/\texttt{az}, \texttt{target}), the clock (\texttt{time}), the mode and the scan length, which is how the schedule's eye button opens an entry as it will be observed.
+
+\subsection{Schedule (formerly Realise)}
+\index{Schedule button}\index{Realise button|see{Schedule button}}
+
+The browser version's \emph{Schedule} button hands the simulation to the scheduler rather than to the telescope directly: it posts the pointing, the mode, the scan length and the clock to \texttt{/api/simulator/schedule}, which builds an ordinary schedule entry --- a tracked spectrum, or a drift scan starting at the clock and crossing beam centre half a scan in --- with the comment ``Observation set via the Simulator''. A pinned clock books it, at the next whole minute; a live clock \emph{starts it now}, with its full duration, since ``now'' is not a booking. The button exists only when the page is served by the scheduler, because that is the only origin from which the API can be reached; opened any other way it is not shown. The scheduler owns the astronomy of the drift case, so a page parameter never decides where the telescope points. The desktop simulator keeps its original \emph{Realise} button, which commands the controller directly.
 
 %==============================================================================
 \section{Installation}
@@ -2203,10 +2354,13 @@ This document describes a working instrument, not a finished one. Two categories
 \subsection{Known limitations}
 
 \begin{description}[style=nextline]
-    \item[No LSR correction in the recorded data] Section~\ref{sec:lsr}. The velocity axis is topocentric and the correction must be applied in analysis. This is the limitation most likely to produce a wrong scientific result if overlooked.
-    \item[No absolute temperature calibration] Section~\ref{sec:radiometry}. The noise diode is switched and recorded but not used for a gain solution, and the blank-sky calibration is a single point against an assumed $T_\text{sys}$.
-    \item[Pointing model fitted from the Sun alone] Only IE, IA, AN and AE are constrained; CA, NPAE and TF exist in the transform and the wire format but are left at zero. A source list spanning a wider range of elevations would constrain the rest.
-    \item[Simplified lunar ephemeris] 5--10 arcminutes, which is negligible against a $4.9^\circ$ beam but would not be for a larger dish.
+    \item[The recorded velocity axis is topocentric] Section~\ref{sec:lsr}. The plots draw an LSR axis and say so; anyone reducing the files directly must apply the correction themselves, and it is not small.
+    \item[The temperature scale rests on the H\,\textsc{i} model] Section~\ref{sec:gainfit}. The gain and $T_\text{sys}$ are fitted against the simulator's prediction of the line, which is circular for line science and separates the two only through the line's contrast. The noise diode is switched and recorded but not yet used; the way forward --- a receiver-generated pseudorandom comb radiated from a vertex antenna and recovered by cross-correlation, giving gain, passband and $T_\text{sys}$ per record --- is issue \#26.
+    \item[The beam width is the largest systematic in that scale] Section~\ref{sec:beamwidth}. Three independent measurements on 26 August 2026 put the beam near $4.0$--$4.6^\circ$ rather than the $5.164^\circ$ the model assumes, and the assumed value moves the fitted gain by 6\% and $T_\text{sys}$ by 22\,K. Unresolved; the test is continuous drift scans of Cyg~A, Tau~A and the Sun at several elevations.
+    \item[The Cas~A excess] A drift scan of Cassiopeia~A read 1.46 times the model with a 29-minute crossing against 40 predicted --- consistent with a narrower beam, and possibly with a point-source response that is higher at the zenith than the Sun scans see at $20$--$50^\circ$. Unresolved, and bound up with the item above.
+    \item[Pointing model fitted from the Sun alone] Six terms are now constrained (IE, IA, AN, AE, CA and an azimuth scale) from 49 scans over three days; NPAE and TF exist in the transform and the wire format but are left at zero. A source list spanning a wider range of elevations would constrain the rest.
+    \item[Moon tracking is geocentric] No parallax, up to $0.9^\circ$ low --- to be fixed before the Moon is used as a calibrator. The simplified lunar ephemeris adds 5--10 arcminutes.
+    \item[Encoder counts are only as good as the last homing] Section~\ref{sec:homefirst}. Counts were lost twice in a week; the homing-first option measures the loss, and the Due printing its counter at the stall (issue \#24) is the belt-and-braces version.
     \item[No inbound route to the controller from the site LAN] Section~\ref{sec:network}, deliberately.
 \end{description}
 
@@ -2739,11 +2893,19 @@ The Due firmware sits at the repository root\index{repository!layout}\index{Plat
 \midrule
 \texttt{README.md} & Receiver and scheduler documentation \\
 \texttt{requirements.txt} & Flask, PyEphem, pytest --- what radioconda does not already supply \\
-\texttt{b210\_h1\_receiver.py} & GNU~Radio spectrometer: FFT, integration, live display, HDF5 logging, the calibration control of Section~\ref{sec:radiometry} \\
-\texttt{h1\_web\_scheduler.py} & The Flask scheduler: schedule, observation execution, telescope control, firmware updates, and the calibration endpoints \\
+\texttt{b210\_h1\_receiver.py} & GNU~Radio spectrometer: the two-product headless recorder of Section~\ref{sec:instrument}, the console window, HDF5 logging, the live sidecar \\
+\texttt{tuning.py} & The fixed instrument --- LO, rate, gain, the two bands --- shared by scheduler and receiver so they cannot disagree; the older LO-offset planner for the console window \\
+\texttt{h1\_web\_scheduler.py} & The Flask scheduler: schedule, observation execution, telescope control, firmware updates, the calibration, horizon and observe endpoints \\
+\texttt{observation\_files.py} & Where recordings go and what they are called \\
+\texttt{observation\_plot.py} & Reading a recording (live or finished, either product, always as counts), the spectrum, drift and check plots, the LSR axis \\
+\texttt{bandpass.py} & The measured instrument response: one template per product, fitted on the Lockman Hole \\
+\texttt{rf\_calibration.py} & The gain and $T_\text{sys}$ fit against the simulator's sky, candidate fields, the clock-shift rule \\
+\texttt{drift\_fit.py} & The total-power fit of a drift scan against the predicted drift curve, continuum band only \\
+\texttt{drift\_park.py} & Parking a drift scan on the drive grid: the controller's transform in Python, validated against its own reports \\
 \texttt{sun\_scan.py} & Sun raster, Gaussian fit, pointing-model fit, quality gates and the controller wire format \\
-\texttt{test\_scheduler.py} & Scheduler tests \\
-\texttt{test\_sun\_scan.py} & Calibration tests, including the design matrix against numerically rotated coordinates \\
+\texttt{horizon\_scan.py} & The strip scan of Section~\ref{sec:horizon} \\
+\texttt{web/} & The operator page: \texttt{index.html}, \texttt{app.css}, twelve classic scripts under \texttt{js/} \\
+\texttt{test\_*.py}, \texttt{conftest.py} & The suite of Section~\ref{sec:testing}; the isolation fixtures \\
 \texttt{pointing\_data.json} & Accumulated Sun-scan records. The tracked set holds 23 scans from July and August 2026, all at \texttt{record\_version} 1 --- residuals against a model that is no longer knowable, so the fit skips them all (Section~\ref{sec:pointing}). They are kept for their measured beam widths, a median of $5.1^\circ$, which corroborate the $4.9^\circ$ of Section~\ref{sec:beam} \\
 \texttt{read\_h1\_data.ipynb} & Reads HDF5 files, plots waterfalls and mean spectra \\
 \texttt{start\_scheduler.sh} & Launches the scheduler, reusing an already-serving instance \\
@@ -2767,6 +2929,8 @@ The Due firmware sits at the repository root\index{repository!layout}\index{Plat
 \texttt{README.md} & Usage, data provenance and the compression scheme \\
 \texttt{requirements.txt} & NumPy, SciPy, matplotlib, astropy \\
 \texttt{astro\_simulator.py} & The interactive simulator of Section~\ref{sec:simulator} \\
+\texttt{instrument.py} & The one copy of the measured numbers: the surveyed site, the measured beam, the total-power instability, the main-beam efficiency \\
+\texttt{horizon\_store.py} & The horizon archive of Section~\ref{sec:horizon} --- on the simulator side because that is the layer everything may depend on \\
 \texttt{hi4pi\_compact.npz.xz} & The HI4PI cube reduced from 33\,GiB to $\sim$23\,MB \\
 \texttt{hi4pi\_compress.py} & Regenerates that file from the full survey \\
 \texttt{hi4pi\_data.py} & Download helper for the full cube from CDS \\
@@ -2799,7 +2963,8 @@ The browser port exists so the simulator can be used with no installation\index{
 \texttt{js/ephemeris.js} & Sun and Moon, plus the velocity-frame offsets \\
 \texttt{js/map.js} & Mollweide all-sky canvas with overlays and click-to-point \\
 \texttt{js/plot.js} & Spectrum and drift-scan panel \\
-\texttt{js/ui.js} & Parameter row, targets menu, frame cycling, \emph{Realise} \\
+\texttt{js/ui.js} & Parameter row, targets menu, frame cycling, the band per map type, \emph{Reset}, \emph{Schedule} \\
+\texttt{js/clock.js} & The pinnable clock \\
 \texttt{make\_web\_data.py} & Converts the compact datasets into the web bundles \\
 \texttt{data/hi4pi\_web.bin.gz} & H\,\textsc{i} bundle \\
 \texttt{data/continuum\_web.bin.gz} & Continuum bundle \\
@@ -3028,6 +3193,21 @@ Served on \texttt{http://127.0.0.1:5000}.
 \texttt{/api/fetch\_tle} & POST & Fetch a TLE from CelesTrak \\
 \texttt{/api/predict\_pass} & POST & Predict the next satellite pass \\
 \texttt{/api/drift\_preview} & GET & Drift-scan pointing and next transit \\
+\texttt{/api/instrument} & GET & The fixed instrument in force, and which keys are overridden \\
+\texttt{/api/observations} & GET & The recordings catalogue: date, name, comment, mode, units, whether still recording \\
+\texttt{/api/observe/info} & GET & A recording's facts for the details table (\texttt{?file=}) \\
+\texttt{/api/observe/plot} & GET & Plot a recording, live or finished \\
+\texttt{/api/observe/live} & GET & The live band-power trace of the running (or last) drift scan or solar track \\
+\texttt{/api/observe/fit} & POST & Fit gain and $T_\text{sys}$ to a recording (per-channel for a spectrum, total-power for a drift scan); a proposal \\
+\texttt{/api/observe/fit/plot}, \texttt{/api/observe/fit/apply} & GET, POST & Draw the proposal; adopt it as the calibration (refused for a total-power fit) \\
+\texttt{/api/observe/download} & GET & The recording as an attachment \\
+\texttt{/api/simulator/schedule} & POST & Book, or start now, an observation from the simulator's state \\
+\texttt{/api/rf/status}, \texttt{/api/rf/target} & GET & RF calibration state; candidate fields screened against the horizon \\
+\texttt{/api/rf/run}, \texttt{/api/rf/cancel} & POST & Run the bandpass or gain job; cancel it \\
+\texttt{/api/rf/goto} & POST & Track the Lockman Hole (or a given $l$, $b$) for a bandpass measurement \\
+\texttt{/api/rf/bandpass/plot}, \texttt{/api/rf/gain/plot} & GET & The check plots \\
+\texttt{/api/horizon/start}, \texttt{/api/horizon/stop}, \texttt{/api/horizon/status} & POST, POST, GET & The horizon scan \\
+\texttt{/api/horizon/profile}, \texttt{/api/horizon/profiles}, \texttt{/api/horizon/active} & GET, GET, POST & The profile in force; the archive; choose one \\
 \texttt{/api/log} & GET & Last $N$ lines of the scheduler log \\
 \texttt{/api/firmware/update} & POST & Run the OTA firmware upload \\
 \texttt{/api/firmware/status} & GET & Firmware upload progress \\

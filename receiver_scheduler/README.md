@@ -23,9 +23,12 @@ This receiver is designed for radio astronomy observations of neutral hydrogen (
 | `sun_scan.py` | Sun raster, pointing-model fit, calibration day |
 | `horizon_scan.py` | Radiometric horizon measurement, and the Stellarium landscape export |
 | `rf_calibration.py` | Counts to kelvin: gain, system temperature, and the fitted clock offset |
-| `bandpass.py` | The measured instrument response, and whether it applies to a given tuning |
-| `tuning.py` | Chooses the LO offset and sample rate so the line sits in the flat band |
-| `observation_plot.py` | Renders a finished observation, in kelvin and on an LSR velocity axis |
+| `bandpass.py` | The measured instrument response: one template per product, and whether it applies to a given tuning |
+| `tuning.py` | The **fixed instrument** — LO, sample rate, gain and the two product bands — shared by the receiver and the scheduler; the older LO-offset planner is kept for the console window |
+| `drift_park.py` | Parks a drift scan on the drive grid: the controller's transform in Python, validated against its own reports |
+| `drift_fit.py` | The total-power fit of a drift scan against the predicted drift curve (continuum band only) |
+| `observation_files.py` | Where recordings go and what they are called |
+| `observation_plot.py` | Reads a recording (live or finished, either product, always as counts) and renders it, in kelvin and on an LSR velocity axis |
 | `observatory.py` | Where the telescope is and how big its beam is — plumbing only; the numbers live in `astro_simulator/instrument.py` |
 | `page_sources.py` | Collects the page and every script it loads, for the tests that guard it |
 | `ad9361_filters.py` | Reads the B210's own decimation-filter chain and computes its response |
@@ -236,11 +239,11 @@ correct rather than broken.
 | **Scheduler** | Booking observations, and what is running now |
 | **Sun Scan** | Pointing calibration: a raster on the Sun, the model fit, and the calibration day that repeats it |
 | **Horizon** | Measuring the obstructed horizon, choosing which measured profile is in force, and exporting it to Stellarium |
-| **RF calibration** | The bandpass template and the counts-to-kelvin gain, with suggested targets screened against the measured horizon |
+| **RF calibration** | The two bandpass templates and the counts-to-kelvin gain, with suggested targets screened against the measured horizon, and a *Go to Lockman Hole* button |
 | **Camera** | The safety camera watching the dish |
-| **Simulator** | The sky simulator, served from the scheduler so the two share an origin |
-| **Observe** | Running an observation now — a tracked spectrum, a drift scan, or a solar flux track with a live plot |
-| **Configuration** | Site, controller, receiver and camera settings |
+| **Simulator** | The sky simulator, served from the scheduler so the two share an origin; its *Schedule* button books (or starts) an observation |
+| **Observe** | Running an observation now, and looking at any recording: a dropdown of everything recorded, the plot with a details table beside it, *Fit model*, *Download file*, *View live recording*, and a live band-power trace while a drift scan or solar track runs |
+| **Configuration** | Site, controller, receiver and camera settings — and the fixed instrument, editable here only, with a warning |
 | **Log** | The operational record |
 
 Only one of the Sun scan, calibration day, horizon scan, RF calibration, a
@@ -334,15 +337,24 @@ Displays the last N lines of `scheduler.log` with auto-refresh (5 second interva
 | Start Date/Time | When to start (local time, leave date empty for "today") |
 | Duration | How long to observe (minutes); end time is calculated automatically |
 | Coordinates | Target position — see Coordinate Systems below |
-| Center Frequency | Observation frequency in MHz (default: 1420.405) |
-| Bandwidth | Sample rate / observation bandwidth in MHz |
-| Gain | RF gain in dB |
-| Channels | FFT size (frequency resolution) |
-| Integration Time | Seconds per averaged spectrum |
+| Comment | Free text, stored as the recording's `comment` attribute |
+| Instrument | **Shown, not set** — the fixed instrument (see below) |
+| Integration Time | Seconds per record |
 | SDR Type | B210, RTL-SDR, or Demo |
 | Calibrator | Turn noise source on/off for this observation |
+| Respect local horizon | Advisory check against the measured horizon; trims a scheduled entry |
+| Home the mount first | Run the physical homing before pointing, recording the count error |
 | When Done | Action after observation ends: Stay, Go Home (Alt 0°, Az 0°), or Stow (Alt 90°, Az 180°) |
-| Filename | Output file (auto-generated if empty; `_cal` suffix added when calibrator is on) |
+| Filename | Output file (auto-generated if empty) |
+
+**The tuning is not an observation parameter.** Since issue #27 the B210 records
+with a **fixed instrument** — LO 1418.905752 MHz, 8 Msps, gain 40 dB — set once
+in `tuning.py`, overridable only on the Configuration tab (with a warning). The
+centre-frequency, bandwidth, gain and channels boxes are gone from the form.
+Every recording carries **two products**: an H I sub-band (1419.006–1422.306 MHz,
+845 channels of 3.91 kHz) under the usual dataset names, and a continuum product
+(the whole 8 MHz, 1024 channels) beside it. Continuum measurements always exclude
+the H I band.
 
 ### Coordinate Systems
 
@@ -458,11 +470,14 @@ an `altaz` entry is a **drift** scan, because the scheduler sends it to
 The convention lives in `observation_files.py`, shared by the scheduler and the
 receiver. `H1_OUTPUT_FILE` still overrides it outright.
 
-These can also be overridden via environment variables (used by the scheduler):
-- `H1_CENTER_FREQ`
-- `H1_FFT_SIZE`
+The scheduler passes the fixed instrument and the run's settings through the
+environment:
+- `H1_INSTRUMENT` — the fixed-instrument document (JSON); the receiver ignores
+  `--sample-rate` and `--gain` in headless mode so a stale launcher cannot retune
+  a scheduled run
 - `H1_INTEGRATION_TIME`
 - `H1_OUTPUT_FILE`
+- `H1_OBS_METADATA` — the observation metadata above
 
 ### Frequency Resolution
 
@@ -485,47 +500,61 @@ For hydrogen line observations, ~500 Hz resolution is typically sufficient.
 
 Data is saved to an HDF5 file with the following structure:
 
-Each HDF5 file has one fixed spectral geometry. If the center frequency, sample rate, or FFT size changes during a receiver session, the active file is closed and a new timestamped segment is created.
+A recording carries **two products** (issue #27) and can be **read while it is
+being written** (HDF5 SWMR): open it read-only, or in h5py with
+`h5py.File(path, 'r', swmr=True)`. A change of spectral geometry — which can now
+only happen on the console window, not a scheduled run — rolls to a new
+timestamped file.
 
 ### Datasets
 
 | Dataset | Shape | Type | Description |
 |---------|-------|------|-------------|
-| `frequency_hz` | (N_fft,) | float64 | Frequency axis in Hz |
-| `spectra_linear` | (N_spectra, N_fft) | float32 | Power spectra in linear units |
-| `timestamps` | (N_spectra,) | float64 | Unix timestamps |
-| `integration_times` | (N_spectra,) | float32 | Actual integration time per spectrum |
+| `frequency_hz` | (N_ch,) | float64 | H I sub-band axis in Hz (845 channels) |
+| `spectra_kelvin` **or** `spectra_linear` | (N_rec, N_ch) | float32 | H I product; kelvin when calibrated, else counts |
+| `frequency_hz_wide` | (N_wide,) | float64 | Continuum product axis (1024 channels over 8 MHz) |
+| `spectra_wide_kelvin` **or** `spectra_wide_linear` | (N_rec, N_wide) | float32 | Continuum product |
+| `bandpass_correction`, `bandpass_valid` (and `_wide`) | (N,) | float32 / bool | Per-channel correction applied at write time, and where the template speaks |
+| `timestamps` | (N_rec,) | float64 | Unix time at the end of each record |
+| `integration_times` | (N_rec,) | float32 | Actual integration per record |
+| `overflows` | (N_rec,) | int32 | UHD overflows during the record |
+
+**The units are in the dataset name.** `spectra_kelvin` means the bandpass template
+and gain in force applied to this tuning; `spectra_linear` means they did not and
+the data are raw counts. Asking for the wrong one raises `KeyError`. Writing kelvin
+is exactly reversible — the correction, gain and T_sys travel in the file — and
+`observation_plot.read_observation` reverses it so the fitting code always gets counts.
 
 ### Attributes
 
 | Attribute | Description |
 |-----------|-------------|
 | `sdr_type` | SDR used ('b210', 'rtlsdr', or 'demo') |
-| `center_freq_hz` | Center frequency in Hz |
-| `sample_rate_hz` | Sample rate in Hz |
-| `fft_size` | Number of FFT bins |
-| `gain_db` | RF gain setting |
-| `nominal_integration_time` | Target integration time |
-| `created` | ISO 8601 timestamp of file creation |
+| `center_freq_hz`, `sample_rate_hz`, `gain_db` | The fixed instrument's LO, rate and gain |
+| `instrument` | The whole fixed-instrument document (JSON) |
+| `h1_band_hz`, `continuum_band_hz` | The two bands, `[low, high]` in Hz |
+| `spectra_units`, `spectra_wide_units` | `K` or `counts`, per product |
+| `applied_gain_counts_per_k`, `applied_t_sys_k` | The calibration applied when in kelvin |
+| `bandpass_template`, `bandpass_template_wide`, `gain_calibration` | The calibration in force, as JSON, so a file is reducible off-machine |
+| `beam_fwhm_deg`, `effective_area_m2`, `site_lat_deg/lon_deg/height_m` | Measured beam and surveyed site |
+| `nominal_integration_time`, `created` | Target integration; ISO 8601 creation time |
 
 When launched from the scheduler, additional observation metadata is included:
 
 | Attribute | Description |
 |-----------|-------------|
-| `obs_name` | Observation name from the schedule |
-| `coord_system` | Coordinate system used (altaz, radec, galactic, drift, object) |
-| `object_name` | Solar system object name (sun, moon) if applicable |
-| `coord1_deg/min/sec` | Target coordinate 1 (Alt, RA, or Galactic longitude) |
-| `coord2_deg/min/sec` | Target coordinate 2 (Az, Dec, or Galactic latitude) |
-| `calibrator` | 1 if calibrator noise source was on, 0 otherwise |
-| `duration_minutes` | Scheduled observation duration |
-| `start_date` | Scheduled start date (YYYY-MM-DD) |
-| `start_time` | Scheduled start time (HH:MM) |
-| `drift_frame` | Drift scans: source frame (radec or galactic) |
-| `drift_window_min` | Drift scans: half-window W in minutes |
-| `drift_beam_time` | Drift scans: beam-crossing time T (local) |
-| `drift_alt` / `drift_az` | Drift scans: the fixed pointing commanded (degrees) |
-| `comment` | Free text typed into the schedule form; absent when none was given |
+| `obs_name`, `comment` | Name, and the free text from the schedule form |
+| `observation_mode` | `track`, `drift` or `manual` — the word in the filename |
+| `coord_system` | altaz, radec, galactic, object, drift, satellite |
+| `object_name` | Solar system object (sun, moon, jupiter) if applicable |
+| `coord1_deg/min/sec`, `coord2_deg/min/sec` | Target coordinates |
+| `calibrator` | 1 if the noise source was on |
+| `duration_minutes`, `start_date`, `start_time` | The scheduled slot |
+| `drift_frame`, `drift_window_min`, `drift_beam_time` | Drift scans: frame, half-window W, planned crossing T |
+| `drift_alt` / `drift_az` | The true alt/az commanded |
+| `drift_drive_alt` / `drift_drive_az` | The drive-grid point parked on |
+| `drift_crossing_time`, `drift_crossing_offset_deg` | When the source crosses the parked beam, and how far off centre |
+| `homed_first`, `homing_count_error_alt_deg`, `homing_count_error_az_deg` | Homing before the run, and the count error at the stops |
 
 ### Reading Data in Python
 

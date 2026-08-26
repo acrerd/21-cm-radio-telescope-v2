@@ -517,27 +517,35 @@ Every recording goes in `receiver_scheduler/data/observations/`, named for when 
 
 `track` and `drift` describe the mount rather than the box the entry was typed into: an alt/az observation is a **drift** scan, because the scheduler parks the dish and leaves tracking off.
 
+Since issue #27 the B210 records with a **fixed instrument** (LO 1418.905752 MHz,
+8 Msps, gain 40 dB, set in `tuning.py`) and every file carries **two products** —
+an H I sub-band and a whole-band continuum product — readable while it is still
+being written (HDF5 SWMR):
+
 ```
-20260825_192937_drift.h5
-├── frequency_hz            # Frequency axis (Hz)
-├── spectra_kelvin          # Antenna temperature (K)  -- when calibrated
-│   or spectra_linear       # Raw power (counts)       -- when not
-├── bandpass_correction     # Per-channel correction that was applied
-├── bandpass_valid          # False where the template had nothing to say
-├── timestamps              # Unix timestamps for each spectrum
-├── integration_times       # Actual integration time per spectrum
+20260826_184209_drift.h5
+├── frequency_hz            # H I sub-band axis (Hz), 845 channels
+├── spectra_kelvin          # H I product, antenna temperature (K)  -- when calibrated
+│   or spectra_linear       #             raw power (counts)         -- when not
+├── frequency_hz_wide       # Continuum product axis, 1024 ch over 8 MHz
+├── spectra_wide_kelvin     # Continuum product (K or counts)
+│   or spectra_wide_linear
+├── bandpass_correction(_wide), bandpass_valid(_wide)  # per-channel correction applied
+├── timestamps              # Unix time at the end of each record
+├── integration_times       # Actual integration per record
+├── overflows               # UHD overflows during the record
 └── attrs:
-    ├── spectra_units       # "K" or "counts"
+    ├── spectra_units, spectra_wide_units            # "K" or "counts", per product
+    ├── instrument, h1_band_hz, continuum_band_hz    # the fixed instrument and its bands
     ├── applied_gain_counts_per_k, applied_t_sys_k   # to reverse the calibration
-    ├── bandpass_template, gain_calibration          # the full calibration, as JSON
-    ├── sdr_type            # "b210", "rtlsdr", or "demo"
-    ├── center_freq_hz, sample_rate_hz, fft_size, gain_db
-    ├── created             # ISO timestamp
-    ├── obs_name            # Observation name (from scheduler)
-    ├── observation_mode    # "track", "drift" or "manual"
+    ├── bandpass_template(_wide), gain_calibration   # the full calibration, as JSON
+    ├── beam_fwhm_deg, effective_area_m2, site_*     # measured beam and surveyed site
+    ├── sdr_type, center_freq_hz, sample_rate_hz, gain_db, created
+    ├── obs_name, comment, observation_mode          # "track", "drift" or "manual"
     ├── coord_system        # altaz, radec, galactic, object, drift, or satellite
-    ├── calibrator          # 1 = noise source on, 0 = off
-    └── ...                 # Target coordinates, TLE, schedule times
+    ├── drift_crossing_time, drift_crossing_offset_deg   # drift scans: parked-beam crossing
+    ├── homed_first, homing_count_error_*_deg        # if homed first, the count error
+    └── ...                 # calibrator, target coordinates, TLE, schedule times
 ```
 
 **The dataset name is the units.** If the bandpass template and gain in force applied to the tuning, the spectra were converted at write time and live under `spectra_kelvin`; otherwise they are raw counts under `spectra_linear`. Asking for the wrong name raises `KeyError` instead of quietly handing back the other scale. Nothing is lost by calibrating on write — the correction, the gain and the system temperature all travel in the file, so the raw counts are one line away:
@@ -601,7 +609,9 @@ See `receiver_scheduler/read_h1_data.ipynb` for a complete analysis example.
 │   ├── horizon_scan.py     # Radiometric horizon measurement
 │   ├── rf_calibration.py   # Counts to kelvin: gain, T_sys, clock offset
 │   ├── bandpass.py         # The measured instrument response
-│   ├── tuning.py           # LO offset and sample rate for the line
+│   ├── tuning.py           # The fixed instrument: LO, rate, gain, the two bands
+│   ├── drift_park.py       # Park a drift scan on the drive grid
+│   ├── drift_fit.py        # Total-power fit of a drift scan vs the model curve
 │   ├── observation_plot.py # Finished observations, in kelvin and LSR velocity
 │   ├── observatory.py      # Site and beam - plumbing; numbers in instrument.py
 │   ├── observation_files.py # Where a recording goes and what it is called
