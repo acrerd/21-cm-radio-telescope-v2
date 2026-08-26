@@ -33,6 +33,9 @@ const FRAME_NAMES = { lsr: "LSR", ssb: "SSB", topo: "Topo" };
 
 export function setupUI(cfg) {
   const { sky, map, plot, els, site } = cfg;
+  // The site the page opened with, for Reset: the site boxes edit `site`
+  // in place, so the defaults have to be remembered here.
+  const siteDefault = { name: site.name, lat: site.lat, lon: site.lon };
   const state = { last: null, frame: "lsr", params: null, mode: "hi" };
   const messages = [];
 
@@ -291,7 +294,7 @@ export function setupUI(cfg) {
   els.mapBtn.addEventListener("click", () => {
     state.mode = state.mode === "hi" ? "cont" : "hi";
     const cont = state.mode === "cont";
-    els.mapBtn.textContent = cont ? "Map: 1420" : "Map: H I";
+    els.mapBtn.textContent = cont ? "Map: continuum" : "Map: H I";
     els.frameBtn.disabled = cont;
     boxes.sd.disabled = !cont;
     map.setMode(cont ? "cont" : "hi");
@@ -426,49 +429,44 @@ export function setupUI(cfg) {
     menu.style.display = menu.style.display === "none" ? "block" : "none";
   });
 
-  // home / save
   els.rotateBtn.addEventListener("click", () => {
     map.rotate(90);
     map.draw();
     message(`Map centred on l=${map.l0}°` + (map.l0 === 180 ? " (galactic centre at the edge)" : ""));
   });
 
+  // Reset: every parameter back to its default - the instrument boxes, the
+  // site, the clock (live), map mode (H I), frame (LSR), rotation and the
+  // horizon overlay. The pointing is kept: it is the thing being looked at,
+  // not a setting, and it is re-rendered with the defaults. Replaced "Home",
+  // which reset the boxes only, and the Save button (2026-08-26).
   els.homeBtn.addEventListener("click", () => {
+    const keep = state.last ? { glon: state.last.glon, glat: state.last.glat } : null;
+    // Instrument boxes and the frequency shown.
+    fcShown = (F_HI / 1e6).toFixed(2);
     initBoxes();
+    if (keep) { boxes.l.value = keep.glon.toFixed(3); boxes.b.value = keep.glat.toFixed(3); }
+    // Site, as the page was opened with (the site boxes edit `site` in
+    // place, so the defaults are the snapshot taken at setup).
+    els.siteName.value = siteDefault.name;
+    els.siteLat.value = `${siteDefault.lat}`;
+    els.siteLon.value = `${siteDefault.lon}`;
+    onSiteChange();
+    // Clock: live.
+    els.timeBox.value = "";
+    setFixedTime(null);
+    // Frame and map mode.
     state.frame = "lsr";
     els.frameBtn.textContent = "Frame: LSR";
-    fcShown = (F_HI / 1e6).toFixed(2);
-    message("Parameters reset to startup values.");
+    if (state.mode === "cont") els.mapBtn.click();
+    // Rotation and the horizon overlay.
+    if (map.l0 !== 0) map.rotate(-map.l0);
+    if (map.horizon && els.horizonBtn && !map.showHorizon) els.horizonBtn.click();
+    onEpochChange();
+    message("Reset: all parameters at their defaults, clock live.");
     const p = applyParams();
-    if (p && state.last) point(p.glon, p.glat);
-  });
-
-  function save() {
-    if (!state.last) return;
-    const { glon, glat, v, t } = state.last;
-    const base = `spectrum_l${glon.toFixed(2).padStart(7, "0")}` +
-                 `_b${(glat >= 0 ? "+" : "") + glat.toFixed(2)}`;
-    const jd = jdFromDate(simDate());
-    const dv = frameOffset(glon, glat, state.frame, jd, site);
-    let txt = `# v_${state.frame}_km/s   T_A_K\n`;
-    for (let i = 0; i < v.length; i++)
-      txt += `${((v[i] + dv) / 1e3).toExponential(6)}   ` +
-             `${t[i].toExponential(6)}\n`;
-    const a = document.createElement("a");
-    a.href = URL.createObjectURL(new Blob([txt], { type: "text/plain" }));
-    a.download = base + ".txt";
-    a.click();
-    plot.canvas.toBlob((blob) => {
-      const b = document.createElement("a");
-      b.href = URL.createObjectURL(blob);
-      b.download = base + ".png";
-      b.click();
-    });
-    message(`Saved ${base}.png and ${base}.txt (${state.frame} frame)`);
-  }
-  els.saveBtn.addEventListener("click", save);
-  document.addEventListener("keydown", (e) => {
-    if (e.key === "s" && state.last) save();
+    if (p && keep) point(p.glon, p.glat);
+    map.draw();
   });
 
   // ---- realise: hand the simulated observation to the telescope -----

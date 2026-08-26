@@ -393,6 +393,31 @@ export class SkyMap {
     }
     this.path(hL, hB, { color: "#55585b", lw: 3.2, dash: [8, 4] });
     this.path(hL, hB, { color: "#ffffff", lw: 1.6, dash: [8, 4] });
+    // Cardinal points on the horizon, so the reader can tell which way
+    // round the sky is sitting - the alt 0 loop alone does not say where
+    // north is, and the galactic frame gives no hint. A dot on the line
+    // and the letter just outside it, away from the zenith.
+    ctx.save();
+    ctx.font = "bold 13px sans-serif";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    const zenG = altAzToGal(90, 0, this.site.lat, this.site.lon, jd);
+    const zenP = this.toCanvas(zenG.l, zenG.b);
+    for (const [az, letter] of [[0, "N"], [90, "E"], [180, "S"], [270, "W"]]) {
+      const g = altAzToGal(0, az, this.site.lat, this.site.lon, jd);
+      const p = this.toCanvas(g.l, g.b);
+      ctx.beginPath();
+      ctx.fillStyle = "#ffffff";
+      ctx.strokeStyle = "#333639";
+      ctx.arc(p.x, p.y, 3, 0, 2 * Math.PI);
+      ctx.fill(); ctx.stroke();
+      // Outward = away from the zenith on the canvas; 11 px is clear of
+      // the dot without drifting off the line it belongs to.
+      const dx = p.x - zenP.x, dy = p.y - zenP.y;
+      const norm = Math.hypot(dx, dy) || 1;
+      this._label(letter, p.x + 11 * dx / norm, p.y + 11 * dy / norm);
+    }
+    ctx.restore();
     const zen = altAzToGal(90, 0, this.site.lat, this.site.lon, jd);
     const zp = this.toCanvas(zen.l, zen.b);
     ctx.save();

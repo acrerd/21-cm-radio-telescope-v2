@@ -29,7 +29,7 @@
   #btn-map { background: #f4ede8; }
   #btn-frame { background: #f0ede4; }
   #btn-horizon { background: #fbe9d5; }
-  #btn-home, #btn-save { background: #f0f0f2; }
+  #btn-home { background: #f0f0f2; }
   /* The button that reaches the scheduler, coloured like the desktop's Realise. */
   #btn-schedule { background: #e2ecf8; }
   #btn-schedule:hover:enabled { background: #cfe0f2; }
@@ -90,7 +90,7 @@
   <div class="row">
     <div id="left-col">
       <button id="btn-targets">Targets ▾</button>
-      <button id="btn-map">Map: H I</button>
+      <button id="btn-map" title="toggle the sky map between H I column density and the 1420 MHz continuum; the lower panel follows (spectrum, or drift scan)">Map: H I</button>
       <button id="btn-frame">Frame: LSR</button>
       <!-- Like Schedule, shown only when the scheduler is at this origin: the
            measured horizon comes from its API. See main.js. -->
@@ -101,8 +101,7 @@
            only context where it can reach the schedule. See main.js. -->
       <button id="btn-schedule" hidden title="add this observation to the schedule">Schedule</button>
       <button id="btn-rotate" title="turn the map 90° in longitude; twice puts the galactic centre at the edge">Rotate 90°</button>
-      <button id="btn-home" title="reset parameters">Home</button>
-      <button id="btn-save" title="save spectrum (s)">Save</button>
+      <button id="btn-home" title="put every parameter back to its default: instrument, site, clock (live), map mode, frame, rotation and horizon; keeps the current pointing">Reset</button>
       <label>site name</label>
       <input id="p-site" value="Glasgow">
       <label>site lat (°N)</label>
