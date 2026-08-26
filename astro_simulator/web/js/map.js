@@ -474,6 +474,7 @@ export class SkyMap {
     const lx = W - 240, ly = H - 20 * legend.length - 6;
     ctx.fillStyle = "rgba(251,252,253,0.92)";
     ctx.fillRect(lx - 8, ly - 16, 248, 20 * legend.length + 14);
+    ctx.fillStyle = "#333639";                   // the entries' text colour
     legend.forEach((e, i) => {
       const y = ly + 20 * i;
       ctx.strokeStyle = e.color === "#ffffff" ? "#55585b" : e.color;
