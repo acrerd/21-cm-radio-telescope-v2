@@ -165,7 +165,7 @@
                     // screen until the tab was switched away and back.
                     obvLiveStart();
                 } else {
-                    setObserveStatus('Failed: ' + (d.error || 'unknown') + ' - see the Log tab.', '#ff4757');
+                    setObserveStatus('Failed: ' + (d.error || 'unknown'), '#ff4757');
                 }
             }).catch(e => setObserveStatus('Failed: ' + e, '#ff4757'))
               .finally(() => { btn.disabled = false; });

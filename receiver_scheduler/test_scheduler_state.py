@@ -191,3 +191,23 @@ def test_a_due_booking_is_not_mistaken_for_its_running_namesake():
     assert sched._same_booking(dict(running, start_date="", start_time=""), twin) is True, \
         "a run that recorded no start can only be matched by name"
     assert sched._same_booking(running, {"name": "Other"}) is False
+
+
+def test_a_manual_start_while_recording_is_refused_and_says_what_is_in_the_way(idle, running_proc):
+    """Refused, not queued, not preempting - and the message names the run."""
+    with patch.object(sched, "SRT_CONTROLLER_URL", None), \
+         patch("subprocess.Popen", return_value=running_proc), \
+         patch.object(sched, "generate_filename", return_value="/tmp/state_test.h5"):
+        assert sched.start_observation(dict(OBS)) is True
+    try:
+        sched.app.config["TESTING"] = True
+        with sched.app.test_client() as client:
+            r = client.post("/api/start", json=dict(OBS, name="Second"))
+        assert r.status_code == 409
+        assert "State test" in r.get_json()["error"]
+        assert "already recording" in r.get_json()["error"]
+        assert_running("State test", "the first run must be untouched")
+    finally:
+        running_proc.poll.return_value = 0
+        with patch.object(sched, "SRT_CONTROLLER_URL", None):
+            sched.stop_observation()

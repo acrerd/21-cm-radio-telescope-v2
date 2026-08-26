@@ -4561,9 +4561,30 @@ def api_receiver_start():
 
 @app.route('/api/start', methods=['POST'])
 def api_start():
+    """A manual start: Start Now on the Observe tab, or Run Now on a row.
+
+    Refused, not queued and not preempting, if an observation is already
+    recording - preemption is the scheduler thread's business, for a booking
+    whose slot has come due. The refusal says which run is in the way and
+    when it ends; the old message conflated this with a start that failed
+    and sent the operator to a log that had nothing in it.
+    """
     obs = request.json
+    with process_lock:
+        busy = (current_process is not None and current_process.poll() is None)
+        running = dict(current_observation) if busy and current_observation else None
+        starting = observation_starting
+    if busy or starting:
+        name = (running or {}).get('name') or starting_observation_name or 'an observation'
+        ends = (running or {}).get('ends_at', '')
+        ends = ' until ' + ends[11:16] + ' local' if len(ends) >= 16 else ''
+        return jsonify({'success': False,
+                        'error': "'%s' is already recording%s. Stop it first, or book "
+                                 "this in the schedule - a booking preempts at its slot."
+                                 % (name, ends)}), 409
     success = start_observation(obs)
-    return jsonify({'success': success, 'error': None if success else 'Failed to start or already running'})
+    return jsonify({'success': success,
+                    'error': None if success else 'Failed to start - see the Log tab'})
 
 
 @app.route('/api/stop', methods=['POST'])
