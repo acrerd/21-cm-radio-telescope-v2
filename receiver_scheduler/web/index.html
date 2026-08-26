@@ -610,7 +610,13 @@
                     </span>
                 </div>
                 <div id="obvFitInfo" class="mono" style="color:#888; font-size:12px; margin-top:8px;"></div>
-                <div id="obvPlot" class="rf-wide" style="margin-top:12px;"></div>
+                <!-- Plot and the recording's facts side by side: the questions a
+                     plot raises - was the line in band at that tuning, how long
+                     were the records - are answered by the table, not by arithmetic. -->
+                <div class="rf-wide" style="margin-top:12px; display:flex; gap:16px; align-items:flex-start; flex-wrap:wrap;">
+                    <div id="obvPlot" style="flex:1 1 640px; min-width:0;"></div>
+                    <table id="obvDetails" class="mono" style="flex:0 0 330px; font-size:12px; color:#aab; border-collapse:collapse;"></table>
+                </div>
                 <p style="color:#888; font-size:12px; margin-top:12px;">
                     <strong>Start Now</strong> points the telescope and starts the
                     receiver immediately; it is not owned by a schedule slot, so a

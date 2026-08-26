@@ -922,6 +922,7 @@ def plot_drift_fit(fit, output_path, figsize=(16.0, 9.0), dpi=120):
     axr.grid(alpha=0.3)
     axr.xaxis.set_major_formatter(mdates.DateFormatter("%H:%M"))
     fig.tight_layout()
-    fig.savefig(output_path, facecolor="white")
+    _style_dark(fig)
+    fig.savefig(output_path, facecolor=fig.get_facecolor())
     plt.close(fig)
     return output_path

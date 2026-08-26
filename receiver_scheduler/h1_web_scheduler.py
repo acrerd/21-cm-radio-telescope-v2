@@ -38,6 +38,7 @@ from observatory import SITE_HEIGHT_M, SITE_LAT_DEG, SITE_LON_DEG
 # the scheduler cannot import the receiver back (it pulls in GNU Radio at
 # module scope), so the convention lives in a module they can both have.
 import observation_files
+import numpy as np
 
 try:
     import ephem
@@ -3965,6 +3966,79 @@ def _observation_info(filename):
     except (KeyError, TypeError, ValueError):
         info['transit_minutes'] = None
     return info
+
+
+H1_LINE_HZ = 1420405751.768
+
+
+def _recording_details(path):
+    """The facts about a recording that decide what can be done with it.
+
+    Read from the file: tuning (sky centre, LO, sample rate, the band it
+    spans), whether the H I line is in that band and where the fit window
+    lies, the spectral geometry, the calibration state, the pointing and the
+    comment. The point is to have these beside the plot, so a question like
+    "did the recorded band overlap the line at that tuning?" is answered by
+    looking rather than by arithmetic.
+    """
+    import h5py
+    import drift_fit
+    with h5py.File(path, 'r') as hf:
+        a = dict(hf.attrs)
+        name = 'spectra_kelvin' if 'spectra_kelvin' in hf else 'spectra_linear'
+        n_rec, n_ch = hf[name].shape
+        freq = hf['frequency_hz'][:]
+        taus = hf['integration_times'][:] if 'integration_times' in hf else []
+    f = lambda k, d=None: (float(a[k]) if k in a and a[k] is not None else d)
+    lo_hz, sr = f('center_freq_hz'), f('sample_rate_hz')
+    sky_hz = f('sky_center_freq_hz', lo_hz)
+    band = (float(freq.min()), float(freq.max())) if len(freq) else (None, None)
+    win_lo, win_hi, _ = drift_fit._band_window(a, freq) if len(freq) else (None, None, None)
+    line_in_band = band[0] is not None and band[0] <= H1_LINE_HZ <= band[1]
+    line_in_window = win_lo is not None and win_lo <= H1_LINE_HZ <= win_hi
+    mode = a.get('observation_mode')
+    if mode is None:
+        mode = observation_files.observation_mode({'coord_system': str(a.get('coord_system', ''))})
+    d = {
+        'filename': os.path.basename(path),
+        'name': str(a.get('obs_name', '')), 'comment': str(a.get('comment', '')),
+        'mode': str(mode), 'coord_system': str(a.get('coord_system', '')),
+        'coord1_deg': f('coord1_deg'), 'coord2_deg': f('coord2_deg'),
+        'drift_frame': str(a.get('drift_frame', '')),
+        'drift_alt': f('drift_alt'), 'drift_az': f('drift_az'),
+        'created': str(a.get('created', '')),
+        'records': int(n_rec), 'channels': int(n_ch),
+        'integration_s': (float(np.median(taus)) if len(taus) else f('nominal_integration_time')),
+        'sky_center_mhz': sky_hz / 1e6 if sky_hz else None,
+        'lo_mhz': lo_hz / 1e6 if lo_hz else None,
+        'sample_rate_mhz': sr / 1e6 if sr else None,
+        'band_mhz': [band[0] / 1e6, band[1] / 1e6] if band[0] is not None else None,
+        'fit_window_mhz': [win_lo / 1e6, win_hi / 1e6] if win_lo is not None else None,
+        'channel_khz': (sr / n_ch / 1e3) if sr and n_ch else None,
+        'h1_line_mhz': H1_LINE_HZ / 1e6,
+        'h1_in_band': bool(line_in_band), 'h1_in_fit_window': bool(line_in_window),
+        'h1_offset_from_lo_mhz': ((H1_LINE_HZ - lo_hz) / 1e6) if lo_hz else None,
+        'gain_db': f('gain_db'), 'sdr_type': str(a.get('sdr_type', '')),
+        'units': str(a.get('spectra_units', 'K' if name == 'spectra_kelvin' else 'counts')),
+        'applied_gain_counts_per_k': f('applied_gain_counts_per_k'),
+        'applied_t_sys_k': f('applied_t_sys_k'),
+    }
+    return d
+
+
+@app.route('/api/observe/info', methods=['GET'])
+def api_observe_info():
+    """Recording details for the chosen file, for the table beside the plot."""
+    import numpy as np  # noqa: F401  (used by _recording_details through the module)
+    chosen = request.args.get('file')
+    try:
+        info = _observation_info(chosen)
+        return jsonify({'success': True, 'details': _recording_details(info['output_file'])})
+    except ValueError as exc:
+        return jsonify({'success': False, 'error': str(exc)}), 404
+    except (OSError, BlockingIOError) as exc:
+        return jsonify({'success': False, 'error': 'the recording is locked (still '
+                        'being written?): %s' % exc}), 409
 
 
 @app.route('/api/observations', methods=['GET'])

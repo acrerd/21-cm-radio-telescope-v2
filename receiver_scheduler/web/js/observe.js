@@ -233,6 +233,50 @@
             // A fit belongs to one file; changing the file retires its proposal.
             document.getElementById('obvFitApplyBtn').style.display = 'none';
             document.getElementById('obvFitInfo').textContent = '';
+            loadObserveDetails();
+        }
+
+        // The recording's facts, beside the plot.
+        function loadObserveDetails() {
+            const t = document.getElementById('obvDetails');
+            const file = obvSelectedFile();
+            if (!file) { t.innerHTML = ''; return; }
+            fetch('/api/observe/info?file=' + encodeURIComponent(file)).then(r => r.json()).then(d => {
+                if (!d.success) { t.innerHTML = '<tr><td style="color:#ffa502;">' + escapeHtml(d.error || '') + '</td></tr>'; return; }
+                const x = d.details;
+                const f = (v, n) => v == null ? '\u2014' : Number(v).toFixed(n);
+                const rows = [];
+                const row = (k, v) => rows.push('<tr><td style="color:#778; padding:2px 8px 2px 0; white-space:nowrap; vertical-align:top;">'
+                                              + k + '</td><td style="padding:2px 0;">' + v + '</td></tr>');
+                row('file', escapeHtml(x.filename));
+                if (x.name) row('target', escapeHtml(x.name));
+                row('mode', escapeHtml(x.mode) + (x.coord_system ? ' \u00b7 ' + escapeHtml(x.coord_system) : ''));
+                if (x.mode === 'drift' && x.drift_alt != null) {
+                    row('parked at', 'alt ' + f(x.drift_alt, 2) + '\u00b0, az ' + f(x.drift_az, 2) + '\u00b0');
+                }
+                if (x.coord1_deg != null && x.coord_system !== 'object') {
+                    row('coords', f(x.coord1_deg, 3) + ', ' + f(x.coord2_deg, 3)
+                        + (x.drift_frame ? ' (' + escapeHtml(x.drift_frame) + ')' : ''));
+                }
+                if (x.created) row('started', escapeHtml(x.created.slice(0, 19).replace('T', ' ')) + ' UTC');
+                row('records', x.records + ' \u00d7 ' + f(x.integration_s, 0) + ' s, ' + x.channels + ' ch');
+                row('sky centre', f(x.sky_center_mhz, 3) + ' MHz');
+                row('LO', f(x.lo_mhz, 3) + ' MHz');
+                row('sample rate', f(x.sample_rate_mhz, 2) + ' Msps'
+                    + (x.channel_khz != null ? ' (' + f(x.channel_khz, 2) + ' kHz/ch)' : ''));
+                if (x.band_mhz) row('band', f(x.band_mhz[0], 2) + ' \u2013 ' + f(x.band_mhz[1], 2) + ' MHz');
+                if (x.fit_window_mhz) row('fit window', f(x.fit_window_mhz[0], 2) + ' \u2013 ' + f(x.fit_window_mhz[1], 2) + ' MHz');
+                row('H I line', f(x.h1_line_mhz, 3) + ' MHz: '
+                    + (x.h1_in_band ? '<span style="color:#2ed573;">in band</span>' : '<span style="color:#ff4757;">not in band</span>')
+                    + (x.h1_in_fit_window ? ', in fit window' : ', outside fit window')
+                    + (x.h1_offset_from_lo_mhz != null ? ', ' + (x.h1_offset_from_lo_mhz >= 0 ? '+' : '') + f(x.h1_offset_from_lo_mhz, 2) + ' MHz from LO' : ''));
+                row('gain', f(x.gain_db, 0) + ' dB' + (x.sdr_type ? ' \u00b7 ' + escapeHtml(x.sdr_type) : ''));
+                row('units', x.units === 'K'
+                    ? 'kelvin (gain ' + Number(x.applied_gain_counts_per_k).toExponential(3) + ' counts/K, T_sys ' + f(x.applied_t_sys_k, 1) + ' K applied)'
+                    : 'counts (uncalibrated)');
+                if (x.comment) row('comment', escapeHtml(x.comment));
+                t.innerHTML = rows.join('');
+            }).catch(() => { t.innerHTML = ''; });
         }
 
         function showObservePlot() {

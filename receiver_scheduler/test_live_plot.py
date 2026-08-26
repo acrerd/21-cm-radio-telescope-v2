@@ -523,3 +523,19 @@ def test_a_drift_scan_gets_the_total_power_fit(client, no_run):
 
 
 
+
+
+def test_recording_details_say_whether_the_line_was_in_band(client):
+    """The Cas A scan at 1419 MHz: LO 1419.8, the line +0.6 MHz above it, in band."""
+    here = os.path.dirname(os.path.abspath(__file__))
+    if not os.path.exists(os.path.join(here, "data", "observations", "Cas A drift scan.h5")):
+        pytest.skip("no Cas A drift scan on this machine")
+    d = client.get("/api/observe/info?file=Cas%20A%20drift%20scan.h5").get_json()
+    assert d["success"], d
+    x = d["details"]
+    assert x["lo_mhz"] == pytest.approx(1419.8)
+    assert x["h1_in_band"] and x["h1_in_fit_window"]
+    assert x["h1_offset_from_lo_mhz"] == pytest.approx(0.606, abs=0.01)
+    assert x["units"] == "counts" and x["mode"] == "drift"
+    assert x["records"] == 73 and x["integration_s"] == pytest.approx(240, abs=1)
+    assert client.get("/api/observe/info?file=../secret.h5").status_code == 404
