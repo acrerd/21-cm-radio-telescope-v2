@@ -545,18 +545,29 @@ export function setupUI(cfg) {
         return;
       }
       const e = d.entry;
-      message(drift
-        ? `  scheduled "${e.name}": transit ${e.drift_time} local, ` +
-          `${e.start_date} ${e.start_time} for ${e.duration_minutes} min`
-        : `  scheduled "${e.name}": ${e.start_date} ${e.start_time} local ` +
-          `for ${e.duration_minutes} min`);
+      if (d.started) {
+        // A live clock: the observation has started, not been booked.
+        message(drift
+          ? `  started now: "${e.name}", ${e.duration_minutes} min, ` +
+            `beam crossing ${e.drift_time} local`
+          : `  started now: "${e.name}" for ${e.duration_minutes} min`);
+      } else {
+        message(drift
+          ? `  scheduled "${e.name}": transit ${e.drift_time} local, ` +
+            `${e.start_date} ${e.start_time} for ${e.duration_minutes} min`
+          : `  scheduled "${e.name}": ${e.start_date} ${e.start_time} local ` +
+            `for ${e.duration_minutes} min`);
+      }
       for (const n of d.horizon_notes || []) message(`  local horizon: ${n}`);
-      // The schedule list lives in the page that embeds this one; ask it to
-      // reload so the new entry appears without a tab round-trip.
+      // The schedule list and the status line live in the page that embeds
+      // this one; ask it to refresh so the change shows without a tab
+      // round-trip.
       try {
-        if (window.parent && window.parent !== window
-            && typeof window.parent.loadSchedule === "function")
-          window.parent.loadSchedule();
+        const parent = window.parent;
+        if (parent && parent !== window) {
+          if (typeof parent.loadSchedule === "function") parent.loadSchedule();
+          if (d.started && typeof parent.updateStatus === "function") parent.updateStatus();
+        }
       } catch (_) { /* cross-origin or not embedded: nothing to refresh */ }
     } catch (e) {
       message(`Schedule failed: ${e}`);

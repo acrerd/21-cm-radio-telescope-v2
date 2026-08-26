@@ -4900,7 +4900,18 @@ def api_simulator_schedule():
         return jsonify({'success': False,
                         'error': "the simulator's clock is in the past (%s); set it "
                                  "ahead, or press Now" % epoch.strftime('%Y-%m-%d %H:%M')}), 409
-    epoch = _next_whole_minute(max(epoch, now + timedelta(seconds=SIMULATOR_LEAD_S)))
+    # A live clock means "now", and now is not a booking: booked, the run
+    # waited for the next whole minute, then for the scheduler thread's
+    # 30 s poll, then had its duration trimmed to what was left of the slot
+    # - two minutes gone and a two-minute spectrum recording for one
+    # (22:27-22:29 on 2026-08-26). It starts here instead, the way the
+    # Observe tab's Start Now does, with the full duration, and is not
+    # written to the schedule (a due slot would restart it when it ended).
+    live = abs((epoch - now).total_seconds()) <= 60
+    if live:
+        epoch = now.replace(second=0, microsecond=0)
+    else:
+        epoch = _next_whole_minute(max(epoch, now + timedelta(seconds=SIMULATOR_LEAD_S)))
 
     entry = {
         'name': ('Drift scan' if drift else 'Spectrum')
@@ -4950,6 +4961,22 @@ def api_simulator_schedule():
     entry['end_date'] = end_dt.strftime('%Y-%m-%d')
     entry['end_time'] = end_dt.strftime('%H:%M')
 
+    if live:
+        with process_lock:
+            busy = (current_process is not None and current_process.poll() is None)
+            running = dict(current_observation) if busy and current_observation else None
+            starting = observation_starting
+        if busy or starting:
+            name = (running or {}).get('name') or starting_observation_name or 'an observation'
+            return jsonify({'success': False,
+                            'error': "'%s' is already recording; stop it first, or pin the "
+                                     "simulator's clock to a later time to book instead"
+                                     % name}), 409
+        log.info("Simulator: starting now: %s (%d min)", entry['name'], entry['duration_minutes'])
+        ok = start_observation(entry)
+        return jsonify({'success': ok, 'started': True, 'entry': entry, 'horizon_notes': [],
+                        'error': None if ok else 'Failed to start - see the Log tab'}), (200 if ok else 500)
+
     schedule = load_schedule()
     schedule.append(entry)
     notes, clashes = _store_schedule(schedule)
@@ -4958,7 +4985,7 @@ def api_simulator_schedule():
                         'error': 'clashes with the schedule: %s' % clashes}), 409
     log.info("Simulator scheduled: %s at %s %s (%d min)", entry['name'],
              entry['start_date'], entry['start_time'], entry['duration_minutes'])
-    return jsonify({'success': True, 'entry': entry, 'horizon_notes': notes})
+    return jsonify({'success': True, 'started': False, 'entry': entry, 'horizon_notes': notes})
 
 
 @app.route('/api/status', methods=['GET'])

@@ -734,22 +734,51 @@ class TestFlaskAPI:
         assert e['start_time'] == start.strftime('%H:%M')
         assert e['drift_time'] == (start + timedelta(minutes=150)).strftime('%H:%M')
 
-    def test_a_live_clock_books_the_next_whole_minute_and_at_least_two(self, client):
+    def test_a_live_clock_starts_now_rather_than_booking(self, client):
         """Pressed at 21:25:57 with a one-minute spectrum, Schedule used to
-        book 21:25 - a minute already gone - and the entry arrived expired.
-        The start is the next whole minute with 45 s in hand, and a spectrum
-        lasts at least two minutes."""
+        book 21:25 - a minute already gone - and the entry arrived expired;
+        booked for the next minute instead, a run waited for the minute, then
+        for the thread's poll, then had its duration trimmed to the slot. A
+        live clock now starts the observation at once, with the full
+        duration, and writes nothing to the schedule."""
+        started = []
+        with patch.object(sched, 'start_observation', side_effect=lambda obs: started.append(obs) or True):
+            resp = client.post('/api/simulator/schedule', json={
+                'l': 42.7, 'b': 1.4, 'mode': 'hi',
+                'epoch_utc': datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
+                'integration_time_s': 60.0})
+        d = resp.get_json()
+        assert resp.status_code == 200 and d['success'] and d['started'], d
+        assert len(started) == 1 and started[0]['coord_system'] == 'galactic'
+        assert started[0]['duration_minutes'] == sched.SIMULATOR_MIN_SPECTRUM_MIN
+        assert client.get('/api/schedule').get_json() == []
+
+    def test_a_live_clock_is_refused_while_something_records(self, client):
+        proc = MagicMock(); proc.poll.return_value = None
+        with patch.object(sched, 'current_process', proc), \
+             patch.object(sched, 'current_observation', {'name': 'Busy one'}), \
+             patch.object(sched, 'start_observation') as start:
+            resp = client.post('/api/simulator/schedule', json={
+                'l': 42.7, 'b': 1.4, 'mode': 'hi',
+                'epoch_utc': datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
+                'integration_time_s': 60.0})
+        assert resp.status_code == 409 and 'Busy one' in resp.get_json()['error']
+        start.assert_not_called()
+
+    def test_a_pinned_clock_books_the_next_whole_minute_and_at_least_two(self, client):
+        """A pinned clock a few minutes ahead is a booking: the next whole
+        minute with 45 s in hand, and a spectrum of at least two minutes."""
         now = datetime.now()
+        epoch = datetime.now(timezone.utc) + timedelta(minutes=5)
         resp = client.post('/api/simulator/schedule', json={
             'l': 42.7, 'b': 1.4, 'mode': 'hi',
-            'epoch_utc': datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
+            'epoch_utc': epoch.strftime('%Y-%m-%dT%H:%M:%SZ'),
             'integration_time_s': 60.0})
         d = resp.get_json()
-        assert resp.status_code == 200 and d['success'], d
+        assert resp.status_code == 200 and d['success'] and not d['started'], d
         e = d['entry']
         start = datetime.strptime(e['start_date'] + ' ' + e['start_time'], '%Y-%m-%d %H:%M')
-        lead = (start - now).total_seconds()
-        assert start.second == 0 and sched.SIMULATOR_LEAD_S <= lead <= sched.SIMULATOR_LEAD_S + 65
+        assert start.second == 0 and (start - now).total_seconds() >= sched.SIMULATOR_LEAD_S
         assert e['duration_minutes'] == sched.SIMULATOR_MIN_SPECTRUM_MIN
 
     def test_a_clock_in_the_past_is_refused_not_booked_dead(self, client):
