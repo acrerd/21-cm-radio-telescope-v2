@@ -473,7 +473,10 @@ def test_fit_runs_end_to_end_on_a_real_calibration_field(client, no_run):
         pytest.skip("no bandpass template applies to that file here")
     assert r.status_code == 200, d
     f = d["fit"]
-    assert 1e-6 < f["gain_counts_per_k"] < 1e-3
+    # The counts scale is the flowgraph's - the fixed instrument's sums
+    # linear power, the old graph went through dB - so only its sign is
+    # a property of the fit.
+    assert f["gain_counts_per_k"] > 0
     assert 100 < f["t_sys_k"] < 1000
     assert d["compare"] is None or "gain_ratio" in d["compare"]
     assert client.get("/api/observe/fit/plot").status_code == 200

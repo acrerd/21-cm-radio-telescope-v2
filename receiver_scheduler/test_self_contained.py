@@ -20,9 +20,23 @@ import bandpass
 import rf_calibration as R
 
 
+def _tuning_in_force():
+    """The tuning the calibration on this machine belongs to - the fixed
+    instrument's, or whatever the stored gain says if it is older."""
+    cal = R.load_calibration() or {}
+    cfg = cal.get("config") or {}
+    if cfg.get("lo_hz"):
+        return {"center_freq_hz": float(cfg["lo_hz"]),
+                "sample_rate_hz": float(cfg["sample_rate_hz"]),
+                "gain_db": float(cfg.get("gain_db", 40.0))}
+    import tuning
+    inst = tuning.fixed_instrument()
+    return {"center_freq_hz": inst["lo_hz"], "sample_rate_hz": inst["sample_rate_hz"],
+            "gain_db": inst["gain_db"]}
+
+
 def header_with(cal=None, template=None, **over):
-    h = {"center_freq_hz": 1421205752.0, "sample_rate_hz": 4500000.0,
-         "gain_db": 40.0}
+    h = dict(_tuning_in_force())
     if cal is not None:
         h["gain_calibration"] = json.dumps(cal)
     if template is not None:
@@ -182,7 +196,10 @@ def test_a_calibrated_recording_still_reduces_as_counts(tmp_path):
 
     _, spectra, _, _, header = op.read_observation(path)
     assert header["spectra_units"] == "K", "the file says what it holds"
-    assert np.allclose(spectra, counts, rtol=1e-5), (
+    # Kelvin are stored as float32: T_A = counts/G - T_sys sits near -350 K
+    # with a resolution of ~3e-5 K, which on the way back is a few parts in
+    # 1e4 of a small count. Physically 30 microkelvin; not a round-trip error.
+    assert np.allclose(spectra, counts, rtol=1e-3), (
         "read_observation must hand the pipeline counts, whatever is stored")
 
 

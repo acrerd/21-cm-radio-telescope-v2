@@ -48,7 +48,7 @@ class TestFixedInstrument:
         plan = tuning.h1_subband_plan(tuning.fixed_instrument())
         assert plan["out_rate_hz"] == 4.0e6
         assert plan["offset_from_lo_hz"] == pytest.approx(1.75e6)
-        assert plan["channel_width_hz"] == pytest.approx(4.0e6 / 2048)
+        assert plan["channel_width_hz"] == pytest.approx(4.0e6 / 1024)
         # the anti-alias filter is flat across the whole sub-band
         assert plan["cutoff_hz"] >= 0.5 * (plan["band_hz"][1] - plan["band_hz"][0])
         with pytest.raises(ValueError):
@@ -59,9 +59,20 @@ class TestFixedInstrument:
         assert "1418.905752" in text and "8.0 Msps" in text and "40 dB" in text
 
 
-def _two_product_file(path, n_records=4, calibrated=False, monkeypatch=None):
-    """A file as the headless recorder writes it, in demo mode."""
+def _two_product_file(path, n_records=4, monkeypatch=None):
+    """A file as the headless recorder writes it, in demo mode.
+
+    With no calibration in force: the fixture's tuning is the real one, so
+    whatever templates and gain happen to be on this machine would apply
+    and the file would come out in kelvin. These tests are about the
+    layout, so they see counts.
+    """
     import b210_h1_receiver as rx
+    import bandpass
+    import rf_calibration
+    if monkeypatch is not None:
+        monkeypatch.setattr(bandpass, "load_bandpass", lambda *a, **k: None)
+        monkeypatch.setattr(rf_calibration, "load_calibration", lambda *a, **k: None)
     inst = tuning.fixed_instrument()
     lo, hi = inst["h1_band_hz"]
     f_h1 = np.linspace(lo, hi, 300)
@@ -85,9 +96,9 @@ def _two_product_file(path, n_records=4, calibrated=False, monkeypatch=None):
 
 
 class TestTwoProductFile:
-    def test_the_layout_and_the_legacy_names(self, tmp_path):
+    def test_the_layout_and_the_legacy_names(self, tmp_path, monkeypatch):
         path = str(tmp_path / "two.h5")
-        _two_product_file(path)
+        _two_product_file(path, monkeypatch=monkeypatch)
         with h5py.File(path, "r") as hf:
             assert {"frequency_hz", "spectra_linear", "frequency_hz_wide",
                     "spectra_wide_linear", "overflows", "bandpass_correction_wide"} <= set(hf)
@@ -99,10 +110,10 @@ class TestTwoProductFile:
             assert list(hf.attrs["h1_band_hz"]) == pytest.approx(inst["h1_band_hz"])
             assert hf.attrs["product"] == "h1"
 
-    def test_readers_pick_a_product_and_a_file_without_one_says_so(self, tmp_path):
+    def test_readers_pick_a_product_and_a_file_without_one_says_so(self, tmp_path, monkeypatch):
         from observation_plot import read_observation, has_wide_product
         path = str(tmp_path / "two.h5")
-        f_h1, f_wide = _two_product_file(path)
+        f_h1, f_wide = _two_product_file(path, monkeypatch=monkeypatch)
         f, s, stamps, taus, header = read_observation(path)
         assert f == pytest.approx(f_h1) and header["product_used"] == "h1"
         fw, sw, _, _, hw = read_observation(path, product="wide")
@@ -122,9 +133,9 @@ class TestTwoProductFile:
         with pytest.raises(KeyError, match="no continuum product"):
             read_observation(old, product="wide")
 
-    def test_the_live_sidecar_carries_the_continuum(self, tmp_path):
+    def test_the_live_sidecar_carries_the_continuum(self, tmp_path, monkeypatch):
         path = str(tmp_path / "two.h5")
-        _two_product_file(path)
+        _two_product_file(path, monkeypatch=monkeypatch)
         lines = [json.loads(l) for l in open(str(tmp_path / "two.live.jsonl"))]
         assert len(lines) == 4
         assert "continuum" in lines[0] and "overflows" in lines[0]
@@ -135,11 +146,11 @@ class TestTwoProductFile:
 
 
 class TestContinuumExcludesHydrogen:
-    def test_a_fixed_instrument_file_is_measured_over_its_continuum_band(self, tmp_path):
+    def test_a_fixed_instrument_file_is_measured_over_its_continuum_band(self, tmp_path, monkeypatch):
         import drift_fit
         from observation_plot import read_observation
         path = str(tmp_path / "two.h5")
-        _two_product_file(path)
+        _two_product_file(path, monkeypatch=monkeypatch)
         fw, sw, _, _, hw = read_observation(path, product="wide")
         lo, hi, keep = drift_fit._band_window(hw, fw)
         inst = tuning.fixed_instrument()
@@ -205,7 +216,7 @@ class TestWideTemplate:
     def test_the_wide_template_is_fitted_on_its_own_product_and_normalised_on_the_h1_band(self, tmp_path, monkeypatch):
         import bandpass
         path = str(tmp_path / "two.h5")
-        f_h1, f_wide = _two_product_file(path)
+        f_h1, f_wide = _two_product_file(path, monkeypatch=monkeypatch)
         # Replace the flat wide spectrum with a tilted one and refit.
         with h5py.File(path, "a") as hf:
             tilt = 1.0 + 0.1 * (f_wide - f_wide.mean()) / 4e6
@@ -217,7 +228,12 @@ class TestWideTemplate:
         assert set(fitted) == {"h1", "wide"}
         wide_t = fitted["wide"][0]
         assert wide_t["product"] == "wide"
-        assert wide_t["u_centre_hz"] == pytest.approx(f_wide.mean(), abs=2e4)
+        # Fitted from the continuum band's low edge to the H I band's high
+        # edge - the science bands - not across the filter skirts.
+        inst = tuning.fixed_instrument()
+        span = (inst["continuum_band_hz"][0], inst["h1_band_hz"][1])
+        assert wide_t["u_centre_hz"] == pytest.approx(0.5 * (span[0] + span[1]), abs=1e3)
+        assert 2 * wide_t["u_scale_hz"] == pytest.approx(span[1] - span[0], abs=1e3)
         assert wide_t["normalise_band_hz"] == pytest.approx(tuning.fixed_instrument()["h1_band_hz"])
         # Unit median over the H I band means the template reads ~1 there and
         # follows the tilt elsewhere.

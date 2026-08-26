@@ -65,7 +65,11 @@ FIXED_SAMPLE_RATE_HZ = 8.0e6
 FIXED_GAIN_DB = 40.0
 WIDE_CHANNELS = 1024                              # 7.8 kHz per channel
 H1_BAND_HZ = (FIXED_LO_HZ + 0.1e6, FIXED_LO_HZ + 3.4e6)
-H1_CHANNELS = 2048                                # over the decimated 4 Msps: 1.95 kHz
+# Over the decimated 4 Msps: 3.9 kHz = 0.82 km/s, 845 channels kept across
+# the sub-band. Chosen 2026-08-26 over 2048: the narrowest galactic H I is
+# 2-3 km/s wide and the HI4PI model is 1.29 km/s, so 0.8 km/s still
+# Nyquist-samples anything the 5 deg beam can show, at half the file size.
+H1_CHANNELS = 1024
 H1_DECIMATION = 2                                 # 8 -> 4 Msps holds a 3.3 MHz band
 CONTINUUM_BAND_HZ = (FIXED_LO_HZ - 3.2e6, FIXED_LO_HZ - 0.1e6)
 
