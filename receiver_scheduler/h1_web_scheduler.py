@@ -3242,6 +3242,13 @@ def page_asset(path=None):
     return send_from_directory(PAGE_DIR, name)
 
 
+@app.route('/docs/technical-article.pdf')
+def technical_article_pdf():
+    """The compiled technical article, linked from the Guide tab."""
+    docs_dir = os.path.join(os.path.dirname(_SCRIPT_DIR), "docs")
+    return send_from_directory(docs_dir, "SRT_Technical_Article.pdf")
+
+
 @app.route('/simulator/')
 @app.route('/simulator/<path:path>')
 def simulator(path='index.html'):
