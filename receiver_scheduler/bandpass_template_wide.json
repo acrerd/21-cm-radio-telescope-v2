@@ -1,20 +1,20 @@
 {
   "version": 1,
-  "created_utc": "2026-08-26T17:33:46+00:00",
+  "created_utc": "2026-08-27T14:20:38+00:00",
   "source_name": "l=149 b=+52",
-  "source_file": "rf_bandpass_template_20260826_182904.h5",
+  "source_file": "rf_bandpass_template_20260827_151838.h5",
   "degree": 9,
   "coefficients": [
-    -0.36417239171277654,
-    -0.8419558261482404,
-    0.8590139912009087,
-    2.6612272984285457,
-    -0.7671373961218757,
-    -3.0041038026673856,
-    0.27426858390709036,
-    1.155096491598845,
-    0.17736401907945468,
-    1.8037307868172305
+    -0.17971911731589674,
+    -0.8035422282014273,
+    0.4280027190732935,
+    2.4702563719646626,
+    -0.4560303016035311,
+    -2.758320341240031,
+    0.20550350333222037,
+    1.056612989867975,
+    0.19816768745668087,
+    1.7975501893677017
   ],
   "u_scale_hz": 3300000.0,
   "u_centre_hz": 1419005752.0,
@@ -35,12 +35,6 @@
     1419005752.0,
     1422305752.0
   ],
-  "fit_residual_rms": 0.0013177551523083726,
-  "normalise_level": 1.9991,
-  "rescaled_issue28": {
-    "utc": "2026-08-27T13:51:08+00:00",
-    "reason": "wide template was unit-median over the H I band, leaving the continuum product ~2x above the H I gain scale (continuum channels twice as wide). Source recording gone, so coefficients rescaled by the measured wide/H I level ratio rather than re-fitted.",
-    "factor": 1.9991,
-    "previous_normalise_level": 1.0
-  }
+  "normalise_level": 2.000080467690279,
+  "fit_residual_rms": 0.0013264547776298387
 }
