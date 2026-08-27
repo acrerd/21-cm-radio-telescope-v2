@@ -734,6 +734,39 @@ class TestFlaskAPI:
         assert e['start_time'] == start.strftime('%H:%M')
         assert e['drift_time'] == (start + timedelta(minutes=150)).strftime('%H:%M')
 
+    def test_the_simulator_books_a_moving_body_as_an_object(self, client):
+        """A Sun or Moon target is scheduled as an object - the scheduler tracks
+        its motion and parks for the crossing - not the l/b it sits at now, which
+        a fixed galactic point would drift off over the scan."""
+        # The Sun is up at midday, so the horizon does not block it (the Moon is
+        # a valid object too, just often below the horizon at any chosen epoch).
+        noon = (datetime.now(timezone.utc) + timedelta(days=1)).replace(
+            hour=12, minute=0, second=0, microsecond=0)
+        common = {'l': 200.0, 'b': 40.0, 'center_freq_mhz': 1420.405752,
+                  'bandwidth_mhz': 2.4, 'channels': 4096}
+        # Continuum: a Sun drift, driven by the scheduler's drift machinery.
+        e = client.post('/api/simulator/schedule', json={
+            **common, 'mode': 'cont', 'object': 'sun', 'scan_minutes': 40,
+            'integration_time_s': 30.0,
+            'epoch_utc': noon.strftime('%Y-%m-%dT%H:%M:%SZ')}).get_json()['entry']
+        assert e['coord_system'] == 'drift' and e['drift_frame'] == 'object'
+        assert e['object_name'] == 'sun' and e['name'] == 'Sun drift'
+        # H I: a tracked spectrum of the body - coord_system 'object', not
+        # galactic; a couple of hours later so it does not clash with the drift.
+        e2 = client.post('/api/simulator/schedule', json={
+            **common, 'mode': 'hi', 'object': 'sun', 'integration_time_s': 60.0,
+            'epoch_utc': noon.replace(hour=14).strftime('%Y-%m-%dT%H:%M:%SZ')}).get_json()['entry']
+        assert e2['coord_system'] == 'object' and e2['object_name'] == 'sun'
+        assert e2['name'] == 'Sun spectrum'
+
+    def test_an_unknown_drift_object_is_refused(self, client):
+        epoch = (datetime.now(timezone.utc) + timedelta(days=1)).replace(
+            hour=12, minute=0, second=0, microsecond=0)
+        resp = client.post('/api/simulator/schedule', json={
+            'l': 1.0, 'b': 1.0, 'mode': 'cont', 'object': 'pluto',
+            'epoch_utc': epoch.strftime('%Y-%m-%dT%H:%M:%SZ'), 'scan_minutes': 40})
+        assert resp.status_code == 400
+
     def test_a_live_clock_starts_now_rather_than_booking(self, client):
         """Pressed at 21:25:57 with a one-minute spectrum, Schedule used to
         book 21:25 - a minute already gone - and the entry arrived expired;

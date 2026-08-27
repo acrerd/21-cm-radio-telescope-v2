@@ -5011,6 +5011,15 @@ def api_simulator_schedule():
     mode = body.get('mode', 'hi')
     if mode not in ('hi', 'cont'):
         return jsonify({'success': False, 'error': f'unknown mode {mode!r}'}), 400
+    # A moving solar-system target (Sun, Moon) is scheduled as an *object*, not
+    # as the l/b it happens to sit at now: the scheduler's own drift machinery
+    # then samples the body's track and parks for the crossing, tracking its
+    # motion exactly, rather than freezing it to a point it drifts off. The
+    # simulator sends `object` when its target coincides with a body.
+    object_name = str(body.get('object', '')).strip().lower()
+    if object_name and object_name not in DRIFT_OBJECTS:
+        return jsonify({'success': False, 'error':
+                        "unknown drift object %r (sun, moon, jupiter)" % object_name}), 400
     glon = glon % 360.0
     glat = max(-90.0, min(90.0, glat))
     drift = mode == 'cont'
@@ -5042,12 +5051,19 @@ def api_simulator_schedule():
     else:
         epoch = _next_whole_minute(max(epoch, now + timedelta(seconds=SIMULATOR_LEAD_S)))
 
+    if object_name:
+        # e.g. "Sun drift" / "Sun spectrum"; the l/b are not used for a body.
+        name = object_name.capitalize() + (' drift' if drift else ' spectrum')
+    else:
+        name = ('Drift scan' if drift else 'Spectrum') + ' l=%.1f b=%+.1f' % (glon, glat)
     entry = {
-        'name': ('Drift scan' if drift else 'Spectrum')
-                + ' l=%.1f b=%+.1f' % (glon, glat),
+        'name': name,
         'comment': SIMULATOR_COMMENT,
-        'coord_system': 'drift' if drift else 'galactic',
-        'object_name': '', 'tle_text': '',
+        # A body tracks (coord_system 'object') for a spectrum and drifts
+        # (drift_frame 'object') for continuum; a fixed direction stays galactic.
+        'coord_system': ('drift' if drift
+                         else ('object' if object_name else 'galactic')),
+        'object_name': object_name, 'tle_text': '',
         # Decimal degrees in the degrees field; dms_to_decimal sums as given.
         'coord1_deg': round(glon, 4), 'coord1_min': 0, 'coord1_sec': 0,
         'coord2_deg': round(glat, 4), 'coord2_min': 0, 'coord2_sec': 0,
@@ -5056,7 +5072,8 @@ def api_simulator_schedule():
         'sdr_type': 'b210', 'calibrator': False,
         'end_action': 'none', 'respect_local_horizon': True,
         'filename': '', 'enabled': True,
-        'drift_frame': 'galactic', 'drift_time': '', 'drift_window_min': 30,
+        'drift_frame': ('object' if object_name else 'galactic'),
+        'drift_time': '', 'drift_window_min': 30,
     }
     if drift:
         scan = _clamped('duration_minutes', body.get('scan_minutes'), 240.0)

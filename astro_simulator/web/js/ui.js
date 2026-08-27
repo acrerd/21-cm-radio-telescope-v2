@@ -4,7 +4,7 @@
 
 import { jdFromDate, decimalYear, galToEq, raDecToAltAz, sepDeg }
   from "./coordinates.js";
-import { frameOffset, continuumSources } from "./ephemeris.js";
+import { frameOffset, continuumSources, sunGalactic, moonGalacticTopo } from "./ephemeris.js";
 import { C_LIGHT, F_HI } from "./skydata.js";
 import { simDate, setFixedTime, isFixed } from "./clock.js";
 
@@ -512,18 +512,26 @@ export function setupUI(cfg) {
     if (!p) return;
     const drift = state.mode === "cont";
     const scan = parseFloat(boxes.sd.value);
+    // A moving body (Sun, Moon) is handed over as an *object*, not the l/b it
+    // sits at now: the scheduler then tracks its motion and parks for the
+    // crossing itself, rather than freezing it to a point it drifts off. Detect
+    // it by the target coinciding with the body's current position.
+    const jd = jdFromDate(simDate());
+    const sun = sunGalactic(jd), moon = moonGalacticTopo(jd, site);
+    let object = "";
+    if (sepDeg(p.glon, p.glat, sun.l, sun.b) < 0.3) object = "sun";
+    else if (sepDeg(p.glon, p.glat, moon.l, moon.b) < 1.0) object = "moon";
+    const what = object ? object[0].toUpperCase() + object.slice(1)
+                        : `l=${p.glon.toFixed(2)}°, b=${p.glat.toFixed(2)}°`;
     els.scheduleBtn.disabled = true;
-    message(drift
-      ? `Schedule: booking a drift scan of l=${p.glon.toFixed(2)}°, ` +
-        `b=${p.glat.toFixed(2)}°...`
-      : `Schedule: booking a tracked spectrum of l=${p.glon.toFixed(2)}°, ` +
-        `b=${p.glat.toFixed(2)}°...`);
+    message(`Schedule: booking a ${drift ? "drift scan" : "tracked spectrum"} of ${what}...`);
     try {
       const resp = await fetch("/api/simulator/schedule", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           l: p.glon, b: p.glat, mode: drift ? "cont" : "hi",
+          object,
           scan_minutes: Number.isFinite(scan) ? scan : 240,
           // The page's clock, pinned or live: a spectrum starts then, a
           // drift scan is centred on the next transit after it.
