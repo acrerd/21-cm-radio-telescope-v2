@@ -57,6 +57,15 @@ public:
     // rather than as an unexplained glitch in the readout.
     uint32_t getMalformedCount();
 
+    // The encoder error the Due reports at each homing stop (issue #24),
+    // parsed from "Homing: <axis> limit reached at N pulses (D deg)" and
+    // latched. The read loop drops non-status lines, and the status flood
+    // during a homing scrolls the log buffer faster than a reader can poll,
+    // so the number is held here and surfaced on /status instead. First
+    // approach is the count error accumulated since the last homing; the
+    // re-approach after the back-off is the repeatability. NaN until seen.
+    String getHomingReportJSON();
+
     // Serial log access
     String getLogJSON();
     void logESP(const String &msg);  // Log ESP32 diagnostic message
@@ -64,6 +73,7 @@ public:
 private:
     void logMessage(char direction, const String &msg);
     void parseStatus(const String &line);
+    void handleHomingLine(const String &line);
 
     HardwareSerial *uart;
     String lastStatus;
@@ -78,6 +88,14 @@ private:
     bool isSlewing;
     bool calibratorOn;
     uint32_t spliceCount;
+
+    // Homing error latch (see getHomingReportJSON).
+    float homingErrAltFirst;
+    float homingErrAzFirst;
+    float homingErrAltSecond;
+    float homingErrAzSecond;
+    bool homingSecondApproach;
+    time_t homingReportTime;
 
     // Ring buffer for serial log
     SerialLogEntry logBuffer[SERIAL_LOG_SIZE];

@@ -3105,7 +3105,7 @@ All endpoints are HTTP GET unless noted. Base URL \texttt{http://192.168.50.120}
 \endhead
 \texttt{/ping} & Minimal liveness check \\
 \texttt{/network} & Ethernet and DNS diagnostics \\
-\texttt{/status} & Drive \texttt{alt}/\texttt{az}, \texttt{true\_alt}/\texttt{true\_az}, RA/Dec, galactic $l$/$b$, target, currents, status, fault, \texttt{is\_slewing}, calibrator, \texttt{pointing\_loaded}, \texttt{clock\_state}, \texttt{clock\_age\_s}, \texttt{lock\_timeouts}, \texttt{malformed\_status} \\
+\texttt{/status} & Drive \texttt{alt}/\texttt{az}, \texttt{true\_alt}/\texttt{true\_az}, RA/Dec, galactic $l$/$b$, target, currents, status, fault, \texttt{is\_slewing}, calibrator, \texttt{pointing\_loaded}, \texttt{clock\_state}, \texttt{clock\_age\_s}, \texttt{lock\_timeouts}, \texttt{malformed\_status}, \texttt{last\_homing} (the encoder error at the last homing, issue \#24) \\
 \texttt{/tracking} & Tracking state: enabled, RA/Dec, target name, axis mode, offsets, waiting flags \\
 \texttt{/ephemeris} & Sun, Moon and galactic-plane (\texttt{plane}) positions \\
 \texttt{/pointing} & The resident pointing model \\

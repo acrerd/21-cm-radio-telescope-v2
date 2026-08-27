@@ -216,6 +216,8 @@ void setupWebServer() {
         // outputStatus(). A stale readout with a plausible-looking number in it
         // is the failure mode being guarded against here.
         json += "\"malformed_status\":" + String((unsigned long)srtSerial.getMalformedCount()) + ",";
+        // The encoder error reported at the last homing (issue #24), or null.
+        json += "\"last_homing\":" + srtSerial.getHomingReportJSON() + ",";
         json += "\"raw\":\"" + jsonEscape(srtSerial.getLastStatus()) + "\"";
         json += "}";
         request->send(200, "application/json", json);

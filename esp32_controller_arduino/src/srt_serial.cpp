@@ -17,6 +17,12 @@ SRTSerial::SRTSerial() :
     isSlewing(false),
     calibratorOn(false),
     spliceCount(0),
+    homingErrAltFirst(NAN),
+    homingErrAzFirst(NAN),
+    homingErrAltSecond(NAN),
+    homingErrAzSecond(NAN),
+    homingSecondApproach(false),
+    homingReportTime(0),
     logHead(0),
     logCount(0) {
 }
@@ -90,6 +96,52 @@ String SRTSerial::getFaultStr()   { SRTLock lock; return faultStr; }
 uint32_t SRTSerial::getMalformedCount() {
     SRTLock lock;
     return spliceCount;
+}
+
+// Parse "Homing: <axis> limit reached at N pulses (D deg)" and the two phase
+// markers, latching the reported error. The lock is already held by the read
+// loop's caller path via logMessage's scope? No - handleHomingLine is called
+// from processSerialData without the lock, and /status reads under one, so
+// take it here.
+void SRTSerial::handleHomingLine(const String &line) {
+    SRTLock lock;
+    if (line.indexOf("Drive to limits") >= 0) {
+        // A new homing begins: clear the latch and start on the first approach.
+        homingErrAltFirst = NAN; homingErrAzFirst = NAN;
+        homingErrAltSecond = NAN; homingErrAzSecond = NAN;
+        homingSecondApproach = false;
+        return;
+    }
+    if (line.indexOf("Re-approach") >= 0) {
+        homingSecondApproach = true;
+        return;
+    }
+    int paren = line.indexOf('(');
+    if (line.indexOf("limit reached at ") < 0 || paren < 0) return;
+    float deg = line.substring(paren + 1).toFloat();      // "-1.50 deg)" -> -1.50
+    bool az = line.indexOf("Azimuth") >= 0;
+    if (homingSecondApproach) {
+        if (az) homingErrAzSecond = deg; else homingErrAltSecond = deg;
+    } else {
+        if (az) homingErrAzFirst = deg; else homingErrAltFirst = deg;
+    }
+    homingReportTime = time(nullptr);
+}
+
+String SRTSerial::getHomingReportJSON() {
+    SRTLock lock;
+    if (homingReportTime == 0) return "null";
+    auto num = [](float v) -> String {
+        return isnan(v) ? String("null") : String(v, 2);
+    };
+    String j = "{";
+    j += "\"alt_error_first_deg\":" + num(homingErrAltFirst) + ",";
+    j += "\"az_error_first_deg\":" + num(homingErrAzFirst) + ",";
+    j += "\"alt_error_second_deg\":" + num(homingErrAltSecond) + ",";
+    j += "\"az_error_second_deg\":" + num(homingErrAzSecond) + ",";
+    j += "\"utc\":" + String((unsigned long)homingReportTime);
+    j += "}";
+    return j;
 }
 
 String SRTSerial::getLastStatus() { SRTLock lock; return lastStatus; }
@@ -238,6 +290,13 @@ bool SRTSerial::readStatus() {
         if (statusLineLooksIntact(line)) {
             lastValidLine = line;
             logMessage('R', line);  // Log valid status lines
+        } else if (line.startsWith("Homing:")) {
+            // The Due's homing progress lines are not status lines and were
+            // being dropped as junk (issue #24). Log them, and latch the
+            // count error they carry so /status can report it after the
+            // status flood has scrolled the line out of the log buffer.
+            logMessage('R', line);
+            handleHomingLine(line);
         } else if (line.length() > 0) {
             // Kept visible rather than dropped silently: a run of these is the
             // signature of the UART being flooded again.

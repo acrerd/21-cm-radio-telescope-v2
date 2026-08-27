@@ -967,25 +967,24 @@ static bool driveToLimits() {
             stopMotorAz();
             azAtLimit = true;
             // The counter at the stop IS the net encoder error since the last
-            // homing (the stop is the true zero), so print it rather than
+            // homing (the stop is the true zero), so report it rather than
             // overwrite it silently with 0. First approach: the accumulated
             // error. Re-approach after the back-off: the repeatability, ~0.
-            // The prefix is unchanged so anything matching it still does; the
-            // scheduler reads the number from here (issue #24).
-            printAll("Homing: Azimuth limit reached at ");
-            printAllInt(positionAz);
-            printAll(" pulses (");
-            printAllFloat((float)positionAz / PULSES_PER_DEGREE, 2);
-            printAllLn(" deg)");
+            // Sent to Serial1 as well as USB - printAll* go only to USB, and
+            // the controller (which the scheduler reads) is on Serial1; the
+            // prefix is unchanged so anything matching it still does. #24.
+            String m = "Homing: Azimuth limit reached at " + String(positionAz)
+                     + " pulses (" + String((float)positionAz / PULSES_PER_DEGREE, 2) + " deg)";
+            Serial.println(m);
+            Serial1.println(m);
         }
         if (!altAtLimit && (now - lastPulseAlt) > cfg.stallTimeoutMs) {
             stopMotorAlt();
             altAtLimit = true;
-            printAll("Homing: Altitude limit reached at ");
-            printAllInt(positionAlt);
-            printAll(" pulses (");
-            printAllFloat((float)positionAlt / PULSES_PER_DEGREE, 2);
-            printAllLn(" deg)");
+            String m = "Homing: Altitude limit reached at " + String(positionAlt)
+                     + " pulses (" + String((float)positionAlt / PULSES_PER_DEGREE, 2) + " deg)";
+            Serial.println(m);
+            Serial1.println(m);
         }
 
         FaultCode fault = checkFaultFlags();
@@ -1147,8 +1146,12 @@ static bool returnToZero(int pwm) {
 }
 
 void performHoming() {
-    // Phase 1: drive to limits with ramp-up
+    // Phase 1: drive to limits with ramp-up. The phase markers go to Serial1
+    // as well as USB, because the controller uses "Drive to limits" to reset
+    // its homing-error latch and "Re-approach" to tell the first approach
+    // (the accumulated error) from the second (repeatability). #24.
     printAllLn("Homing: Drive to limits...");
+    Serial1.println("Homing: Drive to limits...");
     if (!driveToLimits()) return;
 
     // Phase 2: back off a few degrees (back-off zeros position, then drives positive)
@@ -1157,6 +1160,7 @@ void performHoming() {
 
     // Phase 3: re-approach limit with ramp-up for accurate zero
     printAllLn("Homing: Re-approach limits...");
+    Serial1.println("Homing: Re-approach limits...");
     if (!driveToLimits()) return;
 
     // At limit switches - reset position counters to 0

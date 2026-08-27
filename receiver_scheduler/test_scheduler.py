@@ -1863,6 +1863,18 @@ class TestHomingCounters:
         # The bare prefix, no number and no preceding status line: unknown.
         assert sched._homing_counters(["Homing: Azimuth limit reached"]) == {"first": {}, "second": {}}
 
+    def test_reads_the_error_the_controller_latched_on_status(self):
+        """The controller latches the homing error on /status (issue #24),
+        which survives the status flood that scrolls it out of the log."""
+        status = {"last_homing": {"alt_error_first_deg": -0.5, "az_error_first_deg": -1.0,
+                                  "alt_error_second_deg": 0.0, "az_error_second_deg": 0.5,
+                                  "utc": 1787825741}}
+        assert sched._homing_counters_from_status(status) == {
+            "first": {"alt": -0.5, "az": -1.0}, "second": {"alt": 0.0, "az": 0.5}}
+        # A controller too old to carry it, or before any homing.
+        assert sched._homing_counters_from_status({}) is None
+        assert sched._homing_counters_from_status({"last_homing": None}) is None
+
 
 class TestHomeFirst:
     """An entry with home_first runs the physical homing before pointing, and

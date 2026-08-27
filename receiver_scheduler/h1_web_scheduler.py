@@ -863,6 +863,23 @@ _HOMING_LIMIT_RE = re.compile(
     r"Homing: (Azimuth|Altitude) limit reached(?: at -?\d+ pulses \((-?\d+(?:\.\d+)?) deg\))?")
 
 
+def _homing_counters_from_status(status: dict) -> dict:
+    """The homing error the controller latched on /status (issue #24), in the
+    same shape _homing_counters returns, or None if the controller does not
+    carry it. `last_homing` is null until a homing has been reported."""
+    lh = (status or {}).get("last_homing")
+    if not isinstance(lh, dict):
+        return None
+    out = {"first": {}, "second": {}}
+    for phase, a, z in (("first", "alt_error_first_deg", "az_error_first_deg"),
+                        ("second", "alt_error_second_deg", "az_error_second_deg")):
+        if lh.get(a) is not None:
+            out[phase]["alt"] = float(lh[a])
+        if lh.get(z) is not None:
+            out[phase]["az"] = float(lh[z])
+    return out if out["first"] or out["second"] else None
+
+
 def _homing_counters(messages: list) -> dict:
     """What the encoder counters read as each axis hit its stop, per approach.
 
@@ -952,7 +969,11 @@ def srt_home_with_report(timeout: int = 300,
                 started = True
             elif started and state == "ready" and not status.get("is_slewing", False):
                 poll_serial()
-                counters = _homing_counters(messages)
+                # The controller latches the reported error on /status
+                # (issue #24), which survives the status flood scrolling the
+                # log; prefer it, and fall back to scraping the log for a
+                # controller too old to carry it.
+                counters = _homing_counters_from_status(status) or _homing_counters(messages)
                 first, second = counters["first"], counters["second"]
                 fmt = lambda d: ("Alt=%s Az=%s" % (
                     ("%.1f" % d["alt"]) if "alt" in d else "?",

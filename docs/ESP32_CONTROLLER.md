@@ -274,9 +274,25 @@ All endpoints return JSON unless noted.
   "fault": "",
   "fault_active": false,
   "is_slewing": false,
-  "calibrator": false
+  "calibrator": false,
+  "last_homing": {
+    "alt_error_first_deg": -0.5,
+    "az_error_first_deg": -1.0,
+    "alt_error_second_deg": 0.0,
+    "az_error_second_deg": 0.5,
+    "utc": 1787825741
+  }
 }
 ```
+
+`last_homing` is the encoder error the Due reports at the last homing (issue
+#24), latched from its `Homing: <axis> limit reached at N pulses (D deg)`
+lines. The **first approach** is the count error accumulated since the
+previous homing — the stop is the true zero, so a healthy axis reads within
+a pulse or two; the **re-approach** after the 5° back-off is the stop's
+repeatability. It is `null` until a homing has run. The value is latched
+here because the status flood during a homing scrolls the line out of the
+30-line serial log before a reader can poll it.
 
 ### Control Endpoints
 
