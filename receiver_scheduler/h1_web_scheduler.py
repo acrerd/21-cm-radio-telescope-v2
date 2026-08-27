@@ -166,7 +166,11 @@ _DEFAULT_CONFIG = {
     # (the minimum) is the default. Names match the V4L2 control names exactly
     # (see the Camera tab / v4l2-ctl --list-ctrls); unknown names are ignored,
     # so a camera with a real exposure control can be tuned here instead.
-    "camera_controls": {"Brightness": -64},
+    # Gamma 300 (default 150) lifts the shadows the -64 brightness crushes -
+    # trees and foreground go near-black otherwise - without raising the
+    # highlights back into blowout: a settled sweep held clipping at 0 while the
+    # 5th-percentile level rose from 2 to 6. It reads as lower contrast.
+    "camera_controls": {"Brightness": -64, "Gamma": 300},
 }
 
 

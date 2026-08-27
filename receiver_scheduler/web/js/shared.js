@@ -247,7 +247,10 @@
             // The live flux panel polls only while its tab is open, and
             // hides itself unless the running observation is a solar track.
             if (name === 'observe') { obvLiveStart(); } else { obvLiveStop(); }
-            if (name === 'camera' && !camObjectUrl) refreshCamera();
+            // Always grab a fresh frame on entering the tab, not just the first
+            // time - a stale image from a previous visit is misleading on a
+            // safety camera. refreshCamera chains the auto-refresh itself.
+            if (name === 'camera') refreshCamera();
             else scheduleCameraRefresh();
         }
 
