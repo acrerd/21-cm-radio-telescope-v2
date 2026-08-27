@@ -105,4 +105,77 @@
         .log-container { background: #0a0a1a; border: 1px solid #333; border-radius: 8px; padding: 15px; font-family: monospace; font-size: 12px; line-height: 1.6; max-height: 70vh; overflow-y: auto; white-space: pre-wrap; word-break: break-all; color: #ccc; }
         .log-controls { display: flex; gap: 10px; align-items: center; margin-bottom: 10px; }
         .log-controls select, .log-controls input { padding: 6px 10px; border: 1px solid #333; border-radius: 5px; background: #0f0f23; color: #fff; font-size: 13px; }
+
+        /* ---- Contextual hover help ---- */
+        #hover-help { position: fixed; display: none; z-index: 2000; max-width: 300px;
+            background: #0a1830; color: #d6e6ff; border: 1px solid #00d4ff;
+            border-radius: 6px; padding: 8px 11px; font-size: 12.5px; line-height: 1.45;
+            box-shadow: 0 6px 20px rgba(0,0,0,0.55); pointer-events: none; }
+        .help-toggle { display: flex; align-items: center; gap: 6px; color: #888;
+            font-size: 12px; cursor: pointer; user-select: none; white-space: nowrap; }
+        .help-toggle input { width: auto; }
+
+        /* ---- Guide tab (student handbook) ---- */
+        .guide-wrap { display: grid; grid-template-columns: 210px 1fr; gap: 20px; align-items: start; }
+        .guide-nav { position: sticky; top: 10px; display: flex; flex-direction: column; gap: 4px;
+            background: #16213e; border: 1px solid #24304f; border-radius: 10px; padding: 10px; }
+        .guide-nav-group { color: #667; font-size: 10px; text-transform: uppercase; letter-spacing: 0.6px;
+            margin: 10px 6px 3px; }
+        .guide-nav-group:first-child { margin-top: 2px; }
+        .guide-nav-item { text-align: left; background: transparent; color: #cbd5f0; border: none;
+            border-radius: 6px; padding: 7px 10px; font-size: 13.5px; cursor: pointer; width: 100%; }
+        .guide-nav-item:hover { background: #1e2c4d; color: #fff; }
+        .guide-nav-item.active { background: #00d4ff; color: #04121e; font-weight: 600; }
+        .guide-content { background: #0f1830; border: 1px solid #24304f; border-radius: 10px;
+            padding: 26px 30px; max-height: 76vh; overflow-y: auto; }
+        .guide-section { display: none; }
+        .guide-section.active { display: block; }
+        .guide-section h2 { color: #00d4ff; margin: 0 0 6px; font-size: 24px; }
+        .guide-section h3 { color: #7fdcff; margin: 26px 0 8px; font-size: 17px;
+            border-top: 1px solid #1c2947; padding-top: 18px; }
+        .guide-section h3:first-of-type { border-top: none; padding-top: 0; }
+        .guide-section p, .guide-section li { color: #c7d0e6; font-size: 14.5px; line-height: 1.65; }
+        .guide-section .lead { color: #aeb9d4; font-size: 15.5px; }
+        .guide-section ul, .guide-section ol { padding-left: 22px; }
+        .guide-section li { margin-bottom: 5px; }
+        .guide-section strong { color: #eef2ff; }
+        .guide-section a { color: #00d4ff; }
+        .guide-section code { background: #08101f; border: 1px solid #223; border-radius: 4px;
+            padding: 1px 5px; font-size: 13px; color: #9fe6ff; }
+        /* Cross-links that jump to another tab */
+        .guide-jump { display: inline-block; background: #12305a; color: #9fe6ff; border: 1px solid #2c6;
+            border-color: #245a86; border-radius: 5px; padding: 2px 9px; font-size: 12.5px;
+            cursor: pointer; margin: 2px 2px; }
+        .guide-jump:hover { background: #16406f; color: #fff; }
+        /* Equation block, rendered with plain HTML/Unicode - no external math lib */
+        .eqn { background: #08101f; border-left: 3px solid #00d4ff; border-radius: 4px;
+            padding: 10px 16px; margin: 12px 0; font-size: 16px; color: #e8eeff;
+            font-family: "Cambria Math", Georgia, serif; overflow-x: auto; }
+        .eqn .var { font-style: italic; }
+        .eqn small, .eqn-where { color: #8b97b5; font-size: 12.5px; }
+        .eqn-where { display: block; margin: 4px 0 12px; line-height: 1.5; }
+        /* Callouts */
+        .callout { border-radius: 8px; padding: 12px 15px; margin: 16px 0; font-size: 14px; line-height: 1.6; }
+        .callout .tag { display: block; font-size: 11px; text-transform: uppercase; letter-spacing: 0.6px;
+            margin-bottom: 4px; font-weight: 700; }
+        .callout.note { background: #0e2033; border: 1px solid #245a86; color: #cfe4ff; }
+        .callout.note .tag { color: #4fc3f7; }
+        .callout.tip { background: #0d2a1c; border: 1px solid #1f6b45; color: #d0f5e2; }
+        .callout.tip .tag { color: #00ff88; }
+        .callout.warn { background: #2c2410; border: 1px solid #7a5d15; color: #f6e6c0; }
+        .callout.warn .tag { color: #ffa502; }
+        /* Numbered step list for walkthroughs */
+        .guide-steps { list-style: none; padding-left: 0; counter-reset: step; }
+        .guide-steps > li { counter-increment: step; position: relative; padding: 4px 0 14px 46px; margin: 0; }
+        .guide-steps > li::before { content: counter(step); position: absolute; left: 0; top: 0;
+            width: 30px; height: 30px; border-radius: 50%; background: #00d4ff; color: #04121e;
+            font-weight: 700; display: flex; align-items: center; justify-content: center; font-size: 15px; }
+        /* Glossary */
+        .glossary dt { color: #7fdcff; font-weight: 600; margin-top: 14px; font-size: 14.5px; }
+        .glossary dd { color: #c7d0e6; margin: 3px 0 0; padding-left: 0; font-size: 14px; line-height: 1.6; }
+        @media (max-width: 760px) {
+            .guide-wrap { grid-template-columns: 1fr; }
+            .guide-nav { position: static; flex-direction: row; flex-wrap: wrap; }
+            .guide-content { max-height: none; padding: 18px; }
+        }
     

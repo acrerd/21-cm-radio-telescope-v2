@@ -251,6 +251,42 @@
             else scheduleCameraRefresh();
         }
 
+        // Open the telescope controller in the right place for wherever this
+        // browser is. Remotely the controller is reached through an ssh
+        // port-forward at 127.0.0.1:8080; at the observatory console it is the
+        // direct link http://192.168.50.120. The scheduler page is served at
+        // localhost:5000 in BOTH cases, so it cannot tell which from its own URL
+        // - it probes which controller address actually answers and opens that.
+        function openController(ev) {
+            if (ev) ev.preventDefault();
+            const candidates = ['http://127.0.0.1:8080/', 'http://192.168.50.120/'];
+            // Open the tab synchronously, inside the click, so the pop-up is not
+            // blocked; point it once a probe answers.
+            const win = window.open('', '_blank');
+            const reach = base => new Promise(resolve => {
+                const done = ok => { clearTimeout(timer); resolve(ok); };
+                const timer = setTimeout(() => done(false), 1500);
+                // no-cors: the controller's response cannot be read cross-origin,
+                // but the fetch resolving at all means it answered; a network
+                // error (nothing forwarded / no route) rejects.
+                fetch(base + 'ping', { mode: 'no-cors', cache: 'no-store' })
+                    .then(() => done(true)).catch(() => done(false));
+            });
+            (async () => {
+                for (const base of candidates) {
+                    if (await reach(base)) {
+                        if (win) win.location = base; else window.open(base, '_blank');
+                        return;
+                    }
+                }
+                // Nothing answered: send it to the console address so the browser
+                // shows a real error rather than a blank tab.
+                const fallback = candidates[candidates.length - 1];
+                if (win) win.location = fallback; else window.open(fallback, '_blank');
+            })();
+            return false;
+        }
+
         // The banner used to be rendered into the page by Jinja. Fetched here
         // instead so the markup is a plain static file with no template engine
         // between it and the browser - which is what removes the whole class of

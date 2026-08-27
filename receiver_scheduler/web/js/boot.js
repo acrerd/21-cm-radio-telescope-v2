@@ -13,6 +13,8 @@
             fetch('/api/config').then(r => r.json()).then(cfg => {
                 soundEnabled = cfg.sound_enabled !== false;
             });
+            initHoverHelp();
+            showGuide('start');
         });
         document.getElementById('obsForm').addEventListener('submit', e => {
             e.preventDefault();

@@ -29,35 +29,39 @@
         </div>
         <div class="status-bar">
             <div class="status-group">
-                <div class="status-indicator">
+                <div class="status-indicator" data-help="Scheduler state: whether an observation is running now, and which one.">
                     <div class="status-dot" id="statusDot"></div>
                     <span id="statusText">Idle</span>
                 </div>
-                <div class="status-indicator">
+                <div class="status-indicator" data-help="Where the dish is pointing and what it is doing - homed, idle, slewing, or faulted.">
                     <div class="status-dot" id="telescopeDot"></div>
                     <span id="telescopeText">Telescope: --</span>
                 </div>
-                <div class="status-indicator">
+                <div class="status-indicator" data-help="Whether the receiver (software-defined radio) is busy, and whether an observation or a manual session owns it.">
                     <div class="status-dot" id="receiverDot"></div>
                     <span id="receiverText">Receiver: --</span>
                     <button class="btn btn-secondary" id="receiverBootBtn" onclick="bootReceiver()" title="Opens the receiver's Qt window on the observatory console, for warm-up and checking the band. Not part of the observing path, and it will fail over ssh - there is no display.">Start receiver GUI (console only)</button>
-                    <a class="btn btn-secondary" href="http://127.0.0.1:8080/" target="_blank" rel="noopener" title="Open the telescope controller web page in a new browser tab (mirrors the Scheduler link on the controller).">Open Controller</a>
+                    <a class="btn btn-secondary" href="http://192.168.50.120/" target="_blank" rel="noopener" onclick="return openController(event)" title="Open the telescope controller. Tries the remote ssh port-forward (127.0.0.1:8080) first, then the observatory-console address (192.168.50.120).">Open Controller</a>
                 </div>
             </div>
-            <div>
+            <div style="display:flex; align-items:center; gap:14px;">
+                <label class="help-toggle" title="Show a short explanation when you hover over a control. New to the telescope? Open the Guide tab.">
+                    <input type="checkbox" id="helpTipsToggle" onchange="setHelpEnabled(this.checked)"> Help tips
+                </label>
                 <button title="Stop the observation that is recording now. The file keeps what it has; the dish stows or homes if the entry asked for it." class="btn btn-danger" id="stopBtn" style="display:none" onclick="stopObs()">Stop</button>
             </div>
         </div>
         <div class="tabs">
-            <div class="tab active" onclick="switchTab('scheduler')">Scheduler</div>
-            <div class="tab" onclick="switchTab('sunscan')">Sun Scan</div>
-            <div class="tab" onclick="switchTab('horizon')">Horizon</div>
-            <div class="tab" onclick="switchTab('rf')">RF calibration</div>
-            <div class="tab" onclick="switchTab('camera')">Camera</div>
-            <div class="tab" onclick="switchTab('simulator')">Simulator</div>
-            <div class="tab" onclick="switchTab('observe')">Observe</div>
-            <div class="tab" onclick="switchTab('config')">Configuration</div>
-            <div class="tab" onclick="switchTab('log')">Log</div>
+            <div class="tab active" onclick="switchTab('scheduler')" data-help="Plan and run observations. This is the telescope's diary: each entry says what to observe, when, and how.">Scheduler</div>
+            <div class="tab" onclick="switchTab('sunscan')" data-help="Scan the Sun to measure and correct the mount's pointing, and to set the temperature (kelvin) scale.">Sun Scan</div>
+            <div class="tab" onclick="switchTab('horizon')" data-help="Map the obstructed skyline (trees, towers) radiometrically, so observations avoid pointing through warm obstructions.">Horizon</div>
+            <div class="tab" onclick="switchTab('rf')" data-help="Radio-frequency calibration: measure the receiver's bandpass shape and gain so spectra read in kelvin.">RF calibration</div>
+            <div class="tab" onclick="switchTab('camera')" data-help="A live still from the safety webcam watching the dish.">Camera</div>
+            <div class="tab" onclick="switchTab('simulator')" data-help="A planetarium for the telescope: the sky, horizon, Sun, Moon and bright sources, in real time. Use it to plan.">Simulator</div>
+            <div class="tab" onclick="switchTab('observe')" data-help="View recordings, plot spectra on a velocity axis, and fit calibration or drift models.">Observe</div>
+            <div class="tab" onclick="switchTab('config')" data-help="Site and receiver settings. Change with care - some settings invalidate the calibration.">Configuration</div>
+            <div class="tab" onclick="switchTab('log')" data-help="The operational log: a running record of what the telescope actually did.">Log</div>
+            <div class="tab" onclick="switchTab('guide')" title="How to operate the telescope, and the astronomy behind it. Start here." data-help="How to operate the telescope, and the astronomy behind it. New here? Start on this tab.">Guide</div>
         </div>
 
         <div class="tab-content active" id="tab-scheduler">
@@ -843,7 +847,7 @@
                     </div>
                     <div class="form-group">
                         <label>Duration (minutes)</label>
-                        <input autocomplete="off" type="number" id="obsDuration" min="1" max="1440" required onchange="updateEndTime()">
+                        <input autocomplete="off" type="number" id="obsDuration" min="1" max="1440" required onchange="updateEndTime()" data-help="How long to record. Longer means lower noise (the radiometer equation) but more mount time. A few minutes is plenty for the bright galactic plane.">
                     </div>
                     <div class="form-group">
                         <label>End Time <span class="unit">(local)</span></label>
@@ -857,7 +861,7 @@
                     <div class="form-grid">
                         <div class="form-group">
                             <label>Coordinate System</label>
-                            <select autocomplete="off" id="obsCoordSystem" onchange="updateCoordLabels()">
+                            <select autocomplete="off" id="obsCoordSystem" onchange="updateCoordLabels()" data-help="How you specify the target. Alt/Az and Drift Scan park the dish and let the sky drift through the beam; RA/Dec, Galactic, Famous and Object track a source as it moves. Calibration and Horizon are maintenance scans.">
                                 <option value="altaz">Alt/Az (Horizontal)</option>
                                 <option value="radec">RA/Dec (Equatorial J2000)</option>
                                 <option value="galactic">Galactic (l, b)</option>
@@ -1111,6 +1115,379 @@
         </div>
     </div>
 
+        <div class="tab-content" id="tab-guide">
+            <div class="guide-wrap">
+                <div class="guide-nav">
+                    <div class="guide-nav-group">Start</div>
+                    <button class="guide-nav-item active" data-guide="start" onclick="showGuide('start')">Getting started</button>
+                    <button class="guide-nav-item" data-guide="first" onclick="showGuide('first')">Your first observation</button>
+                    <div class="guide-nav-group">Operating</div>
+                    <button class="guide-nav-item" data-guide="scheduling" onclick="showGuide('scheduling')">Scheduling observations</button>
+                    <button class="guide-nav-item" data-guide="types" onclick="showGuide('types')">Tracked vs drift scan</button>
+                    <button class="guide-nav-item" data-guide="spectrum" onclick="showGuide('spectrum')">Reading a spectrum</button>
+                    <button class="guide-nav-item" data-guide="suncal" onclick="showGuide('suncal')">Sun scan &amp; calibration</button>
+                    <button class="guide-nav-item" data-guide="simhorizon" onclick="showGuide('simhorizon')">Simulator &amp; horizon</button>
+                    <div class="guide-nav-group">Theory</div>
+                    <button class="guide-nav-item" data-guide="line" onclick="showGuide('line')">The 21&nbsp;cm line</button>
+                    <button class="guide-nav-item" data-guide="velocity" onclick="showGuide('velocity')">Doppler &amp; velocity frames</button>
+                    <button class="guide-nav-item" data-guide="rotation" onclick="showGuide('rotation')">Galactic rotation</button>
+                    <button class="guide-nav-item" data-guide="beam" onclick="showGuide('beam')">The beam &amp; resolution</button>
+                    <button class="guide-nav-item" data-guide="temperature" onclick="showGuide('temperature')">Temperature &amp; noise</button>
+                    <button class="guide-nav-item" data-guide="pointing" onclick="showGuide('pointing')">Pointing &amp; calibration</button>
+                    <div class="guide-nav-group">Advanced (technical)</div>
+                    <button class="guide-nav-item" data-guide="adv-hyperfine" onclick="showGuide('adv-hyperfine')">Hyperfine transition</button>
+                    <button class="guide-nav-item" data-guide="adv-column" onclick="showGuide('adv-column')">Column density</button>
+                    <button class="guide-nav-item" data-guide="adv-rotation" onclick="showGuide('adv-rotation')">Rotation &amp; tangent point</button>
+                    <button class="guide-nav-item" data-guide="adv-antenna" onclick="showGuide('adv-antenna')">Antenna theorem</button>
+                    <button class="guide-nav-item" data-guide="adv-radiometer" onclick="showGuide('adv-radiometer')">T<sub>sys</sub> &amp; radiometry</button>
+                    <button class="guide-nav-item" data-guide="adv-calibration" onclick="showGuide('adv-calibration')">The calibration chain</button>
+                    <button class="guide-nav-item" data-guide="adv-frames" onclick="showGuide('adv-frames')">Frames &amp; pointing model</button>
+                    <button class="guide-nav-item" data-guide="adv-article" onclick="showGuide('adv-article')">Full technical article</button>
+                    <div class="guide-nav-group">Reference</div>
+                    <button class="guide-nav-item" data-guide="glossary" onclick="showGuide('glossary')">Glossary</button>
+                </div>
+                <div class="guide-content">
+
+                    <div class="guide-section active" id="guide-start">
+                        <h2>Getting started</h2>
+                        <p class="lead">This is a 3&nbsp;m dish radio telescope tuned to the 21&nbsp;cm line of neutral hydrogen. It maps hydrogen gas through the Galaxy and measures how fast that gas moves. It works by day and through cloud, because radio waves pass through the atmosphere and the Sun does not blind a radio receiver.</p>
+                        <h3>What the telescope is made of</h3>
+                        <ul>
+                            <li>A <strong>dish on an alt&ndash;azimuth mount</strong>: it points by swinging in azimuth (compass bearing) and altitude (angle above the horizon).</li>
+                            <li>A <strong>receiver</strong> (a software-defined radio) that records the radio spectrum around 1420&nbsp;MHz.</li>
+                            <li>Two web pages: this <strong>Scheduler</strong>, where you plan and run observations and look at the data, and the <strong>Controller</strong> (the <strong>Open Controller</strong> button at the top of the page), which drives the mount directly.</li>
+                        </ul>
+                        <h3>The status bar</h3>
+                        <p>The strip at the top of every tab always tells you the state of the system: whether an observation is <strong>running</strong>, where the <strong>telescope</strong> is pointing and whether it is slewing or homed, and whether the <strong>receiver</strong> is busy. Glance at it before you start anything.</p>
+                        <h3>Ground rules</h3>
+                        <div class="callout warn"><span class="tag">Be gentle with the mount</span>The dish is a real, wearing machine. It has hard limits in both axes and homes itself against them. Avoid needless slewing, and never assume it has finished moving &mdash; watch the status bar. If something looks wrong, the red <strong>Stop</strong> button halts the current run.</div>
+                        <div class="callout note"><span class="tag">Turn on Help tips</span>The <strong>Help tips</strong> switch at the top right shows a one-line explanation whenever you hover over a control. Leave it on while you are learning.</div>
+                        <p>When you are ready, read <span class="guide-jump" onclick="showGuide('first')">Your first observation</span>.</p>
+                    </div>
+
+                    <div class="guide-section" id="guide-first">
+                        <h2>Your first observation</h2>
+                        <p class="lead">A good first target is the <strong>galactic plane</strong>: it is full of hydrogen, so the line is strong and unmistakable. Here is the whole loop, start to finish.</p>
+                        <ol class="guide-steps">
+                            <li><strong>Check the telescope is ready.</strong> In the status bar, the <em>Telescope</em> indicator should say it is homed and idle, not faulted. If it has never been homed today, home it first (the schedule form has a <em>Home first</em> option).</li>
+                            <li><strong>See what is up.</strong> Open the <span class="guide-jump" onclick="guideGoto('simulator')">Simulator</span>. It shows the sky over the observatory now, the measured horizon, and where the bright sources and the galactic plane are. Pick a point on the plane that is well above the horizon.</li>
+                            <li><strong>Book it.</strong> On the <span class="guide-jump" onclick="guideGoto('scheduler')">Scheduler</span> tab, add an observation: choose the target, a start time, a duration (a few minutes is plenty for the plane), and whether to <em>track</em> it or take a <em>drift scan</em> (see <span class="guide-jump" onclick="showGuide('types')">Tracked vs drift scan</span>). Save it.</li>
+                            <li><strong>Let it run.</strong> At the start time the telescope slews, settles, and records. The status bar shows the running observation and offers <em>Stop</em>. It writes an HDF5 file you can open while it is still being written.</li>
+                            <li><strong>Look at the data.</strong> Open the <span class="guide-jump" onclick="guideGoto('observe')">Observe</span> tab and view the recording. You will see a spectrum with a peak near the hydrogen line. Read it on the velocity axis &mdash; see <span class="guide-jump" onclick="showGuide('spectrum')">Reading a spectrum</span>.</li>
+                        </ol>
+                        <div class="callout tip"><span class="tag">What success looks like</span>A clear bump rising out of the noise, within a few hundred km/s of zero. That bump is hydrogen gas in the Milky Way, Doppler-shifted by the Galaxy's rotation.</div>
+                    </div>
+
+                    <div class="guide-section" id="guide-scheduling">
+                        <h2>Scheduling observations</h2>
+                        <p>The <span class="guide-jump" onclick="guideGoto('scheduler')">Scheduler</span> tab is the diary of the telescope. Each entry says what to observe, when, for how long, and how. At the start time the scheduler slews the dish, waits for it to settle, runs the receiver, and stows or homes afterwards if you asked it to.</p>
+                        <h3>What goes in an entry</h3>
+                        <ul>
+                            <li><strong>Target.</strong> A named object (the Sun, the Moon), a fixed alt/az direction, an RA/Dec position, or galactic coordinates <em>l, b</em>.</li>
+                            <li><strong>Time and duration.</strong> When to start and how long to record. Longer means less noise (see <span class="guide-jump" onclick="showGuide('temperature')">Temperature &amp; noise</span>) but more mount time.</li>
+                            <li><strong>Mode.</strong> Track the source across the sky, or park and let it drift through the beam &mdash; <span class="guide-jump" onclick="showGuide('types')">Tracked vs drift scan</span>.</li>
+                            <li><strong>Respect local horizon.</strong> Leave this on: it keeps the dish from observing through the trees and dome towers, which are warm and would contaminate the data.</li>
+                        </ul>
+                        <div class="callout note"><span class="tag">One telescope, one user</span>Only one thing can hold the dish and receiver at a time: an observation, a Sun scan, a calibration, a horizon scan. A scheduled observation takes priority and will interrupt a calibration to run on time.</div>
+                        <div class="callout warn"><span class="tag">The tuning is fixed</span>Every scheduled observation records with the same receiver setup (the &ldquo;fixed instrument&rdquo;), chosen so the hydrogen line always lands in a clean part of the band. You do not set the frequency per observation; it is shown for reference only.</div>
+                    </div>
+
+                    <div class="guide-section" id="guide-types">
+                        <h2>Tracked vs drift scan</h2>
+                        <p class="lead">The most important choice in an observation is whether the dish follows the source or stays still. It decides what successive rows of the data mean.</p>
+                        <h3>Tracked observation</h3>
+                        <p>The mount continuously re-points to keep the source in the beam as the Earth turns. Every spectrum in the file looks at the <strong>same piece of sky</strong>, so you can add them up to beat down the noise and study one direction deeply. Use it to measure the hydrogen profile of a chosen point.</p>
+                        <h3>Drift scan</h3>
+                        <p>The mount is parked at a fixed spot and the sky <strong>drifts through the beam</strong> as the Earth rotates (about 15&deg; per hour, so a 5&deg; beam takes ~20&nbsp;minutes to cross). Successive spectra look at <strong>different sky</strong>: the source rises in signal as it enters the beam, peaks at the centre, and falls as it leaves. Use it to measure a source's brightness and the beam's shape, with the mount barely moving.</p>
+                        <div class="callout note"><span class="tag">Why the distinction is recorded</span>The file stores <code>track</code> or <code>drift</code> as the observation mode, because it is the difference between &ldquo;these rows are the same sky&rdquo; and &ldquo;these rows are a cut across the sky.&rdquo; An alt/az &ldquo;fixed direction&rdquo; entry is a drift scan.</div>
+                    </div>
+
+                    <div class="guide-section" id="guide-spectrum">
+                        <h2>Reading a spectrum</h2>
+                        <p>Open a recording from the <span class="guide-jump" onclick="guideGoto('observe')">Observe</span> tab. The plot is <strong>power against velocity</strong> (or frequency). The hydrogen line appears as one or more bumps above a flat baseline.</p>
+                        <h3>The axes</h3>
+                        <ul>
+                            <li><strong>Horizontal:</strong> the recorded axis is frequency, but it is shown as a <strong>velocity</strong> in km/s, because that is what tells you about the gas. Zero velocity is the rest frequency of the line, 1420.405751&nbsp;MHz.</li>
+                            <li><strong>Vertical:</strong> received power. Once the telescope is calibrated this is an <strong>antenna temperature</strong> in kelvin (see <span class="guide-jump" onclick="showGuide('temperature')">Temperature &amp; noise</span>); before that it is raw counts.</li>
+                        </ul>
+                        <h3>Which velocity frame</h3>
+                        <p>The plot uses the <strong>LSR</strong> (Local Standard of Rest) frame whenever the direction and time are known, so your measurement can be compared with published data and with the same source months later. The raw file stays in the telescope's own (topocentric) frame; the conversion is done only for display. The plot labels which frame it is in &mdash; details in <span class="guide-jump" onclick="showGuide('velocity')">Doppler &amp; velocity frames</span>.</p>
+                        <h3>Making sense of the shape</h3>
+                        <p>Along a line of sight through the Galaxy you look through gas at many distances, each moving at a different speed, so the line is a <strong>blend</strong> of contributions at different velocities. Multiple peaks mean multiple clouds or spiral arms along the way. The velocity of a peak, through the Galaxy's rotation, encodes <em>where</em> that gas is &mdash; see <span class="guide-jump" onclick="showGuide('rotation')">Galactic rotation</span>.</p>
+                    </div>
+
+                    <div class="guide-section" id="guide-suncal">
+                        <h2>Sun scan &amp; calibration</h2>
+                        <p>Two things must be true before your numbers mean anything: the dish must point where it says it does, and received counts must convert to a real temperature. Both are settled by looking at the <strong>Sun</strong>, which is a strong, well-known radio source.</p>
+                        <h3>Pointing</h3>
+                        <p>On the <span class="guide-jump" onclick="guideGoto('sunscan')">Sun Scan</span> tab the telescope rasters a small grid around the Sun and finds where the signal actually peaks. The offset between that and where it aimed is a pointing error. Collect these over a range of Sun positions and fit a <strong>pointing model</strong> that corrects the mount everywhere &mdash; see <span class="guide-jump" onclick="showGuide('pointing')">Pointing &amp; calibration</span>.</p>
+                        <h3>Temperature scale</h3>
+                        <p>The same measurement gives the <strong>gain</strong> (counts per kelvin) and the <strong>system temperature</strong> <span class="var">T</span><sub>sys</sub>, which together put spectra on a kelvin scale. Because the receiver cools through the evening the gain drifts a little, so calibrate close in time to the observation that needs absolute temperatures.</p>
+                        <div class="callout note"><span class="tag">Why the Sun, and not hydrogen</span>Calibrating a hydrogen measurement against a hydrogen model would be circular. The Sun is an independent, broadband source, so it is an honest ruler for both pointing and temperature.</div>
+                    </div>
+
+                    <div class="guide-section" id="guide-simhorizon">
+                        <h2>Simulator &amp; horizon</h2>
+                        <h3>The Simulator</h3>
+                        <p>The <span class="guide-jump" onclick="guideGoto('simulator')">Simulator</span> is a planetarium for the telescope. It draws the sky over the observatory in real time: the horizon, the galactic plane, the Sun and Moon, and the bright radio sources. Use it to see what is observable now, to understand what a target will do during your observation, and to picture what the beam is sweeping up.</p>
+                        <h3>The measured horizon</h3>
+                        <p>Trees, the roofline and the dome towers are <strong>warm</strong> at 1420&nbsp;MHz &mdash; foliage glows at roughly room temperature in the radio &mdash; so pointing the beam through them injects a large false signal. The <span class="guide-jump" onclick="guideGoto('horizon')">Horizon</span> tab maps this obstructed skyline radiometrically. The orange line on the Simulator is that measurement, and it is the rule that decides whether a target is high enough to observe cleanly.</p>
+                        <div class="callout tip"><span class="tag">Rule of thumb</span>If a target sits below the orange horizon line in the Simulator, the trees will be in the beam. Wait for it to rise, or pick another target.</div>
+                    </div>
+
+                    <div class="guide-section" id="guide-line">
+                        <h2>The 21&nbsp;cm line</h2>
+                        <p class="lead">Neutral hydrogen atoms &mdash; a single proton and electron &mdash; emit a faint radio line at a precise frequency. It is the single most useful spectral line in radio astronomy, and it is what this telescope is built to detect.</p>
+                        <h3>Where it comes from</h3>
+                        <p>In the ground state of hydrogen the electron and proton spins can be <strong>parallel</strong> (slightly higher energy) or <strong>antiparallel</strong> (slightly lower). When an atom flips from parallel to antiparallel it releases the tiny energy difference as a photon:</p>
+                        <div class="eqn"><span class="var">&nu;</span><sub>0</sub> = 1420.405751&nbsp;MHz,&nbsp;&nbsp; <span class="var">&lambda;</span> = <span class="var">c</span>/<span class="var">&nu;</span><sub>0</sub> &asymp; 21.1&nbsp;cm,&nbsp;&nbsp; <span class="var">E</span> = <span class="var">h&nu;</span><sub>0</sub> &asymp; 5.9&nbsp;&mu;eV</div>
+                        <p>This is a <strong>forbidden</strong> transition: a single atom waits, on average, about <strong>11 million years</strong> to flip on its own. The line is bright only because the Galaxy contains an enormous amount of hydrogen &mdash; there are so many atoms along any line of sight that a steady trickle of photons adds up to an easily detectable signal.</p>
+                        <h3>What it tells you</h3>
+                        <p>Where the gas is optically thin (usually the case), the brightness of the line is proportional to how many hydrogen atoms lie along the line of sight &mdash; the <strong>column density</strong>:</p>
+                        <div class="eqn"><span class="var">N</span><sub>H</sub> &asymp; 1.82&times;10<sup>18</sup> &int; <span class="var">T</span><sub>B</sub>(<span class="var">v</span>) d<span class="var">v</span> &nbsp;&nbsp;<small>[cm<sup>&minus;2</sup>, with T<sub>B</sub> in K and v in km/s]</small></div>
+                        <p>So the <em>strength</em> of the line measures how much gas there is, and its <strong>Doppler shift</strong> measures how fast that gas is moving &mdash; which, through the rotation of the Galaxy, reveals where it is. Those two facts are the whole basis of 21&nbsp;cm astronomy.</p>
+                        <div class="callout note"><span class="tag">Why 1420 MHz is protected</span>This frequency is reserved for radio astronomy by international agreement, so terrestrial transmitters may not sit on the hydrogen line.</div>
+                    </div>
+
+                    <div class="guide-section" id="guide-velocity">
+                        <h2>Doppler &amp; velocity frames</h2>
+                        <p class="lead">The line is emitted at a fixed frequency, so any shift you observe is caused by motion along the line of sight. Reading it correctly means knowing what the telescope's own motion contributes.</p>
+                        <h3>The Doppler shift</h3>
+                        <p>Gas moving away from you stretches the wave to a lower frequency (redshift); gas moving toward you compresses it to a higher frequency (blueshift). For the speeds involved here (&ll;&nbsp;<span class="var">c</span>) the radial velocity is</p>
+                        <div class="eqn"><span class="var">v</span><sub>r</sub> / <span class="var">c</span> = (<span class="var">&nu;</span><sub>0</sub> &minus; <span class="var">&nu;</span>) / <span class="var">&nu;</span><sub>0</sub> = &Delta;<span class="var">&lambda;</span> / <span class="var">&lambda;</span></div>
+                        <span class="eqn-where">Positive <span class="var">v</span><sub>r</sub> means the gas is receding (lower observed frequency). Converting the frequency axis this way gives the velocity axis you read on a spectrum.</span>
+                        <h3>Why the frame matters</h3>
+                        <p>Your telescope is not a fixed platform. It spins with the Earth (~0.5&nbsp;km/s), orbits the Sun (~30&nbsp;km/s), and the Sun itself moves. All of that is folded into the raw (<strong>topocentric</strong>) velocity, up to about <strong>&plusmn;30&nbsp;km/s</strong> depending on the direction and the date. Observe the same cloud six months apart and the raw peak would sit at two different velocities &mdash; useless for comparison.</p>
+                        <h3>The Local Standard of Rest</h3>
+                        <p>The fix is to refer everything to the <strong>LSR</strong>: the average motion of stars in the Sun's neighbourhood, a steady local reference. The software computes the projection of the observer's motion toward the target at the observation's own time and subtracts it, so the plotted axis is what an observer at rest in the LSR would measure. The raw recording is left untouched; only the display is converted, and it is labelled with the frame it is in.</p>
+                        <div class="callout tip"><span class="tag">The anticentre check</span>Toward the galactic anticentre (<span class="var">l</span>&nbsp;=&nbsp;180&deg;) rotation contributes no radial velocity, so the line should sit near 0&nbsp;km/s in the LSR. A measurement here landed at +3.75&nbsp;km/s against a survey value of +3.97 &mdash; agreement to 0.2&nbsp;km/s, from 15&nbsp;km/s before the frame correction.</div>
+                    </div>
+
+                    <div class="guide-section" id="guide-rotation">
+                        <h2>Galactic rotation</h2>
+                        <p class="lead">The Milky Way rotates, and it does not turn as a rigid wheel: gas at different radii moves at different speeds. That differential rotation turns a velocity measurement into a map.</p>
+                        <h3>Radial velocity along a sight line</h3>
+                        <p>Look into the galactic plane at longitude <span class="var">l</span>. Gas at galactocentric radius <span class="var">R</span>, orbiting at speed <span class="var">V</span>(<span class="var">R</span>), has a line-of-sight velocity relative to the LSR of</p>
+                        <div class="eqn"><span class="var">v</span><sub>r</sub> = <span class="var">R</span><sub>0</sub> ( <span class="var">V</span>(<span class="var">R</span>)/<span class="var">R</span> &minus; <span class="var">V</span><sub>0</sub>/<span class="var">R</span><sub>0</sub> ) sin&nbsp;<span class="var">l</span></div>
+                        <span class="eqn-where"><span class="var">R</span><sub>0</sub> &asymp; 8.2&nbsp;kpc is the Sun's distance from the centre and <span class="var">V</span><sub>0</sub> &asymp; 235&nbsp;km/s its orbital speed. The sin&nbsp;<span class="var">l</span> is why gas toward the centre (<span class="var">l</span>=0) and anticentre (<span class="var">l</span>=180&deg;) shows little shift, while gas at <span class="var">l</span>=90&deg; shows the most.</span>
+                        <h3>The tangent-point method</h3>
+                        <p>Inside the Sun's orbit, along one sight line, the largest radial velocity comes from the <strong>tangent point</strong>, where the line of sight is exactly along the gas's motion and <span class="var">R</span>&nbsp;=&nbsp;<span class="var">R</span><sub>0</sub> sin&nbsp;<span class="var">l</span>. Reading the maximum velocity of the line at each longitude therefore samples the <strong>rotation curve</strong> <span class="var">V</span>(<span class="var">R</span>), longitude by longitude.</p>
+                        <div class="callout note"><span class="tag">Where dark matter shows up</span>The rotation curve stays roughly <strong>flat</strong> (~235&nbsp;km/s) far beyond where the visible mass thins out. Newtonian gravity from the stars alone predicts it should fall. The gap is one of the classic pieces of evidence for dark matter, and it shows in data from this telescope.</div>
+                    </div>
+
+                    <div class="guide-section" id="guide-beam">
+                        <h2>The beam &amp; resolution</h2>
+                        <p class="lead">A dish does not see a point &mdash; it sees a cone of sky. How wide that cone is sets what you can and cannot tell apart.</p>
+                        <h3>Angular resolution</h3>
+                        <p>Diffraction blurs any aperture. For a dish of diameter <span class="var">D</span> observing wavelength <span class="var">&lambda;</span>, the beam width is about</p>
+                        <div class="eqn"><span class="var">&theta;</span> &asymp; <span class="var">&lambda;</span> / <span class="var">D</span> &nbsp;(radians) &nbsp;=&nbsp; 0.211&nbsp;m / 3&nbsp;m &asymp; 0.07&nbsp;rad &asymp; 4&deg;</div>
+                        <span class="eqn-where">In practice this dish's beam is measured at about <strong>5&deg;</strong> across (full width at half maximum). That is roughly ten times the width of the full Moon.</span>
+                        <h3>What that means for you</h3>
+                        <ul>
+                            <li>The telescope <strong>cannot resolve</strong> individual clouds; it averages everything within ~5&deg; into one measurement.</li>
+                            <li>A source smaller than the beam (like the Sun, half a degree across) is smeared out to the beam's width &mdash; that smearing <em>is</em> the beam shape, which a drift scan measures.</li>
+                            <li>To point and calibrate well you must know the beam, because it sets how much of a source's signal you actually collect.</li>
+                        </ul>
+                        <div class="callout note"><span class="tag">A wide beam is not a handicap here</span>A wide beam is poor for imaging but good for surveying diffuse gas. The Milky Way's hydrogen fills the sky on scales far larger than 5&deg;, so a dish this size maps it well.</div>
+                    </div>
+
+                    <div class="guide-section" id="guide-temperature">
+                        <h2>Temperature &amp; noise</h2>
+                        <p class="lead">Radio astronomers measure power as a temperature. Two equations set what you can detect, and how long it takes.</p>
+                        <h3>Antenna temperature</h3>
+                        <p>In the radio, the power a receiver collects in a bandwidth <span class="var">&Delta;&nu;</span> is proportional to a temperature (the Rayleigh&ndash;Jeans law), so signals are quoted in <strong>kelvin</strong>:</p>
+                        <div class="eqn"><span class="var">P</span> = <span class="var">k</span><sub>B</sub> <span class="var">T</span> <span class="var">&Delta;&nu;</span></div>
+                        <p>The telescope always measures the <strong>sum</strong> of the sky signal and the receiver's own noise. The receiver noise is captured by the <strong>system temperature</strong> <span class="var">T</span><sub>sys</sub> (a few hundred kelvin for this instrument); the source adds an <strong>antenna temperature</strong> <span class="var">T</span><sub>A</sub> on top.</p>
+                        <h3>The radiometer equation</h3>
+                        <p>You cannot measure <span class="var">T</span><sub>A</sub> perfectly, because the total power fluctuates. The noise on a measurement falls as you average more:</p>
+                        <div class="eqn">&Delta;<span class="var">T</span> = <span class="var">T</span><sub>sys</sub> / &radic;( <span class="var">&Delta;&nu;</span> &middot; <span class="var">&tau;</span> )</div>
+                        <span class="eqn-where"><span class="var">&Delta;&nu;</span> is the channel bandwidth and <span class="var">&tau;</span> the integration time. Doubling the time cuts the noise by &radic;2; a faint line that is buried at one minute can emerge after ten. This single relation is why radio observations integrate for a long time.</span>
+                        <div class="callout tip"><span class="tag">Practical consequence</span>If your line is lost in the noise, the first thing to try is a longer observation. The second is to add spectra from a tracked run &mdash; same sky, more time.</div>
+                        <div class="callout note"><span class="tag">The catch for total power</span>For a broadband (band-integrated) measurement, receiver gain also drifts, adding a term that averaging cannot remove: &Delta;<span class="var">T</span>/<span class="var">T</span><sub>sys</sub> = &radic;( 1/(<span class="var">&Delta;&nu;&tau;</span>) + (&Delta;<span class="var">G</span>/<span class="var">G</span>)&sup2; ). It is why per-channel line work is easier than absolute continuum work.</div>
+                    </div>
+
+                    <div class="guide-section" id="guide-pointing">
+                        <h2>Pointing &amp; calibration</h2>
+                        <p class="lead">Two corrections stand between raw hardware and trustworthy numbers: making the dish point true, and turning counts into kelvin.</p>
+                        <h3>Why a mount mispoints</h3>
+                        <p>No real mount is perfect. Its azimuth axis is slightly tilted, its zero points are offset, the structure flexes under gravity, and the feed is not perfectly centred. Left uncorrected these add up to a degree or more &mdash; a large fraction of the beam. A <strong>pointing model</strong> describes these errors with a handful of terms (axis tilts, index offsets, collimation) fitted from Sun scans, and the controller applies it to every command so the beam lands where you asked.</p>
+                        <div class="callout note"><span class="tag">Judge a model by prediction</span>A pointing model is good if it <em>predicts</em> where a source will be on a day it was not fitted to &mdash; not because any single term looks reasonable. This telescope's model predicts blind to about 0.03&deg;, a small fraction of the beam.</div>
+                        <h3>From counts to kelvin</h3>
+                        <p>A raw spectrum is in arbitrary receiver counts. Two measurements fix the scale: the <strong>gain</strong> <span class="var">G</span> (counts per kelvin) and the <strong>system temperature</strong> <span class="var">T</span><sub>sys</sub>, both from a Sun scan against the known solar flux. Then</p>
+                        <div class="eqn"><span class="var">T</span><sub>A</sub> = (counts) / <span class="var">G</span> &minus; <span class="var">T</span><sub>sys</sub></div>
+                        <p>There is also a fixed <strong>bandpass</strong> shape &mdash; the receiver is more sensitive at some frequencies than others &mdash; which is measured and divided out so a flat sky looks flat. With pointing, bandpass and gain all in hand, a spectrum becomes a real map of hydrogen temperature versus velocity.</p>
+                        <div class="callout tip"><span class="tag">An external check</span>Put through this chain, the telescope measured the Sun at 112 solar flux units against a reference network's 88&ndash;108 that day &mdash; agreement within the network's own spread, and an end-to-end test of the whole calibration.</div>
+                    </div>
+
+                    <div class="guide-section" id="guide-adv-hyperfine">
+                        <h2>The hyperfine transition</h2>
+                        <p class="lead">The 21&nbsp;cm line is one precise change in a hydrogen atom: the electron's spin flips relative to the proton's. This is where the number comes from, and why the line is bright enough to see.</p>
+                        <h3>Two levels, one photon</h3>
+                        <p>Neutral hydrogen in its ground state has two hyperfine levels, split by whether the proton and electron spins are parallel (<span class="var">F</span>=1) or antiparallel (<span class="var">F</span>=0):</p>
+                        <div class="eqn"><span class="var">&nu;</span><sub>0</sub> = 1420.405751768&nbsp;MHz,&nbsp;&nbsp; <span class="var">&lambda;</span><sub>0</sub> = 21.106&nbsp;cm</div>
+                        <p>The transition is magnetic-dipole and strongly forbidden. Its Einstein coefficient is</p>
+                        <div class="eqn"><span class="var">A</span><sub>10</sub> = 2.869&times;10<sup>&minus;15</sup>&nbsp;s<sup>&minus;1</sup></div>
+                        <p>so a single atom radiates about <strong>once every 11 million years</strong>. We see the line only because the Galaxy holds of order 10<sup>10</sup>&nbsp;<span class="var">M</span><sub>&#8857;</sub> of neutral hydrogen, and because collisions keep the two levels near thermal equilibrium at a <strong>spin temperature</strong> <span class="var">T</span><sub>s</sub>.</p>
+                        <h3>Why it measures amount, not temperature</h3>
+                        <p>The level populations follow</p>
+                        <div class="eqn"><span class="var">n</span><sub>1</sub>/<span class="var">n</span><sub>0</sub> = 3&nbsp;exp(&minus;<span class="var">h&nu;</span><sub>0</sub>/<span class="var">kT</span><sub>s</sub>)</div>
+                        <span class="eqn-where">Since <span class="var">h&nu;</span><sub>0</sub>/<span class="var">k</span> = 0.068&nbsp;K is far below any astrophysical temperature, the exponential is &asymp;1 and the ratio is 3 to a part in a thousand.</span>
+                        <p>Three quarters of all H&nbsp;I atoms sit in the upper state at any moment, <strong>whatever the temperature</strong>. That is why 21&nbsp;cm emission measures <em>how much</em> hydrogen lies along the line of sight, almost independently of how hot it is &mdash; the property that makes it such a clean tracer of galactic structure.</p>
+                    </div>
+
+                    <div class="guide-section" id="guide-adv-column">
+                        <h2>Column density &amp; optical depth</h2>
+                        <p>The brightness temperature seen along a line of sight is set by the spin temperature and the optical depth <span class="var">&tau;</span><sub>&nu;</sub>:</p>
+                        <div class="eqn"><span class="var">T</span><sub>B</sub> = <span class="var">T</span><sub>s</sub> ( 1 &minus; <span class="var">e</span><sup>&minus;<span class="var">&tau;</span><sub>&nu;</sub></sup> )</div>
+                        <p>For the <strong>optically thin</strong> case (<span class="var">&tau;</span><sub>&nu;</sub> &ll; 1), which holds for most directions away from the inner plane, this becomes <span class="var">T</span><sub>B</sub> &asymp; <span class="var">T</span><sub>s</sub><span class="var">&tau;</span><sub>&nu;</sub> and the integral over the line profile gives the <strong>column density</strong> directly:</p>
+                        <div class="eqn"><span class="var">N</span><sub>H&nbsp;I</sub> = 1.823&times;10<sup>18</sup> &int; <span class="var">T</span><sub>B</sub> d<span class="var">v</span> &nbsp;&nbsp;<small>[cm<sup>&minus;2</sup>, T<sub>B</sub> in K, v in km/s]</small></div>
+                        <p>This is the single most useful result in 21&nbsp;cm astronomy, and it is why spectra must be stored in <strong>linear power and calibrated in kelvin</strong>, never in decibels &mdash; the integral of a logarithm means nothing.</p>
+                        <h3>What to expect</h3>
+                        <p>Typical values for the directions this telescope can reach:</p>
+                        <table style="width:100%; border-collapse:collapse; margin:10px 0; font-size:13.5px;">
+                            <tr style="color:#7fdcff; text-align:left; border-bottom:1px solid #24304f;"><th style="padding:5px 8px;">Direction</th><th>Peak T<sub>B</sub></th><th>&int;T<sub>B</sub>&nbsp;dv</th><th>N<sub>H&nbsp;I</sub> (cm<sup>&minus;2</sup>)</th></tr>
+                            <tr style="border-bottom:1px solid #17203a;"><td style="padding:5px 8px;">Inner plane, b=0</td><td>80&ndash;120&nbsp;K</td><td>500&ndash;1600</td><td>1&ndash;3&times;10<sup>21</sup></td></tr>
+                            <tr style="border-bottom:1px solid #17203a;"><td style="padding:5px 8px;">Outer plane / anticentre</td><td>50&ndash;80&nbsp;K</td><td>300&ndash;700</td><td>0.5&ndash;1.3&times;10<sup>21</sup></td></tr>
+                            <tr style="border-bottom:1px solid #17203a;"><td style="padding:5px 8px;">Mid-latitude, |b|~30&deg;</td><td>5&ndash;15&nbsp;K</td><td>100&ndash;300</td><td>2&ndash;5&times;10<sup>20</sup></td></tr>
+                            <tr><td style="padding:5px 8px;">Coldest high-latitude sky</td><td>1&ndash;3&nbsp;K</td><td>30&ndash;80</td><td>0.6&ndash;1.5&times;10<sup>20</sup></td></tr>
+                        </table>
+                        <div class="callout note"><span class="tag">Beam averaging</span>The ~5&deg; beam never resolves individual clouds: it measures the column density averaged over a patch of Galaxy some 5&deg; across &mdash; hundreds of parsecs at the inner Galaxy. The profile it records is the superposition of everything along the sight line, separated only in velocity, which is exactly what the tangent-point method exploits.</div>
+                    </div>
+
+                    <div class="guide-section" id="guide-adv-rotation">
+                        <h2>Galactic rotation &amp; the tangent-point method</h2>
+                        <p>Because the line is intrinsically narrow, its observed frequency encodes the gas's radial velocity, and galactic rotation turns that velocity into a position. For gas in circular rotation in the plane at galactocentric radius <span class="var">R</span>, seen at longitude <span class="var">l</span>:</p>
+                        <div class="eqn"><span class="var">v</span><sub>LSR</sub> = <span class="var">R</span><sub>0</sub> sin&nbsp;<span class="var">l</span> [ <span class="var">V</span>(<span class="var">R</span>)/<span class="var">R</span> &minus; <span class="var">V</span><sub>0</sub>/<span class="var">R</span><sub>0</sub> ]</div>
+                        <span class="eqn-where"><span class="var">R</span><sub>0</sub> &asymp; 8.2&nbsp;kpc is the Sun's galactocentric distance and <span class="var">V</span><sub>0</sub> &asymp; 235&nbsp;km/s the local circular speed.</span>
+                        <h3>The tangent point</h3>
+                        <p>In the first quadrant (0&deg; &lt; <span class="var">l</span> &lt; 90&deg;) the line of sight reaches a minimum radius &mdash; the <strong>tangent point</strong>, at <span class="var">R</span> = <span class="var">R</span><sub>0</sub> sin&nbsp;<span class="var">l</span> &mdash; where the whole circular velocity lies along the sight line. That gas gives the extreme (<em>terminal</em>) velocity in the profile, and the equation collapses to</p>
+                        <div class="eqn"><span class="var">V</span>(<span class="var">R</span><sub>0</sub> sin&nbsp;<span class="var">l</span>) = <span class="var">v</span><sub>max</sub>(<span class="var">l</span>) + <span class="var">V</span><sub>0</sub> sin&nbsp;<span class="var">l</span></div>
+                        <p>Measuring the terminal velocity as a function of longitude traces the <strong>rotation curve directly</strong> &mdash; no distance ladder, no assumption beyond circular rotation. This is the classic experiment for a telescope this size, and everything else in the system exists to make it possible: the pointing must be good to a fraction of the beam so <span class="var">l</span> means what it says, the clock must be right, and the velocity axis must be corrected to the LSR or the curve acquires an annual wobble of up to 30&nbsp;km/s.</p>
+                        <div class="callout note"><span class="tag">Why the channels are so fine</span>The 2.4&nbsp;MHz band spans &plusmn;253&nbsp;km/s, comfortably over the &plusmn;150&nbsp;km/s galactic rotation produces. The 586&nbsp;Hz channels are 0.124&nbsp;km/s &mdash; some 80&times; finer than a typical 10&nbsp;km/s line component. That is deliberate: channels can be averaged after the fact but never un-averaged, and smoothing to 10&nbsp;km/s buys a factor of nine in sensitivity.</div>
+                    </div>
+
+                    <div class="guide-section" id="guide-adv-antenna">
+                        <h2>The antenna theorem &amp; sensitivity</h2>
+                        <p>The dish's geometric area is <span class="var">A</span><sub>g</sub> = <span class="var">&pi;D</span>&sup2;/4 = 7.07&nbsp;m&sup2;. What it actually collects &mdash; the <strong>effective area</strong> &mdash; follows from the beam through the antenna theorem <span class="var">A</span><sub>e</sub><span class="var">&Omega;</span><sub>A</sub> = <span class="var">&lambda;</span>&sup2;:</p>
+                        <div class="eqn"><span class="var">A</span><sub>e</sub> = <span class="var">&lambda;</span>&sup2;<span class="var">&eta;</span><sub>MB</sub> / (1.133&nbsp;<span class="var">&theta;</span><sub>FWHM</sub>&sup2;) = 3.74&nbsp;m&sup2;</div>
+                        <span class="eqn-where">with main-beam efficiency <span class="var">&eta;</span><sub>MB</sub> &asymp; 0.7. That is an aperture efficiency <span class="var">&eta;</span><sub>A</sub> = <span class="var">A</span><sub>e</sub>/<span class="var">A</span><sub>g</sub> = 0.53, reasonable for a prime-focus dish with a simple feed.</span>
+                        <p>The sensitivity in kelvin per jansky, and its reciprocal the system-equivalent flux density, are then</p>
+                        <div class="eqn"><span class="var">&Gamma;</span> = <span class="var">A</span><sub>e</sub>/2<span class="var">k</span> = 1.35&nbsp;mK&nbsp;Jy<sup>&minus;1</sup>,&nbsp;&nbsp;&nbsp; SEFD = 2<span class="var">kT</span><sub>sys</sub>/<span class="var">A</span><sub>e</sub> &asymp; 5.2&times;10<sup>4</sup>&nbsp;Jy&nbsp;<small>(at T<sub>sys</sub>=70&nbsp;K)</small></div>
+                        <p>Fifty thousand janskys is a large number, and it says plainly that this is a small telescope: only a handful of the brightest radio sources are detectable in continuum at all.</p>
+                        <h3>Beam dilution &amp; expected signals</h3>
+                        <p>An unresolved source of solid angle <span class="var">&Omega;</span><sub>s</sub> is diluted to <span class="var">T</span><sub>A</sub> &asymp; <span class="var">&eta;</span><sub>MB</sub> <span class="var">T</span><sub>B</sub> <span class="var">&Omega;</span><sub>s</sub>/<span class="var">&Omega;</span><sub>b</sub>. The Sun's 0.53&deg; disc fills only ~0.8% of the 27&nbsp;deg&sup2; beam, but its 21&nbsp;cm brightness is ~10<sup>5</sup>&nbsp;K, so it still arrives at ~10<sup>3</sup>&nbsp;K &mdash; far above everything else in the sky.</p>
+                        <table style="width:100%; border-collapse:collapse; margin:10px 0; font-size:13.5px;">
+                            <tr style="color:#7fdcff; text-align:left; border-bottom:1px solid #24304f;"><th style="padding:5px 8px;">Source</th><th>S or T<sub>B</sub></th><th>T<sub>A</sub></th><th>Y (vs blank sky)</th></tr>
+                            <tr style="border-bottom:1px solid #17203a;"><td style="padding:5px 8px;">Sun (quiet)</td><td>5&times;10<sup>5</sup>&nbsp;Jy</td><td>677&nbsp;K</td><td>10.7</td></tr>
+                            <tr style="border-bottom:1px solid #17203a;"><td style="padding:5px 8px;">Cassiopeia&nbsp;A</td><td>1660&nbsp;Jy</td><td>2.25&nbsp;K</td><td>1.032</td></tr>
+                            <tr style="border-bottom:1px solid #17203a;"><td style="padding:5px 8px;">Cygnus&nbsp;A</td><td>1590&nbsp;Jy</td><td>2.15&nbsp;K</td><td>1.031</td></tr>
+                            <tr style="border-bottom:1px solid #17203a;"><td style="padding:5px 8px;">Moon</td><td>890&nbsp;Jy</td><td>1.20&nbsp;K</td><td>1.017</td></tr>
+                            <tr style="border-bottom:1px solid #17203a;"><td style="padding:5px 8px;">H&nbsp;I, inner plane</td><td>80&ndash;120&nbsp;K</td><td>55&ndash;85&nbsp;K</td><td>1.8&ndash;2.2</td></tr>
+                            <tr><td style="padding:5px 8px;">H&nbsp;I, high latitude</td><td>1&ndash;3&nbsp;K</td><td>0.7&ndash;2.1&nbsp;K</td><td>1.01&ndash;1.03</td></tr>
+                        </table>
+                        <p>Note the dynamic range: the Sun raises the total power tenfold; the next brightest object in the sky raises it by three per cent. That asymmetry is what makes calibration hard &mdash; see <span class="guide-jump" onclick="showGuide('adv-calibration')">The calibration chain</span>.</p>
+                    </div>
+
+                    <div class="guide-section" id="guide-adv-radiometer">
+                        <h2>System temperature &amp; radiometry</h2>
+                        <h3>The noise budget</h3>
+                        <p>The telescope always measures the source signal on top of the receiver's own noise, the <strong>system temperature</strong>. The blank-sky budget is about 70&nbsp;K:</p>
+                        <ul>
+                            <li><strong>Low-noise amplifier &mdash; 43&nbsp;K.</strong> From the SAWbird+&nbsp;H1 noise figure <span class="var">F</span>&asymp;0.6&nbsp;dB: <span class="var">T</span><sub>rx</sub> = <span class="var">T</span><sub>0</sub>(10<sup><span class="var">F</span>/10</sup>&minus;1) = 290(10<sup>0.06</sup>&minus;1) = 43&nbsp;K.</li>
+                            <li><strong>Sky &mdash; 10&nbsp;K</strong> (CMB, atmosphere, galactic background).</li>
+                            <li><strong>Spillover &amp; feed losses &mdash; 17&nbsp;K</strong> (ground pickup past the dish edge).</li>
+                        </ul>
+                        <h3>The radiometer equation</h3>
+                        <p>The RMS fluctuation in one channel of width <span class="var">&Delta;&nu;</span> after integrating for <span class="var">&tau;</span> is</p>
+                        <div class="eqn">&Delta;<span class="var">T</span> = ( <span class="var">T</span><sub>sys</sub> + <span class="var">T</span><sub>A</sub> ) / &radic;( <span class="var">n</span><sub>pol</sub> <span class="var">&Delta;&nu; &tau;</span> )</div>
+                        <span class="eqn-where">The source appears in the numerator because it is itself noise: a channel on a bright line fluctuates more than one beside it. For this single-polarisation receiver <span class="var">n</span><sub>pol</sub>=1.</span>
+                        <p>Worked example, at 586&nbsp;Hz channels and <span class="var">T</span><sub>sys</sub>=200&nbsp;K: &Delta;<span class="var">T</span> = 200/&radic;(586&times;60) = <strong>1.1&nbsp;K per channel in one minute</strong>. Low-latitude H&nbsp;I reaches tens of kelvin, so it shows in a single minute; a few-kelvin high-latitude profile needs tens of minutes &mdash; and this equation is how you plan that.</p>
+                        <div class="callout note"><span class="tag">Total-power instability</span>The ideal above misses gain drift. The practical form is &Delta;<span class="var">T</span>/<span class="var">T</span><sub>sys</sub> = &radic;( 1/(<span class="var">&Delta;&nu;&tau;</span>) + (&Delta;<span class="var">G</span>/<span class="var">G</span>)&sup2; ), and the measured gain wobble here is &Delta;<span class="var">G</span>/<span class="var">G</span> = 2.3&times;10<sup>&minus;4</sup> (0.079&nbsp;K per 60&nbsp;s record). It bites only for <em>band-integrated</em> total power, where the thermal term divides by the channel count but the gain term does not &mdash; giving an Allan minimum for band power of about 5&nbsp;s. Per-channel line work stays thermal.</div>
+                        <h3>The noise diode &amp; Y-factor</h3>
+                        <p>A switchable noise diode of known excess temperature <span class="var">T</span><sub>cal</sub> gives the classic Y-factor calibration (recorded now, applied in a future upgrade):</p>
+                        <div class="eqn"><span class="var">Y</span> = <span class="var">P</span><sub>on</sub>/<span class="var">P</span><sub>off</sub>,&nbsp;&nbsp; <span class="var">T</span><sub>sys</sub> = <span class="var">T</span><sub>cal</sub>/(<span class="var">Y</span>&minus;1),&nbsp;&nbsp; <span class="var">T</span><sub>A</sub> = <span class="var">T</span><sub>sys</sub>(<span class="var">P</span><sub>source</sub>/<span class="var">P</span><sub>off</sub> &minus; 1)</div>
+                        <p>Because the diode fires ahead of the amplifier, this tracks gain drift through an observation, which a blank-sky calibration cannot.</p>
+                    </div>
+
+                    <div class="guide-section" id="guide-adv-calibration">
+                        <h2>The calibration chain</h2>
+                        <h3>Why only the Sun and Moon can calibrate a 5&deg; beam</h3>
+                        <p>A source list with Cassiopeia&nbsp;A, Cygnus&nbsp;A and Taurus&nbsp;A looks like several calibrators. It is not. The beam collects 27&nbsp;deg&sup2;, and all three lie near the galactic plane where the diffuse continuum is 0.6&ndash;0.8&times; the source itself. <strong>Pointing at them measures the background as much as the source</strong>, and the part that does not cancel (the spread over off-positions a beamwidth away) runs from 14% for Taurus&nbsp;A to 190% for Cygnus&nbsp;A. The distinguishing property is not brightness but whether the background can be removed:</p>
+                        <ul>
+                            <li><strong>The Sun escapes by brightness:</strong> 677&nbsp;K against &lt;5&nbsp;K background anywhere on the ecliptic &mdash; contamination below a per cent, no subtraction needed.</li>
+                            <li><strong>The Moon escapes by motion:</strong> it moves ~13&deg;/day, so the <em>same</em> celestial coordinates can be observed with the Moon present and again once it has left, and the background cancels identically. It is also a black body of known size at ~225&nbsp;K, so its flux is predictable.</li>
+                        </ul>
+                        <h3>Bandpass, then gain</h3>
+                        <p>The calibration in force is fitted in two steps. First a <strong>bandpass template</strong>: the dish points at the emptiest hydrogen field in the north (the Lockman Hole, <span class="var">l</span>=150, <span class="var">b</span>=+52), and a polynomial is fitted to the mean spectrum with the H&nbsp;I line masked &mdash; the instrument's spectral shape. Dividing a recording by it flattens the band without moving its level. Then the <strong>gain and system temperature</strong>, from a straight-line fit of a plane field against the survey model:</p>
+                        <div class="eqn">counts(<span class="var">&nu;</span>) = <span class="var">G</span> ( <span class="var">T</span><sub>sys</sub> + <span class="var">T</span><sub>A</sub><sup>model</sup>(<span class="var">&nu;</span>) )</div>
+                        <span class="eqn-where"><span class="var">G</span> is the slope, <span class="var">T</span><sub>sys</sub> the intercept over slope. The last fit in force: <span class="var">G</span> = 1.197&times;10<sup>&minus;5</sup>&nbsp;counts&nbsp;K<sup>&minus;1</sup>, <span class="var">T</span><sub>sys</sub> = 347&nbsp;K, correlation 0.998.</span>
+                        <div class="callout warn"><span class="tag">Two honest caveats</span>This calibrates H&nbsp;I against an H&nbsp;I model, which is circular for line science and separates <span class="var">G</span> from <span class="var">T</span><sub>sys</sub> only through the line's contrast. And it assumes the beam width, which is the largest silent systematic in the temperature scale (moving the assumed beam from 4.0&deg; to 5.16&deg; shifts the fitted gain 6% and <span class="var">T</span><sub>sys</sub> 22&nbsp;K). A pseudo-random-comb scheme that needs no sky model is the planned way past both.</div>
+                        <h3>Drift scans, and an external check</h3>
+                        <p>A drift scan is fitted differently &mdash; total power against the simulator's predicted curve, counts = <span class="var">G</span>(<span class="var">T</span><sub>sys</sub> + <span style="font-style:italic">T&#772;</span><sub>model</sub>(<span class="var">t</span>)) &mdash; over the continuum band only, needing no bandpass template. Put through the whole chain, the telescope measured the Sun at <strong>112 solar flux units</strong> against a reference network's 88&ndash;108 that day: agreement within the network's own spread, and the first end-to-end test of bandpass, gain, <span class="var">T</span><sub>sys</sub>, beam and the antenna theorem against an external standard.</p>
+                    </div>
+
+                    <div class="guide-section" id="guide-adv-frames">
+                        <h2>Two frames &amp; the pointing model</h2>
+                        <p class="lead">Everything the telescope does lives in one of two coordinate frames, and the boundary between them is where the pointing model and the velocity correction are applied.</p>
+                        <h3>True vs drive</h3>
+                        <p><strong>True alt/az</strong> is where the dish looks on the sky, computed with the real site position. <strong>Drive</strong> is what the mount mechanically is &mdash; encoder pulses quantised to 0.5&deg;. <code>trueToDrive()</code> converts one way and <code>driveToTrue()</code> inverts it. Every goto and track goes true&rarr;drive; every measured position (status RA/Dec, galactic <span class="var">l,b</span>, Stellarium) goes drive&rarr;true.</p>
+                        <h3>The seven pointing terms</h3>
+                        <p>The correction <strong>added to a true position to get the drive position</strong> (altitude <span class="var">h</span>, azimuth <span class="var">A</span>) is the standard alt-az model:</p>
+                        <div class="eqn">&Delta;<span class="var">h</span> = IE + AN&nbsp;cos<span class="var">A</span> + AE&nbsp;sin<span class="var">A</span> &minus; TF&nbsp;cos<span class="var">h</span></div>
+                        <div class="eqn">&Delta;<span class="var">A</span> = IA + (AN&nbsp;sin<span class="var">A</span> &minus; AE&nbsp;cos<span class="var">A</span>)&nbsp;tan<span class="var">h</span> + CA&nbsp;sec<span class="var">h</span> + NPAE&nbsp;tan<span class="var">h</span></div>
+                        <span class="eqn-where"><strong>IE, IA</strong> encoder zero-point errors; <strong>AN, AE</strong> azimuth-axis tilt (north, east); <strong>CA</strong> collimation (beam not perpendicular to the altitude axis); <strong>NPAE</strong> axis non-perpendicularity; <strong>TF</strong> tube flexure. All seven slots always exist and default to zero; the four-term fit simply leaves CA, NPAE and TF at zero.</span>
+                        <p>Refraction is applied <em>first</em>, at the apparent position: <span class="var">h</span><sub>app</sub> = <span class="var">h</span><sub>true</sub> + <span class="var">R</span>(<span class="var">h</span><sub>true</sub>), then the model is evaluated there. The inverse is done by <strong>fixed-point iteration on the forward transform itself</strong> (three passes), so the two directions cannot drift apart &mdash; near the zenith a first-order inverse would be wrong by ~0.25&deg;, half the encoder quantum.</p>
+                        <div class="callout note"><span class="tag">Judge a model by prediction</span>A pointing model is trustworthy if it predicts where a source will be on a day it was <em>not</em> fitted to &mdash; not because any single term looks reasonable. This mount's model predicts blind to about 0.03&deg;. Two clamps guard the mount: the altitude fed to tan/sec is limited to 89&deg;, and the total correction per axis to &plusmn;10&deg; (the whole real error is ~2&deg;).</div>
+                        <h3>Velocity frames</h3>
+                        <p>The recorded axis is <strong>topocentric</strong> &mdash; sky frequency exactly as observed, so a file re-reduces correctly whatever is later learned about the direction. The plots draw an <strong>LSR</strong> axis:</p>
+                        <div class="eqn"><span class="var">v</span><sub>LSR</sub> = <span class="var">v</span><sub>topo</sub> + <span class="var">v</span><sub>bary</sub> + <strong>U</strong>&middot;<strong>n&#770;</strong></div>
+                        <span class="eqn-where"><span class="var">v</span><sub>bary</sub> is the observer's barycentric velocity toward the source; <strong>U</strong> is the solar motion (20.0&nbsp;km/s toward the LSR apex). The terms are: Earth rotation 0.46, Earth orbit 29.8, solar motion 20.0 &mdash; combined ~50&nbsp;km/s (&equiv;237&nbsp;kHz), so uncorrected spectra of the same source in different seasons do not superpose. Evaluated at the observation's own mid-time; the B210 clock adds a further &minus;2.36&nbsp;ppm (&plusmn;0.08&nbsp;km/s).</span>
+                    </div>
+
+                    <div class="guide-section" id="guide-adv-article">
+                        <h2>Full technical article</h2>
+                        <p class="lead">These advanced pages distil the astronomy and measurement chapters of the telescope's technical article. The article is the full reference, about sixty pages.</p>
+                        <h3>What the article adds beyond this guide</h3>
+                        <ul>
+                            <li><strong>Engineering:</strong> the Arduino Due drive firmware (state machine, homing, motion profiles, stall handling), the ESP32 controller software, and the serial and HTTP interfaces in full.</li>
+                            <li><strong>Coordinate transforms:</strong> Julian date and GMST, precession J2000&harr;date, the horizontal and galactic conversions, and their accuracy.</li>
+                            <li><strong>Systems:</strong> the observatory host and private controller link, the HDF5 recording format, the scheduler internals, the sky simulator, installation, testing and troubleshooting.</li>
+                            <li><strong>Reference:</strong> full pin-outs, the serial command set, and the complete controller and scheduler HTTP APIs.</li>
+                        </ul>
+                        <div class="callout note"><span class="tag">Where to find it</span>The source is <code>docs/SRT_Technical_Article.tex</code> in the repository, with a compiled <code>SRT_Technical_Article.pdf</code> alongside it. Rebuild the PDF from source (<code>pdflatex</code>) if the checked-in copy is older than recent changes. The outstanding engineering work is tracked in the project's GitHub issues rather than in the article.</div>
+                        <div class="callout tip"><span class="tag">Going further</span>Projects this telescope is suited to: measure the galactic rotation curve by the tangent-point method; map H&nbsp;I column density along the plane; measure the beam and aperture efficiency from a Sun drift scan; or calibrate the system temperature from a Sun&ndash;sky pair.</div>
+                    </div>
+
+                    <div class="guide-section" id="guide-glossary">
+                        <h2>Glossary</h2>
+                        <dl class="glossary">
+                            <dt>21&nbsp;cm line / H&nbsp;I line</dt><dd>The 1420.405751&nbsp;MHz radio line emitted when neutral hydrogen flips its spin state. &ldquo;H&nbsp;I&rdquo; means neutral atomic hydrogen.</dd>
+                            <dt>Alt&ndash;azimuth mount</dt><dd>A mount that points by altitude (angle above the horizon) and azimuth (compass bearing), rather than by celestial axes.</dd>
+                            <dt>Antenna temperature (<span class="var">T</span><sub>A</sub>)</dt><dd>The power a source contributes, expressed as the temperature of a resistor that would deliver the same power. The radio unit of signal strength.</dd>
+                            <dt>Bandpass</dt><dd>The receiver's built-in sensitivity-versus-frequency shape, measured and divided out so a flat sky reads flat.</dd>
+                            <dt>Beam / FWHM</dt><dd>The cone of sky the dish is sensitive to. Its full width at half maximum (~5&deg; here) sets the angular resolution.</dd>
+                            <dt>Column density (<span class="var">N</span><sub>H</sub>)</dt><dd>The number of hydrogen atoms in a column of one cm&sup2; cross-section along the line of sight; proportional to the line's strength when optically thin.</dd>
+                            <dt>Drift scan</dt><dd>An observation with the mount parked, letting the sky drift through the beam. Successive spectra look at different sky.</dd>
+                            <dt>Gain (<span class="var">G</span>)</dt><dd>The conversion factor from raw receiver counts to kelvin, found by calibration.</dd>
+                            <dt>LSR</dt><dd>Local Standard of Rest: the average motion of nearby stars, used as a steady reference frame for velocities so measurements are comparable across time and direction.</dd>
+                            <dt>Optically thin</dt><dd>A gas transparent to its own radiation, so the observed brightness adds up all the emitting atoms along the path.</dd>
+                            <dt>Pointing model</dt><dd>A fitted description of a mount's pointing errors (tilts, offsets, flexure) that the controller applies to make the beam land on target.</dd>
+                            <dt>Radiometer equation</dt><dd>&Delta;<span class="var">T</span> = <span class="var">T</span><sub>sys</sub>/&radic;(<span class="var">&Delta;&nu;&tau;</span>): how measurement noise falls with bandwidth and integration time.</dd>
+                            <dt>Rotation curve</dt><dd>Orbital speed of galactic material versus distance from the centre. Its flatness is evidence for dark matter.</dd>
+                            <dt>SFU</dt><dd>Solar flux unit, 10<sup>4</sup> jansky (10<sup>&minus;22</sup> W m<sup>&minus;2</sup> Hz<sup>&minus;1</sup>); the customary unit for the Sun's radio brightness.</dd>
+                            <dt>System temperature (<span class="var">T</span><sub>sys</sub>)</dt><dd>The receiver's own noise, expressed as a temperature. Everything is measured on top of it.</dd>
+                            <dt>Tangent point</dt><dd>The place along a galactic sight line where gas moves exactly along the line of sight, giving the maximum radial velocity &mdash; the basis for measuring the rotation curve.</dd>
+                            <dt>Topocentric</dt><dd>Measured from the moving telescope, before correcting for the Earth's and Sun's motion. The raw velocity frame of a recording.</dd>
+                            <dt>Tracked observation</dt><dd>An observation where the mount follows the source, so every spectrum looks at the same sky.</dd>
+                        </dl>
+                    </div>
+
+                </div>
+            </div>
+        </div>
+
+    <div id="hover-help"></div>
+
     <script src="/js/state.js"></script>
 <script src="/js/shared.js"></script>
 <script src="/js/schedule.js"></script>
@@ -1122,6 +1499,8 @@
 <script src="/js/config.js"></script>
 <script src="/js/log.js"></script>
 <script src="/js/simulator.js"></script>
+<script src="/js/help.js"></script>
+<script src="/js/guide.js"></script>
 <script src="/js/boot.js"></script>
 </body>
 </html>
