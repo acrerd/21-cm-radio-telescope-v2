@@ -157,6 +157,16 @@ _DEFAULT_CONFIG = {
     # Which PipeWire node to capture from. Empty means the default video
     # source, which is right while there is only one camera on the machine.
     "camera_pipewire_target": "",
+    # V4L2 controls set on the device before each capture, as {name: value}.
+    # This camera exposes no exposure control at all - its auto-exposure is
+    # firmware-internal - and left to itself it meters the dark treeline and
+    # blows the overcast sky to solid white (35% of pixels clipped at 255,
+    # measured 2026-08-27). Brightness is the one control that pulls it back:
+    # a settled sweep showed clipping collapsing to 0 only at <= -56, so -64
+    # (the minimum) is the default. Names match the V4L2 control names exactly
+    # (see the Camera tab / v4l2-ctl --list-ctrls); unknown names are ignored,
+    # so a camera with a real exposure control can be tuned here instead.
+    "camera_controls": {"Brightness": -64},
 }
 
 
@@ -6157,6 +6167,56 @@ def _newest_frame(workdir: str) -> str | None:
     return os.path.join(workdir, frames[-1]) if frames else None
 
 
+def _apply_camera_controls(device: str, controls: dict) -> None:
+    """Set the named V4L2 controls on the device before a capture.
+
+    Done by ioctl rather than v4l2-ctl: v4l-utils is not installed and cannot be
+    (no sudo), and the processing-unit controls are settable on a brief O_RDWR
+    open even while PipeWire holds the device for streaming. Best-effort: a
+    control that is missing, out of range, or a device that will not open must
+    never stop the snapshot, so nothing here raises. Names match the V4L2
+    control names exactly, case-insensitively; values are clamped to range.
+    """
+    if not controls or not os.path.exists(device):
+        return
+    import struct
+    import fcntl
+    def _iowr(nr, size):                       # _IOWR('V', nr, size)
+        return (3 << 30) | (size << 16) | (ord('V') << 8) | nr
+    QC_FMT = "II32siiiiI2I"                     # struct v4l2_queryctrl
+    CT_FMT = "Ii"                              # struct v4l2_control
+    QUERYCTRL = _iowr(36, struct.calcsize(QC_FMT))
+    S_CTRL = _iowr(28, struct.calcsize(CT_FMT))
+    NEXT_CTRL, DISABLED = 0x80000000, 0x0001
+    want = {str(k).strip().lower(): int(v) for k, v in controls.items()}
+    try:
+        fd = os.open(device, os.O_RDWR | os.O_NONBLOCK)
+    except OSError as exc:
+        log.debug("camera controls: cannot open %s: %s", device, exc)
+        return
+    try:
+        cid = NEXT_CTRL
+        while want:
+            buf = bytearray(struct.pack(QC_FMT, cid, 0, b"", 0, 0, 0, 0, 0, 0, 0))
+            try:
+                fcntl.ioctl(fd, QUERYCTRL, buf, True)
+            except OSError:
+                break                          # no more controls to enumerate
+            rid, _typ, name, mn, mx, _step, _dfl, flags, _r0, _r1 = struct.unpack(QC_FMT, buf)
+            key = name.split(b"\0")[0].decode("ascii", "replace").strip().lower()
+            if key in want and not (flags & DISABLED):
+                val = max(mn, min(mx, want.pop(key)))
+                try:
+                    fcntl.ioctl(fd, S_CTRL, bytearray(struct.pack(CT_FMT, rid, val)), True)
+                except OSError as exc:
+                    log.debug("camera controls: set %s=%s failed: %s", key, val, exc)
+            cid = rid | NEXT_CTRL
+        if want:
+            log.debug("camera controls: not found on %s: %s", device, ", ".join(want))
+    finally:
+        os.close(fd)
+
+
 def _capture_via_pipewire(workdir: str, width: int, height: int,
                           target: str, frames: int) -> tuple[str | None, str]:
     """Capture through PipeWire, which owns the camera on a desktop session.
@@ -6247,6 +6307,7 @@ def api_camera_snapshot():
         # next one after a failure pays the full warm-up again.
         warm = (time.monotonic() - _camera_last_capture) <= CAMERA_WARM_WINDOW_S
         frames = CAMERA_WARM_FRAMES if warm else CAMERA_COLD_FRAMES
+        _apply_camera_controls(device, cfg.get("camera_controls") or {})
         with tempfile.TemporaryDirectory(prefix="srt-camera-") as workdir:
             captured_utc = datetime.now(timezone.utc)
             frame, pipewire_error = _capture_via_pipewire(workdir, width, height,
