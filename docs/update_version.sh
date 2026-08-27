@@ -2,13 +2,18 @@
 # Regenerate docs/version.tex from the current git state.
 #
 # SRT_Technical_Article.tex \input's this file to stamp the title page with the
-# commit the document describes and the date it was built. Run it before
-# building the PDF:
+# commit the document describes and the date it was built.
 #
-#     sh docs/update_version.sh && cd docs && latexmk -pdf SRT_Technical_Article.tex
+# An ordinary build does not need this script: docs/.latexmkrc does the same
+# thing in perl before every latexmk run, because relying on someone remembering
+# an extra step meant the PDF spent a long time stamped "unknown". Use this for
+# builds that do not go through latexmk:
+#
+#     sh docs/update_version.sh && cd docs && pdflatex SRT_Technical_Article.tex
 #
 # The article falls back to placeholders if version.tex is missing, so a build
-# without this step still succeeds - it just cannot say which commit it is.
+# without a stamp still succeeds - it just cannot say which commit it is.
+# Keep the output identical to the .latexmkrc version.
 
 set -e
 cd "$(dirname "$0")/.."

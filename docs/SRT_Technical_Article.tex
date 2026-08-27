@@ -20,12 +20,14 @@
 \usepackage{enumitem}
 \usepackage{tikz}
 \usetikzlibrary{shapes,arrows,positioning,fit,backgrounds}
-\usepackage{makeidx}
+\usepackage{makeidx} 
 \makeindex
 
-% Build stamp. docs/update_version.sh writes version.tex from the current git
-% state; without it the document still builds, but cannot say which commit it
-% describes. Run it before building:
+% Build stamp. version.tex is generated and gitignored; docs/.latexmkrc writes
+% it from the current git state before every latexmk run, so an ordinary build
+% needs no extra step. Building some other way (or from a tree with no git)
+% still succeeds, but falls through to the placeholders below and cannot say
+% which commit it describes -- run docs/update_version.sh by hand for that:
 %     sh docs/update_version.sh
 \IfFileExists{version.tex}{\input{version.tex}}{%
     \newcommand{\gitcommit}{unknown}%
@@ -128,7 +130,7 @@ with the 1420\,MHz feed at prime focus.\par}
 {\large Acre Road Observatory\\[0.15cm] University of Glasgow\par}
 
 \vspace{0.7cm}
-{Built \builddate\par}
+{Document built \builddate\par}
 \vspace{0.15cm}
 {\small Describes commit \texttt{\gitcommit} of \gitcommitdate\ \gitdirty\par}
 
@@ -2238,7 +2240,8 @@ Targets below the observing horizon are refused outright; a tracked target that 
 
 \begin{table}[H]
 \centering
-\small\begin{tabular}{p{5.4cm}p{9.2cm}}
+\small
+\begin{tabular}{p{5.4cm}p{9.2cm}}
 \toprule
 \textbf{Symptom} & \textbf{Check} \\
 \midrule
@@ -2255,7 +2258,8 @@ Homing aborts ``not responding'' & Encoder wiring, or \texttt{DEBOUNCE} set too 
 
 \begin{table}[H]
 \centering
-\small\begin{tabular}{p{5.4cm}p{9.2cm}}
+\small
+\begin{tabular}{p{5.4cm}p{9.2cm}}
 \toprule
 \textbf{Symptom} & \textbf{Check} \\
 \midrule
@@ -2271,7 +2275,8 @@ Motors run backwards & Direction wiring, and the \texttt{*\_DIR\_INVERT} macros 
 
 \begin{table}[H]
 \centering
-\small\begin{tabular}{p{5.4cm}p{9.2cm}}
+\small
+\begin{tabular}{p{5.4cm}p{9.2cm}}
 \toprule
 \textbf{Symptom} & \textbf{Check} \\
 \midrule
@@ -2289,7 +2294,8 @@ Jerky motion & Increase \texttt{RAMPUP} \\
 
 \begin{table}[H]
 \centering
-\small\begin{tabular}{p{5.4cm}p{9.2cm}}
+\small
+\begin{tabular}{p{5.4cm}p{9.2cm}}
 \toprule
 \textbf{Symptom} & \textbf{Check} \\
 \midrule
@@ -2309,7 +2315,8 @@ Dish parks at drive azimuth 170 & Stow being routed through the pointing model \
 
 \begin{table}[H]
 \centering
-\small\begin{tabular}{p{5.4cm}p{9.2cm}}
+\small
+\begin{tabular}{p{5.4cm}p{9.2cm}}
 \toprule
 \textbf{Symptom} & \textbf{Check} \\
 \midrule
@@ -2329,7 +2336,8 @@ Clock never syncs & Missing \texttt{ufw route allow} rule; NAT is being dropped 
 
 \begin{table}[H]
 \centering
-\small\begin{tabular}{p{5.4cm}p{9.2cm}}
+\small
+\begin{tabular}{p{5.4cm}p{9.2cm}}
 \toprule
 \textbf{Symptom} & \textbf{Check} \\
 \midrule
@@ -2990,7 +2998,8 @@ The golden-vector arrangement is the part worth noticing\index{golden vectors}\i
 \midrule
 \texttt{docs/SRT\_Technical\_Article.tex} & This document \\
 \texttt{docs/SRT\_Technical\_Article.pdf} & Its built form, tracked so it can be read without a \LaTeX{} installation \\
-\texttt{docs/update\_version.sh} & Writes \texttt{version.tex}, the build stamp on the title page \\
+\texttt{docs/.latexmkrc} & Writes \texttt{version.tex} before every \texttt{latexmk} run, so the build stamp cannot be forgotten \\
+\texttt{docs/update\_version.sh} & The same stamp by hand, for builds that do not go through \texttt{latexmk} \\
 \texttt{docs/SRT\_DRIVE\_MANUAL.md} & Operations manual for the drive firmware \\
 \texttt{docs/SRT\_DRIVE\_MANUAL.html} & Its rendered form \\
 \texttt{docs/ESP32\_CONTROLLER.md} & Controller technical manual \\
