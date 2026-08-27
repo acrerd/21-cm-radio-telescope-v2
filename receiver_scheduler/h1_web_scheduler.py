@@ -245,10 +245,17 @@ def _controller_url_candidates() -> list[str]:
     cfg = load_config()
     with controller_settings_lock:
         current = SRT_CONTROLLER_URL
+    # The configured direct link comes before the sticky last-worked URL. They
+    # are usually the same host reached two ways - 192.168.50.120 is the IP,
+    # srt-controller.local its mDNS alias - so preferring whichever last answered
+    # made a single transient timeout flip `current` to the slow mDNS name and
+    # flap between the two forever (293 recovered-timeout warnings on 2026-08-27).
+    # Trying the configured IP first settles it; `current` still follows, so a
+    # genuine failover to the WiFi AP (192.168.4.1) is preserved.
     candidates = [
         os.environ.get("SRT_CONTROLLER_URL"),
-        current,
         cfg.get("srt_controller_url"),
+        current,
     ]
     candidates.extend(cfg.get("srt_controller_fallback_urls", []))
 
@@ -344,14 +351,18 @@ def srt_api_call(endpoint: str, params: Optional[dict] = None,
                 result = json.loads(e.read().decode(errors="replace"), strict=False)
             except Exception:
                 last_error = e
-                log.warning("SRT API error via %s: %s", base_url, e)
+                log.debug("SRT API error via %s: %s", base_url, e)
                 continue
             log.warning("SRT API rejected %s: %s", endpoint,
                         result.get("error", result))
             return result
         except Exception as e:
             last_error = e
-            log.warning("SRT API error via %s: %s", base_url, e)
+            # A single candidate timing out is expected and usually recovered by
+            # the next one (the controller stalls briefly under concurrent load,
+            # issue #1). Only the total failure below is worth a warning; the
+            # per-candidate misses are debug, or the log fills with transients.
+            log.debug("SRT API error via %s: %s", base_url, e)
 
     log.warning("SRT connection error after trying %s: %s", ", ".join(candidates), last_error)
     return None
