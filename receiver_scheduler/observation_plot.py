@@ -908,6 +908,31 @@ def plot_gain_check(calibration, output_path, figsize=(16.0, 9.0), dpi=120):
     measured_k = counts / gain - t_sys
     resid_k = measured_k - model_k
 
+    # Remove a continuum tilt from the DISPLAY only. The receiver's gain slope
+    # drifts between the bandpass template and this recording, the way the gain
+    # magnitude does, and a single fitted gain cannot absorb a slope, so it is
+    # left as a linear tilt across the residual. It is drift, not a property to
+    # carry, so nothing here changes the fit, the saved gain, T_sys or residual
+    # - it only takes the tilt off the drawn traces so the operator can judge
+    # the line profile and the real residual structure without it on top. Slope
+    # only, mean preserved (so a genuine T_sys offset - continuum not at zero -
+    # still shows), fitted on the line-free channels with one RFI-clipping pass.
+    display_tilt = np.zeros_like(measured_k)
+    tilt_k_per_mhz = 0.0
+    lf = (np.abs(freq - H1_REST_FREQ_HZ) > 400e3) & np.isfinite(resid_k)
+    if lf.sum() >= 8:
+        fref = float(np.mean(freq[lf]))
+        x = freq - fref
+        a, _b = np.polyfit(x[lf], resid_k[lf], 1)
+        r = resid_k - np.polyval([a, _b], x)
+        good = lf & (np.abs(r) < 3.0 * (float(np.nanstd(r[lf])) or 1.0))
+        if good.sum() >= 8:
+            a, _b = np.polyfit(x[good], resid_k[good], 1)
+        display_tilt = a * x
+        tilt_k_per_mhz = float(a * 1e6)
+        measured_k = measured_k - display_tilt
+        resid_k = resid_k - display_tilt
+
     fig = plt.figure(figsize=figsize, dpi=dpi)
     gs = fig.add_gridspec(2, 2, height_ratios=[1.5, 1.0],
                           hspace=0.26, wspace=0.16)
@@ -933,7 +958,9 @@ def plot_gain_check(calibration, output_path, figsize=(16.0, 9.0), dpi=120):
     # was never measured at a slope.
     step = dict(drawstyle="steps-mid")
     ax_spec.plot(mhz, measured_k, color=_ACCENT, lw=1.1,
-                 label="measured, calibrated to kelvin", **step)
+                 label=("measured, calibrated to kelvin"
+                        + (" (display de-tilted)" if abs(tilt_k_per_mhz) > 1e-3 else "")),
+                 **step)
     ax_spec.plot(mhz, model_k, color=_MARK, lw=1.8, alpha=0.9,
                  label="HI4PI through this beam (simulated)", **step)
     if sigma_k is not None:
@@ -992,6 +1019,12 @@ def plot_gain_check(calibration, output_path, figsize=(16.0, 9.0), dpi=120):
     else:
         ax_res.text(0.02, 0.05, "rms %.2f K" % rms, transform=ax_res.transAxes,
                     fontsize=10, color=_PLOT_FG, alpha=0.85)
+    if abs(tilt_k_per_mhz) > 1e-3:
+        ax_res.text(0.02, 0.13,
+                    "continuum tilt %+.2f K/MHz removed for display "
+                    "(gain drift; calibration unchanged)" % tilt_k_per_mhz,
+                    transform=ax_res.transAxes, fontsize=8, color=_PLOT_FG,
+                    alpha=0.7)
 
     # Say plainly when the fit is not to be trusted. A calibration that sat on
     # its floor, or one with no lever arm, must not look like a measurement
