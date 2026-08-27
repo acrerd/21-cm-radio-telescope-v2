@@ -875,7 +875,16 @@ def append_spectrum(hf, avg_linear, timestamp, integration_time, fft_size,
 
     `wide_linear` is the continuum product's record for a file that has one;
     `overflows` the UHD overflow count during this record.
+
+    `timestamp` is passed as the *end* of the integration (time.time() when the
+    record was taken). A record is the mean over its whole interval, so it
+    belongs at the CENTRE - it is shifted back by half the integration here, once,
+    so the HDF5 and the live sidecar both carry the midpoint. Stamping the end put
+    every feature half an integration late on the time axis (a Sun-drift transit
+    came out tau/2 = 15 s late, 2026-08-27). Commissioning recordings are junked,
+    so there is no compatibility shim, and analysis must no longer subtract tau/2.
     """
+    timestamp = timestamp - integration_time / 2.0
     name = 'spectra_kelvin' if 'spectra_kelvin' in hf else 'spectra_linear'
     values = avg_linear
     if name == 'spectra_kelvin':

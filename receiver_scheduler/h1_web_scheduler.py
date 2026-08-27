@@ -4334,14 +4334,16 @@ def api_observe_live():
         # record stays, carrying a ~1% dip that is visibly the first point of
         # the run.
         #
-        # Record timestamps are the *end* of the integration, so the run
-        # started one integration before the first stamp.
-        run_start = records[0]["t"] - records[0].get("tau", 0.0)
+        # Record timestamps are the *centre* of the integration, so each record
+        # spans [t - tau/2, t + tau/2] and the run started half an integration
+        # before the first stamp.
+        run_start = records[0]["t"] - records[0].get("tau", 0.0) / 2.0
         warm_end = run_start + LIVE_WARMUP_S
         kept = []
         for r in records:
             tau = max(r.get("tau", 0.0), 1e-9)
-            overlap = max(0.0, min(warm_end, r["t"]) - (r["t"] - tau))
+            lo, hi = r["t"] - tau / 2.0, r["t"] + tau / 2.0
+            overlap = max(0.0, min(warm_end, hi) - max(run_start, lo))
             if overlap / tau > 0.1:
                 dropped += 1
             else:

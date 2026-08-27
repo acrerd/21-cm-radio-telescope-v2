@@ -332,8 +332,9 @@ def _run_with_tau(sched_mod, tmp_path, tau, n=4):
     t0 = started.timestamp()
     with open(side, "w") as fh:
         for i in range(n):
-            # Timestamps are the *end* of each integration.
-            fh.write(json.dumps({"t": t0 + (i + 1) * tau, "tau": tau,
+            # Timestamps are the *centre* of each integration: record i spans
+            # [t0 + i*tau, t0 + (i+1)*tau], so its midpoint is t0 + (i+0.5)*tau.
+            fh.write(json.dumps({"t": t0 + (i + 0.5) * tau, "tau": tau,
                                  "n": i + 1, "median": 0.004}) + "\n")
     return {"name": "Warmup", "coord_system": "drift", "output_file": str(out),
             "center_freq_mhz": 1420.405752, "bandwidth_mhz": 2.4,
