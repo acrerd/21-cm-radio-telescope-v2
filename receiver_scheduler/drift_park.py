@@ -172,13 +172,18 @@ def closest_approach(distance, t_ref, half_span_s=SEARCH_HALF_SPAN_S,
 
 
 def choose_parking(track, t_ref, terms, half_span_s=SEARCH_HALF_SPAN_S,
-                   step_s=SEARCH_STEP_S):
+                   step_s=SEARCH_STEP_S, reachable=None):
     """The drive grid point the source's track passes closest to near t_ref.
 
-    `track(t)` gives the source's true (alt, az) at datetime t. Returns a dict:
-    `drive_alt`/`drive_az` (the grid point), `true_alt`/`true_az` (its sky
-    position - what to send to /direct), `crossing` (when the track is nearest
-    it) and `offset_deg` (how near: the cross-drift miss that remains).
+    `track(t)` gives the source's true (alt, az) at datetime t. `reachable`, if
+    given, is a predicate `(drive_alt, drive_az) -> bool` that a grid point
+    must satisfy - the mount limits and the azimuth dead zone - so a source
+    that transits through the dead zone (Cas A culminates due north, in the
+    355-360 deg gap) is parked at the closest point it can actually reach,
+    slightly off exact transit, rather than at a point it cannot.
+
+    Returns a dict (`drive_alt`/`drive_az`, `true_alt`/`true_az`, `crossing`,
+    `offset_deg`), or None if no grid point near the track is reachable.
     """
     n = int(round(half_span_s / step_s))
     candidates = set()
@@ -186,6 +191,10 @@ def choose_parking(track, t_ref, terms, half_span_s=SEARCH_HALF_SPAN_S,
         alt, az = track(t_ref + timedelta(seconds=k * step_s))
         d_alt, d_az = true_to_drive(alt, az, terms)
         candidates.add((quantise(d_alt), quantise(d_az)))
+    if reachable is not None:
+        candidates = {c for c in candidates if reachable(*c)}
+    if not candidates:
+        return None
 
     found = []
     for g_alt, g_az in sorted(candidates):

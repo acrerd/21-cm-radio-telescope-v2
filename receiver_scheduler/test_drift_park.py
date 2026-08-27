@@ -103,6 +103,27 @@ class TestChooseParking:
         park = dp.choose_parking(lambda t: (45.0, 180.0), self.T0, {})
         assert park["crossing"] == self.T0
 
+    def test_only_reachable_grid_points_are_chosen(self):
+        """A source that sweeps azimuth through the 355-360 deg dead zone
+        (Cas A transits due north at alt 87) must be parked on a grid point
+        the mount can reach, just off exact transit - not on the closest
+        point overall, which may be in the dead zone."""
+        def track(t):
+            m = (t - self.T0).total_seconds() / 60.0
+            return 87.0, (1.6 - 4.7 * m) % 360.0
+        reach = lambda da, dz: 0.0 <= da <= 90.0 and 0.0 <= dz <= 355.0
+        park = dp.choose_parking(track, self.T0, {}, reachable=reach)
+        assert reach(park["drive_alt"], park["drive_az"])
+        # every candidate this returns really is a point the mount accepts
+        assert 0.0 <= park["drive_az"] <= 355.0
+        assert park["offset_deg"] < 0.5
+
+    def test_none_when_no_grid_point_is_reachable(self):
+        # A source that never leaves the dead zone.
+        park = dp.choose_parking(lambda t: (87.0, 357.5), self.T0, {},
+                                 reachable=lambda da, dz: dz <= 355.0)
+        assert park is None
+
     def test_with_the_real_model_the_answer_is_a_grid_point(self):
         track = _westward_track(23.0, 43.9, 192.2, self.T0)
         park = dp.choose_parking(track, self.T0, TERMS)

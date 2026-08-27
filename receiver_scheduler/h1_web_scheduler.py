@@ -1389,7 +1389,14 @@ def plan_drift_parking(obs: dict, beam_time: datetime, terms: Optional[dict]) ->
     track = _drift_track(obs)
     if track(beam_time) is None:
         return None
-    return drift_park.choose_parking(track, beam_time, terms)
+    # Only grid points the mount can reach: inside the alt/az limits and
+    # clear of the 355-360 deg azimuth dead zone. Without this a source that
+    # transits through the dead zone (Cas A, due north at alt 87) parked on a
+    # grid point at az 357.5, which the controller rejected.
+    def reachable(drive_alt, drive_az):
+        return (DRIFT_MIN_ALT <= drive_alt <= DRIFT_MAX_ALT
+                and 0.0 <= drive_az <= DRIFT_MAX_AZ)
+    return drift_park.choose_parking(track, beam_time, terms, reachable=reachable)
 
 
 def _crossing_time_str(when: datetime) -> str:
