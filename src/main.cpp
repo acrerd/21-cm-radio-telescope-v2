@@ -1145,6 +1145,80 @@ static bool returnToZero(int pwm) {
     return true;
 }
 
+// Define the encoder zero on the first edge seen driving in the POSITIVE
+// (observing) direction off the stop, not on the negative stall that found it.
+//
+// The stall quantises to +-1 pulse, and worse it uses the opposite edge
+// direction to all subsequent tracking (homing drives into the lower limit;
+// every observation then drives positive away from it), so a given reed
+// magnet counts at a different position on the way in than on the way out.
+// Zeroing on a positive edge makes the zero share the same edges tracking
+// reads, so that ~1-pulse ambiguity becomes common-mode and cancels. The
+// occasional homing that landed a pulse off was the source of the azimuth
+// outliers in the pointing fit (kept scans agree to 0.02 deg; the rejected
+// ones sat at ~1 pulse). Sets positionAz/Alt to 0 at that edge and returns
+// true; on no edge within a safe travel (encoder not responding) it faults
+// and returns false, exactly as driveToLimits does.
+static bool refineZeroPositiveEdge() {
+    int32_t azStart = positionAz;
+    int32_t altStart = positionAlt;
+    azBacklashRemaining = 0;                 // count the real edge, not gear slack
+    digitalWrite(PIN_DIR_AZ, AZ_DIR(HIGH));  // positive: the tracking direction
+    digitalWrite(PIN_DIR_ALT, ALT_DIR(HIGH));
+    lastPulseAz = millis();
+    lastPulseAlt = millis();
+    unsigned long startTime = millis();
+    analogWrite(PIN_PWM_AZ, PWM_MIN_SPEED);   // slow creep, so the edge is precise
+    analogWrite(PIN_PWM_ALT, PWM_MIN_SPEED);
+    motionStateAz = MOTION_DRIVING;
+    motionStateAlt = MOTION_DRIVING;
+
+    bool azDone = false;
+    bool altDone = false;
+    while (!azDone || !altDone) {
+        unsigned long now = millis();
+
+        // The first counted edge off the stop is the zero for that axis.
+        if (!azDone && positionAz != azStart) {
+            stopMotorAz();
+            positionAz = 0;
+            azDone = true;
+        }
+        if (!altDone && positionAlt != altStart) {
+            stopMotorAlt();
+            positionAlt = 0;
+            altDone = true;
+        }
+
+        // If an axis has driven for a few stall-timeouts without an edge, the
+        // encoder is not responding - fault rather than run into the mount.
+        if ((!azDone || !altDone) &&
+            (now - startTime) > (unsigned long)cfg.stallTimeoutMs * 3) {
+            stopAllMotors();
+            faultCode = azDone ? FAULT_ALT_STALL : FAULT_AZ_STALL;
+            systemState = STATE_FAULT;
+            printAllLn("Homing ABORTED: no encoder edge leaving the stop");
+            return false;
+        }
+
+        FaultCode fault = checkFaultFlags();
+        if (fault != FAULT_NONE) {
+            stopAllMotors();
+            faultCode = fault;
+            systemState = STATE_FAULT;
+            printAll("Homing ABORTED: ");
+            printAllLn(getFaultString());
+            return false;
+        }
+
+        delay(5);
+        #ifdef SIMULATION_MODE
+        simulatePulses();
+        #endif
+    }
+    return true;
+}
+
 void performHoming() {
     // Phase 1: drive to limits with ramp-up. The phase markers go to Serial1
     // as well as USB, because the controller uses "Drive to limits" to reset
@@ -1163,9 +1237,9 @@ void performHoming() {
     Serial1.println("Homing: Re-approach limits...");
     if (!driveToLimits()) return;
 
-    // At limit switches - reset position counters to 0
-    positionAlt = 0;
-    positionAz = 0;
+    // Set the zero on the first positive-going edge off the stop, not on the
+    // negative stall - see refineZeroPositiveEdge. It zeroes positionAz/Alt.
+    if (!refineZeroPositiveEdge()) return;
 
     printAllLn("Homing: Moving to home position...");
 
