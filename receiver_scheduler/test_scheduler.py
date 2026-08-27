@@ -1834,13 +1834,33 @@ class TestHomingCounters:
         "Homing: Moving to home position...",
     ]
 
+    # The firmware carrying issue #24 prints the counter on the limit line
+    # itself; reading it there does not depend on catching a status line
+    # before the 30-line buffer rolls.
+    LINES_PRINTED = [
+        "Homing: Drive to limits...",
+        "Homing: Altitude limit reached at 1 pulses (0.50 deg)",
+        "Homing: Azimuth limit reached at -3 pulses (-1.50 deg)",
+        "Homing: Backing off limits...",
+        "Homing: Re-approach limits...",
+        "Homing: Altitude limit reached at 0 pulses (0.00 deg)",
+        "Homing: Azimuth limit reached at 0 pulses (0.00 deg)",
+        "Homing: Moving to home position...",
+    ]
+
     def test_reads_the_counter_at_each_stop(self):
         c = sched._homing_counters(self.LINES)
         assert c["first"] == {"alt": 0.5, "az": -1.5}
         assert c["second"] == {"alt": 0.0, "az": 0.0}
 
+    def test_reads_the_counter_printed_on_the_limit_line(self):
+        c = sched._homing_counters(self.LINES_PRINTED)
+        assert c["first"] == {"alt": 0.5, "az": -1.5}
+        assert c["second"] == {"alt": 0.0, "az": 0.0}
+
     def test_missing_lines_leave_the_axis_out_rather_than_inventing_it(self):
         assert sched._homing_counters([]) == {"first": {}, "second": {}}
+        # The bare prefix, no number and no preceding status line: unknown.
         assert sched._homing_counters(["Homing: Azimuth limit reached"]) == {"first": {}, "second": {}}
 
 

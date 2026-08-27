@@ -855,33 +855,48 @@ def srt_home_and_wait(timeout: int = 300,
 _HOMING_LIMIT_MESSAGES = {"Homing: Azimuth limit reached": "az",
                           "Homing: Altitude limit reached": "alt"}
 _HOMING_POSITION_RE = re.compile(r"Alt:(-?\d+(?:\.\d+)?)\s+Az:(-?\d+(?:\.\d+)?)")
+# The Due (issue #24, since the firmware carrying this) prints the counter on
+# the limit line itself: "Homing: Azimuth limit reached at -2 pulses
+# (-1.00 deg)". Reading it from here is robust; the preceding-status-line
+# scrape below is the fallback for firmware that predates it.
+_HOMING_LIMIT_RE = re.compile(
+    r"Homing: (Azimuth|Altitude) limit reached(?: at -?\d+ pulses \((-?\d+(?:\.\d+)?) deg\))?")
 
 
 def _homing_counters(messages: list) -> dict:
     """What the encoder counters read as each axis hit its stop, per approach.
 
-    `messages` are the Due's lines in order. The Due keeps reporting its
-    position while `driveToLimits` runs, so the last position line before
-    "Homing: <axis> limit reached" is the counter at the stall. Each axis
-    reaches its stop twice - the first approach, from wherever the mount was,
-    and the re-approach after backing off 5 degrees - so the first reading is
-    the count error accumulated since the previous homing (the stop is the
-    true zero) and the second is the repeatability of the stop itself.
-    Returns {'first': {'alt': x, 'az': y}, 'second': {...}}, with an axis
-    missing where its lines were not captured.
+    Each axis reaches its stop twice - the first approach, from wherever the
+    mount was, and the re-approach after backing off 5 degrees - so the first
+    reading is the count error accumulated since the previous homing (the stop
+    is the true zero) and the second is the repeatability of the stop itself.
+
+    The number comes from the "limit reached" line when the firmware prints it
+    (issue #24). Otherwise it is the last `Alt:… Az:…` status line before that
+    line, which the Due emits all the way into the stop - robust only while
+    that line is still in the controller's 30-line serial buffer, which is why
+    the firmware printing it directly is the real fix. Returns
+    {'first': {'alt': x, 'az': y}, 'second': {...}}, an axis missing where
+    neither was captured.
     """
     out = {"first": {}, "second": {}}
     last_pos = None
     for msg in messages:
-        m = _HOMING_POSITION_RE.search(msg)
-        if m:
-            last_pos = (float(m.group(1)), float(m.group(2)))
+        pos = _HOMING_POSITION_RE.search(msg)
+        if pos:
+            last_pos = (float(pos.group(1)), float(pos.group(2)))
+        limit = _HOMING_LIMIT_RE.match(msg.strip())
+        if not limit:
             continue
-        axis = _HOMING_LIMIT_MESSAGES.get(msg.strip())
-        if axis and last_pos is not None:
-            reading = last_pos[0] if axis == "alt" else last_pos[1]
-            phase = "first" if axis not in out["first"] else "second"
-            out[phase][axis] = reading
+        axis = "az" if limit.group(1) == "Azimuth" else "alt"
+        if limit.group(2) is not None:                    # printed on the line
+            reading = float(limit.group(2))
+        elif last_pos is not None:                        # scraped from status
+            reading = last_pos[1] if axis == "az" else last_pos[0]
+        else:
+            continue
+        phase = "first" if axis not in out["first"] else "second"
+        out[phase][axis] = reading
     return out
 
 

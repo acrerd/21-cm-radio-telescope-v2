@@ -966,12 +966,26 @@ static bool driveToLimits() {
         if (!azAtLimit && (now - lastPulseAz) > cfg.stallTimeoutMs) {
             stopMotorAz();
             azAtLimit = true;
-            printAllLn("Homing: Azimuth limit reached");
+            // The counter at the stop IS the net encoder error since the last
+            // homing (the stop is the true zero), so print it rather than
+            // overwrite it silently with 0. First approach: the accumulated
+            // error. Re-approach after the back-off: the repeatability, ~0.
+            // The prefix is unchanged so anything matching it still does; the
+            // scheduler reads the number from here (issue #24).
+            printAll("Homing: Azimuth limit reached at ");
+            printAllInt(positionAz);
+            printAll(" pulses (");
+            printAllFloat((float)positionAz / PULSES_PER_DEGREE, 2);
+            printAllLn(" deg)");
         }
         if (!altAtLimit && (now - lastPulseAlt) > cfg.stallTimeoutMs) {
             stopMotorAlt();
             altAtLimit = true;
-            printAllLn("Homing: Altitude limit reached");
+            printAll("Homing: Altitude limit reached at ");
+            printAllInt(positionAlt);
+            printAll(" pulses (");
+            printAllFloat((float)positionAlt / PULSES_PER_DEGREE, 2);
+            printAllLn(" deg)");
         }
 
         FaultCode fault = checkFaultFlags();
