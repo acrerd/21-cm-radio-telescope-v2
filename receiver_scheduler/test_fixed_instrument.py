@@ -279,12 +279,25 @@ class TestWideTemplate:
         assert wide_t["u_centre_hz"] == pytest.approx(0.5 * (span[0] + span[1]), abs=1e3)
         assert 2 * wide_t["u_scale_hz"] == pytest.approx(span[1] - span[0], abs=1e3)
         assert wide_t["normalise_band_hz"] == pytest.approx(tuning.fixed_instrument()["h1_band_hz"])
-        # Unit median over the H I band means the template reads ~1 there and
-        # follows the tilt elsewhere.
+        # The wide template carries the wide/H I count ratio over the H I band
+        # (issue #28) rather than being unit-median there, so applying it lands
+        # the continuum product on the same scale the H I gain was fitted on.
+        # Test that invariant directly: each product divided by its own template
+        # matches over the H I band.
+        with h5py.File(path, "r") as hf:
+            hi_raw = np.asarray(hf["spectra_linear"][:], float).mean(axis=0)
+            wide_raw = np.asarray(hf["spectra_wide_linear"][:], float).mean(axis=0)
+        hi_corr = hi_raw / bandpass.evaluate(fitted["h1"][0], f_h1)
+        wide_corr = wide_raw / bandpass.evaluate(wide_t, f_wide)
+        lo, high = wide_t["normalise_band_hz"]
+        assert np.nanmedian(wide_corr[(f_wide >= lo) & (f_wide <= high)]) == pytest.approx(
+            np.nanmedian(hi_corr[(f_h1 >= lo) & (f_h1 <= high)]), rel=0.02)
+        # The template reads normalise_level over the H I band and still follows
+        # the tilt down towards the continuum band.
         model = bandpass.evaluate(wide_t, f_wide)
-        inb = (f_wide >= wide_t["normalise_band_hz"][0]) & (f_wide <= wide_t["normalise_band_hz"][1])
-        assert np.nanmedian(model[inb]) == pytest.approx(1.0, abs=0.01)
-        assert np.nanmedian(model[f_wide < 1417e6]) < 0.98
+        inb = (f_wide >= lo) & (f_wide <= high)
+        assert np.nanmedian(model[inb]) == pytest.approx(wide_t["normalise_level"], abs=0.02)
+        assert np.nanmedian(model[f_wide < 1417e6]) < np.nanmedian(model[inb])
         assert os.path.exists(out_wide)
         # The stored H I template evaluates on the fine axis, the wide one on
         # the wide axis, each within its own span.

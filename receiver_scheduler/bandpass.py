@@ -152,7 +152,7 @@ def fit_bandpass(freq_hz, spectra, header, degree=DEFAULT_DEGREE,
                  line_mask_hz=DEFAULT_LINE_MASK_HZ,
                  dc_mask_hz=DEFAULT_DC_MASK_HZ,
                  source_name="", source_file="", product="h1",
-                 normalise_band_hz=None):
+                 normalise_band_hz=None, normalise_level=1.0):
     """Fit the instrument response from an observation of empty sky.
 
     Returns a template dict ready for save_bandpass(). The polynomial is
@@ -215,7 +215,13 @@ def fit_bandpass(freq_hz, spectra, header, degree=DEFAULT_DEGREE,
         norm = inside & (freq_hz >= normalise_band_hz[0]) & (freq_hz <= normalise_band_hz[1])
         if not norm.any():
             norm = inside
-    level = float(np.median(model[norm]))
+    # Normally the template is unit-median over `norm` so dividing by it flattens
+    # the spectrum without moving its level. For the wide (continuum) product,
+    # normalise_level carries the wide/H I count ratio over the shared H I band
+    # (~2, the continuum channels being twice as wide), so the one gain fitted on
+    # the H I product converts the continuum product correctly - unit median left
+    # it a factor of two high (issue #28).
+    level = float(np.median(model[norm])) / float(normalise_level)
     coef = np.asarray(coef, float) / level
 
     residual = mean[keep] / (model[keep]) - 1.0
@@ -237,6 +243,7 @@ def fit_bandpass(freq_hz, spectra, header, degree=DEFAULT_DEGREE,
         "dc_mask_hz": float(dc_mask_hz),
         "normalise_band_hz": (list(map(float, normalise_band_hz))
                               if normalise_band_hz is not None else None),
+        "normalise_level": float(normalise_level),
         "fit_residual_rms": float(np.std(residual)),
     }
 
@@ -373,14 +380,31 @@ def fit_from_observation(path, name="", degree=DEFAULT_DEGREE, out=None,
 
     freq_hz, spectra, _stamps, _taus, header = read_observation(path, product=product)
     normalise = None
+    normalise_level = 1.0
     if product == "wide" and header.get("h1_band_hz") is not None:
-        # Unit median over the H I band, so the gain fitted on the H I
-        # product is the right scale for the continuum product too.
+        # Tie the continuum product to the H I product's scale over the shared
+        # H I band, so the one gain fitted on the H I product converts both.
+        # Unit median alone is not enough: the continuum channels are twice as
+        # wide as the H I ones, so ~twice the counts per kelvin, and the H I gain
+        # then read the continuum product a factor of two high (issue #28). The
+        # ratio is an instrument constant - both products see the same sky over
+        # the H I band - so it is measured here from the same recording.
         normalise = [float(x) for x in header["h1_band_hz"]]
+        hi_freq, hi_spectra, *_ = read_observation(path, product="h1")
+        lo, high = normalise
+        fw = np.asarray(freq_hz, float); fh = np.asarray(hi_freq, float)
+        sw = np.asarray(spectra, float); sh = np.asarray(hi_spectra, float)
+        mw = (fw >= lo) & (fw <= high)
+        mh = (fh >= lo) & (fh <= high)
+        wide_lvl = float(np.median(sw[:, mw] if sw.ndim == 2 else sw[mw]))
+        hi_lvl = float(np.median(sh[:, mh] if sh.ndim == 2 else sh[mh]))
+        if hi_lvl > 0 and np.isfinite(wide_lvl / hi_lvl):
+            normalise_level = wide_lvl / hi_lvl
     template = fit_bandpass(freq_hz, spectra, header, degree=degree,
                             source_name=name or header.get("obs_name", ""),
                             source_file=path, product=product,
-                            normalise_band_hz=normalise)
+                            normalise_band_hz=normalise,
+                            normalise_level=normalise_level)
     out = save_bandpass(template, out, product=product)
     return template, out
 
