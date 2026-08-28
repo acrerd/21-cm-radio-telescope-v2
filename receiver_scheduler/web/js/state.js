@@ -114,6 +114,7 @@
 
         // ---- Sun Scan ----
         let ssPollTimer = null;
+        let ssShownImageStamp = null;   // identity of the plot currently drawn
 
         // ---- Calibration Day ----
         let cdPollTimer = null;

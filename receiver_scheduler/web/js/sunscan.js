@@ -102,14 +102,18 @@
                             html += '<div style="margin-top:12px; color:#00ff88; font-size:13px;">&check; Saved to pointing data</div>';
                         }
                         document.getElementById('ssResults').innerHTML = html;
-
-                        if (data.has_image) {
-                            document.getElementById('ssImageContainer').innerHTML =
-                                '<img src="/api/sunscan/image?' + Date.now() + '" style="max-width:100%; border-radius:8px; border:1px solid #333; margin-top:10px;">';
-                        }
                     } else {
                         document.getElementById('ssStatus').innerHTML = '<span style="color:#888;">Idle &mdash; configure parameters and click Start.</span>';
                     }
+                }
+                // Always show the most recent scan plot - it fills the space
+                // that is otherwise blank at rest, and updates in place as new
+                // scans land. Keyed on image_stamp so it is re-fetched only
+                // when the plot actually changes, not on every poll.
+                if (data.has_image && data.image_stamp !== ssShownImageStamp) {
+                    document.getElementById('ssImageContainer').innerHTML =
+                        '<img src="/api/sunscan/image?ts=' + data.image_stamp + '" style="max-width:100%; border-radius:8px; border:1px solid #333; margin-top:10px;">';
+                    ssShownImageStamp = data.image_stamp;
                 }
             });
         }

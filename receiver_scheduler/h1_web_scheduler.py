@@ -5652,8 +5652,29 @@ def api_sunscan_stop():
     return jsonify({'success': True})
 
 
+def _latest_sun_scan_image():
+    """Path of the most recent Sun-scan plot to show, or None.
+
+    Prefer this process's own last scan (sun_scan_state); fall back to the
+    newest sun_scan_*.png on disk, so the tab still shows the last scan after a
+    restart or before anything has run this session - it fills the space that
+    is otherwise blank.
+    """
+    live = sun_scan_state.get("image_path")
+    if live and os.path.isfile(live):
+        return live
+    import glob
+    try:
+        data_folder = get_config_value("data_output_folder")
+        candidates = glob.glob(os.path.join(data_folder, "sun_scan_*.png"))
+    except Exception:
+        return None
+    return max(candidates, key=os.path.getmtime) if candidates else None
+
+
 @app.route('/api/sunscan/status', methods=['GET'])
 def api_sunscan_status():
+    latest_image = _latest_sun_scan_image()
     return jsonify({
         'running': sun_scan_state["running"],
         'progress': sun_scan_state["progress"],
@@ -5661,8 +5682,10 @@ def api_sunscan_status():
         'point_info': sun_scan_state["point_info"],
         'result': sun_scan_state["result"],
         'error': sun_scan_state["error"],
-        'has_image': sun_scan_state["image_path"] is not None
-                     and os.path.isfile(sun_scan_state["image_path"]),
+        'has_image': latest_image is not None,
+        # Identity of the shown plot, so the page only re-fetches when it
+        # actually changes rather than on every poll.
+        'image_stamp': int(os.path.getmtime(latest_image)) if latest_image else None,
         'horizon_warning': sun_scan_state.get("horizon_warning"),
         'saved': sun_scan_state.get("saved", False),
         # A standalone single scan the operator can add to the pointing
@@ -5706,7 +5729,7 @@ def api_sunscan_save():
 
 @app.route('/api/sunscan/image', methods=['GET'])
 def api_sunscan_image():
-    img = sun_scan_state.get("image_path")
+    img = _latest_sun_scan_image()
     if img and os.path.isfile(img):
         from flask import send_file
         return send_file(img, mimetype='image/png')
