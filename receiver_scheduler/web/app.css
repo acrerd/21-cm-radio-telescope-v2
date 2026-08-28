@@ -96,6 +96,18 @@
            squeezed those. It gets the whole 1400px container, which is also
            the width the .rf-wide pull-out was sized for. */
         .config-form.observe-form { max-width: 1400px; }
+        /* The Configuration tab is a stack of short sections; a single 700px
+           column left most of the width blank. Lay the sections out in two
+           balanced columns, each section kept whole (break-inside: avoid) so
+           none is split across the gap. The Save button stays below, full
+           width, outside the columns. */
+        #tab-config .config-form { max-width: 1150px; }
+        .config-cols { column-count: 2; column-gap: 40px; }
+        @media (max-width: 800px) { .config-cols { column-count: 1; } }
+        .config-cols .config-section {
+            break-inside: avoid; -webkit-column-break-inside: avoid;
+            display: inline-block; width: 100%; margin-bottom: 8px;
+        }
         .config-form .form-group { margin-bottom: 15px; }
         .config-form input { width: 100%; }
         /* ...except a tick box, which the rule above stretched across the row
