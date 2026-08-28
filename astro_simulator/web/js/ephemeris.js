@@ -142,9 +142,17 @@ export function moonGalacticTopo(jd, site) {
   return eqToGal(j2000.ra, j2000.dec);
 }
 
-// Cas A secular fade: Baars 1965 anchor, Trotter et al. (2017) rate
+// Cas A secular fade: Perley & Butler (2017) epoch-2000 anchor (1749 Jy at
+// 1420 MHz) and their ~0.53 %/yr L-band ageing rate; ~1520 Jy in 2026. The
+// old Baars 2500 Jy @1965 anchor was ~20 % above Baars' own formula there.
 export function casAFluxJy(decimalYr) {
-  return 2500.0 * Math.exp(-0.00670 * (decimalYr - 1965.0));
+  return 1748.9 * Math.exp(-0.0053 * (decimalYr - 2000.0));
+}
+
+// Tau A (Crab) fade: Baars 875 Jy @1420, 1977, at 0.167 %/yr (Aller &
+// Reynolds 1985); ~805 Jy in 2026.
+export function tauAFluxJy(decimalYr) {
+  return 875.0 * Math.exp(-0.00167 * (decimalYr - 1977.0));
 }
 
 // The five analytic continuum sources, evaluated at jd for a site
@@ -152,7 +160,7 @@ export function continuumSources(jd, decimalYr, site) {
   const fixed = [
     ["Cyg A", eqToGal(299.868, 40.734), 1590.0],
     ["Cas A", eqToGal(350.850, 58.815), casAFluxJy(decimalYr)],
-    ["Tau A", eqToGal(83.633, 22.015), 875.0],
+    ["Tau A", eqToGal(83.633, 22.015), tauAFluxJy(decimalYr)],
   ];
   const sun = sunGalactic(jd);
   const moon = moonGalacticTopo(jd, site);

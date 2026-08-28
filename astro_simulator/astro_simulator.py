@@ -129,14 +129,18 @@ def continuum_sources():
     # ~0.52 deg diameter is ~890 Jy at 21 cm - Cas A class in this beam
     moon_gcrs = get_body("moon", now, location=SITE_LOC)
     moon = SkyCoord(ra=moon_gcrs.ra, dec=moon_gcrs.dec).galactic
-    # Cas A fades secularly: anchor the Baars et al. (1977) epoch-1965
-    # spectrum (2500 Jy at 1420 MHz) and apply the 0.670 +/- 0.019 %/yr
-    # long-term L-band rate of Trotter et al. (2017, MNRAS 469, 1299);
-    # ~1650 Jy in 2026, good to a few % (the rate wanders by decade)
-    cas_jy = 2500.0 * np.exp(-0.00670 * (now.decimalyear - 1965.0))
+    # Cas A fades secularly: anchor on the Perley & Butler (2017, ApJS 230,
+    # 7) epoch-2000 spectrum, 1749 Jy at 1420 MHz, and apply their ~0.53 %/yr
+    # L-band ageing rate; ~1520 Jy in 2026. The old anchor (Baars 2500 Jy at
+    # 1420, 1965) was itself ~20 % above Baars' own formula there (2078 Jy),
+    # so even after fading it ran ~10 % high against the modern scale.
+    cas_jy = 1748.9 * np.exp(-0.0053 * (now.decimalyear - 2000.0))
+    # Tau A (Crab) also fades: Baars 875 Jy at 1420, epoch 1977, at the
+    # 0.167 %/yr rate of Aller & Reynolds (1985); ~805 Jy in 2026.
+    tau_jy = 875.0 * np.exp(-0.00167 * (now.decimalyear - 1977.0))
     return [("Cyg A", cyg.l.deg, cyg.b.deg, 1590.0),
             ("Cas A", cas.l.deg, cas.b.deg, cas_jy),
-            ("Tau A", tau.l.deg, tau.b.deg, 875.0),
+            ("Tau A", tau.l.deg, tau.b.deg, tau_jy),
             ("Sun", sun.l.deg, sun.b.deg, 5.0e5),
             ("Moon", moon.l.deg, moon.b.deg, 890.0)]
 

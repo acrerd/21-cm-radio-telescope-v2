@@ -47,10 +47,11 @@ def fixed_sources():
     sun = SkyCoord(ra=sun_g.ra, dec=sun_g.dec).galactic
     moon_g = get_body("moon", T0, location=A.SITE_LOC)
     moon = SkyCoord(ra=moon_g.ra, dec=moon_g.dec).galactic
-    cas_jy = 2500.0 * np.exp(-0.00670 * (T0.decimalyear - 1965.0))
+    cas_jy = 1748.9 * np.exp(-0.0053 * (T0.decimalyear - 2000.0))
+    tau_jy = 875.0 * np.exp(-0.00167 * (T0.decimalyear - 1977.0))
     return [("Cyg A", cyg.l.deg, cyg.b.deg, 1590.0),
             ("Cas A", cas.l.deg, cas.b.deg, float(cas_jy)),
-            ("Tau A", tau.l.deg, tau.b.deg, 875.0),
+            ("Tau A", tau.l.deg, tau.b.deg, float(tau_jy)),
             ("Sun", sun.l.deg, sun.b.deg, 5.0e5),
             ("Moon", moon.l.deg, moon.b.deg, 890.0)]
 
