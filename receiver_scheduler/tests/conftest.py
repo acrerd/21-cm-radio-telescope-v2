@@ -20,8 +20,16 @@ something else.
 """
 import logging
 import os
+import sys
 
 import pytest
+
+# The suite lives in tests/ but the modules under test are its parent
+# (receiver_scheduler/). Put that on the path before any test imports them, so
+# `import h1_web_scheduler` resolves under pytest and when a file is run
+# directly. conftest is imported before the test modules in this directory, so
+# this runs first.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
 @pytest.fixture(autouse=True, scope="session")

@@ -462,7 +462,7 @@ def test_fit_runs_end_to_end_on_a_real_calibration_field(client, no_run):
     the proposal, and deliberately never applies it.
     """
     import glob
-    here = os.path.dirname(os.path.abspath(__file__))
+    here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     files = sorted(glob.glob(os.path.join(here, "data", "rf_gain_calibration_*.h5")))
     if not files:
         pytest.skip("no archived calibration field on this machine")
@@ -534,7 +534,7 @@ def test_a_drift_scan_gets_the_total_power_fit(client, no_run):
     continuum out of a band that holds the line. (It fitted at correlation
     0.86 with the line in, 0.69 with the line cut out, for the record.)
     """
-    here = os.path.dirname(os.path.abspath(__file__))
+    here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     path = os.path.join(here, "data", "observations", "Cas A drift scan.h5")
     if not os.path.exists(path):
         pytest.skip("no Cas A drift scan on this machine")
@@ -551,7 +551,7 @@ def test_a_drift_scan_gets_the_total_power_fit(client, no_run):
 
 def test_recording_details_say_whether_the_line_was_in_band(client):
     """The Cas A scan at 1419 MHz: LO 1419.8, the line +0.6 MHz above it, in band."""
-    here = os.path.dirname(os.path.abspath(__file__))
+    here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     if not os.path.exists(os.path.join(here, "data", "observations", "Cas A drift scan.h5")):
         pytest.skip("no Cas A drift scan on this machine")
     d = client.get("/api/observe/info?file=Cas%20A%20drift%20scan.h5").get_json()
@@ -590,7 +590,7 @@ def test_the_total_power_band_window_is_the_continuum_band_less_the_spur_and_the
 
 
 def test_the_selected_recording_can_be_downloaded(client):
-    here = os.path.dirname(os.path.abspath(__file__))
+    here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     if not os.path.exists(os.path.join(here, "data", "observations", "Cas A drift scan.h5")):
         pytest.skip("no Cas A drift scan on this machine")
     r = client.get("/api/observe/download?file=Cas%20A%20drift%20scan.h5")

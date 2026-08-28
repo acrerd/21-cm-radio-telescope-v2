@@ -20,12 +20,20 @@ and no runnable golden harness - and these exist to be the honest substitute.
 
 import json
 import os
+import sys
 
 import pytest
+
+# receiver_scheduler/ is the parent of tests/: it holds the modules under test
+# and the web assets. Put it on the path so a direct `python tests/... --bless`
+# run resolves h1_web_scheduler, and name it for the resource paths below.
+PKG = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, PKG)
 
 import h1_web_scheduler as scheduler
 import page_sources as ps
 
+# test_data travels with the tests, so it stays relative to this file.
 BASELINE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                         "test_data", "page_baseline.json")
 
@@ -101,7 +109,7 @@ def test_nothing_the_page_had_has_been_lost(page, baseline):
     moved badly.
 
     Regenerate deliberately, never to make this pass:
-        python test_page_structure.py --bless
+        python tests/test_page_structure.py --bless
     """
     html, js = page
     lost_fns = sorted(set(baseline["functions"]) - ps.reachable_functions(js))
@@ -194,7 +202,7 @@ def _parse_javascript(path, module):
 
 
 @pytest.mark.parametrize("name", sorted(
-    f for f in os.listdir(os.path.join(os.path.dirname(os.path.abspath(__file__)), "web", "js"))
+    f for f in os.listdir(os.path.join(PKG, "web", "js"))
     if f.endswith(".js")))
 def test_every_page_script_parses(name):
     """A syntax error in one classic script kills every handler it defines
@@ -202,8 +210,7 @@ def test_every_page_script_parses(name):
     schedule form, say - and nothing in the browser tells the operator.
     Twice on 2026-08-24/25 that took a day to find. Parse each file.
     """
-    _parse_javascript(os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                   "web", "js", name), module=False)
+    _parse_javascript(os.path.join(PKG, "web", "js", name), module=False)
 
 
 @pytest.mark.parametrize("name", sorted(
@@ -235,8 +242,7 @@ def test_the_famous_targets_are_the_simulator_targets():
     import os
     import re
 
-    here = os.path.dirname(os.path.abspath(__file__))
-    sim_js = os.path.join(here, "..", "astro_simulator", "web", "js")
+    sim_js = os.path.join(PKG, "..", "astro_simulator", "web", "js")
 
     def parse_rows(path, name):
         src = open(path).read()
@@ -253,7 +259,7 @@ def test_the_famous_targets_are_the_simulator_targets():
 
     sim = parse_rows(os.path.join(sim_js, "ui.js"), "TARGETS")
     sched_list = parse_rows(
-        os.path.join(here, "web", "js", "schedule.js"), "FAMOUS_TARGETS")
+        os.path.join(PKG, "web", "js", "schedule.js"), "FAMOUS_TARGETS")
     assert len(sim) > 10, "the simulator list should be substantial"
 
     # The H I targets, verbatim and in order.

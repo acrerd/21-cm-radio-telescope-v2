@@ -19,7 +19,7 @@ from unittest.mock import patch, MagicMock
 import pytest
 
 # Ensure the scheduler module can be imported
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 # Mock flask before importing the scheduler (in case flask is not installed in test env)
 # The actual Flask app is not needed for unit tests of pure functions
@@ -2692,8 +2692,8 @@ class TestOneSitePosition:
         import os
         import re
         import observatory
-        header = os.path.join(os.path.dirname(os.path.dirname(
-            os.path.abspath(__file__))), "esp32_controller_arduino", "src",
+        header = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(
+            os.path.abspath(__file__)))), "esp32_controller_arduino", "src",
             "config.h")
         if not os.path.exists(header):
             pytest.skip("controller firmware not present")
@@ -2785,7 +2785,7 @@ class TestOneSitePosition:
         """It is plumbing. If numbers appear in it, there are two places again."""
         import os
         import re
-        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+        path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                             "observatory.py")
         with open(path) as fh:
             body = "".join(l for l in fh if not l.strip().startswith("#"))

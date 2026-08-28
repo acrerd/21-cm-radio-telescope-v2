@@ -303,7 +303,7 @@ def test_the_reduction_reports_the_total_integration():
     """
     import glob
     import os
-    files = sorted(glob.glob(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+    files = sorted(glob.glob(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                                           "data", "rf_gain_calibration_*.h5")))
     if not files:
         pytest.skip("no calibration observation on disk")
@@ -400,7 +400,7 @@ def test_only_positive_excursions_are_flagged():
 
 def test_the_known_interference_line_is_rejected_from_a_real_run():
     import os
-    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data",
+    path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data",
                         "rf_gain_calibration_20260824_180418.h5")
     if not os.path.exists(path):
         pytest.skip("the 2026-08-24 run is not on disk")
