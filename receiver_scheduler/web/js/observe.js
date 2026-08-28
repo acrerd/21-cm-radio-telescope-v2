@@ -213,6 +213,15 @@
                 const liveRow = obvObservations.find(r => r.recording && !r.locked);
                 document.getElementById('obvLiveViewBtn').style.display = liveRow ? '' : 'none';
                 onObserveFileChange();
+                // Fill the plot area on first view so it is not blank: draw the
+                // selected recording if nothing is drawn yet and it is readable.
+                // A guard on the existing <img> keeps the operator's own plot
+                // across tab switches and never re-draws over it.
+                const chosen = obvObservations.find(x => x.filename === want);
+                const host = document.getElementById('obvPlot');
+                if (chosen && !chosen.locked && host && !host.querySelector('img')) {
+                    showObservePlot();
+                }
             }).catch(() => {});
         }
 
