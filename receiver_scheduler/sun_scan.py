@@ -2014,11 +2014,77 @@ def pointing_model_document(model: dict, fitted_utc: str | None = None) -> dict:
     return document
 
 
+_POINTING_MODEL_DIR = os.path.join(_SCRIPT_DIR, "pointing_models")
+
+
+def _pointing_model_stamp(model: dict) -> str:
+    """The compact UTC stamp a fitted model is filed under, from fitted_utc.
+
+    Same convention as the horizon archive (YYYYMMDDTHHMMSSZ), so two fits are
+    distinct files while re-saving the same fit lands on the same one.
+    """
+    keep = [c for c in str((model or {}).get("fitted_utc") or "") if c.isdigit()]
+    if len(keep) < 14:
+        return "unknown"
+    return "%sT%sZ" % ("".join(keep[:8]), "".join(keep[8:14]))
+
+
+def _pointing_model_path(name: str) -> str:
+    """Resolve an archived-model name to a path, refusing any separator.
+
+    The name can arrive from an HTTP request, so it must not be able to
+    address anything outside the archive.
+    """
+    base = os.path.basename(str(name))
+    if not base.endswith(".json"):
+        base += ".json"
+    if base == ".json":
+        raise ValueError("not a model name: %r" % (name,))
+    return os.path.join(_POINTING_MODEL_DIR, base)
+
+
+def _archive_pointing_model(model: dict) -> str | None:
+    """File a model under its fitted_utc, without overwriting an existing one.
+
+    Idempotent: re-saving the same fit lands on the same file and is a no-op,
+    so a model archived once is never rewritten (a restore, then a re-fit, does
+    not disturb it). Returns the path, or None if the model has no fitted_utc.
+    """
+    stamp = _pointing_model_stamp(model)
+    if stamp == "unknown":
+        return None
+    os.makedirs(_POINTING_MODEL_DIR, exist_ok=True)
+    path = _pointing_model_path("pointing_%s" % stamp)
+    if not os.path.exists(path):
+        with open(path, "w") as f:
+            json.dump(model, f, indent=2)
+    return path
+
+
 def save_pointing_model(model: dict):
-    """Save fitted pointing model to file."""
+    """Save the fitted model as active, and archive a dated copy.
+
+    pointing_model.json stays the active mirror every reader already uses;
+    alongside it, pointing_models/pointing_<fitted_utc>.json keeps each fit so
+    a previous parameter set is never lost - the fit can be compared with its
+    predecessor and a bad one rolled back. This mirrors the horizon profile
+    archive, and for the same reason: the derived product is the important one
+    and overwriting it in place destroyed the only record of it.
+
+    The model already in force is archived first, so the one predating the
+    archive (or any not yet filed) survives being replaced on the next fit.
+    """
+    existing = load_pointing_model()
+    if existing:
+        _archive_pointing_model(existing)
     with open(_POINTING_MODEL_FILE, "w") as f:
         json.dump(model, f, indent=2)
-    log.info("Pointing model saved")
+    archive_path = _archive_pointing_model(model)
+    if archive_path:
+        log.info("Pointing model saved and archived as %s",
+                 os.path.basename(archive_path))
+    else:
+        log.info("Pointing model saved (no fitted_utc; not archived)")
 
 
 def load_pointing_model() -> dict | None:
@@ -2028,6 +2094,56 @@ def load_pointing_model() -> dict | None:
             return json.load(f)
     except (FileNotFoundError, json.JSONDecodeError):
         return None
+
+
+def list_pointing_models() -> list:
+    """Archived pointing models, newest first, each with a short summary.
+
+    The one whose stamp matches the active pointing_model.json is flagged so
+    the operator can see which fit is in force.
+    """
+    try:
+        names = os.listdir(_POINTING_MODEL_DIR)
+    except FileNotFoundError:
+        return []
+    active_stamp = _pointing_model_stamp(load_pointing_model() or {})
+    out = []
+    for fn in names:
+        if not fn.endswith(".json"):
+            continue
+        try:
+            with open(os.path.join(_POINTING_MODEL_DIR, fn)) as f:
+                m = json.load(f)
+        except (json.JSONDecodeError, OSError):
+            continue
+        out.append({
+            "name": fn[:-5],
+            "fitted_utc": m.get("fitted_utc"),
+            "n_scans": m.get("n_scans"),
+            "rms_alt": m.get("rms_alt"),
+            "rms_az": m.get("rms_az"),
+            "reduced_chi_squared": m.get("reduced_chi_squared"),
+            "terms": m.get("terms"),
+            "active": _pointing_model_stamp(m) == active_stamp
+                      and active_stamp != "unknown",
+        })
+    out.sort(key=lambda e: e.get("fitted_utc") or "", reverse=True)
+    return out
+
+
+def restore_pointing_model(name: str) -> dict:
+    """Make an archived model the active one again (roll back a fit).
+
+    Copies the archived file over pointing_model.json; the archive is left
+    intact, so restoring is itself reversible. Returns the restored model.
+    """
+    path = _pointing_model_path(name)
+    with open(path) as f:
+        model = json.load(f)
+    with open(_POINTING_MODEL_FILE, "w") as f:
+        json.dump(model, f, indent=2)
+    log.info("Pointing model restored from archive: %s", os.path.basename(path))
+    return model
 
 
 # Plot theme, matching the scheduler page these images are shown on.

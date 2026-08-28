@@ -1763,6 +1763,11 @@ sun_scan_state: dict = {
     "result": None,
     "error": None,
     "image_path": None,
+    # A standalone single scan is look-and-see: it is not added to the
+    # pointing data unless the operator saves it (/api/sunscan/save). The
+    # calibration day sets this True the moment it auto-saves each raster,
+    # so the "Save to pointing data" button never offers to save one twice.
+    "saved": False,
 }
 
 # Horizon scan state. A separate activity from the Sun scan but the same
@@ -2910,7 +2915,7 @@ def _run_sun_scan(params: dict):
     global sun_scan_state
     sun_scan_state.update(running=True, progress=0, total=0,
                           point_info=None, result=None, error=None,
-                          image_path=None)
+                          image_path=None, saved=False)
     try:
         from sun_scan import sun_scan as do_sun_scan
 
@@ -3209,6 +3214,7 @@ def _run_calibration_day(params: dict):
             # Save result to pointing data
             if sun_scan_state.get("result") and not sun_scan_state.get("error"):
                 save_scan_to_pointing_data(sun_scan_state["result"])
+                sun_scan_state["saved"] = True
                 cal_day_state["scans_completed"] += 1
                 cal_day_state["consecutive_failures"] = 0
                 cal_day_state["last_scan_error"] = None
@@ -5658,7 +5664,44 @@ def api_sunscan_status():
         'has_image': sun_scan_state["image_path"] is not None
                      and os.path.isfile(sun_scan_state["image_path"]),
         'horizon_warning': sun_scan_state.get("horizon_warning"),
+        'saved': sun_scan_state.get("saved", False),
+        # A standalone single scan the operator can add to the pointing
+        # model: a good fit, not already saved, and not one the calibration
+        # day is auto-banking as we speak.
+        'can_save': bool(sun_scan_state.get("result")
+                         and not sun_scan_state.get("error")
+                         and sun_scan_state["result"].get("fit", {}).get("success")
+                         and not sun_scan_state.get("saved")
+                         and not sun_scan_state.get("running")
+                         and not cal_day_state["running"]),
     })
+
+
+@app.route('/api/sunscan/save', methods=['POST'])
+def api_sunscan_save():
+    """Append the last single Sun scan to the pointing data by hand.
+
+    A single scan is look-and-see and is not saved on its own; this lets the
+    operator keep one that looks good, so a later Fit Model includes it. The
+    calibration day saves its own rasters, so this refuses anything already
+    banked (the `saved` flag), and refuses a failed or missing fit.
+    """
+    from sun_scan import save_scan_to_pointing_data, load_pointing_data
+    result = sun_scan_state.get("result")
+    if not result or sun_scan_state.get("error"):
+        return jsonify({'success': False, 'error': 'No successful scan to save'}), 400
+    if not result.get("fit", {}).get("success"):
+        return jsonify({'success': False,
+                        'error': 'That scan\'s fit was rejected; nothing to save'}), 400
+    if sun_scan_state.get("saved"):
+        return jsonify({'success': False,
+                        'error': 'That scan is already in the pointing data'}), 409
+    if cal_day_state["running"]:
+        return jsonify({'success': False,
+                        'error': 'A calibration day is saving its own scans'}), 409
+    save_scan_to_pointing_data(result)
+    sun_scan_state["saved"] = True
+    return jsonify({'success': True, 'total': len(load_pointing_data())})
 
 
 @app.route('/api/sunscan/image', methods=['GET'])
@@ -5817,6 +5860,33 @@ def api_calday_plot():
         from flask import send_file
         return send_file(plot_path, mimetype='image/png')
     return ('', 404)
+
+
+@app.route('/api/calday/models', methods=['GET'])
+def api_calday_models():
+    """The archived pointing-model fits, newest first, for comparison."""
+    from sun_scan import list_pointing_models
+    return jsonify({'models': list_pointing_models()})
+
+
+@app.route('/api/calday/models/restore', methods=['POST'])
+def api_calday_models_restore():
+    """Roll the active pointing model back to an archived fit.
+
+    Local only - it rewrites pointing_model.json but does not touch the
+    controller, exactly like a fresh fit. Apply afterwards to push it.
+    """
+    from sun_scan import restore_pointing_model
+    name = (request.get_json(silent=True) or {}).get("name")
+    if not name:
+        return jsonify({'success': False, 'error': 'No model name given'}), 400
+    try:
+        model = restore_pointing_model(name)
+    except (FileNotFoundError, ValueError):
+        return jsonify({'success': False, 'error': 'No such archived model'}), 404
+    except json.JSONDecodeError:
+        return jsonify({'success': False, 'error': 'Archived model is unreadable'}), 500
+    return jsonify({'success': True, 'model': model})
 
 
 @app.route('/api/calday/apply', methods=['POST'])

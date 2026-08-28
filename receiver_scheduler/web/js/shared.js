@@ -233,7 +233,7 @@
             document.getElementById('tab-' + name).classList.add('active');
             if (name === 'config') loadConfig();
             if (name === 'log') loadLog();
-            if (name === 'sunscan') { pollSunScan(); pollCalDay(); loadCalModel(); showInstrument('ssInstrument'); }
+            if (name === 'sunscan') { pollSunScan(); pollCalDay(); loadCalModel(); refreshPointingModels(); showInstrument('ssInstrument'); }
             // Leaving the tab stops the loop; scheduleCameraRefresh cancels
             // itself whenever the camera tab is not the one on screen.
             if (name === 'horizon') { pollHorizon(); loadHorizonProfiles(); }

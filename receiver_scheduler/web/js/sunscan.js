@@ -94,6 +94,13 @@
                         html += '<tr><td style="color:#888; padding:4px 8px;">Integration</td><td>' + r.integration_time_s + 's per point</td></tr>';
                         html += '<tr><td style="color:#888; padding:4px 8px;">Timestamp</td><td>' + r.timestamp + '</td></tr>';
                         html += '</table>';
+                        if (data.can_save) {
+                            html += '<button id="ssSaveBtn" class="btn btn-success" style="margin-top:12px;" '
+                                + 'title="Add this scan to the pointing data so the next Fit Model includes it. A single scan is not saved otherwise." '
+                                + 'onclick="saveSunScan()">Save to pointing data</button>';
+                        } else if (data.saved) {
+                            html += '<div style="margin-top:12px; color:#00ff88; font-size:13px;">&check; Saved to pointing data</div>';
+                        }
                         document.getElementById('ssResults').innerHTML = html;
 
                         if (data.has_image) {
@@ -104,6 +111,24 @@
                         document.getElementById('ssStatus').innerHTML = '<span style="color:#888;">Idle &mdash; configure parameters and click Start.</span>';
                     }
                 }
+            });
+        }
+
+        function saveSunScan() {
+            const btn = document.getElementById('ssSaveBtn');
+            if (btn) { btn.disabled = true; btn.textContent = 'Saving...'; }
+            fetch('/api/sunscan/save', {method: 'POST'}).then(r => r.json()).then(data => {
+                if (data.success) {
+                    if (btn) btn.outerHTML = '<div style="margin-top:12px; color:#00ff88; font-size:13px;">&check; Saved to pointing data'
+                        + (data.total ? ' (' + data.total + ' on file)' : '') + '</div>';
+                } else if (btn) {
+                    btn.disabled = false;
+                    btn.textContent = 'Save to pointing data';
+                    alert(data.error || 'Could not save the scan');
+                }
+            }).catch(e => {
+                if (btn) { btn.disabled = false; btn.textContent = 'Save to pointing data'; }
+                alert('Save request failed: ' + e);
             });
         }
 
@@ -242,6 +267,7 @@
                     // Show plot
                     document.getElementById('cdPlotContainer').innerHTML =
                         '<img src="/api/calday/plot?' + Date.now() + '" style="max-width:100%; border-radius:8px; border:1px solid #333; margin-top:10px;">';
+                    refreshPointingModels();  // the fit just archived a new one
                 } else {
                     document.getElementById('cdModel').innerHTML = '<span style="color:#ff4757;">' + (m.error || 'Fit failed') + '</span>';
                 }
@@ -284,6 +310,65 @@
         }
 
         // Load existing model on tab open
+        function refreshPointingModels() {
+            const el = document.getElementById('cdArchive');
+            if (!el) return;
+            fetch('/api/calday/models').then(r => r.json()).then(data => {
+                const models = data.models || [];
+                if (!models.length) {
+                    el.innerHTML = '<span style="color:#888;">No archived fits.</span>';
+                    return;
+                }
+                let html = '<table style="width:100%; font-size:13px; color:#ccc;">';
+                models.forEach(m => {
+                    const when = m.fitted_utc
+                        ? m.fitted_utc.replace('T', ' ').replace('Z', ' UTC') : m.name;
+                    const rms = (m.rms_alt != null && m.rms_az != null)
+                        ? 'RMS ' + m.rms_alt.toFixed(3) + '/' + m.rms_az.toFixed(3) + '&deg;' : '';
+                    const tag = m.active
+                        ? '<span style="color:#00ff88;">active</span>'
+                        : '<button class="btn btn-secondary" style="padding:2px 10px; font-size:12px;" '
+                          + 'onclick="restorePointingModel(\'' + m.name + '\')">Restore</button>';
+                    html += '<tr>'
+                        + '<td style="padding:4px 8px;">' + when + '</td>'
+                        + '<td style="padding:4px 8px; color:#888;">' + (m.n_scans || '?') + ' scans'
+                        + (rms ? ', ' + rms : '') + '</td>'
+                        + '<td style="padding:4px 8px; text-align:right;">' + tag + '</td>'
+                        + '</tr>';
+                });
+                html += '</table>';
+                el.innerHTML = html;
+            }).catch(() => {
+                el.innerHTML = '<span style="color:#ff4757;">Could not load archived fits.</span>';
+            });
+        }
+
+        function restorePointingModel(name) {
+            if (!confirm('Make this archived fit the active pointing model? It rewrites the '
+                + 'local model; press Apply to Telescope afterwards to push it to the controller.')) return;
+            fetch('/api/calday/models/restore', {
+                method: 'POST', headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({name: name})
+            }).then(r => r.json()).then(data => {
+                if (!data.success) { alert(data.error || 'Restore failed'); return; }
+                const m = data.model || {};
+                const t = m.terms || {};
+                let html = '<div style="color:#00d4ff; margin-bottom:8px;">Restored fit '
+                    + (m.fitted_utc || name) + '</div>';
+                html += '<table style="width:100%; font-size:13px; color:#ccc;">';
+                Object.keys(t).forEach(k => {
+                    html += '<tr><td style="color:#888; padding:4px 8px;">' + k + '</td><td>'
+                        + (t[k] >= 0 ? '+' : '') + t[k].toFixed(4) + '&deg;</td></tr>';
+                });
+                html += '</table><div style="color:#888; font-size:12px; margin-top:8px;">'
+                    + 'Press Apply to Telescope to push it to the controller.</div>';
+                document.getElementById('cdModel').innerHTML = html;
+                document.getElementById('cdApplyBtn').style.display = 'inline-block';
+                document.getElementById('cdPlotContainer').innerHTML = '';
+                refreshPointingModels();
+            }).catch(e => alert('Restore request failed: ' + e));
+        }
+
         function loadCalModel() {
             fetch('/api/calday/model').then(r => r.json()).then(m => {
                 if (m.success) {
