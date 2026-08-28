@@ -109,9 +109,13 @@ class TestControllerUrlResolution:
         with patch.dict(os.environ, {}, clear=True), \
              patch.object(sched, "SRT_CONTROLLER_URL", "http://192.0.2.136"), \
              patch.object(sched, "load_config", return_value=cfg):
+            # The configured URL comes before the sticky runtime one: preferring
+            # `current` let one transient timeout flip it to the slow mDNS name
+            # and flap forever, so `_controller_url_candidates` tries the config
+            # first (`current` still follows, preserving a real WiFi failover).
             assert sched._controller_url_candidates() == [
-                "http://192.0.2.136",
                 "http://192.0.2.120",
+                "http://192.0.2.136",
                 "http://srt-controller.local",
             ]
 

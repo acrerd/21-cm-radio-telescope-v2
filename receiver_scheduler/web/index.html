@@ -46,7 +46,7 @@
             </div>
             <div style="display:flex; align-items:center; gap:14px;">
                 <label class="help-toggle" title="Show a short explanation when you hover over a control. New to the telescope? Open the Guide tab.">
-                    <input type="checkbox" id="helpTipsToggle" onchange="setHelpEnabled(this.checked)"> Help tips
+                    <input autocomplete="off" type="checkbox" id="helpTipsToggle" onchange="setHelpEnabled(this.checked)"> Help tips
                 </label>
                 <button title="Stop the observation that is recording now. The file keeps what it has; the dish stows or homes if the entry asked for it." class="btn btn-danger" id="stopBtn" style="display:none" onclick="stopObs()">Stop</button>
             </div>

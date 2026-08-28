@@ -333,4 +333,6 @@ def test_a_finished_file_reads_exactly_as_before(tmp_path):
     freq, spectra, stamps, taus, header = op.read_observation(path)
     assert spectra.shape == (2, 64)
     assert np.allclose(spectra[0], 0.003) and np.allclose(spectra[1], 0.00301)
-    assert list(stamps) == [1.0e9, 1.0e9 + 1]
+    # Records are stamped at the centre of the integration, so a 1 s integration
+    # shifts the passed end time back by 0.5 s.
+    assert list(stamps) == [1.0e9 - 0.5, 1.0e9 + 0.5]
