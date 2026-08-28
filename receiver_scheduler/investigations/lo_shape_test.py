@@ -26,7 +26,9 @@ import sys
 import time
 import urllib.request
 
-HERE = os.path.dirname(os.path.abspath(__file__))
+# receiver_scheduler/, where the recording data and the receiver live;
+# this script sits one level down in investigations/.
+HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PYTHON = "/home/astro/radioconda/bin/python"
 RECEIVER = os.path.join(HERE, "b210_h1_receiver.py")
 CONTROLLER = "http://192.168.50.120"

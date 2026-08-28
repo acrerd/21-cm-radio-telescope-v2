@@ -27,7 +27,9 @@ import os
 import h5py
 import numpy as np
 
-HERE = os.path.dirname(os.path.abspath(__file__))
+# receiver_scheduler/, where the recording data and the receiver live;
+# this script sits one level down in investigations/.
+HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 H1 = 1420.405752e6
 HALF_BAND = 0.25
 

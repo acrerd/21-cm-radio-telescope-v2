@@ -30,9 +30,9 @@ This receiver is designed for radio astronomy observations of neutral hydrogen (
 | `observation_files.py` | Where recordings go and what they are called |
 | `observation_plot.py` | Reads a recording (live or finished, either product, always as counts) and renders it, in kelvin and on an LSR velocity axis |
 | `observatory.py` | Where the telescope is and how big its beam is — plumbing only; the numbers live in `astro_simulator/instrument.py` |
-| `page_sources.py` | Collects the page and every script it loads, for the tests that guard it |
+| `tests/page_sources.py` | Collects the page and every script it loads, for the tests that guard it |
 | `ad9361_filters.py` | Reads the B210's own decimation-filter chain and computes its response |
-| `lo_shape_*.py`, `freq_switch_demo.py` | One-off investigations, kept for their reasoning |
+| `investigations/lo_shape_*.py`, `investigations/freq_switch_demo.py` | One-off investigations, kept for their reasoning |
 
 ### State the scheduler keeps
 

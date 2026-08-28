@@ -30,7 +30,9 @@ import os
 import h5py
 import numpy as np
 
-HERE = os.path.dirname(os.path.abspath(__file__))
+# receiver_scheduler/, where the recording data and the receiver live;
+# this script sits one level down in investigations/.
+HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 H1 = 1420.405752e6
 DC_BLANK_HZ = 25e3        # the LO artefact, at baseband zero in every run
 H1_BLANK_HZ = 300e3       # generous: real emission, wherever it lands
