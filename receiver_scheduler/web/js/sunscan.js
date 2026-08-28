@@ -159,6 +159,10 @@
                         info += '<br><span style="color:#ffaa00;">Waiting for the Sun to reach 5&deg; altitude</span>';
                     } else if (data.phase === 'waiting_for_clear_horizon') {
                         info += '<br><span style="color:#ffaa00;">Sun is behind the obstructed horizon; waiting for it to clear</span>';
+                        if (data.horizon_clear_eta) {
+                            const eta = new Date(data.horizon_clear_eta).toLocaleTimeString();
+                            info += '<br><span style="color:#888;">Expected to clear at ' + eta + ' local</span>';
+                        }
                     } else if (data.phase === 'homing') {
                         info += '<br><span style="color:#ffaa00;">Running physical homing sequence before scan</span>';
                     } else if (data.phase === 'retrying') {

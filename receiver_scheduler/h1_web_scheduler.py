@@ -1820,6 +1820,7 @@ cal_day_state: dict = {
     "consecutive_failures": 0,
     "last_scan_error": None,
     "next_scan_time": None,
+    "horizon_clear_eta": None,
     "interval_minutes": 30,
     "error": None,
 }
@@ -3071,6 +3072,31 @@ def _run_horizon_scan(params: dict):
         horizon_state["running"] = False
 
 
+def _horizon_clear_eta(lat, lon, elev, n, spacing, sectors,
+                       step_min=2, max_min=360):
+    """Predict when the Sun's raster next clears the measured horizon.
+
+    Steps the Sun forward from now and returns the first *local* datetime at
+    which every raster point is clear, or None if it does not clear within
+    max_min (e.g. the Sun sets before rising above the obstruction). Advisory
+    only - the scan itself re-checks the live position, so a stale prediction
+    costs nothing.
+    """
+    from sun_scan import get_sun_altaz, raster_obstruction
+    if not sectors:
+        return None
+    now_utc = datetime.utcnow()
+    to_local = datetime.now() - now_utc          # tz offset as a timedelta
+    for m in range(step_min, max_min + 1, step_min):
+        when = now_utc + timedelta(minutes=m)
+        alt, az = get_sun_altaz(lat, lon, elev, when)
+        if alt < 5.0:
+            continue
+        if not raster_obstruction(alt, az, n, spacing, sectors):
+            return when + to_local
+    return None
+
+
 def _run_calibration_day(params: dict):
     """Run repeated sun scans at a fixed interval until sunset or cancelled."""
     from sun_scan import (get_sun_altaz, parse_obstruction_sectors,
@@ -3080,7 +3106,8 @@ def _run_calibration_day(params: dict):
     cal_day_state.update(running=True, finished=False, phase="starting",
                          scans_completed=0, consecutive_failures=0,
                          last_scan_error=None, error=None,
-                         interval_minutes=interval, next_scan_time=None)
+                         interval_minutes=interval, next_scan_time=None,
+                         horizon_clear_eta=None)
     cal_day_cancel.clear()
 
     try:
@@ -3089,6 +3116,7 @@ def _run_calibration_day(params: dict):
             lat = cfg.get("observer_lat", 55.9)
             lon = cfg.get("observer_lon", -4.3)
             elev = cfg.get("observer_elevation", 50)
+            cal_day_state["horizon_clear_eta"] = None
 
             # Check sun is up — wait for sunrise if not
             sun_alt, sun_az = get_sun_altaz(lat, lon, elev)
@@ -3134,6 +3162,12 @@ def _run_calibration_day(params: dict):
                          sun_alt, sun_az, bad["alt_deg"], bad["az_deg"],
                          bad["shortfall_deg"])
                 cal_day_state["phase"] = "waiting_for_clear_horizon"
+                eta = _horizon_clear_eta(lat, lon, elev,
+                                         params.get("n", 5),
+                                         params.get("grid_spacing_deg", 1.5),
+                                         sectors)
+                cal_day_state["horizon_clear_eta"] = (
+                    eta.isoformat() if eta else None)
                 if cal_day_cancel.wait(60):
                     return
                 continue
@@ -3211,6 +3245,7 @@ def _run_calibration_day(params: dict):
     finally:
         cal_day_state["running"] = False
         cal_day_state["next_scan_time"] = None
+        cal_day_state["horizon_clear_eta"] = None
         if cal_day_cancel.is_set() and cal_day_state["phase"] != "error":
             cal_day_state["phase"] = "stopped"
             cal_day_state["finished"] = True
@@ -5689,6 +5724,7 @@ def api_calday_status():
         'consecutive_failures': cal_day_state["consecutive_failures"],
         'last_scan_error': cal_day_state["last_scan_error"],
         'next_scan_time': cal_day_state["next_scan_time"],
+        'horizon_clear_eta': cal_day_state["horizon_clear_eta"],
         'interval_minutes': cal_day_state["interval_minutes"],
         'error': cal_day_state["error"],
         'scan_running': sun_scan_state["running"],
