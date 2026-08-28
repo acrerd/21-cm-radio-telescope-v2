@@ -1145,6 +1145,7 @@
                     <button class="guide-nav-item" data-guide="scheduling" onclick="showGuide('scheduling')">Scheduling observations</button>
                     <button class="guide-nav-item" data-guide="types" onclick="showGuide('types')">Tracked vs drift scan</button>
                     <button class="guide-nav-item" data-guide="spectrum" onclick="showGuide('spectrum')">Reading a spectrum</button>
+                    <button class="guide-nav-item" data-guide="datafile" onclick="showGuide('datafile')">The data file (HDF5)</button>
                     <button class="guide-nav-item" data-guide="suncal" onclick="showGuide('suncal')">Sun scan &amp; calibration</button>
                     <button class="guide-nav-item" data-guide="simhorizon" onclick="showGuide('simhorizon')">Simulator &amp; horizon</button>
                     <div class="guide-nav-group">Theory</div>
@@ -1234,6 +1235,35 @@
                         <p>The plot uses the <strong>LSR</strong> (Local Standard of Rest) frame whenever the direction and time are known, so your measurement can be compared with published data and with the same source months later. The raw file stays in the telescope's own (topocentric) frame; the conversion is done only for display. The plot labels which frame it is in &mdash; details in <span class="guide-jump" onclick="showGuide('velocity')">Doppler &amp; velocity frames</span>.</p>
                         <h3>Making sense of the shape</h3>
                         <p>Along a line of sight through the Galaxy you look through gas at many distances, each moving at a different speed, so the line is a <strong>blend</strong> of contributions at different velocities. Multiple peaks mean multiple clouds or spiral arms along the way. The velocity of a peak, through the Galaxy's rotation, encodes <em>where</em> that gas is &mdash; see <span class="guide-jump" onclick="showGuide('rotation')">Galactic rotation</span>.</p>
+                    </div>
+
+                    <div class="guide-section" id="guide-datafile">
+                        <h2>The data file (HDF5)</h2>
+                        <p>Every observation is one <strong>HDF5</strong> file in <code>data/observations/</code>, named <code>YYYYMMDD_HHMMSS_&lt;mode&gt;.h5</code> &mdash; the UTC time it started and whether it was a <code>track</code> or a <code>drift</code> scan. HDF5 is a self-describing scientific format: one file holds several named arrays (its <em>datasets</em>) and a set of labelled values (its <em>attributes</em>), and it reads the same way from Python, MATLAB or a notebook.</p>
+
+                        <h3>Two products in every file</h3>
+                        <p>From the one radio stream the receiver records <strong>two views</strong> of the sky at once:</p>
+                        <ul>
+                            <li><strong>The H&nbsp;I sub-band</strong> &mdash; a narrow, finely-channelled band around the 21&nbsp;cm line (~0.8&nbsp;km/s per channel), for the line itself. Datasets <code>frequency_hz</code> and <code>spectra_kelvin</code> (or <code>spectra_linear</code>).</li>
+                            <li><strong>The continuum</strong> &mdash; the whole 8&nbsp;MHz in coarser channels with the line cut out, for broadband sources. Datasets <code>frequency_hz_wide</code> and <code>spectra_wide_kelvin</code> (or <code>_linear</code>).</li>
+                        </ul>
+                        <p>Each row of a <code>spectra_*</code> array is one integration. Alongside them, one value per row: <code>timestamps</code> (Unix seconds, at the <em>centre</em> of the integration), <code>integration_times</code>, and <code>overflows</code> (samples the SDR dropped that record &mdash; should be zero).</p>
+
+                        <div class="callout note"><span class="tag">The units are in the name</span><code>spectra_kelvin</code> means the calibration was applied and the numbers are an antenna temperature; <code>spectra_linear</code> means it did not apply to that tuning and the numbers are raw counts. Asking for the wrong one raises an error rather than quietly handing back the other scale. The kelvin scale is exactly reversible &mdash; the bandpass and gain travel in the file &mdash; so the counts can always be recovered.</div>
+
+                        <h3>Everything else is an attribute</h3>
+                        <p>The tuning, the calibration constants (<code>applied_gain_counts_per_k</code>, <code>applied_t_sys_k</code>), where the dish pointed, the site position, the beam width, and the observation's name and mode are all stored as file attributes. A drift scan also records the computed beam-crossing time. Nothing about the observation lives only in the filename.</p>
+
+                        <h3>Reading one</h3>
+                        <p>The repository ships a notebook, <code>receiver_scheduler/read_h1_data.ipynb</code>, that opens a recording, prints all of this and plots it &mdash; a tracked spectrum as a spectrum, a drift scan as its power-through-time curve. Start there. The essence is only a few lines:</p>
+                        <pre style="background:#0f0f23; border:1px solid #333; border-radius:6px; padding:12px; overflow-x:auto; font-size:12px; color:#ccd; line-height:1.5;">import h5py
+with h5py.File('data/observations/20260828_060018_drift.h5', 'r') as f:
+    freq    = f['frequency_hz'][:]        # Hz
+    spectra = f['spectra_kelvin'][:]      # (records, channels), kelvin
+    times   = f['timestamps'][:]          # Unix seconds
+    meta    = dict(f.attrs)               # all the metadata</pre>
+
+                        <div class="callout note"><span class="tag">Reading a live file</span>A recording still being written must be opened with <code>swmr=True</code> (single-writer, many-reader); a plain open otherwise hits the file lock. The scheduler's own <code>observation_plot.py</code> handles that, reverses the kelvin scale to counts, and puts the axis on the LSR velocity frame &mdash; use it when you want exactly the reduction the Observe tab shows.</div>
                     </div>
 
                     <div class="guide-section" id="guide-suncal">
