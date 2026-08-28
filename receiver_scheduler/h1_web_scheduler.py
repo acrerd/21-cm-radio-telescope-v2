@@ -3090,15 +3090,15 @@ def _horizon_clear_eta(lat, lon, elev, n, spacing, sectors,
     from sun_scan import get_sun_altaz, raster_obstruction
     if not sectors:
         return None
-    now_utc = datetime.utcnow()
-    to_local = datetime.now() - now_utc          # tz offset as a timedelta
+    now_utc = datetime.now(timezone.utc)
     for m in range(step_min, max_min + 1, step_min):
-        when = now_utc + timedelta(minutes=m)
+        when = now_utc + timedelta(minutes=m)        # aware UTC; ephem treats it so
         alt, az = get_sun_altaz(lat, lon, elev, when)
         if alt < 5.0:
             continue
         if not raster_obstruction(alt, az, n, spacing, sectors):
-            return when + to_local
+            # Local naive, to match next_scan_time (the page reads both as local).
+            return when.astimezone().replace(tzinfo=None)
     return None
 
 
