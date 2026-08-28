@@ -96,6 +96,14 @@
            squeezed those. It gets the whole 1400px container, which is also
            the width the .rf-wide pull-out was sized for. */
         .config-form.observe-form { max-width: 1400px; }
+        /* The camera frame is 640x480 native and was rendering ~1:1 in the
+           700px settings card. Widen the camera card and let the frame fill it
+           so it shows larger - upscaled and a little softer, which is fine for
+           a safety view. max-width:100% alone only caps, so the image needs
+           width:100% to actually grow. Only the display grows; each refresh is
+           still a 640x480 JPEG. */
+        #tab-camera .config-form { max-width: 1024px; }
+        #tab-camera #camView img { width: 100%; height: auto; }
         /* The Configuration tab is a stack of short sections; a single 700px
            column left most of the width blank. Lay the sections out in two
            balanced columns, each section kept whole (break-inside: avoid) so
