@@ -445,11 +445,25 @@ export class SkyMap {
     // is up, but not observable.
     if (this.horizon && this.showHorizon) {
       const mL = [], mB = [];
+      const push = (alt, az) => {
+        const g = altAzToGal(alt, az, this.site.lat, this.site.lon, jd);
+        mL.push(g.l); mB.push(g.b);
+      };
+      // The castellation's treads (constant alt) are sampled finely in azimuth
+      // and project cleanly. Its risers (the floor stepping between adjacent
+      // azimuths) are near-vertical in alt/az and must be sampled in altitude
+      // too - otherwise path() joins the step's two ends with a straight chord
+      // in screen space instead of following the curved azimuth meridian.
+      let prevAlt = null;
       for (let i = 0; i <= 720; i++) {
         const az = i * 0.5;
-        const g = altAzToGal(horizonFloor(this.horizon.floors, az), az,
-                             this.site.lat, this.site.lon, jd);
-        mL.push(g.l); mB.push(g.b);
+        const alt = horizonFloor(this.horizon.floors, az);
+        if (prevAlt !== null && alt !== prevAlt) {
+          const steps = Math.max(2, Math.ceil(Math.abs(alt - prevAlt)));  // ~1 deg per sample
+          for (let s = 1; s < steps; s++) push(prevAlt + (alt - prevAlt) * (s / steps), az);
+        }
+        push(alt, az);
+        prevAlt = alt;
       }
       this.path(mL, mB, { color: "#55585b", lw: 3.2 });
       this.path(mL, mB, { color: "#ff9f43", lw: 1.6 });
