@@ -37,6 +37,7 @@ public:
     void startScan();
     int scanStatus();   // -1 running, -2 failed/no result, >=0 network count
     int scanStartResultCode() const;  // rc of the scanNetworks() call itself
+    const char *scanProbeResult() const;  // driver's esp_err name for a refused start
     bool retryScanStart();            // re-attempt a start that was refused
     bool scanStartAttemptsLeft() const;
     bool scanWasRequested() const;
@@ -72,6 +73,9 @@ private:
     unsigned long scanStartedMs;
     int scanStartResult;
     int scanStartAttempts;
+    int scanProbeErr;       // esp_err_t from the direct-driver probe
+    bool scanProbed;        // whether a refused start has been probed
+    void probeScanStart();  // ask esp_wifi_scan_start directly for its error
 };
 
 // Global instance

@@ -4,6 +4,7 @@
 #include "config.h"
 #include "settings.h"
 #include <Preferences.h>
+#include <esp_wifi.h>
 // esp_task_wdt.h is deliberately not included any more: nothing here should
 // touch the task watchdog. See the note above startScan().
 
@@ -14,7 +15,7 @@ WiFiManager::WiFiManager()
     : wifiDisabled(false), apActive(false),
       powerChangePending(false), powerChangeTarget(false),
       scanRequested(false), scanStartedMs(0), scanStartResult(WIFI_SCAN_FAILED),
-      scanStartAttempts(0) {
+      scanStartAttempts(0), scanProbeErr(0), scanProbed(false) {
 }
 
 bool WiFiManager::loadCredentials(String &ssid, String &password) {
@@ -158,12 +159,48 @@ void WiFiManager::startScan() {
         WiFi.mode(WIFI_AP_STA);
     }
 
+    // Clear any half-formed station state before scanning. The driver
+    // refuses a scan while a connect is in progress, and stale connect
+    // state is one of the candidate causes of the standing
+    // WIFI_SCAN_FAILED (#12). With no association this is a no-op.
+    if (WiFi.status() != WL_CONNECTED) {
+        WiFi.disconnect();
+    }
+
     WiFi.scanDelete();
     scanStartResult = WiFi.scanNetworks(true);  // async - returns immediately
+    if (scanStartResult == WIFI_SCAN_FAILED) {
+        probeScanStart();
+    }
     scanRequested = true;
     scanStartedMs = millis();
     scanStartAttempts = 1;
     Serial.printf("Async WiFi scan started (rc=%d)\n", scanStartResult);
+}
+
+// The Arduino scanNetworks() wrapper reports a refused start as a bare -2 and
+// drops the driver's esp_err_t, which is the one fact that separates the
+// candidate causes of #12 (driver not started, stale connect state, missing
+// STA interface...). When a start is refused, ask esp_wifi_scan_start()
+// directly with the same default parameters and keep its error for
+// /wifi/scan to report. If the direct call unexpectedly succeeds - meaning
+// the failure lives in the Arduino layer, not the driver - stop the scan it
+// started, since nothing is tracking it; the point is the code, not the scan.
+void WiFiManager::probeScanStart() {
+    wifi_scan_config_t cfg = {};
+    const esp_err_t err = esp_wifi_scan_start(&cfg, false);
+    scanProbeErr = (int)err;
+    scanProbed = true;
+    if (err == ESP_OK) {
+        esp_wifi_scan_stop();
+    }
+    Serial.printf("WiFi scan probe: %s (0x%x)\n", esp_err_to_name(err), (unsigned)err);
+}
+
+const char *WiFiManager::scanProbeResult() const {
+    if (!scanProbed) return "not probed";
+    if (scanProbeErr == ESP_OK) return "ESP_OK (driver accepted the probe; Arduino layer refused)";
+    return esp_err_to_name((esp_err_t)scanProbeErr);
 }
 
 // Try again to start a scan that refused to begin.
@@ -179,6 +216,9 @@ bool WiFiManager::retryScanStart() {
     }
     scanStartAttempts++;
     scanStartResult = WiFi.scanNetworks(true);
+    if (scanStartResult == WIFI_SCAN_FAILED) {
+        probeScanStart();
+    }
     scanStartedMs = millis();
     Serial.printf("Async WiFi scan retry %d (rc=%d)\n",
                   scanStartAttempts, scanStartResult);

@@ -852,7 +852,8 @@ void setupWebServer() {
             String json = "{\"status\":\"failed\",\"complete_rc\":" + String(n) +
                           ",\"start_rc\":" + String(wifiManager.scanStartResultCode()) +
                           ",\"wifi_mode\":" + String((int)WiFi.getMode()) +
-                          ",\"age_ms\":" + String(wifiManager.scanAgeMs()) + "}";
+                          ",\"age_ms\":" + String(wifiManager.scanAgeMs()) +
+                          ",\"probe\":\"" + jsonEscape(String(wifiManager.scanProbeResult())) + "\"}";
             request->send(200, "application/json", json);
             return;
         }
@@ -1028,6 +1029,31 @@ void setupWebServer() {
 
     // Save settings (must be before /settings to avoid route conflict)
     webServer.on("/settings/save", HTTP_GET, [](AsyncWebServerRequest *request) {
+        // Validate the string settings before touching anything, and reject
+        // loudly rather than truncate: the browser's maxlength is a courtesy,
+        // not a boundary. softAP limits are 31 chars of SSID and 8-63 of
+        // password (below 8 the AP silently fails to start, which would cost
+        // the fallback access path); the page name bound matches the UI's
+        // maxlength. An absent or empty ap_password means "keep the current
+        // one" - it is no longer served by /settings, so the form cannot
+        // round-trip it.
+        const char *bad = nullptr;
+        if (request->hasArg("ap_ssid")) {
+            const size_t n = request->arg("ap_ssid").length();
+            if (n < 1 || n > 31) bad = "AP SSID must be 1-31 characters";
+        }
+        if (!bad && request->hasArg("ap_password") && request->arg("ap_password").length() > 0) {
+            const size_t n = request->arg("ap_password").length();
+            if (n < 8 || n > 63) bad = "AP password must be 8-63 characters";
+        }
+        if (!bad && request->hasArg("page_name")) {
+            if (request->arg("page_name").length() > 31) bad = "Page name must be at most 31 characters";
+        }
+        if (bad) {
+            String err = "{\"ok\":false,\"error\":\"" + jsonEscape(String(bad)) + "\"}";
+            request->send(400, "application/json", err);
+            return;
+        }
         // observerLat/Lon are 8-byte doubles read by updateTracking() on
         // loopTask; an unlocked write there can be seen half-updated and emit
         // one wildly wrong slew command. Scoped so the NVS write at the end of
@@ -1070,7 +1096,7 @@ void setupWebServer() {
             if (request->hasArg("ap_ssid")) {
                 settings.apSSID = request->arg("ap_ssid");
             }
-            if (request->hasArg("ap_password")) {
+            if (request->hasArg("ap_password") && request->arg("ap_password").length() > 0) {
                 settings.apPassword = request->arg("ap_password");
             }
             if (request->hasArg("page_name")) {
@@ -1097,24 +1123,31 @@ void setupWebServer() {
 
     // Get settings
     webServer.on("/settings", HTTP_GET, [](AsyncWebServerRequest *request) {
-        char json[700];
-        snprintf(json, sizeof(json),
+        // Built as a String rather than a fixed buffer: the three string
+        // settings are operator text, and truncating the document mid-structure
+        // killed the whole Settings tab. The strings go through jsonEscape so a
+        // quote in a page name cannot break the JSON. The AP password is
+        // deliberately not served - the UI does not need it to render, and it
+        // was going out in cleartext to any client; an empty field on save
+        // means "keep the current password".
+        char numeric[360];
+        snprintf(numeric, sizeof(numeric),
             "{\"observer_lat\":%.6f,\"observer_lon\":%.6f,"
             "\"mount_az_min\":%.1f,\"mount_az_max\":%.1f,"
             "\"mount_alt_min\":%.1f,\"mount_alt_max\":%.1f,"
             "\"horizon_alt\":%.1f,\"galactic_min_alt\":%.1f,"
             "\"stow_alt\":%.1f,\"stow_az\":%.1f,"
-            "\"position_deadband\":%.2f,"
-            "\"ap_ssid\":\"%s\",\"ap_password\":\"%s\","
-            "\"page_name\":\"%s\"}",
+            "\"position_deadband\":%.2f,",
             settings.observerLat, settings.observerLon,
             settings.mountAzMin, settings.mountAzMax,
             settings.mountAltMin, settings.mountAltMax,
             settings.horizonAlt, settings.galacticMinAlt,
             settings.stowAlt, settings.stowAz,
-            settings.positionDeadband,
-            settings.apSSID.c_str(), settings.apPassword.c_str(),
-            settings.pageName.c_str());
+            settings.positionDeadband);
+        String json = numeric;
+        json += "\"ap_ssid\":\"" + jsonEscape(settings.apSSID) + "\",";
+        json += "\"ap_password\":\"\",";
+        json += "\"page_name\":\"" + jsonEscape(settings.pageName) + "\"}";
         request->send(200, "application/json", json);
     });
 
