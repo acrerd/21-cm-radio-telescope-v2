@@ -202,12 +202,13 @@ void test_sun_position_reasonable_range() {
 // =============================================================================
 
 void test_moon_position_reasonable_range() {
-    // Moon's RA should be 0-24h, Dec should be within +/- 28.5 degrees
+    // Moon's RA is 0-24h; geocentric Dec reaches +/-28.5, and topocentric
+    // parallax (issue #3, C14) can add up to ~1 deg, so allow +/-30.
     double ra, dec;
     getMoonPosition(ra, dec);
 
     TEST_ASSERT_TRUE(ra >= 0.0 && ra < 24.0);
-    TEST_ASSERT_TRUE(dec >= -29.0 && dec <= 29.0);
+    TEST_ASSERT_TRUE(dec >= -30.0 && dec <= 30.0);
 }
 
 // =============================================================================

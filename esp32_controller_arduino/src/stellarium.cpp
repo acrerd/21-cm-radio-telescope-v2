@@ -9,6 +9,7 @@
 #include "srt_serial.h"
 #include "sync.h"
 #include <AsyncTCP.h>
+#include <string.h>
 
 static AsyncServer* stellariumServer = nullptr;
 static AsyncClient* stellariumClient = nullptr;
@@ -19,6 +20,7 @@ extern SRTState state;
 static void prepareStellariumTrackingTarget() {
     state.waitingForWrap = false;
     state.waitingForRise = false;
+    state.waitingForDescend = false;
     state.movementHoldUntil = 0;
     if (state.azOnlyTracking) {
         state.azOnlyAlt = srtSerial.getCurrentAlt();
@@ -88,34 +90,65 @@ void sendPositionToStellarium() {
     stellariumClient->write((const char*)msg, 24);
 }
 
+// One goto message is 20 bytes; the buffer holds a few so a burst or a
+// partial tail has room. Only one Stellarium client is served at a time, so a
+// single static buffer suffices.
+static uint8_t stellBuf[128];
+static size_t stellBufLen = 0;
+
+static void processStellariumMessage(const uint8_t* bytes, uint16_t msgLen) {
+    uint16_t msgType = bytes[2] | (bytes[3] << 8);
+    if (msgType != 0 || msgLen < 20) return;  // only the goto (type 0) is acted on
+
+    uint32_t raRaw = bytes[12] | (bytes[13] << 8) | (bytes[14] << 16) | (bytes[15] << 24);
+    int32_t decSigned = bytes[16] | (bytes[17] << 8) | (bytes[18] << 16) | (bytes[19] << 24);
+    double raHours = (double)raRaw * 24.0 / 4294967296.0;
+    double decDeg = (double)decSigned * 90.0 / 1073741824.0;
+
+    Serial.printf("Stellarium goto: RA=%.4fh, Dec=%.4f\n", raHours, decDeg);
+    char logBuf[48];
+    snprintf(logBuf, sizeof(logBuf), "Stellarium: RA=%.3fh Dec=%.1f", raHours, decDeg);
+    srtSerial.logESP(logBuf);
+
+    // Runs on async_tcp; updateTracking() reads all of this on loopTask, and
+    // targetName is a String, so the whole target update is applied as one
+    // unit rather than being seen half-written.
+    SRTLock lock;
+    state.currentRA = raHours;
+    state.currentDec = decDeg;
+    state.targetName = "";
+    prepareStellariumTrackingTarget();
+}
+
 void onStellariumData(void* arg, AsyncClient* client, void* data, size_t len) {
-    if (len >= 20) {
-        uint8_t* bytes = (uint8_t*)data;
+    // The protocol is length-prefixed (msgLen in the first two bytes, LE). A
+    // goto can arrive split across TCP segments, or two can coalesce into one;
+    // parsing a single read() dropped the first case and ran only the first of
+    // the second (issue #3, C8). Buffer until whole messages are present and
+    // drain them all.
+    const uint8_t* in = (const uint8_t*)data;
+    for (size_t i = 0; i < len && stellBufLen < sizeof(stellBuf); i++) {
+        stellBuf[stellBufLen++] = in[i];
+    }
 
-        uint16_t msgLen = bytes[0] | (bytes[1] << 8);
-        uint16_t msgType = bytes[2] | (bytes[3] << 8);
-
-        if (msgType == 0) {  // Goto command
-            uint32_t raRaw = bytes[12] | (bytes[13] << 8) | (bytes[14] << 16) | (bytes[15] << 24);
-            int32_t decSigned = bytes[16] | (bytes[17] << 8) | (bytes[18] << 16) | (bytes[19] << 24);
-
-            double raHours = (double)raRaw * 24.0 / 4294967296.0;
-            double decDeg = (double)decSigned * 90.0 / 1073741824.0;
-
-            Serial.printf("Stellarium goto: RA=%.4fh, Dec=%.4f\n", raHours, decDeg);
-            char logBuf[48];
-            snprintf(logBuf, sizeof(logBuf), "Stellarium: RA=%.3fh Dec=%.1f", raHours, decDeg);
-            srtSerial.logESP(logBuf);
-
-            // Runs on async_tcp; updateTracking() reads all of this on loopTask,
-            // and targetName is a String, so the whole target update is applied
-            // as one unit rather than being seen half-written.
-            SRTLock lock;
-            state.currentRA = raHours;
-            state.currentDec = decDeg;
-            state.targetName = "";
-            prepareStellariumTrackingTarget();
+    size_t pos = 0;
+    while (stellBufLen - pos >= 2) {
+        uint16_t msgLen = stellBuf[pos] | (stellBuf[pos + 1] << 8);
+        // A length that cannot be a real message means the stream is out of
+        // frame (or the buffer overran); drop everything and resync on the
+        // next segment rather than parsing garbage forever.
+        if (msgLen < 4 || msgLen > sizeof(stellBuf)) {
+            pos = stellBufLen;
+            break;
         }
+        if (stellBufLen - pos < msgLen) break;   // the rest has not arrived yet
+        processStellariumMessage(stellBuf + pos, msgLen);
+        pos += msgLen;
+    }
+    // Keep only the unconsumed tail.
+    if (pos > 0) {
+        stellBufLen -= pos;
+        memmove(stellBuf, stellBuf + pos, stellBufLen);
     }
 }
 
@@ -132,6 +165,7 @@ void onStellariumClient(void* arg, AsyncClient* client) {
             stellariumClient->close();
         }
         stellariumClient = client;
+        stellBufLen = 0;   // a fresh connection starts in-frame
     }
 
     client->onData(onStellariumData, nullptr);

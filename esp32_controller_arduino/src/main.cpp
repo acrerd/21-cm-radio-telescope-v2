@@ -472,8 +472,25 @@ void updateTracking() {
             // dish cannot follow, and parking it against the stop to chase the
             // azimuth would run the mount along its limit switch for hours.
             if (driveAlt > settings.mountAltMax) {
-                DBG(Serial.printf("Target above altitude limit: drive Alt=%.1f\n", driveAlt));
+                if (!state.waitingForDescend) {
+                    state.waitingForDescend = true;
+                    DBG(Serial.printf("Target above altitude limit: drive Alt=%.1f Max=%.1f\n",
+                                      driveAlt, settings.mountAltMax));
+                    DBG(Serial.println("Holding - cannot follow past the zenith stop; waiting to descend..."));
+                    // Surface it: without this the dish froze here on nothing
+                    // but a debug print, the UI still showing active tracking
+                    // (issue #3, C11). It is held in place, not driven to the
+                    // stop, for the reason above.
+                    srtSerial.logESP("Target above alt limit - holding");
+                }
                 return;
+            }
+            if (state.waitingForDescend) {
+                state.waitingForDescend = false;
+                DBG(Serial.printf("Target back below altitude limit: drive Alt=%.1f\n", driveAlt));
+                srtSerial.logESP("Target below alt limit - resuming");
+                lastSentAlt = -999;
+                lastSentAz = -999;
             }
             // Below the lower stop it is clamped, as it always was. This is
             // only reachable now that the observing horizon and the mechanical

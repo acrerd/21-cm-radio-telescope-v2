@@ -345,6 +345,31 @@ void getMoonPosition(double &raOut, double &decOut) {
             175.0 * sin(A1rad - Frad) + 175.0 * sin(A1rad + Frad) +
             127.0 * sin(Lprad - Mprad) - 115.0 * sin(Lprad + Mprad);
 
+    // Sum of distance terms (Meeus 47.A); distance in km = 385000.56 + sumR/1000.
+    // Needed only for the topocentric parallax below, which wants the distance
+    // to ~0.1% - the leading terms give that comfortably.
+    double sumR = -20905355.0 * cos(Mprad) +
+                  -3699111.0 * cos(2 * Drad - Mprad) +
+                  -2955968.0 * cos(2 * Drad) +
+                  -569925.0 * cos(2 * Mprad) +
+                  48888.0 * E * cos(Mrad) +
+                  -3149.0 * cos(2 * Frad) +
+                  246158.0 * cos(2 * Drad - 2 * Mprad) +
+                  -152138.0 * E * cos(2 * Drad - Mrad - Mprad) +
+                  -170733.0 * cos(2 * Drad + Mprad) +
+                  -204586.0 * E * cos(2 * Drad - Mrad) +
+                  -129620.0 * E * cos(Mrad - Mprad) +
+                  108743.0 * cos(Drad) +
+                  104755.0 * E * cos(Mrad + Mprad) +
+                  10321.0 * cos(2 * Drad - 2 * Frad) +
+                  79661.0 * cos(Mprad - 2 * Frad) +
+                  -34782.0 * cos(4 * Drad - Mprad) +
+                  -23210.0 * cos(3 * Mprad) +
+                  -21636.0 * cos(4 * Drad - 2 * Mprad) +
+                  24208.0 * E * cos(2 * Drad + Mrad - Mprad) +
+                  30824.0 * E * cos(2 * Drad + Mrad);
+    double moonDistanceKm = 385000.56 + sumR / 1000.0;
+
     // Ecliptic coordinates
     double eclLon = Lp + sumL / 1000000.0;
     double eclLat = sumB / 1000000.0;
@@ -371,6 +396,25 @@ void getMoonPosition(double &raOut, double &decOut) {
     double raApparent = fmod((raRad * RAD_TO_DEG) / 15.0, 24.0);
     if (raApparent < 0) raApparent += 24.0;
     double decApparent = decRad * RAD_TO_DEG;
+
+    // Topocentric parallax (Meeus ch. 40). The position above is geocentric,
+    // wrong by up to the ~57' horizontal parallax as seen from the ground -
+    // ~1 deg, far larger than the ~0.1 deg corrections this mount calibrates
+    // for (issue #3, C14). Shift it to the observatory's viewpoint so the
+    // Alt/Az the caller derives is where the Moon actually is in the sky.
+    double sinPi = 6378.14 / moonDistanceKm;              // sin(horizontal parallax)
+    double obsLatRad = OBSERVER_LAT * DEG_TO_RAD;
+    double uu = atan(0.99664719 * tan(obsLatRad));
+    double rhoSinPhi = 0.99664719 * sin(uu);              // ~sea level; the 50 m elevation term is negligible
+    double rhoCosPhi = cos(uu);
+    double lstHours = localSiderealTime(jd, OBSERVER_LON);
+    double Hrad = (lstHours - raApparent) * 15.0 * DEG_TO_RAD;   // local hour angle of the Moon
+    double decAppRad = decApparent * DEG_TO_RAD;
+    double dRa = atan2(-rhoCosPhi * sinPi * sin(Hrad),
+                       cos(decAppRad) - rhoCosPhi * sinPi * cos(Hrad));
+    raApparent = fmod(raApparent + (dRa * RAD_TO_DEG) / 15.0 + 24.0, 24.0);
+    decApparent = atan2((sin(decAppRad) - rhoSinPhi * sinPi) * cos(dRa),
+                        cos(decAppRad) - rhoCosPhi * sinPi * cos(Hrad)) * RAD_TO_DEG;
 
     // Precess to J2000
     precessDateToJ2000(raApparent, decApparent, jd, raOut, decOut);

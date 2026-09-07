@@ -87,12 +87,14 @@ static void clearCurrentTracking() {
     state.targetName = "";
     state.waitingForWrap = false;
     state.waitingForRise = false;
+    state.waitingForDescend = false;
 }
 
 static void prepareTrackingTarget() {
     SRTLock lock;
     state.waitingForWrap = false;
     state.waitingForRise = false;
+    state.waitingForDescend = false;
     state.movementHoldUntil = 0;
     if (state.azOnlyTracking) {
         state.azOnlyAlt = srtSerial.getCurrentAlt();
@@ -114,6 +116,31 @@ static void setTrackingTarget(double ra, double dec, const String &name) {
     state.currentDec = dec;
     state.targetName = name;
     prepareTrackingTarget();
+}
+
+// Slew once to a true alt/az and stop - no tracking. This is what a "Go To"
+// is meant to do; the /goto endpoints used to enable tracking regardless, so
+// the dish sidereally tracked (and auto-parked at set) after a button that
+// promised "slew once" (issue #3, C7). Returns false with a JSON error in
+// `err` when the drive position is outside the mount limits.
+static bool slewOnceTrue(double tAlt, double tAz, char *err, size_t errLen) {
+    SRTLock lock;
+    clearCurrentTracking();
+    double driveAlt, driveAz;
+    trueToDrive(tAlt, tAz, driveAlt, driveAz);
+    if (!driveAltWithinLimits(driveAlt) || !driveAzWithinLimits(driveAz)) {
+        snprintf(err, errLen,
+            "{\"ok\":false,\"error\":\"Drive position %.1f/%.1f is outside the mount "
+            "limits (alt %.1f..%.1f, az %.1f..%.1f)\"}",
+            driveAlt, driveAz, settings.mountAltMin, settings.mountAltMax,
+            settings.mountAzMin, settings.mountAzMax);
+        return false;
+    }
+    state.targetAlt = tAlt;
+    state.targetAz = tAz;
+    state.movementHoldUntil = 0;
+    srtSerial.sendDriveTarget(driveAlt, driveAz);
+    return true;
 }
 
 // Route ordering matters. ESPAsyncWebServer matches a handler when the request
@@ -307,9 +334,22 @@ void setupWebServer() {
             request->send(400, "application/json", err);
             return;
         }
-        setTrackingTarget(ra, dec, "Gal l=" + String(l, 1) + " b=" + String(b, 1));
-        char json[64];
-        snprintf(json, sizeof(json), "{\"ok\":true,\"ra\":%.4f,\"dec\":%.2f}", ra, dec);
+        // track defaults to the historical goto-implies-tracking behaviour so
+        // no external caller is surprised; the UI's "Go To" passes track=0 for
+        // a genuine slew-once (issue #3, C7).
+        bool track = request->hasArg("track") ? (request->arg("track").toInt() != 0) : true;
+        if (track) {
+            setTrackingTarget(ra, dec, "Gal l=" + String(l, 1) + " b=" + String(b, 1));
+        } else {
+            char err[160];
+            if (!slewOnceTrue(tAlt, tAz, err, sizeof(err))) {
+                request->send(400, "application/json", err);
+                return;
+            }
+        }
+        char json[80];
+        snprintf(json, sizeof(json), "{\"ok\":true,\"ra\":%.4f,\"dec\":%.2f,\"tracking\":%s}",
+                 ra, dec, track ? "true" : "false");
         request->send(200, "application/json", json);
     });
 
@@ -328,8 +368,21 @@ void setupWebServer() {
             request->send(400, "application/json", err);
             return;
         }
-        setTrackingTarget(ra, dec, "");
-        request->send(200, "application/json", "{\"ok\":true}");
+        // See the /goto/galactic note (issue #3, C7): default tracks, the UI's
+        // "Go To" passes track=0 for a slew-once.
+        bool track = request->hasArg("track") ? (request->arg("track").toInt() != 0) : true;
+        if (track) {
+            setTrackingTarget(ra, dec, "");
+        } else {
+            char err[160];
+            if (!slewOnceTrue(tAlt, tAz, err, sizeof(err))) {
+                request->send(400, "application/json", err);
+                return;
+            }
+        }
+        char json[48];
+        snprintf(json, sizeof(json), "{\"ok\":true,\"tracking\":%s}", track ? "true" : "false");
+        request->send(200, "application/json", json);
     });
 
     // Track enable/disable - use /tracking/enable to avoid route conflict with /track/*
@@ -563,6 +616,7 @@ void setupWebServer() {
         json += "\"alt_only_az\":" + String(state.altOnlyAz, 2) + ",";
         json += "\"waiting_for_wrap\":" + String(state.waitingForWrap ? "true" : "false") + ",";
         json += "\"waiting_for_rise\":" + String(state.waitingForRise ? "true" : "false") + ",";
+        json += "\"waiting_for_descend\":" + String(state.waitingForDescend ? "true" : "false") + ",";
         json += "\"offset_alt\":" + String(state.offsetAlt, 2) + ",";
         json += "\"offset_az\":" + String(state.offsetAz, 2);
         json += "}";

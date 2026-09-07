@@ -20,6 +20,7 @@ struct SRTState {
     float altOnlyAz = 0.0;        // Fixed azimuth for altitude-only tracking
     bool waitingForWrap = false; // True when target is outside az limits
     bool waitingForRise = false; // True when target is below horizon
+    bool waitingForDescend = false; // True when target is above the mechanical altitude limit
     unsigned long movementHoldUntil = 0; // Suppress automatic tracking sends until this millis()
     uint32_t trackingRevision = 0; // Increment when target/mode changes to force a fresh command
 
