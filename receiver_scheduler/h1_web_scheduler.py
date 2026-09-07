@@ -5185,6 +5185,31 @@ def api_simulator_schedule():
     return jsonify({'success': True, 'started': False, 'entry': entry, 'horizon_notes': notes})
 
 
+def _background_activity():
+    """A background job holding the hardware that is not the scheduled
+    observation - a hand-started horizon or Sun scan, a calibration day, an RF
+    calibration, or the manually-booted receiver. Mirrors hardware_in_use's
+    claimants (minus the scheduled observation, reported separately) so the
+    bottom-of-page flag stops reading "Idle" while the mount is actually
+    driving. Returns a small descriptor, or None.
+    """
+    if horizon_state["running"]:
+        return {"kind": "horizon", "label": "Horizon scan",
+                "progress": horizon_state.get("progress"), "total": horizon_state.get("total")}
+    if cal_day_state["running"]:
+        return {"kind": "calibration", "label": "Calibration day",
+                "progress": cal_day_state.get("scans_completed")}
+    if sun_scan_state["running"]:
+        return {"kind": "sunscan", "label": "Sun scan",
+                "progress": sun_scan_state.get("progress"), "total": sun_scan_state.get("total")}
+    if rf_state["running"]:
+        return {"kind": "rf", "label": "RF calibration"}
+    with receiver_boot_lock:
+        if _proc_running(receiver_boot_process):
+            return {"kind": "receiver", "label": "Receiver (started by hand)"}
+    return None
+
+
 @app.route('/api/status', methods=['GET'])
 def get_status():
     with process_lock:
@@ -5200,7 +5225,11 @@ def get_status():
     return jsonify({
         'running': running,
         'observation': current_observation if running else None,
-        'remaining_seconds': remaining
+        'remaining_seconds': remaining,
+        # A background scan started from its own tab is not the scheduled
+        # observation, so the flag would otherwise call the telescope idle
+        # while it drives the mount for two hours.
+        'background': None if running else _background_activity(),
     })
 
 

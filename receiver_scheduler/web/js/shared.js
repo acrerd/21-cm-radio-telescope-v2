@@ -128,6 +128,19 @@
                     btn.style.display = 'inline-block';
                     if (wasRunning === false) playStartSound();
                     currentObs = data.observation;
+                } else if (data.background) {
+                    // A hand-started horizon/Sun scan, calibration day, RF
+                    // calibration or manual receiver holds the mount and SDR
+                    // but is not the scheduled observation, so it has no Stop
+                    // here - it is stopped from its own tab.
+                    dot.classList.add('running');
+                    const b = data.background;
+                    let label = b.label || 'Background task';
+                    if (b.progress != null && b.total != null) label += ' ' + b.progress + '/' + b.total;
+                    else if (b.progress != null) label += ' (' + b.progress + ')';
+                    text.textContent = label;
+                    btn.style.display = 'none';
+                    currentObs = null;
                 } else {
                     dot.classList.remove('running');
                     text.textContent = 'Idle' + nextObsCountdown();

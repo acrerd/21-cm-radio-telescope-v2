@@ -40,15 +40,23 @@
                 document.getElementById('hzStartBtn').style.display = d.running ? 'none' : 'inline-block';
                 document.getElementById('hzStopBtn').style.display = d.running ? 'inline-block' : 'none';
                 if (d.running) {
-                    let info = '<span style="color:#00d4ff;">Scanning</span> &mdash; azimuth ' +
+                    let info = '<span style="color:#00d4ff;">Scanning</span> &mdash; strip ' +
                                d.progress + ' of ' + d.total;
+                    // The strip scan reports the live point as {alt, az, measured,
+                    // of, power, sky_reference} - not the {edge, clear, estimator}
+                    // of the retired per-azimuth cut scan, which this used to read
+                    // and which threw on every poll, freezing the display.
                     const p = d.point_info;
                     if (p) {
-                        info += '<br><span style="color:#888;">az ' + p.az.toFixed(0) + '&deg;: ' +
-                                (p.edge === null ? 'no edge found'
-                                 : 'edge ' + p.edge.toFixed(1) + '&deg;, clear above ' +
-                                   (p.clear === null ? '?' : p.clear.toFixed(1)) + '&deg;') +
-                                ' (' + p.estimator + ')</span>';
+                        const bits = ['alt ' + (p.alt != null ? p.alt.toFixed(0) : '?') +
+                                      '&deg; az ' + (p.az != null ? p.az.toFixed(0) : '?') + '&deg;'];
+                        if (p.measured != null && p.of != null) bits.push('point ' + p.measured + '/' + p.of);
+                        if (p.power != null) {
+                            let pw = 'power ' + p.power.toFixed(4);
+                            if (p.sky_reference != null) pw += ' vs sky ' + p.sky_reference.toFixed(4);
+                            bits.push(pw);
+                        }
+                        info += '<br><span style="color:#888;">' + bits.join(' &mdash; ') + '</span>';
                     }
                     status.innerHTML = info;
                 } else if (d.error) {
