@@ -692,11 +692,17 @@ class TestFlaskAPI:
         # A pinned clock a day ahead, on a whole minute: booked as it is.
         epoch = (datetime.now(timezone.utc) + timedelta(days=1)).replace(
             hour=12, minute=0, second=0, microsecond=0)
-        resp = client.post('/api/simulator/schedule', json={
-            'l': 132.0, 'b': -1.0, 'mode': 'hi',
-            'epoch_utc': epoch.strftime('%Y-%m-%dT%H:%M:%SZ'),
-            'center_freq_mhz': 1420.405752, 'bandwidth_mhz': 2.0,
-            'channels': 327, 'integration_time_s': 600.0})
+        # Stub the horizon trim: this test is about the tau->duration mapping,
+        # not the measured horizon. Left live it depends on whatever profile is
+        # in force - a real scan that clips l=132 b=-1 at this epoch trimmed the
+        # 10 min to 8 and the assertion below failed for reasons unrelated to
+        # what it checks.
+        with patch.object(sched, 'apply_horizon_trim', side_effect=lambda obs: obs):
+            resp = client.post('/api/simulator/schedule', json={
+                'l': 132.0, 'b': -1.0, 'mode': 'hi',
+                'epoch_utc': epoch.strftime('%Y-%m-%dT%H:%M:%SZ'),
+                'center_freq_mhz': 1420.405752, 'bandwidth_mhz': 2.0,
+                'channels': 327, 'integration_time_s': 600.0})
         d = resp.get_json()
         assert resp.status_code == 200 and d['success'], d
         e = d['entry']
@@ -886,11 +892,27 @@ class TestFlaskAPI:
                            content_type='application/json')
         assert resp.status_code == 400
 
+    def test_post_schedule_rejects_a_malformed_body(self, client):
+        """S13: the wrong shape is refused with a reason at the POST, not left
+        to raise deep in the scheduler thread later. None of these reach the
+        store, so nothing is written."""
+        r = client.post('/api/schedule', json={'not': 'a list'})
+        assert r.status_code == 400 and 'list' in r.get_json()['error']
+        r = client.post('/api/schedule', json=['not an object'])
+        assert r.status_code == 400
+        r = client.post('/api/schedule',
+                        json=[{'name': 'x', 'duration_minutes': 'ten'}])
+        assert r.status_code == 400 and 'duration_minutes' in r.get_json()['error']
+        r = client.post('/api/schedule', json=[{'name': 123}])
+        assert r.status_code == 400 and 'name' in r.get_json()['error']
+
     def test_get_status_idle(self, client):
         resp = client.get('/api/status')
         data = resp.get_json()
         assert data["running"] is False
         assert data["observation"] is None
+        # No scheduled observation and no background scan holds the hardware.
+        assert data["background"] is None
 
     def test_get_config(self, client):
         resp = client.get('/api/config')

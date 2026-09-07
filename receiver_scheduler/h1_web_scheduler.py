@@ -1742,6 +1742,13 @@ current_process: Optional[subprocess.Popen] = None
 current_observation: Optional[dict] = None
 observation_end_time: Optional[datetime] = None
 process_lock = threading.Lock()
+# Serialises the check-and-claim of the hardware across the receiver / Sun scan
+# / calibration-day start endpoints. hardware_in_use() reads the claim flags but
+# each endpoint set its flag only after spawning its thread, so two simultaneous
+# starts could both pass every check (S11). Held only around the quick
+# check-and-claim - never over slew or validation - and always the outermost
+# lock (it may take process_lock / receiver_boot_lock inside, never the reverse).
+hardware_start_lock = threading.Lock()
 # True while start_observation is pointing/waiting for the slew with the
 # lock released; start_abort lets stop_observation cancel that in-flight
 # start. Both are only written under process_lock.
@@ -2422,8 +2429,9 @@ def stop_observation() -> bool:
         elif SRT_CONTROLLER_URL and end_action == 'stow':
             srt_go_position("stow", 90, 180)
         log.info("Stopped calibration: %s", name)
-        current_observation = None
-        observation_end_time = None
+        with process_lock:            # the scheduler thread reads this pair under the lock (S6)
+            current_observation = None
+            observation_end_time = None
         return True
 
     # Horizon scan: same shape as the calibration branch above. A partial
@@ -2437,8 +2445,9 @@ def stop_observation() -> bool:
         elif SRT_CONTROLLER_URL and end_action == 'stow':
             srt_go_position("stow", 90, 180)
         log.info("Stopped horizon scan: %s", name)
-        current_observation = None
-        observation_end_time = None
+        with process_lock:            # the scheduler thread reads this pair under the lock (S6)
+            current_observation = None
+            observation_end_time = None
         return True
 
     with process_lock:
@@ -2514,12 +2523,13 @@ def _start_calibration_observation(obs: dict, duration_override: int = None) -> 
 
     duration = duration_override or obs.get('duration_minutes', 480)
     now = datetime.now()
-    observation_end_time = now + timedelta(minutes=duration)
-    current_observation = {
-        **obs,
-        'started_at': now.isoformat(),
-        'ends_at': observation_end_time.isoformat(),
-    }
+    with process_lock:                # set the pair the scheduler thread reads locked (S6)
+        observation_end_time = now + timedelta(minutes=duration)
+        current_observation = {
+            **obs,
+            'started_at': now.isoformat(),
+            'ends_at': observation_end_time.isoformat(),
+        }
 
     raw_params = {
         "n": obs.get("cal_grid_n", 5),
@@ -2536,8 +2546,9 @@ def _start_calibration_observation(obs: dict, duration_override: int = None) -> 
         params = _validate_sun_scan_params(raw_params, include_interval=True)
     except ValueError as exc:
         log.error("Invalid scheduled calibration parameters: %s", exc)
-        current_observation = None
-        observation_end_time = None
+        with process_lock:
+            current_observation = None
+            observation_end_time = None
         return False
     params["scheduled"] = True
 
@@ -2576,12 +2587,13 @@ def _start_horizon_observation(obs: dict, duration_override: int = None) -> bool
 
     duration = duration_override or obs.get('duration_minutes', 180)
     now = datetime.now()
-    observation_end_time = now + timedelta(minutes=duration)
-    current_observation = {
-        **obs,
-        'started_at': now.isoformat(),
-        'ends_at': observation_end_time.isoformat(),
-    }
+    with process_lock:                # set the pair the scheduler thread reads locked (S6)
+        observation_end_time = now + timedelta(minutes=duration)
+        current_observation = {
+            **obs,
+            'started_at': now.isoformat(),
+            'ends_at': observation_end_time.isoformat(),
+        }
 
     params = {
         "az_start": float(obs.get("horizon_az_start", 5.0)),
@@ -4972,9 +4984,35 @@ def _schedule_order(obs):
         return (1, datetime.max)
 
 
+def _validate_schedule_payload(body):
+    """An error string if the posted schedule is the wrong shape, else None.
+
+    Without this a malformed entry raises deep inside the scheduler thread,
+    far from the POST that caused it (S13): a non-list body throws in
+    find_clashes, and a string duration_minutes becomes a string end time that
+    raises TypeError on every scheduler tick.
+    """
+    if not isinstance(body, list):
+        return "schedule must be a list of observations"
+    for i, obs in enumerate(body):
+        if not isinstance(obs, dict):
+            return "observation %d is not an object" % i
+        dm = obs.get("duration_minutes")
+        if dm is not None and (isinstance(dm, bool) or not isinstance(dm, (int, float))):
+            return "observation %d: duration_minutes must be a number" % i
+        for key in ("name", "start_time", "start_date", "coord_system"):
+            v = obs.get(key)
+            if v is not None and not isinstance(v, str):
+                return "observation %d: %s must be text" % (i, key)
+    return None
+
+
 @app.route('/api/schedule', methods=['POST'])
 def post_schedule():
     schedule = request.json
+    shape_error = _validate_schedule_payload(schedule)
+    if shape_error:
+        return jsonify({'success': False, 'error': shape_error}), 400
     notes, clashes = _store_schedule(schedule)
     if clashes:
         return jsonify({'success': False, 'error': f'Schedule has clashing observations: {clashes}'}), 400
@@ -5253,51 +5291,56 @@ def api_receiver_start():
         return jsonify({'success': False, 'running': False,
                         'error': f'Python not found: {python_path}'}), 400
 
-    if sun_scan_state["running"] or cal_day_state["running"]:
-        return jsonify({
-            'success': False,
-            'running': False,
-            'error': 'The B210 is reserved by Sun Scan calibration',
-            'python': python_path,
-        }), 409
+    # The whole check-and-claim under the shared lock, so a Sun scan or
+    # calibration day starting at the same instant cannot slip between the
+    # flag check and the spawn (S11). Popen returns at once, so the lock is
+    # held only briefly.
+    with hardware_start_lock:
+        if sun_scan_state["running"] or cal_day_state["running"]:
+            return jsonify({
+                'success': False,
+                'running': False,
+                'error': 'The B210 is reserved by Sun Scan calibration',
+                'python': python_path,
+            }), 409
 
-    status = receiver_status_snapshot()
-    if status["running"] and status["source"] == "observation":
-        return jsonify(status)
+        status = receiver_status_snapshot()
+        if status["running"] and status["source"] == "observation":
+            return jsonify(status)
 
-    with receiver_boot_lock:
-        if receiver_boot_process is not None and receiver_boot_process.poll() is None:
+        with receiver_boot_lock:
+            if receiver_boot_process is not None and receiver_boot_process.poll() is None:
+                return jsonify({'success': True, 'running': True,
+                                'source': 'manual',
+                                'pid': receiver_boot_process.pid,
+                                'returncode': None,
+                                'observation': None,
+                                'python': python_path})
+
+            env = receiver_process_env(python_path=python_path)
+            # Tell it where to record. Without this it falls back to its own
+            # default, and before 2026-08-25 that default was a bare "h1_data.h5"
+            # resolved against the working directory - which is the repository
+            # root, where it had left 22 stray files. Marked `manual` rather than
+            # track or drift because nobody commanded the mount.
+            env["H1_OUTPUT_FILE"] = observation_files.observation_filename(
+                observations_folder(), observation_files.MANUAL_MODE)
+
+            cmd = [python_path, RECEIVER_SCRIPT, "--sdr", "b210"]
+            try:
+                receiver_boot_process = subprocess.Popen(cmd, cwd=repo_root, env=env)
+            except Exception as exc:
+                log.error("Failed to start receiver: %s", exc)
+                return jsonify({'success': False, 'running': False, 'error': str(exc),
+                                'python': python_path}), 500
+
+            log.info("Receiver started: %s", " ".join(cmd))
             return jsonify({'success': True, 'running': True,
                             'source': 'manual',
                             'pid': receiver_boot_process.pid,
                             'returncode': None,
                             'observation': None,
                             'python': python_path})
-
-        env = receiver_process_env(python_path=python_path)
-        # Tell it where to record. Without this it falls back to its own
-        # default, and before 2026-08-25 that default was a bare "h1_data.h5"
-        # resolved against the working directory - which is the repository
-        # root, where it had left 22 stray files. Marked `manual` rather than
-        # track or drift because nobody commanded the mount.
-        env["H1_OUTPUT_FILE"] = observation_files.observation_filename(
-            observations_folder(), observation_files.MANUAL_MODE)
-
-        cmd = [python_path, RECEIVER_SCRIPT, "--sdr", "b210"]
-        try:
-            receiver_boot_process = subprocess.Popen(cmd, cwd=repo_root, env=env)
-        except Exception as exc:
-            log.error("Failed to start receiver: %s", exc)
-            return jsonify({'success': False, 'running': False, 'error': str(exc),
-                            'python': python_path}), 500
-
-        log.info("Receiver started: %s", " ".join(cmd))
-        return jsonify({'success': True, 'running': True,
-                        'source': 'manual',
-                        'pid': receiver_boot_process.pid,
-                        'returncode': None,
-                        'observation': None,
-                        'python': python_path})
 
 
 @app.route('/api/start', methods=['POST'])
@@ -5606,27 +5649,9 @@ def api_get_log():
 @app.route('/api/sunscan/start', methods=['POST'])
 def api_sunscan_start():
     global sun_scan_thread
-    # One shared matrix rather than this endpoint's own list; see
-    # hardware_in_use for the four holes that drift produced.
-    busy = hardware_in_use()
-    if busy:
-        return jsonify({'success': False, 'error': 'Cannot start a Sun scan: %s' % busy}), 409
-
-    if sun_scan_state["running"] or (sun_scan_thread and sun_scan_thread.is_alive()):
-        return jsonify({'success': False, 'error': 'Scan already running'})
-    if cal_day_state["running"]:
-        return jsonify({'success': False, 'error': 'Calibration day is already running'})
-
-    # Check receiver is not in use
-    with process_lock:
-        if current_process is not None and current_process.poll() is None:
-            return jsonify({'success': False,
-                            'error': 'Receiver is busy with an observation'})
-    receiver_status = receiver_status_snapshot()
-    if receiver_status["running"]:
-        return jsonify({'success': False,
-                        'error': 'Receiver is already running; stop it before a Sun scan'})
-
+    # Validate and run the horizon check before claiming the hardware, so
+    # nothing between the claim and the thread start can fail and leave the
+    # running flag stuck (S11).
     try:
         params = _validate_sun_scan_params(request.get_json(silent=True) or {})
     except ValueError as exc:
@@ -5668,10 +5693,27 @@ def api_sunscan_start():
             log.debug("Could not check the raster against the horizon: %s", exc)
     sun_scan_state["horizon_warning"] = warning
 
-    sun_scan_cancel.clear()
-    sun_scan_thread = threading.Thread(target=_run_sun_scan, args=(params,),
-                                       daemon=True)
-    sun_scan_thread.start()
+    # The check-and-claim under the shared lock, so two simultaneous starts
+    # cannot both pass it (S11). See hardware_in_use for the claimant matrix.
+    with hardware_start_lock:
+        busy = hardware_in_use()
+        if busy:
+            return jsonify({'success': False, 'error': 'Cannot start a Sun scan: %s' % busy}), 409
+        if sun_scan_state["running"] or (sun_scan_thread and sun_scan_thread.is_alive()):
+            return jsonify({'success': False, 'error': 'Scan already running'})
+        if cal_day_state["running"]:
+            return jsonify({'success': False, 'error': 'Calibration day is already running'})
+        receiver_status = receiver_status_snapshot()
+        if receiver_status["running"]:
+            return jsonify({'success': False,
+                            'error': 'Receiver is already running; stop it before a Sun scan'})
+        sun_scan_cancel.clear()
+        # Claim before releasing so a concurrent start sees it via
+        # hardware_in_use; _run_sun_scan re-affirms it on entry.
+        sun_scan_state["running"] = True
+        sun_scan_thread = threading.Thread(target=_run_sun_scan, args=(params,),
+                                           daemon=True)
+        sun_scan_thread.start()
     return jsonify({'success': True, 'horizon_warning': warning})
 
 
@@ -5772,33 +5814,36 @@ def api_sunscan_image():
 @app.route('/api/calday/start', methods=['POST'])
 def api_calday_start():
     global cal_day_thread
-    # One shared matrix rather than this endpoint's own list; see
-    # hardware_in_use for the four holes that drift produced.
-    busy = hardware_in_use()
-    if busy:
-        return jsonify({'success': False, 'error': 'Cannot start a calibration day: %s' % busy}), 409
-
-    if cal_day_state["running"] or (cal_day_thread and cal_day_thread.is_alive()):
-        return jsonify({'success': False, 'error': 'Calibration day already running'})
-    if sun_scan_state["running"]:
-        return jsonify({'success': False, 'error': 'A Sun scan is already running'})
-    with process_lock:
-        if current_process is not None and current_process.poll() is None:
-            return jsonify({'success': False,
-                            'error': 'Receiver is busy with an observation'})
-    receiver_status = receiver_status_snapshot()
-    if receiver_status["running"]:
-        return jsonify({'success': False,
-                        'error': 'Receiver is already running; stop it before calibration'})
+    # Validate before claiming, so nothing between the claim and the thread
+    # start can fail and leave the flag stuck.
     try:
         params = _validate_sun_scan_params(
             request.get_json(silent=True) or {}, include_interval=True)
     except ValueError as exc:
         return jsonify({'success': False, 'error': str(exc)}), 400
-    cal_day_cancel.clear()
-    cal_day_thread = threading.Thread(target=_run_calibration_day, args=(params,),
-                                      daemon=True)
-    cal_day_thread.start()
+    # One shared matrix rather than this endpoint's own list; see
+    # hardware_in_use for the four holes that drift produced. The whole
+    # check-and-claim is under hardware_start_lock so two simultaneous starts
+    # cannot both pass it (S11).
+    with hardware_start_lock:
+        busy = hardware_in_use()
+        if busy:
+            return jsonify({'success': False, 'error': 'Cannot start a calibration day: %s' % busy}), 409
+        if cal_day_state["running"] or (cal_day_thread and cal_day_thread.is_alive()):
+            return jsonify({'success': False, 'error': 'Calibration day already running'})
+        if sun_scan_state["running"]:
+            return jsonify({'success': False, 'error': 'A Sun scan is already running'})
+        receiver_status = receiver_status_snapshot()
+        if receiver_status["running"]:
+            return jsonify({'success': False,
+                            'error': 'Receiver is already running; stop it before calibration'})
+        cal_day_cancel.clear()
+        # Claim before releasing the lock so a concurrent start sees it via
+        # hardware_in_use; _run_calibration_day re-affirms it on entry.
+        cal_day_state["running"] = True
+        cal_day_thread = threading.Thread(target=_run_calibration_day, args=(params,),
+                                          daemon=True)
+        cal_day_thread.start()
     return jsonify({'success': True})
 
 
