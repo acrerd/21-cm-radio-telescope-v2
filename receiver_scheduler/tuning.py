@@ -72,6 +72,16 @@ H1_BAND_HZ = (FIXED_LO_HZ + 0.1e6, FIXED_LO_HZ + 3.4e6)
 H1_CHANNELS = 1024
 H1_DECIMATION = 2                                 # 8 -> 4 Msps holds a 3.3 MHz band
 CONTINUUM_BAND_HZ = (FIXED_LO_HZ - 3.2e6, FIXED_LO_HZ - 0.1e6)
+# Where the total-power meters (Sun scan, horizon scan) tune: the middle of
+# the continuum band, so a 2.4 MHz meter spans 1416.05-1418.45 MHz, half a
+# megahertz clear of H I at any galactic velocity. They sat on the line
+# until 2026-09-08. For the Sun that was a 2% pedestal that varied across
+# the raster; for the horizon scan, galactic H I on the plane is ~40 K
+# band-averaged against a 330 K system - 12% of the sky reading, where a
+# metal-clad building shows 2.3% - so a strip crossing the plane read an
+# obstruction that was hydrogen. Measured 2026-09-08 on three recordings'
+# wide product: no narrow feature above 5% anywhere in this band.
+POWER_METER_CENTER_HZ = 1417.25e6
 
 INSTRUMENT_KEYS = ("lo_hz", "sample_rate_hz", "gain_db", "wide_channels",
                    "h1_band_hz", "h1_channels", "h1_decimation", "continuum_band_hz")

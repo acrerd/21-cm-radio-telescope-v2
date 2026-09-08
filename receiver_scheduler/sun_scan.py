@@ -33,6 +33,7 @@ from pathlib import Path
 import numpy as np
 
 from observatory import SITE_LAT_DEG, SITE_LON_DEG
+from tuning import POWER_METER_CENTER_HZ
 
 try:
     import ephem
@@ -603,7 +604,7 @@ def _measure_power_demo(center_freq: float, sample_rate: float,
 
 
 def measure_power(sdr_type: str = "b210",
-                  center_freq: float = 1420.405752e6,
+                  center_freq: float = POWER_METER_CENTER_HZ,
                   sample_rate: float = 2.4e6,
                   gain: float = 40.0,
                   integration_time: float = 1.0,
@@ -941,7 +942,7 @@ def sun_scan(
     lon: float | None = None,
     elevation: float | None = None,
     sdr_type: str = "b210",
-    center_freq: float = 1420.405752e6,
+    center_freq: float = POWER_METER_CENTER_HZ,
     sample_rate: float = 2.4e6,
     gain: float = 40.0,
     output_image: str | None = "sun_scan.png",
@@ -2335,8 +2336,8 @@ def main():
                         help="Integration time per point in seconds (default 3.0)")
     parser.add_argument("--sdr", default="b210", choices=["b210", "rtlsdr", "demo"],
                         help="SDR type (default b210)")
-    parser.add_argument("--freq", type=float, default=1420.405752e6,
-                        help="Centre frequency in Hz")
+    parser.add_argument("--freq", type=float, default=POWER_METER_CENTER_HZ,
+                        help="Centre frequency in Hz (default: mid continuum band, off the H I line)")
     parser.add_argument("--gain", type=float, default=40.0,
                         help="SDR gain in dB")
     parser.add_argument("--output", default="sun_scan.png",

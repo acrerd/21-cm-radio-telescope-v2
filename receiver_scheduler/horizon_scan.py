@@ -51,6 +51,7 @@ from datetime import datetime, timezone
 import numpy as np
 
 from observatory import SITE_LAT_DEG, SITE_LON_DEG
+from tuning import POWER_METER_CENTER_HZ
 
 # `observatory` puts astro_simulator on the path; the store lives there because
 # the simulator draws the measured horizon and must not import the scheduler.
@@ -898,7 +899,7 @@ def horizon_strip_scan(az_start: float = 5.0,
                        home_every_strips: int = DEFAULT_HOME_EVERY_STRIPS,
                        beam_fwhm_deg: float = DEFAULT_BEAM_FWHM_DEG,
                        sdr_type: str = "b210",
-                       center_freq: float = 1420.405752e6,
+                       center_freq: float = POWER_METER_CENTER_HZ,
                        sample_rate: float = 2.4e6,
                        gain: float = 40.0,
                        srt_url: str | None = None,

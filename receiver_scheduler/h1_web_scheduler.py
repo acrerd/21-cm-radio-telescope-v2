@@ -39,7 +39,11 @@ from observatory import SITE_HEIGHT_M, SITE_LAT_DEG, SITE_LON_DEG
 # the scheduler cannot import the receiver back (it pulls in GNU Radio at
 # module scope), so the convention lives in a module they can both have.
 import observation_files
+# The one place the power meters' centre frequency is written down.
+from tuning import POWER_METER_CENTER_HZ
 import numpy as np
+
+_POWER_METER_CENTER_MHZ = POWER_METER_CENTER_HZ / 1e6
 
 try:
     import ephem
@@ -1851,7 +1855,7 @@ DEFAULT_OBSERVATION = {
     "start_date": "",         # YYYY-MM-DD, empty = today
     "start_time": "12:00",
     "duration_minutes": 30,
-    "center_freq_mhz": 1420.405752,
+    "center_freq_mhz": _POWER_METER_CENTER_MHZ,
     "bandwidth_mhz": 2.4,
     "gain_db": 40,
     "channels": 4096,
@@ -2535,7 +2539,7 @@ def _start_calibration_observation(obs: dict, duration_override: int = None) -> 
         "n": obs.get("cal_grid_n", 5),
         "grid_spacing_deg": obs.get("cal_spacing_deg", 1.5),
         "integration_time_s": obs.get("integration_time_s", 3.0),
-        "center_freq_mhz": obs.get("center_freq_mhz", 1420.405752),
+        "center_freq_mhz": obs.get("center_freq_mhz", _POWER_METER_CENTER_MHZ),
         "bandwidth_mhz": obs.get("bandwidth_mhz", 2.4),
         "gain_db": obs.get("gain_db", 40),
         "sdr_type": obs.get("sdr_type", "b210"),
@@ -2606,7 +2610,7 @@ def _start_horizon_observation(obs: dict, duration_override: int = None) -> bool
         "alt_max": float(obs.get("horizon_alt_max", 60.0)),
         "settle_s": float(obs.get("horizon_settle_s", 2.0)),
         "integration_time_s": float(obs.get("horizon_integration_s", 2.0)),
-        "center_freq_mhz": float(obs.get("center_freq_mhz", 1420.405752)),
+        "center_freq_mhz": float(obs.get("center_freq_mhz", _POWER_METER_CENTER_MHZ)),
         "bandwidth_mhz": float(obs.get("bandwidth_mhz", 2.4)),
         "gain_db": float(obs.get("gain_db", 40)),
         "sdr_type": obs.get("sdr_type", "b210"),
@@ -2900,7 +2904,7 @@ def _validate_sun_scan_params(raw: dict, include_interval: bool = False) -> dict
         "n": number("n", 5, 3, 15, integer=True),
         "grid_spacing_deg": number("grid_spacing_deg", 1.5, 0.1, 10.0),
         "integration_time_s": number("integration_time_s", 3.0, 0.1, 60.0),
-        "center_freq_mhz": number("center_freq_mhz", 1420.405752, 0.001, 100000.0),
+        "center_freq_mhz": number("center_freq_mhz", _POWER_METER_CENTER_MHZ, 0.001, 100000.0),
         "bandwidth_mhz": number("bandwidth_mhz", 2.4, 0.01, 100.0),
         "gain_db": number("gain_db", 40.0, 0.0, 100.0),
         "beam_fwhm_deg": number("beam_fwhm_deg", 5.2, 0.1, 30.0),
@@ -2967,7 +2971,7 @@ def _run_sun_scan(params: dict):
             lon=cfg.get("observer_lon"),
             elevation=cfg.get("observer_elevation", 50),
             sdr_type=params.get("sdr_type", "b210"),
-            center_freq=params.get("center_freq_mhz", 1420.405752) * 1e6,
+            center_freq=params.get("center_freq_mhz", _POWER_METER_CENTER_MHZ) * 1e6,
             sample_rate=params.get("bandwidth_mhz", 2.4) * 1e6,
             gain=params.get("gain_db", 40.0),
             output_image=image_path,
@@ -3030,7 +3034,7 @@ def _run_horizon_scan(params: dict):
             home_every_strips=params.get("home_every_strips", 2),
             beam_fwhm_deg=params.get("beam_fwhm_deg", 5.8),
             sdr_type=params.get("sdr_type", "b210"),
-            center_freq=params.get("center_freq_mhz", 1420.405752) * 1e6,
+            center_freq=params.get("center_freq_mhz", _POWER_METER_CENTER_MHZ) * 1e6,
             # Bandwidth is a free choice here rather than a trade-off: at
             # 2.4 MHz and 0.5 s the radiometric precision is 9e-4, and at 1 MHz
             # it is 1.4e-3, against a sky-to-ground step of order 60%. Narrower
