@@ -111,6 +111,10 @@
         let camObjectUrl = null;
 
         let camTimer = null;
+        // Live video: an <img> pointed at the motion-JPEG endpoint. The
+        // browser keeps that connection open for as long as the element is
+        // on the page, so leaving the tab must remove it, not just hide it.
+        let camLiveImg = null;
 
         // ---- Sun Scan ----
         let ssPollTimer = null;

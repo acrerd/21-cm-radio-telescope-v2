@@ -34,6 +34,7 @@
         document.addEventListener('visibilitychange', () => {
             if (document.hidden) {
                 if (camTimer) { clearTimeout(camTimer); camTimer = null; }
+                stopCameraLive();
             } else {
                 scheduleCameraRefresh();
             }

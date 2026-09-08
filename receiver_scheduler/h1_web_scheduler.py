@@ -15,6 +15,10 @@ import re
 import shutil
 import subprocess
 import sys
+import glob
+import collections
+import io
+import queue
 import signal
 import tempfile
 import threading
@@ -6372,35 +6376,55 @@ def api_horizon_plot():
 # Safety camera
 # =============================================================================
 
-# One frame at a time. Capture is a subprocess that takes the camera for its
-# duration, so two clicks landing together would have the second fail and look
-# like a broken camera rather than a queued one.
+# The camera is a stream that runs only while somebody is watching, and both
+# the snapshot and the live feed are served from it.
+#
+# One-shot capture - start the camera, take a frame, stop it - was the first
+# design, and it cannot be made both quick and right on this camera: every
+# stream start costs 1.7-5.6 s before the first frame arrives (the USB device
+# autosuspends 2 s after it is closed and is slow to come back), and the
+# camera restarts its automatic exposure from a fixed bright state on every
+# start, taking one to four seconds (17 frames under overcast, still moving at
+# 40 in sunshine) to settle. So a fixed frame count was either slow or washed
+# out, and the page's auto-refresh showed exactly the unsettled frames.
+# Writing the V4L2 controls first makes no difference to either (measured
+# 2026-09-08). Alongside a stream that had been live for ten seconds, a frame
+# arrived in 30 ms, settled - which is what every other camera application
+# gets for free by streaming continuously.
+#
+# So the scheduler streams too, on demand: the first request starts a
+# gst-launch process emitting motion-JPEG at the camera's own rate (22 fps at
+# 640x480, 66 kB a frame, 4.6% of a core) into a pipe; a reader thread keeps
+# the last second of frames in memory and hands each new one to every open
+# viewer of /api/camera/stream; /api/camera/snapshot serves the newest settled
+# frame. The process is stopped CAMERA_IDLE_S after the last snapshot with no
+# viewer connected, so nothing holds the camera across an overnight run unless
+# someone is looking at it. Through PipeWire the stream is shared, so nothing
+# else loses the camera meanwhile.
 _camera_lock = threading.Lock()
-CAMERA_CAPTURE_TIMEOUT = 20
+CAMERA_CAPTURE_TIMEOUT = 20      # s: longest a request waits for a frame
+CAMERA_JPEG_QUALITY = 80
+CAMERA_HISTORY_S = 1.0           # frames kept in memory, for the settle check
+CAMERA_SETTLE_MIN_S = 1.5        # at least this much stream before the first frame is judged
+CAMERA_SETTLE_SPAN_S = 0.4       # ...compared with a frame this much older
+CAMERA_SETTLE_MEAN = 2.0         # settled once the mean level moves less than this (of 255)
+CAMERA_SETTLE_CLUMP = 0.25       # ...and under this fraction of pixels share one value near the top
+CAMERA_SETTLE_MAX_S = 10.0       # ...or after this long from a cold start, whichever first
+                                 # (a cold start needs up to 5.6 s + 2 s to converge)
+CAMERA_IDLE_S = 120.0            # stream stops this long after the last request, with no viewer
+CAMERA_VIEWER_BACKLOG = 2        # frames queued per viewer; a slow one drops frames, never lags
+CAMERA_STREAM_MARKER = "srt-camera"   # multipart boundary; also how a stale process is recognised
 
-# The first frames off a USB webcam are black or wildly mis-exposed while its
-# automatic gain settles, and a black picture is worse than none on a safety
-# camera: it reads as "nothing is there". Every frame is written over the same
-# place and only the last survives.
-#
-# How many are needed depends on how recently the camera last ran, because the
-# sensor keeps its exposure state across a quick close and reopen. Measured on
-# this camera against a settled 15-frame reference, a single frame came out at
-# -0.2% mean luminance after 1s idle, -1.0% after 3s, -3.0% after 5s, then
-# -11.8% after 15s and -17.3% after a minute. So the state survives a few
-# seconds and is gone by fifteen; six is inside the flat part with margin, and
-# covers both auto-refresh rates offered by the page.
-#
-# This is what makes a 1s auto-refresh cheap: 15 frames is 0.67s of streaming
-# and about 0.1 core-seconds, while 2 frames is 0.13s and a quarter of the CPU.
-# Process start-up is only 40ms, so the frames are nearly the whole cost.
-CAMERA_COLD_FRAMES = 15
-CAMERA_WARM_FRAMES = 2
-CAMERA_WARM_WINDOW_S = 6.0
+# The one-shot V4L2 fallback (no desktop session, so no PipeWire) still pays the
+# cold start per frame; twenty frames is where the exposure settled plus margin.
+CAMERA_FRAMES = 20
 
-# When the camera last delivered a frame (monotonic). Written under
-# _camera_lock, which is also what stops two captures interleaving.
-_camera_last_capture = 0.0
+# The running stream, or None. Fields: process, started, first_frame,
+# last_request, stderr (a file), frames (deque of (monotonic, jpeg)), viewers
+# (set of queues), lock (for frames/viewers/last_request, which the reader
+# thread and the request handlers both touch). Replaced only under
+# _camera_lock, which is also what serialises starting and stopping it.
+_camera_stream: Optional[dict] = None
 
 
 def _camera_env() -> dict:
@@ -6432,11 +6456,6 @@ def _camera_resolution(cfg: dict) -> tuple[int, int]:
     log.warning("Ignoring camera_resolution %r; using %s",
                 text, _DEFAULT_CONFIG["camera_resolution"])
     return (int(part) for part in _DEFAULT_CONFIG["camera_resolution"].split("x"))
-
-
-def _newest_frame(workdir: str) -> str | None:
-    frames = sorted(f for f in os.listdir(workdir) if f.endswith(".jpg"))
-    return os.path.join(workdir, frames[-1]) if frames else None
 
 
 def _apply_camera_controls(device: str, controls: dict) -> None:
@@ -6489,37 +6508,296 @@ def _apply_camera_controls(device: str, controls: dict) -> None:
         os.close(fd)
 
 
-def _capture_via_pipewire(workdir: str, width: int, height: int,
-                          target: str, frames: int) -> tuple[str | None, str]:
-    """Capture through PipeWire, which owns the camera on a desktop session.
-
-    This is the path that works here. On this host wireplumber holds
-    /dev/video0 open for the life of the session, so anything opening the V4L2
-    device directly gets EBUSY however idle the camera looks; going through
-    PipeWire shares it instead of fighting for it.
-    """
+def _camera_stream_command(width: int, height: int, target: str) -> list:
     gst = shutil.which("gst-launch-1.0", path="/usr/bin:/bin")
     if not gst:
-        return None, "the system gst-launch-1.0 is not installed"
-    source = ["pipewiresrc", f"num-buffers={frames}"]
+        return []
+    source = ["pipewiresrc"]
     if target:
         source.append(f"target-object={target}")
-    command = [gst, "-q"] + source + [
+    return [gst, "-q"] + source + [
         "!", "videoconvert", "!", "videoscale",
         "!", f"video/x-raw,width={width},height={height}",
-        "!", "jpegenc", "quality=85",
-        "!", "multifilesink", f"location={os.path.join(workdir, 'frame%03d.jpg')}",
+        "!", "jpegenc", f"quality={CAMERA_JPEG_QUALITY}",
+        "!", "multipartmux", f"boundary={CAMERA_STREAM_MARKER}",
+        "!", "fdsink", "fd=1", "sync=false",
     ]
+
+
+def _reap_stale_camera_streams() -> None:
+    """At start-up, stop any stream a previous scheduler left behind.
+
+    The clean shutdown path stops the stream; a scheduler killed outright
+    cannot, and the orphan would go on streaming the camera at 5% of a core
+    until someone noticed. Recognised by the multipart boundary in its
+    command line, so nothing else's gst-launch is touched. (Not
+    PR_SET_PDEATHSIG: that fires when the parent *thread* exits, and the
+    thread that starts the stream is a request handler that ends seconds
+    later - which is exactly what happened the first time.)
+    """
+    marker = f"boundary={CAMERA_STREAM_MARKER}".encode()
+    for entry in os.listdir("/proc"):
+        if not entry.isdigit() or int(entry) == os.getpid():
+            continue
+        try:
+            with open(f"/proc/{entry}/cmdline", "rb") as f:
+                argv = f.read().split(b"\0")
+        except OSError:
+            continue
+        if argv and argv[0].endswith(b"gst-launch-1.0") and marker in argv:
+            log.warning("Stopping a camera stream left by a previous scheduler (pid %s)", entry)
+            try:
+                os.kill(int(entry), signal.SIGTERM)
+            except OSError:
+                pass
+
+
+def _start_camera_stream(width: int, height: int, target: str) -> str:
+    """Start the stream. Returns '' or why it could not. Caller holds _camera_lock."""
+    global _camera_stream
+    command = _camera_stream_command(width, height, target)
+    if not command:
+        return "the system gst-launch-1.0 is not installed"
+    stderr = tempfile.TemporaryFile(prefix="srt-camera-")
     try:
-        result = subprocess.run(command, capture_output=True, env=_camera_env(),
-                                timeout=CAMERA_CAPTURE_TIMEOUT)
-    except subprocess.TimeoutExpired:
-        return None, f"PipeWire did not deliver a frame within {CAMERA_CAPTURE_TIMEOUT}s"
-    frame = _newest_frame(workdir)
-    if result.returncode != 0 or not frame:
-        stderr = (result.stderr or b"").decode(errors="replace").strip()
-        return None, stderr.splitlines()[-1] if stderr else "no frame from PipeWire"
-    return frame, ""
+        process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=stderr,
+                                   env=_camera_env())
+    except OSError as exc:
+        stderr.close()
+        return f"could not start gst-launch-1.0: {exc}"
+    now = time.monotonic()
+    stream = {"process": process, "started": now, "first_frame": None, "last_request": now,
+              "stderr": stderr, "frames": collections.deque(), "viewers": set(),
+              "lock": threading.Lock()}
+    _camera_stream = stream
+    log.info("Camera stream started (%dx%d, motion-JPEG)", width, height)
+    threading.Thread(target=_camera_stream_reader, args=(stream,), daemon=True).start()
+    threading.Thread(target=_camera_stream_watch, args=(stream,), daemon=True).start()
+    return ""
+
+
+def _stop_camera_stream(reason: str) -> None:
+    """Stop the stream and release its viewers. Caller holds _camera_lock."""
+    global _camera_stream
+    stream, _camera_stream = _camera_stream, None
+    if stream is None:
+        return
+    process = stream["process"]
+    if process.poll() is None:
+        process.terminate()
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait()
+    _publish_frame(stream, None)             # every viewer's generator ends
+    try:
+        stream["stderr"].close()
+    except Exception:
+        pass
+    log.info("Camera stream stopped: %s", reason)
+
+
+def _camera_stream_error(stream: dict) -> str:
+    """Why a stream that has exited did so, from its stderr."""
+    try:
+        stream["stderr"].seek(0)
+        lines = stream["stderr"].read().decode(errors="replace").strip().splitlines()
+    except Exception:
+        lines = []
+    return lines[-1] if lines else f"gst-launch-1.0 exited with code {stream['process'].poll()}"
+
+
+def _iter_multipart_jpegs(fp):
+    """Yield each JPEG from a multipart/x-mixed-replace stream as bytes.
+
+    multipartmux writes '--boundary', a Content-Type line, a Content-Length
+    line, a blank line, the data, and a line break; the length is what makes
+    this exact, so no marker scanning of the JPEG itself.
+    """
+    while True:
+        length = None
+        while True:
+            line = fp.readline()
+            if not line:
+                return
+            if line in (b"\r\n", b"\n"):
+                if length is not None:
+                    break
+                continue                              # the break after a body
+            if line.lower().startswith(b"content-length:"):
+                try:
+                    length = int(line.split(b":", 1)[1].strip())
+                except ValueError:
+                    return
+        data = fp.read(length)
+        if len(data) < length:
+            return
+        yield data
+
+
+def _publish_frame(stream: dict, jpeg: bytes | None) -> None:
+    """Record a frame and hand it to every viewer; None tells viewers to stop."""
+    now = time.monotonic()
+    with stream["lock"]:
+        if jpeg is not None:
+            if stream["first_frame"] is None:
+                stream["first_frame"] = now
+            frames = stream["frames"]
+            frames.append((now, jpeg))
+            while frames and now - frames[0][0] > CAMERA_HISTORY_S:
+                frames.popleft()
+        viewers = list(stream["viewers"])
+    for q in viewers:
+        try:
+            q.put_nowait((now, jpeg))
+        except queue.Full:
+            pass                                  # a slow viewer skips frames
+
+
+def _camera_stream_reader(stream: dict) -> None:
+    """Read frames off the process for as long as it produces them."""
+    try:
+        for jpeg in _iter_multipart_jpegs(stream["process"].stdout):
+            _publish_frame(stream, jpeg)
+    except (OSError, ValueError):
+        pass
+    # EOF: the process has gone (or is going); the watcher reports it.
+
+
+def _camera_stream_idle(stream: dict, now: float | None = None) -> bool:
+    """Nobody viewing, and no snapshot asked for in CAMERA_IDLE_S."""
+    now = time.monotonic() if now is None else now
+    with stream["lock"]:
+        return not stream["viewers"] and now - stream["last_request"] > CAMERA_IDLE_S
+
+
+def _camera_stream_watch(stream: dict) -> None:
+    """Stop the stream once nobody is watching, or notice it has died."""
+    while True:
+        time.sleep(1.0)
+        with _camera_lock:
+            if _camera_stream is not stream:
+                return                      # replaced or already stopped
+            if stream["process"].poll() is not None:
+                log.warning("Camera stream exited on its own: %s", _camera_stream_error(stream))
+                _stop_camera_stream("exited")
+                return
+            if _camera_stream_idle(stream):
+                _stop_camera_stream("nobody watching for %ds" % CAMERA_IDLE_S)
+                return
+
+
+def _frame_exposure(jpeg: bytes) -> tuple[float, float] | None:
+    """(mean level, clump), or None if the bytes do not decode.
+
+    The clump is the fraction of pixels within one level of the single most
+    common value in the upper half of the histogram: a blown-out frame piles
+    37-57% of its pixels onto the cap, a settled one 10-17% (an overcast sky
+    is genuinely uniform). Not "pixels at the maximum": JPEG ringing puts a
+    few pixels above the true cap, so the maximum is never where the pile is.
+    """
+    try:
+        from PIL import Image
+        import numpy as np
+        with Image.open(io.BytesIO(jpeg)) as im:
+            grey = np.asarray(im.convert("L"))
+        hist = np.bincount(grey.ravel(), minlength=256)
+        upper = hist.copy()
+        upper[:128] = 0
+        cap = int(upper.argmax())
+        clump = float(hist[max(0, cap - 1):cap + 2].sum()) / grey.size
+        return float(grey.mean()), clump
+    except Exception:
+        return None
+
+
+def _settled_frame(stream: dict, now: float | None = None) -> tuple[bytes, float] | None:
+    """The newest frame, once the exposure has settled - else None.
+
+    Judged from the frames themselves: the camera restarts its auto-exposure
+    from a fixed bright state on every stream start and converges by an
+    erratic staircase - a pause, then a jump - so neither a fixed wait nor a
+    stable file size was a safe signal (3 s served a 38%-saturated frame in
+    sunshine, and so did "two consecutive JPEG sizes within 2%"). So: at
+    least CAMERA_SETTLE_MIN_S since the first frame, the mean level moving
+    less than CAMERA_SETTLE_MEAN against a frame CAMERA_SETTLE_SPAN_S older,
+    and a clump (see _frame_exposure) under CAMERA_SETTLE_CLUMP. A stream
+    older than CAMERA_SETTLE_MAX_S is settled by fiat - a scene changing in
+    front of the camera is not a reason to withhold the picture.
+    """
+    now = time.monotonic() if now is None else now
+    with stream["lock"]:
+        frames = list(stream["frames"])
+        first = stream["first_frame"]
+    if not frames:
+        return None
+    t_new, newest = frames[-1]
+    if now - stream["started"] >= CAMERA_SETTLE_MAX_S:
+        return newest, t_new
+    if first is None or now - first < CAMERA_SETTLE_MIN_S:
+        return None
+    older = [f for f in frames if t_new - f[0] >= CAMERA_SETTLE_SPAN_S]
+    if not older:
+        return None
+    latest = _frame_exposure(newest)
+    before = _frame_exposure(older[-1][1])
+    if latest is None or before is None:
+        return None
+    if abs(latest[0] - before[0]) < CAMERA_SETTLE_MEAN and latest[1] < CAMERA_SETTLE_CLUMP:
+        return newest, t_new
+    return None
+
+
+def _ensure_camera_stream(cfg: dict) -> tuple[dict | None, str]:
+    """The running stream, started if need be. Caller holds _camera_lock.
+
+    A stream that has died is reported and forgotten, so the next request
+    starts afresh.
+    """
+    global _camera_stream
+    if _camera_stream is not None and _camera_stream["process"].poll() is not None:
+        error = _camera_stream_error(_camera_stream)
+        _stop_camera_stream("exited")
+        return None, error
+    if _camera_stream is None:
+        device = cfg.get("camera_device") or _DEFAULT_CONFIG["camera_device"]
+        # Controls are set on the open device and outlive the stream, but a
+        # camera that was re-enumerated meanwhile has forgotten them.
+        _apply_camera_controls(device, cfg.get("camera_controls") or {})
+        width, height = _camera_resolution(cfg)
+        error = _start_camera_stream(width, height, str(cfg.get("camera_pipewire_target") or ""))
+        if error:
+            return None, error
+    return _camera_stream, ""
+
+
+def _live_camera_frame(cfg: dict) -> tuple[bytes | None, float | None, str]:
+    """A settled frame from the live stream, starting it if need be.
+
+    Caller holds _camera_lock. Returns (jpeg, wall time, '') or (None, None,
+    why). The first request after a cold start waits for the exposure to
+    settle (up to CAMERA_SETTLE_MAX_S); every later one returns at once.
+    """
+    stream, error = _ensure_camera_stream(cfg)
+    if stream is None:
+        return None, None, error
+    with stream["lock"]:
+        stream["last_request"] = time.monotonic()
+    deadline = time.monotonic() + CAMERA_CAPTURE_TIMEOUT
+    while True:
+        if stream["process"].poll() is not None:
+            error = _camera_stream_error(stream)
+            _stop_camera_stream("exited")
+            return None, None, error
+        found = _settled_frame(stream)
+        if found:
+            jpeg, t = found
+            return jpeg, time.time() - (time.monotonic() - t), ""
+        if time.monotonic() >= deadline:
+            _stop_camera_stream("no frame within %ds" % CAMERA_CAPTURE_TIMEOUT)
+            return None, None, f"PipeWire did not deliver a frame within {CAMERA_CAPTURE_TIMEOUT}s"
+        time.sleep(0.05)
 
 
 def _capture_via_v4l2(workdir: str, device: str, width: int,
@@ -6558,57 +6836,42 @@ def _capture_via_v4l2(workdir: str, device: str, width: int,
 
 @app.route('/api/camera/snapshot', methods=['GET'])
 def api_camera_snapshot():
-    """A single frame from the safety camera, as JPEG.
+    """The newest frame from the safety camera, as JPEG.
 
-    Deliberately one frame per request rather than a stream: the point is to
-    look at the dish when you want to, and a permanently open V4L2 device would
-    be one more thing holding hardware across an overnight run.
+    Served from the on-demand stream above, or - with no desktop session and
+    so no PipeWire - from a one-shot capture off the V4L2 device.
     """
     cfg = load_config()
-    device = cfg.get("camera_device") or _DEFAULT_CONFIG["camera_device"]
-    target = str(cfg.get("camera_pipewire_target") or "")
-    width, height = _camera_resolution(cfg)
-
-    global _camera_last_capture
-
     if not _camera_lock.acquire(timeout=CAMERA_CAPTURE_TIMEOUT):
         return jsonify({'success': False,
                         'error': 'Another snapshot is still being captured'}), 409
     try:
-        # A capture that failed says nothing about the sensor's state, so the
-        # next one after a failure pays the full warm-up again.
-        warm = (time.monotonic() - _camera_last_capture) <= CAMERA_WARM_WINDOW_S
-        frames = CAMERA_WARM_FRAMES if warm else CAMERA_COLD_FRAMES
-        _apply_camera_controls(device, cfg.get("camera_controls") or {})
-        with tempfile.TemporaryDirectory(prefix="srt-camera-") as workdir:
-            captured_utc = datetime.now(timezone.utc)
-            frame, pipewire_error = _capture_via_pipewire(workdir, width, height,
-                                                          target, frames)
-            source = "pipewire"
-            v4l2_error = ""
-            if not frame:
-                # Not a retry of the same thing: the two paths fail in opposite
-                # circumstances, PipeWire when there is no session to ask and
-                # V4L2 when there is one holding the device.
+        jpeg, when, live_error = _live_camera_frame(cfg)
+        source, frames = "pipewire", 0
+        if jpeg:
+            captured_utc = datetime.fromtimestamp(when, timezone.utc)
+        else:
+            # Not a retry of the same thing: the two paths fail in opposite
+            # circumstances, PipeWire when there is no session to ask and
+            # V4L2 when there is one holding the device.
+            device = cfg.get("camera_device") or _DEFAULT_CONFIG["camera_device"]
+            width, height = _camera_resolution(cfg)
+            _apply_camera_controls(device, cfg.get("camera_controls") or {})
+            with tempfile.TemporaryDirectory(prefix="srt-camera-") as workdir:
+                captured_utc = datetime.now(timezone.utc)
                 frame, v4l2_error = _capture_via_v4l2(workdir, device, width,
-                                                      height, frames)
-                source = "v4l2"
-            if not frame:
-                # Forget how warm the camera was. Whatever just went wrong may
-                # have been the device disappearing and re-enumerating, which
-                # resets the sensor: the next capture has to prove the exposure
-                # rather than assume it.
-                _camera_last_capture = 0.0
-                log.warning("Camera capture failed: pipewire: %s; v4l2: %s",
-                            pipewire_error, v4l2_error)
-                return jsonify({
-                    'success': False,
-                    'error': (f'Could not capture a frame. Through PipeWire: '
-                              f'{pipewire_error}. Directly from {device}: {v4l2_error}.'),
-                }), 503
-            with open(frame, "rb") as f:
-                jpeg = f.read()
-        _camera_last_capture = time.monotonic()
+                                                      height, CAMERA_FRAMES)
+                if not frame:
+                    log.warning("Camera capture failed: pipewire: %s; v4l2: %s",
+                                live_error, v4l2_error)
+                    return jsonify({
+                        'success': False,
+                        'error': (f'Could not capture a frame. Through PipeWire: '
+                                  f'{live_error}. Directly from {device}: {v4l2_error}.'),
+                    }), 503
+                with open(frame, "rb") as f:
+                    jpeg = f.read()
+            source, frames = "v4l2", CAMERA_FRAMES
     finally:
         _camera_lock.release()
 
@@ -6617,8 +6880,65 @@ def api_camera_snapshot():
         "Cache-Control": "no-store, must-revalidate",
         "X-Capture-Time": captured_utc.strftime("%Y-%m-%dT%H:%M:%SZ"),
         "X-Capture-Source": source,
+        # 0 means served from the live stream.
         "X-Capture-Frames": str(frames),
     })
+
+
+@app.route('/api/camera/stream', methods=['GET'])
+def api_camera_stream():
+    """The safety camera as motion-JPEG, for an <img> tag.
+
+    Every frame the camera produces, at its own rate (22 fps here), unless
+    ?fps= asks for fewer - 12 Mbit/s per viewer at full rate is fine on the
+    observatory LAN and a lot for an ssh tunnel. Frames a viewer cannot take
+    in time are dropped, never queued, so the picture is always current. The
+    response runs until the viewer disconnects or the stream stops; a viewer
+    holds the stream open for as long as it is connected.
+    """
+    try:
+        fps = float(request.args.get("fps", 0) or 0)
+    except ValueError:
+        fps = 0.0
+    min_gap = 1.0 / fps if fps > 0 else 0.0
+    cfg = load_config()
+    if not _camera_lock.acquire(timeout=CAMERA_CAPTURE_TIMEOUT):
+        return jsonify({'success': False, 'error': 'The camera is busy'}), 409
+    try:
+        stream, error = _ensure_camera_stream(cfg)
+        if stream is None:
+            return jsonify({'success': False, 'error': error}), 503
+        q: queue.Queue = queue.Queue(maxsize=CAMERA_VIEWER_BACKLOG)
+        with stream["lock"]:
+            stream["viewers"].add(q)
+            stream["last_request"] = time.monotonic()
+    finally:
+        _camera_lock.release()
+
+    boundary = CAMERA_STREAM_MARKER.encode()
+
+    def frames():
+        last_sent = 0.0
+        try:
+            while True:
+                try:
+                    t, jpeg = q.get(timeout=CAMERA_CAPTURE_TIMEOUT)
+                except queue.Empty:
+                    return                      # the stream has stalled
+                if jpeg is None:
+                    return                      # the stream has stopped
+                if t - last_sent < min_gap:
+                    continue
+                last_sent = t
+                yield (b"--" + boundary + b"\r\nContent-Type: image/jpeg\r\n"
+                       + b"Content-Length: %d\r\n\r\n" % len(jpeg) + jpeg + b"\r\n")
+        finally:
+            with stream["lock"]:
+                stream["viewers"].discard(q)
+                stream["last_request"] = time.monotonic()
+
+    return app.response_class(frames(), mimetype=f"multipart/x-mixed-replace; boundary={CAMERA_STREAM_MARKER}",
+                              headers={"Cache-Control": "no-store, must-revalidate"})
 
 
 def _handle_sigterm(signum, frame):
@@ -6674,6 +6994,8 @@ def main():
     # app.run(), so the SystemExit unwinds through the finally below.
     signal.signal(signal.SIGTERM, _handle_sigterm)
 
+    _reap_stale_camera_streams()
+
     # Start background scheduler thread
     sched_thread = threading.Thread(target=scheduler_thread, daemon=True)
     sched_thread.start()
@@ -6687,6 +7009,8 @@ def main():
         if current_process or current_observation:
             stop_observation()
         stop_booted_receiver()
+        with _camera_lock:
+            _stop_camera_stream("shutdown")
         # An RF calibration in progress: cancel it and take its receiver
         # down too. Left alone it outlives the scheduler holding the B210,
         # and every run after the restart quietly fails to open the radio.

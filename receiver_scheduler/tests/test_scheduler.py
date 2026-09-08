@@ -5,6 +5,9 @@ Unit tests for h1_web_scheduler.py
 Run with: python -m pytest test_scheduler.py -v
 """
 
+import collections
+import io
+import queue
 import json
 import math
 import os
@@ -959,19 +962,15 @@ class TestFlaskAPI:
         assert data["observer_lat"] == 51.5
 
     def test_camera_snapshot_returns_the_frame_with_its_capture_time(self, client):
-        def fake_pipewire(workdir, width, height, target, frames):
-            frame = os.path.join(workdir, "frame001.jpg")
-            with open(frame, "wb") as f:
-                f.write(b"\xff\xd8jpeg\xff\xd9")
-            return frame, ""
-
-        with patch.object(sched, '_capture_via_pipewire', side_effect=fake_pipewire):
+        with patch.object(sched, '_live_camera_frame',
+                          return_value=(b"\xff\xd8jpeg\xff\xd9", time.time(), "")):
             resp = client.get('/api/camera/snapshot')
 
         assert resp.status_code == 200
         assert resp.mimetype == 'image/jpeg'
         assert resp.data == b"\xff\xd8jpeg\xff\xd9"
         assert resp.headers['X-Capture-Source'] == 'pipewire'
+        assert resp.headers['X-Capture-Frames'] == '0'        # off the live stream
         assert resp.headers['X-Capture-Time'].endswith('Z')
         # A safety camera must never be served from cache.
         assert 'no-store' in resp.headers['Cache-Control']
@@ -981,83 +980,176 @@ class TestFlaskAPI:
 
         PipeWire is unavailable when no desktop session is running; the V4L2
         device is busy exactly when one is, because wireplumber holds it open.
+        The fallback is a one-shot capture and still pays the camera's cold
+        start, so it takes the full frame count.
         """
+        requested = []
+
         def fake_v4l2(workdir, device, width, height, frames):
+            requested.append(frames)
             frame = os.path.join(workdir, "frame.jpg")
             with open(frame, "wb") as f:
                 f.write(b"v4l2-frame")
             return frame, ""
 
-        with patch.object(sched, '_capture_via_pipewire',
-                          return_value=(None, "no PipeWire session")), \
+        with patch.object(sched, '_live_camera_frame',
+                          return_value=(None, None, "no PipeWire session")), \
              patch.object(sched, '_capture_via_v4l2', side_effect=fake_v4l2):
             resp = client.get('/api/camera/snapshot')
 
         assert resp.status_code == 200
         assert resp.data == b"v4l2-frame"
         assert resp.headers['X-Capture-Source'] == 'v4l2'
+        assert requested == [sched.CAMERA_FRAMES]
+        assert resp.headers['X-Capture-Frames'] == str(sched.CAMERA_FRAMES)
+        assert sched.CAMERA_FRAMES >= 17          # where the exposure settled
 
-    def test_camera_warm_up_shrinks_when_the_camera_just_ran(self, client):
-        """The sensor keeps its exposure across a quick close and reopen.
+    @staticmethod
+    def _fake_stream(process=None, started=None):
+        process = process or MagicMock()
+        process.poll.return_value = None
+        now = time.monotonic()
+        return {"process": process, "started": now if started is None else started,
+                "first_frame": None, "last_request": now, "stderr": MagicMock(),
+                "frames": collections.deque(), "viewers": set(), "lock": threading.Lock()}
 
-        Measured against a settled 15-frame reference on this camera, a single
-        frame came back 0.2% darker after 1s idle and 3.0% after 5s, but 11.8%
-        after 15s. Paying the full warm-up every second would make auto-refresh
-        cost four times what it needs to; skipping it after a long idle would
-        serve a visibly dark frame.
+    @staticmethod
+    def _jpeg(mean, saturated=0.0, seed=1):
+        import numpy as np
+        from PIL import Image
+        rng = np.random.default_rng(seed)
+        grey = np.clip(rng.normal(mean, 25, (48, 64)), 0, 230).astype(np.uint8)
+        if saturated:
+            grey.flat[:int(saturated * grey.size)] = 240
+        buf = io.BytesIO()
+        Image.fromarray(grey).save(buf, format="JPEG", quality=85)
+        return buf.getvalue()
+
+    def test_camera_multipart_stream_is_split_into_frames(self):
+        """gst's multipartmux output, parsed by its Content-Length."""
+        a, b = b"\xff\xd8 first \xff\xd9", b"\xff\xd8 second \xff\xd9"
+        raw = b"".join(b"--srt-camera\r\nContent-Type: image/jpeg\r\nContent-Length: %d\r\n\r\n%s\r\n"
+                       % (len(x), x) for x in (a, b))
+        assert list(sched._iter_multipart_jpegs(io.BytesIO(raw))) == [a, b]
+        # A truncated final frame is dropped, not served half-written.
+        assert list(sched._iter_multipart_jpegs(io.BytesIO(raw[:-5]))) == [a]
+
+    def test_camera_stream_is_started_once_and_reused(self):
+        """One stream for as long as the camera is watched.
+
+        A one-shot capture per request cost 1.7-5.6 s of camera start-up plus
+        one to four seconds of exposure settling every time, because this
+        camera restarts its auto-exposure from a fixed bright state on every
+        stream start. The stream is started by the first request and reused
+        by the rest.
         """
-        requested = []
+        process = MagicMock()
+        process.poll.return_value = None
+        with patch.object(sched, '_camera_stream', None), \
+             patch.object(sched, '_apply_camera_controls'), \
+             patch.object(sched, '_camera_stream_command', return_value=['gst']), \
+             patch.object(sched.subprocess, 'Popen', return_value=process) as popen, \
+             patch.object(sched.threading, 'Thread'):          # no reader/watcher in a unit test
+            with sched._camera_lock:
+                first, err1 = sched._ensure_camera_stream({})
+                second, err2 = sched._ensure_camera_stream({})
+                sched._camera_stream = None
+        assert err1 == "" and err2 == ""
+        assert first is second and first["process"] is process
+        assert popen.call_count == 1, "the second request must reuse the stream"
 
-        def fake_pipewire(workdir, width, height, target, frames):
-            requested.append(frames)
-            frame = os.path.join(workdir, "frame001.jpg")
-            with open(frame, "wb") as f:
-                f.write(b"frame")
-            return frame, ""
+    def test_camera_first_frame_waits_for_the_exposure_to_settle(self):
+        """The camera restarts its auto-exposure from a washed-out state on
+        every stream start and converges by an erratic staircase, so the first
+        frame is judged from the pixels: mean level no longer moving against a
+        frame 0.4 s older, and almost nothing piled on one value near the top.
+        Until then a young stream serves nothing; an old one serves the newest
+        frame regardless."""
+        stream = self._fake_stream()
+        now = time.monotonic()
+        stream["first_frame"] = now - 3.0                      # past the minimum age
+        stream["frames"].extend([(now - 0.5, self._jpeg(200, saturated=0.6)),
+                                 (now, self._jpeg(160, saturated=0.4))])
+        assert sched._settled_frame(stream, now) is None, "still converging"
+        stream["frames"].extend([(now + 0.5, self._jpeg(160, saturated=0.4, seed=2))])
+        assert sched._settled_frame(stream, now + 0.5) is None, "level stable but 40% blown out"
+        settled = self._jpeg(120, seed=3)
+        stream["frames"].extend([(now + 1.0, self._jpeg(120, seed=4)), (now + 1.5, settled)])
+        assert sched._settled_frame(stream, now + 1.5) == (settled, now + 1.5)
+        # Too young: nothing yet, however settled the frames look.
+        stream["first_frame"] = now + 1.4
+        assert sched._settled_frame(stream, now + 1.5) is None
+        # Old enough for the cap: the newest frame, whatever it looks like.
+        stream["started"] = now - sched.CAMERA_SETTLE_MAX_S - 1
+        assert sched._settled_frame(stream, now + 1.5) == (settled, now + 1.5)
 
-        with patch.object(sched, '_capture_via_pipewire', side_effect=fake_pipewire), \
-             patch.object(sched, '_camera_last_capture', 0.0):
-            cold = client.get('/api/camera/snapshot')      # nothing recent
-            warm = client.get('/api/camera/snapshot')      # straight after it
+    def test_camera_stream_stops_when_nobody_is_watching(self):
+        """The stream must not hold the camera across a night nobody looks."""
+        stream = self._fake_stream()
+        stream["last_request"] = time.monotonic() - sched.CAMERA_IDLE_S - 1
+        assert sched._camera_stream_idle(stream)
+        # A connected viewer keeps it alive however old the last snapshot.
+        stream["viewers"].add(queue.Queue())
+        assert not sched._camera_stream_idle(stream)
+        stream["viewers"].clear()
+        with patch.object(sched, '_camera_stream', stream):
+            sched._camera_stream_watch(stream)              # returns once it has stopped it
+            assert sched._camera_stream is None
+        stream["process"].terminate.assert_called_once()
 
-        assert requested == [sched.CAMERA_COLD_FRAMES, sched.CAMERA_WARM_FRAMES]
-        assert cold.headers['X-Capture-Frames'] == str(sched.CAMERA_COLD_FRAMES)
-        assert warm.headers['X-Capture-Frames'] == str(sched.CAMERA_WARM_FRAMES)
+    def test_camera_stream_that_died_is_reported_and_forgotten(self):
+        """A dead stream must not be served from, nor block the next start."""
+        stream = self._fake_stream()
+        stream["process"].poll.return_value = 1
+        stream["stderr"] = io.BytesIO(b"ERROR: pipewiresrc: no such node\n")
+        with patch.object(sched, '_camera_stream', stream), \
+             patch.object(sched.subprocess, 'Popen') as popen:
+            with sched._camera_lock:
+                jpeg, when, error = sched._live_camera_frame({})
+            assert sched._camera_stream is None
+        assert jpeg is None and "no such node" in error
+        popen.assert_not_called()
 
-    def test_camera_warm_up_is_paid_again_after_a_failed_capture(self, client):
-        """A capture that failed says nothing about the state of the sensor."""
-        requested = []
+    def test_camera_live_feed_fans_frames_out_to_a_viewer(self, client):
+        """/api/camera/stream: motion-JPEG for an <img>, frames as they come,
+        thinned to ?fps= for a slow link, ending when the stream stops."""
+        stream = self._fake_stream()
+        frames = [b"\xff\xd8 one \xff\xd9", b"\xff\xd8 two \xff\xd9", b"\xff\xd8 three \xff\xd9"]
 
-        def failing(workdir, width, height, target, frames):
-            requested.append(frames)
-            return None, "no frame"
+        def feed():
+            time.sleep(0.2)                    # after the viewer has registered
+            for f in frames:
+                sched._publish_frame(stream, f)
+                time.sleep(0.05)
+            sched._publish_frame(stream, None)  # the stream stopped
 
-        def succeeding(workdir, width, height, target, frames):
-            requested.append(frames)
-            frame = os.path.join(workdir, "frame001.jpg")
-            with open(frame, "wb") as f:
-                f.write(b"frame")
-            return frame, ""
+        with patch.object(sched, '_ensure_camera_stream', return_value=(stream, "")):
+            threading.Thread(target=feed, daemon=True).start()
+            resp = client.get('/api/camera/stream')
+            body = resp.data
+        assert resp.status_code == 200
+        assert resp.mimetype == 'multipart/x-mixed-replace'
+        assert body.count(b"--" + sched.CAMERA_STREAM_MARKER.encode()) == 3
+        for f in frames:
+            assert b"Content-Length: %d\r\n\r\n%s\r\n" % (len(f), f) in body
+        assert not stream["viewers"], "the viewer is forgotten when it goes"
+        # Thinned: three frames 50 ms apart at a 5 fps cap is one frame.
+        with patch.object(sched, '_ensure_camera_stream', return_value=(stream, "")):
+            threading.Thread(target=feed, daemon=True).start()
+            thinned = client.get('/api/camera/stream?fps=5').data
+        assert thinned.count(b"--" + sched.CAMERA_STREAM_MARKER.encode()) == 1
 
-        with patch.object(sched, '_capture_via_v4l2', return_value=(None, "busy")), \
-             patch.object(sched, '_camera_last_capture', 0.0):
-            with patch.object(sched, '_capture_via_pipewire', side_effect=succeeding):
-                client.get('/api/camera/snapshot')
-            with patch.object(sched, '_capture_via_pipewire', side_effect=failing):
-                client.get('/api/camera/snapshot')
-            with patch.object(sched, '_capture_via_pipewire', side_effect=succeeding):
-                client.get('/api/camera/snapshot')
-
-        assert requested[0] == sched.CAMERA_COLD_FRAMES
-        assert requested[1] == sched.CAMERA_WARM_FRAMES
-        assert requested[-1] == sched.CAMERA_COLD_FRAMES
+    def test_camera_stream_command_carries_the_marker_the_reaper_looks_for(self):
+        with patch.object(sched.shutil, 'which', return_value='/usr/bin/gst-launch-1.0'):
+            command = sched._camera_stream_command(640, 480, '')
+        assert f"boundary={sched.CAMERA_STREAM_MARKER}" in command
+        assert "multipartmux" in command and "fd=1" in command
 
     def test_camera_snapshot_reports_why_both_paths_failed(self, client):
-        with patch.object(sched, '_capture_via_pipewire',
-                          return_value=(None, "no PipeWire session")), \
+        with patch.object(sched, '_live_camera_frame',
+                          return_value=(None, None, "no PipeWire session")), \
              patch.object(sched, '_capture_via_v4l2',
-                          return_value=(None, "/dev/video0 is held by another application")), \
-             patch.object(sched, '_camera_last_capture', 0.0):
+                          return_value=(None, "/dev/video0 is held by another application")):
             resp = client.get('/api/camera/snapshot')
 
         assert resp.status_code == 503

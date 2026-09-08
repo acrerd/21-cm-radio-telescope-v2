@@ -413,6 +413,8 @@
                             <option value="0" selected>Off</option>
                             <option value="1">Every 1 s</option>
                             <option value="5">Every 5 s</option>
+                            <option value="live">Live video</option>
+                            <option value="live5">Live video, 5 fps (remote link)</option>
                         </select>
                     </label>
                     <span id="camStatus" style="color:#888; font-size:12px;">Not captured yet.</span>
@@ -421,11 +423,15 @@
                     <span style="color:#888;">Press Refresh to capture a frame.</span>
                 </div>
                 <p style="color:#888; font-size:12px; margin-top:10px;">
-                    One frame is captured per refresh, straight from the camera &mdash;
-                    nothing is recorded or kept on disk, and the device is released
-                    again immediately. Auto-refresh stops on its own whenever this tab
-                    is not the one on screen, so a forgotten browser tab cannot leave
-                    the camera running overnight.
+                    The camera streams only while it is being watched: the first
+                    frame after a quiet spell takes a few seconds while the camera
+                    wakes and its exposure settles, then frames are immediate.
+                    <strong>Live video</strong> shows every frame the camera makes
+                    (about 22 a second, 12&nbsp;Mbit/s); the 5&nbsp;fps option is for
+                    an ssh tunnel. Nothing is recorded or kept on disk, and the stream
+                    stops on its own two minutes after the last look. Auto-refresh and
+                    live video both stop whenever this tab is not the one on screen, so
+                    a forgotten browser tab cannot leave the camera running overnight.
                 </p>
             </div>
         </div>
