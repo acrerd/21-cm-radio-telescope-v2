@@ -914,6 +914,30 @@ class TestFlaskAPI:
         # No scheduled observation and no background scan holds the hardware.
         assert data["background"] is None
 
+    def test_get_status_reports_a_start_in_progress(self, client, monkeypatch):
+        """Pointing and waiting for the slew is part of the observation.
+
+        /api/status used to look only at the receiver process, which does not
+        exist until the slew has finished, so the page said "Idle" for the
+        whole slew. A simulator booking, slotted from the minute it was made,
+        then sat badged "Expired" until recording began - 91 s of a 2 min
+        slot on 2026-09-08. The scheduler thread already counted the start as
+        running; the page must see the same thing, with the entry itself so
+        the schedule list can match it.
+        """
+        entry = {"name": "Spectrum l=145.8 b=+1.1", "start_date": "2026-09-08",
+                 "start_time": "09:07", "duration_minutes": 2}
+        monkeypatch.setattr(sched, "current_process", None)
+        monkeypatch.setattr(sched, "observation_starting", True)
+        monkeypatch.setattr(sched, "starting_observation_name", entry["name"])
+        monkeypatch.setattr(sched, "starting_observation", dict(entry))
+        data = client.get('/api/status').get_json()
+        assert data["running"] is True
+        assert data["starting"] is True
+        assert data["observation"]["name"] == entry["name"]
+        assert data["observation"]["start_time"] == "09:07"
+        assert data["background"] is None
+
     def test_get_config(self, client):
         resp = client.get('/api/config')
         data = resp.get_json()

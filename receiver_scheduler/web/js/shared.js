@@ -124,7 +124,12 @@
                 if (data.running) {
                     dot.classList.add('running');
                     const remaining = formatRemaining(data.remaining_seconds);
-                    text.textContent = `Running: ${data.observation?.name || '?'}${remaining}`;
+                    // Starting: the telescope is pointing and the receiver
+                    // has not been launched yet. Stop works here too - it
+                    // aborts the slew wait.
+                    text.textContent = data.starting
+                        ? `Starting: ${data.observation?.name || '?'} (pointing the telescope)`
+                        : `Running: ${data.observation?.name || '?'}${remaining}`;
                     btn.style.display = 'inline-block';
                     if (wasRunning === false) playStartSound();
                     currentObs = data.observation;

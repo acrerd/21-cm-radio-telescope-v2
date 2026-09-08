@@ -28,7 +28,7 @@ import h1_web_scheduler as sched
 # that separates them has broken something, whichever way round.
 IDLE = {"current_process": None, "current_observation": None,
         "observation_end_time": None, "observation_starting": False,
-        "starting_observation_name": ""}
+        "starting_observation_name": "", "starting_observation": None}
 
 
 def snapshot():
@@ -189,6 +189,7 @@ def test_a_failed_start_leaves_the_state_idle(idle):
     assert sched.observation_starting is False, \
         "a failed start left the scheduler unable to start anything again"
     assert sched.starting_observation_name == ""
+    assert sched.starting_observation is None
 
 
 def test_the_state_names_are_all_present(idle):

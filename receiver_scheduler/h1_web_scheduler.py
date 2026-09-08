@@ -1758,6 +1758,12 @@ hardware_start_lock = threading.Lock()
 # start. Both are only written under process_lock.
 observation_starting = False
 starting_observation_name = ''
+# The entry being started, for /api/status: while the slew runs the receiver
+# process does not exist yet, and reporting only the process left the page
+# saying "Idle" for the length of the slew - a simulator booking, slotted
+# from the minute it was made, then sat badged "Expired" until recording began
+# (2026-09-08, a 91 s slew on a 2 min slot).
+starting_observation: Optional[dict] = None
 start_abort = threading.Event()
 receiver_boot_process: Optional[subprocess.Popen] = None
 receiver_boot_lock = threading.Lock()
@@ -2031,7 +2037,7 @@ def start_observation(obs: dict, duration_override: int = None) -> bool:
     """
     global current_process, current_observation, observation_end_time
     global current_receiver_log
-    global observation_starting, starting_observation_name
+    global observation_starting, starting_observation_name, starting_observation
 
     # Calibration day: runs as a background thread, not a subprocess
     if obs.get('coord_system') == 'calibration':
@@ -2064,6 +2070,7 @@ def start_observation(obs: dict, duration_override: int = None) -> bool:
             return False
         observation_starting = True
         starting_observation_name = obs.get('name', '')
+        starting_observation = dict(obs)
         start_abort.clear()
 
         # A manually started receiver is useful for warm-up/testing, but scheduled
@@ -2286,6 +2293,7 @@ def start_observation(obs: dict, duration_override: int = None) -> bool:
         with process_lock:
             observation_starting = False
             starting_observation_name = ''
+            starting_observation = None
 
 
 # The observation that most recently finished, so its file can still be found
@@ -5258,6 +5266,19 @@ def _background_activity():
 def get_status():
     with process_lock:
         running = current_process is not None and current_process.poll() is None
+        # Pointing and waiting for the slew is part of the observation: the
+        # scheduler thread already counts it as running (it will not start a
+        # second one over it), so the page must not call it idle.
+        starting = (not running) and observation_starting
+        starting_entry = dict(starting_observation) if starting and starting_observation else None
+    if starting:
+        return jsonify({
+            'running': True,
+            'starting': True,
+            'observation': starting_entry or {'name': starting_observation_name},
+            'remaining_seconds': None,
+            'background': None,
+        })
     # Also count calibration day as running
     if not running and current_observation and current_observation.get('coord_system') == 'calibration':
         running = cal_day_state["running"] or cal_day_state["finished"]
@@ -5268,6 +5289,7 @@ def get_status():
         remaining = max(0, (observation_end_time - datetime.now()).total_seconds())
     return jsonify({
         'running': running,
+        'starting': False,
         'observation': current_observation if running else None,
         'remaining_seconds': remaining,
         # A background scan started from its own tab is not the scheduled
