@@ -192,6 +192,27 @@ def raster_obstruction(sun_alt: float, sun_az: float, n: int,
     return worst
 
 
+def raster_obstruction_over_scan(lat: float, lon: float, elevation: float,
+                                 n: int, grid_spacing_deg: float, sectors,
+                                 integration_time_s: float = 3.0):
+    """`raster_obstruction` at the Sun's position now AND where it will be
+    when the raster ends. A 5x5 raster takes ~4 min, over which the Sun
+    moves ~0.6 deg in altitude; checked at the start only, a raster that
+    just clears the treeline can finish inside it. Returns the worse of the
+    two offending points, or None if both ends are clear. The duration is
+    an estimate: one integration plus ~5 s of slew and settle per point."""
+    from datetime import datetime, timedelta, timezone
+    duration = timedelta(seconds=n * n * (float(integration_time_s) + 5.0))
+    worst = None
+    for when in (None, datetime.now(timezone.utc) + duration):
+        alt, az = get_sun_altaz(lat, lon, elevation, when=when)
+        bad = raster_obstruction(alt, az, n, grid_spacing_deg, sectors)
+        if bad and (worst is None or bad["shortfall_deg"] > worst["shortfall_deg"]):
+            worst = dict(bad, sun_alt_deg=alt, sun_az_deg=az,
+                         at_end=(when is not None))
+    return worst
+
+
 def _load_scheduler_config() -> dict:
     """Load observer location and SRT URL from the scheduler config file."""
     defaults = {

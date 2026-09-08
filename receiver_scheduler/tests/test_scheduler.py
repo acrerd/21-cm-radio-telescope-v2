@@ -909,6 +909,85 @@ class TestFlaskAPI:
         r = client.post('/api/schedule', json=[{'name': 123}])
         assert r.status_code == 400 and 'name' in r.get_json()['error']
 
+    def test_homing_report_is_judged(self):
+        """The controller's last-homing report (issue #24): first approach is
+        the count error since the previous homing, the re-approach after the
+        back-off is the repeatability. On 2026-09-08 az read -1.5 / +0.5 (a
+        pulse off the zero the model was fitted to; a Sun track sawtoothed
+        for an hour) and alt +49.0 / -50.5 (a false stall 55 deg above the
+        stop). Both must be called out; a clean homing must not."""
+        assert sched.assess_homing_report(None) is None
+        assert sched.assess_homing_report({"az_error_first_deg": 0.0}) is None   # no utc
+        # A perfect homing on this firmware does not read 0, and each reading
+        # carries a pulse or two of geometry: after travel the first approach
+        # reads the stop -2..-3 pulses, from the zero itself 0..+1, and the
+        # re-approach -1.0 (two reversals, an early pulse after each). All of
+        # those are normal.
+        for first_az, first_alt, second in ((-1.5, -1.0, -1.0), (0.5, -0.5, -1.0), (0.0, 0.0, 0.0)):
+            ok = sched.assess_homing_report({"alt_error_first_deg": first_alt, "az_error_first_deg": first_az,
+                                             "alt_error_second_deg": second, "az_error_second_deg": second,
+                                             "utc": 1788867839})
+            assert ok["level"] == "ok", (first_az, first_alt, second)
+            assert "11:43 UTC: normal" in ok["summary"]
+        # 2026-09-08 11:43: a false stall 55 deg above the stop on altitude.
+        bad = sched.assess_homing_report({"alt_error_first_deg": 49.0, "az_error_first_deg": -1.5,
+                                          "alt_error_second_deg": -50.5, "az_error_second_deg": 0.5,
+                                          "utc": 1788867839})
+        assert bad["level"] == "warn"
+        assert "alt false stall (first +49.0, re-approach -50.5)" in bad["summary"]
+        assert "az " not in bad["summary"].split("(first/re-approach")[0].replace("az -1.5", "")
+        # Counts really lost: the first approach well beyond the range.
+        lost = sched.assess_homing_report({"alt_error_first_deg": -4.0, "az_error_first_deg": -1.0,
+                                           "alt_error_second_deg": -0.5, "az_error_second_deg": -0.5,
+                                           "utc": 1788867839})
+        assert lost["level"] == "warn"
+        assert "alt first approach -4.0, 2.0 beyond its normal -2.0..+0.5: counts lost" in lost["summary"]
+        # A re-approach two pulses past its range.
+        off = sched.assess_homing_report({"alt_error_first_deg": -1.0, "az_error_first_deg": -1.5,
+                                          "alt_error_second_deg": -1.0, "az_error_second_deg": -2.0,
+                                          "utc": 1788867839})
+        assert off["level"] == "warn"
+        assert "az re-approach -2.0, 1.0 beyond its normal -1.0..+0.0" in off["summary"]
+        # Stamped as the homing starts, numbers filled in per axis: a gap
+        # means it is still running, which is neither ok nor a warning.
+        partial = sched.assess_homing_report({"az_error_first_deg": -1.5, "az_error_second_deg": -1.0,
+                                              "utc": 1788867839})
+        assert partial["level"] == "pending" and "in progress" in partial["summary"]
+
+    def test_controller_offset_is_reported(self, client):
+        """A hand-set /offset on the controller survives homings and shows
+        nowhere else; /api/telescope carries it so the status line can."""
+        def api(path, *a, **k):
+            return {"/status": {"alt": 0.0, "az": 0.0}, "/offset": {"ok": True, "offset_alt": 0.0, "offset_az": -0.5},
+                    "/tracking": {"enabled": False}}.get(path)
+        with patch.object(sched, 'SRT_CONTROLLER_URL', 'http://controller'), \
+             patch.object(sched, 'srt_api_call', side_effect=api):
+            data = client.get('/api/telescope').get_json()
+        assert data["offset"] == {"alt": 0.0, "az": -0.5}
+        # An unreachable controller reports no offset rather than a fake zero.
+        with patch.object(sched, 'SRT_CONTROLLER_URL', 'http://controller'), \
+             patch.object(sched, 'srt_api_call', return_value=None):
+            data = client.get('/api/telescope').get_json()
+        assert data["connected"] is False and data["offset"] is None
+
+    def test_suspect_homing_is_logged_once_and_shown(self, client, caplog):
+        status = {"alt": 0.0, "az": 0.0, "true_alt": 1.0, "true_az": 359.8,
+                  "last_homing": {"alt_error_first_deg": 49.0, "az_error_first_deg": -1.5,
+                                  "alt_error_second_deg": -50.5, "az_error_second_deg": 0.5,
+                                  "utc": 1788867839}}
+        with patch.object(sched, 'SRT_CONTROLLER_URL', 'http://controller'), \
+             patch.object(sched, 'srt_api_call', return_value=dict(status)), \
+             patch.object(sched, 'srt_get_tracking', return_value={"enabled": False}), \
+             patch.object(sched, '_homing_report_logged_utc', 0):
+            with caplog.at_level(logging.WARNING, logger='scheduler'):
+                first = client.get('/api/telescope').get_json()
+                second = client.get('/api/telescope').get_json()
+        assert first["homing"]["level"] == "warn"
+        assert second["homing"] == first["homing"]
+        warnings = [r for r in caplog.records if "Last homing" in r.getMessage()]
+        assert len(warnings) == 1, "one warning per homing, not one per poll"
+        assert "Sun scan" in warnings[0].getMessage()
+
     def test_get_status_idle(self, client):
         resp = client.get('/api/status')
         data = resp.get_json()

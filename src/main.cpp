@@ -394,13 +394,50 @@ int32_t getRampDownPulses() {
 // least this many microseconds. Glitches shorter than this are ignored.
 #define PULSE_MIN_WIDTH_US 1000
 
+// Encoder statistics per drive, for the debounce-margin question (#32): the
+// alt window (100 ms) sits only 28% under the pulse period at full speed
+// (128 ms at 3.9 deg/s), so a gravity-assisted descent that runs faster
+// rejects real pulses and the counter runs slow while the axis moves. These
+// count what the ISR actually saw: pulses rejected by the window, the
+// shortest interval it accepted (the true pulse period at speed), and the
+// longest interval it rejected (how close a real pulse came to the window -
+// near the window means a real pulse, near zero means contact bounce).
+// Reset at each driveToLimits, printed with each limit line.
+volatile uint32_t encRejectedAz = 0, encRejectedAlt = 0;
+volatile unsigned long encMinAcceptedAz = 0, encMinAcceptedAlt = 0;  // 0 = none yet
+volatile unsigned long encMaxRejectedAz = 0, encMaxRejectedAlt = 0;
+volatile unsigned long encLastAcceptedAz = 0, encLastAcceptedAlt = 0; // interval of the latest accepted pulse: the speed at the stop
+
+static void resetEncoderStats() {
+    noInterrupts();
+    encRejectedAz = encRejectedAlt = 0;
+    encMinAcceptedAz = encMinAcceptedAlt = 0;
+    encMaxRejectedAz = encMaxRejectedAlt = 0;
+    encLastAcceptedAz = encLastAcceptedAlt = 0;
+    interrupts();
+}
+
+static String encoderStats(bool alt) {
+    uint32_t rej = alt ? encRejectedAlt : encRejectedAz;
+    unsigned long minAcc = alt ? encMinAcceptedAlt : encMinAcceptedAz;
+    unsigned long maxRej = alt ? encMaxRejectedAlt : encMaxRejectedAz;
+    unsigned long last = alt ? encLastAcceptedAlt : encLastAcceptedAz;
+    unsigned long window = alt ? cfg.debounceAltMs : cfg.debounceMs;
+    return " [enc: rejected " + String(rej)
+         + ", min accepted " + (minAcc ? String(minAcc) + " ms" : String("-"))
+         + ", last accepted " + (last ? String(last) + " ms" : String("-"))
+         + ", max rejected " + String(maxRej) + " ms"
+         + ", window " + String(window) + " ms]";
+}
+
 void pulseAzISR() {
     // Reject runt pulses — confirm the pin is still HIGH after a brief delay
     delayMicroseconds(PULSE_MIN_WIDTH_US);
     if (digitalRead(PIN_PULSE_AZ) != HIGH) return;
 
     unsigned long now = millis();
-    if ((now - lastPulseAz) >= cfg.debounceMs) {
+    unsigned long interval = now - lastPulseAz;
+    if (interval >= cfg.debounceMs) {
         if (azBacklashRemaining > 0) {
             // Absorb backlash pulse - motor is taking up gear slack
             azBacklashRemaining--;
@@ -412,7 +449,12 @@ void pulseAzISR() {
                 positionAz--;   // Moving West (decreasing)
             }
         }
+        if (encMinAcceptedAz == 0 || interval < encMinAcceptedAz) encMinAcceptedAz = interval;
+        encLastAcceptedAz = interval;
         lastPulseAz = now;  // Only update on pulses that pass debounce
+    } else {
+        encRejectedAz++;
+        if (interval > encMaxRejectedAz) encMaxRejectedAz = interval;
     }
 }
 
@@ -421,14 +463,20 @@ void pulseAltISR() {
     if (digitalRead(PIN_PULSE_ALT) != HIGH) return;
 
     unsigned long now = millis();
-    if ((now - lastPulseAlt) >= cfg.debounceAltMs) {
+    unsigned long interval = now - lastPulseAlt;
+    if (interval >= cfg.debounceAltMs) {
         // Determine direction from DIR pin state
         if (digitalRead(PIN_DIR_ALT) == ALT_DIR(HIGH)) {
             positionAlt++;  // Moving Up (increasing)
         } else {
             positionAlt--;  // Moving Down (decreasing)
         }
+        if (encMinAcceptedAlt == 0 || interval < encMinAcceptedAlt) encMinAcceptedAlt = interval;
+        encLastAcceptedAlt = interval;
         lastPulseAlt = now;  // Only update on pulses that pass debounce
+    } else {
+        encRejectedAlt++;
+        if (interval > encMaxRejectedAlt) encMaxRejectedAlt = interval;
     }
 }
 
@@ -933,10 +981,15 @@ bool isValidTarget(float altDeg, float azDeg) {
 
 // Helper: drive both axes toward their limits until no pulses for stallTimeoutMs.
 // Uses the normal ramp-up profile, then cruises at full speed (no ramp-down,
-// since we're driving to a hard stop). Returns false if a fault occurred.
-static bool driveToLimits() {
+// since we're driving to a limit switch). With slowFinal - the re-approach,
+// where the counter is already relative to the first stop - each axis drops
+// to creep speed within HOMING_SLOW_APPROACH_PULSES of it, so the coast past
+// the switch, and with it the rest position the zero is taken from, stays a
+// small fraction of a magnet pitch. Returns false if a fault occurred.
+static bool driveToLimits(bool slowFinal) {
     lastPulseAz = millis();
     lastPulseAlt = millis();
+    resetEncoderStats();
 
     digitalWrite(PIN_DIR_AZ, AZ_DIR(LOW));
     digitalWrite(PIN_DIR_ALT, ALT_DIR(LOW));
@@ -950,6 +1003,8 @@ static bool driveToLimits() {
 
     bool azAtLimit = false;
     bool altAtLimit = false;
+    unsigned long azBrakeStart = 0;    // slowFinal: when the axis entered the slow zone
+    unsigned long altBrakeStart = 0;
 
     while (!azAtLimit || !altAtLimit) {
         unsigned long now = millis();
@@ -957,12 +1012,51 @@ static bool driveToLimits() {
         // Ramp up using calculatePWM (pass huge remaining so ramp-down branch
         // is never taken, only ramp-up + cruise)
         int currentPwm = calculatePWM(INT32_MAX, startTime);
-        if (!azAtLimit) analogWrite(PIN_PWM_AZ, currentPwm);
-        if (!altAtLimit) analogWrite(PIN_PWM_ALT, currentPwm);
+        int azPwm = currentPwm;
+        int altPwm = currentPwm;
+        if (slowFinal) {
+            // Entering the slow zone: stop first (HOMING_SLOW_BRAKE_MS), then
+            // creep, so the switch is met at creep speed and not at whatever
+            // friction has left of full speed. The stall timer restarts at
+            // the end of the pause so it measures the creep, not the pause.
+            // The zone is a band around zero: on the re-approach the counter
+            // descends from the back-off distance, on the first approach from
+            // the previous zero, and the switch may sit a pulse past it. A
+            // boot-home starts at counter 0 wherever the mount is, creeps its
+            // first 1.5 deg and then runs at speed - harmless, and precision
+            // is not expected of it.
+            if (positionAz <= HOMING_SLOW_APPROACH_PULSES
+                && positionAz >= -HOMING_SLOW_APPROACH_PULSES) {
+                if (azBrakeStart == 0) azBrakeStart = now;
+                if (now - azBrakeStart < HOMING_SLOW_BRAKE_MS) {
+                    azPwm = PWM_STOP;
+                    lastPulseAz = now;
+                } else {
+                    azPwm = PWM_MIN_SPEED;
+                }
+            }
+            if (positionAlt <= HOMING_SLOW_APPROACH_PULSES
+                && positionAlt >= -HOMING_SLOW_APPROACH_PULSES) {
+                if (altBrakeStart == 0) altBrakeStart = now;
+                if (now - altBrakeStart < HOMING_SLOW_BRAKE_MS) {
+                    altPwm = PWM_STOP;
+                    lastPulseAlt = now;
+                } else {
+                    altPwm = PWM_MIN_SPEED;
+                }
+            }
+        }
+        if (!azAtLimit) analogWrite(PIN_PWM_AZ, azPwm);
+        if (!altAtLimit) analogWrite(PIN_PWM_ALT, altPwm);
 
         updateFilteredCurrents();
         outputStatusIfChanged();
 
+        // The limit is a pulse silence of stallTimeoutMs. The motor current at
+        // that moment goes into the line as diagnostics only: the limit switch
+        // cuts current, but a genuine stop does not always read ~0 A (the alt
+        // re-approach settles at ~0.8 A), so it cannot gate the decision - a
+        // 2026-09-08 attempt to do so faulted a good homing (#32).
         if (!azAtLimit && (now - lastPulseAz) > cfg.stallTimeoutMs) {
             stopMotorAz();
             azAtLimit = true;
@@ -974,7 +1068,8 @@ static bool driveToLimits() {
             // the controller (which the scheduler reads) is on Serial1; the
             // prefix is unchanged so anything matching it still does. #24.
             String m = "Homing: Azimuth limit reached at " + String(positionAz)
-                     + " pulses (" + String((float)positionAz / PULSES_PER_DEGREE, 2) + " deg)";
+                     + " pulses (" + String((float)positionAz / PULSES_PER_DEGREE, 2) + " deg)"
+                     + encoderStats(false) + " I=" + String(filteredCurrentAz, 2) + "A";
             Serial.println(m);
             Serial1.println(m);
         }
@@ -982,7 +1077,8 @@ static bool driveToLimits() {
             stopMotorAlt();
             altAtLimit = true;
             String m = "Homing: Altitude limit reached at " + String(positionAlt)
-                     + " pulses (" + String((float)positionAlt / PULSES_PER_DEGREE, 2) + " deg)";
+                     + " pulses (" + String((float)positionAlt / PULSES_PER_DEGREE, 2) + " deg)"
+                     + encoderStats(true) + " I=" + String(filteredCurrentAlt, 2) + "A";
             Serial.println(m);
             Serial1.println(m);
         }
@@ -1081,62 +1177,26 @@ static bool backOffFromLimits(float degrees) {
         simulatePulses();
         #endif
     }
-    return true;
-}
 
-// Helper: drive both axes back to position 0 (toward limit) using position
-// counting rather than stall detection. Stops cleanly at 0 without slamming
-// into the hard stop.
-static bool returnToZero(int pwm) {
-    lastPulseAz = millis();
-    lastPulseAlt = millis();
-
-    digitalWrite(PIN_DIR_AZ, AZ_DIR(LOW));
-    digitalWrite(PIN_DIR_ALT, ALT_DIR(LOW));
-
-    analogWrite(PIN_PWM_AZ, pwm);
-    analogWrite(PIN_PWM_ALT, pwm);
-
-    bool azDone = false;
-    bool altDone = false;
-
-    while (!azDone || !altDone) {
+    // Let the coast finish before the caller reverses. The motors were cut
+    // dead at the target count with no ramp-down, so both axes may still be
+    // moving, and the re-approach sets DIR low at once; the ISR takes
+    // direction from that pin, so a pulse arriving while still coasting
+    // positive would be counted negative. DIR is still HIGH here, so the
+    // coasting pulses count correctly; wait until none has arrived for
+    // HOMING_SETTLE_MS, bounded by the stall timeout in case one never does.
+    // Note this is hygiene, not the explanation of the constant -2 pulses
+    // the re-approach reports on both axes: that is the single-channel
+    // encoder counting the first pulse after each of the two reversals early
+    // (by the reed switch's closed width), and it read -2 before and after
+    // this wait (2026-09-08 12:13 UTC). The zero is set afterwards on the
+    // positive edge, so neither matters for pointing.
+    unsigned long settleStart = millis();
+    while (((millis() - lastPulseAz) < HOMING_SETTLE_MS ||
+            (millis() - lastPulseAlt) < HOMING_SETTLE_MS) &&
+           (millis() - settleStart) < (unsigned long)cfg.stallTimeoutMs) {
         updateFilteredCurrents();
         outputStatusIfChanged();
-
-        if (!azDone && positionAz <= 0) {
-            analogWrite(PIN_PWM_AZ, PWM_STOP);
-            azDone = true;
-        }
-        if (!altDone && positionAlt <= 0) {
-            analogWrite(PIN_PWM_ALT, PWM_STOP);
-            altDone = true;
-        }
-
-        FaultCode fault = checkFaultFlags();
-        if (fault != FAULT_NONE) {
-            stopAllMotors();
-            faultCode = fault;
-            systemState = STATE_FAULT;
-            printAll("Homing ABORTED: ");
-            printAllLn(getFaultString());
-            return false;
-        }
-        if (!azDone && (millis() - lastPulseAz) > cfg.stallTimeoutMs) {
-            stopAllMotors();
-            faultCode = FAULT_AZ_STALL;
-            systemState = STATE_FAULT;
-            printAllLn("Homing ABORTED: Az stall returning to zero");
-            return false;
-        }
-        if (!altDone && (millis() - lastPulseAlt) > cfg.stallTimeoutMs) {
-            stopAllMotors();
-            faultCode = FAULT_ALT_STALL;
-            systemState = STATE_FAULT;
-            printAllLn("Homing ABORTED: Alt stall returning to zero");
-            return false;
-        }
-
         delay(10);
         #ifdef SIMULATION_MODE
         simulatePulses();
@@ -1159,9 +1219,41 @@ static bool returnToZero(int pwm) {
 // ones sat at ~1 pulse). Sets positionAz/Alt to 0 at that edge and returns
 // true; on no edge within a safe travel (encoder not responding) it faults
 // and returns false, exactly as driveToLimits does.
+// Which side of the counted edge the reed came to rest on. The ISR counts the
+// pin going HIGH, once per magnet. Read at rest after the re-approach: LOW
+// means the reed sits just before that rising edge of the reference magnet,
+// so the first edge on the positive creep is that magnet's own; HIGH means
+// the coast carried it past, so the first edge belongs to the NEXT magnet.
+// Sampled a few times over 50 ms and decided by majority, against bounce.
+static bool reedRestsHigh(int pin) {
+    int high = 0;
+    for (int i = 0; i < 5; i++) {
+        if (digitalRead(pin) == HIGH) high++;
+        delay(10);
+    }
+    return high >= 3;
+}
+
 static bool refineZeroPositiveEdge() {
     int32_t azStart = positionAz;
     int32_t altStart = positionAlt;
+    // The azimuth zero was bistable by exactly one pulse across homings
+    // (2026-09-08: two clusters 0.5 deg apart, the homing counters blind to
+    // which). Two causes, both real. At full speed the coast past the switch
+    // scattered the rest over most of a magnet pitch, so "zero on the first
+    // edge" landed on one magnet or the next by luck; the slow re-approach
+    // (driveToLimits slowFinal) cut that scatter to ~0.2 deg. But the switch
+    // cuts within ~0.07 deg of a reed edge, so even the reduced scatter
+    // straddles it: a LOW rest stops just short of the edge, a HIGH rest has
+    // just crossed it, and five Sun scans split into two clusters with the
+    // rest level predicting the cluster 5 for 5. With the scatter this small
+    // the level (guarded by the time to the first level change, see
+    // HOMING_REST_PAST_EDGE_MS) says unambiguously which, and the HIGH case
+    // starts its counter at +1. The same rule applied with the fast approach
+    // was wrong - the scatter then spanned both dwells and the level meant
+    // nothing - which is why it depends on the slow approach being in place.
+    bool azRestHigh = reedRestsHigh(PIN_PULSE_AZ);
+    bool altRestHigh = reedRestsHigh(PIN_PULSE_ALT);
     azBacklashRemaining = 0;                 // count the real edge, not gear slack
     digitalWrite(PIN_DIR_AZ, AZ_DIR(HIGH));  // positive: the tracking direction
     digitalWrite(PIN_DIR_ALT, ALT_DIR(HIGH));
@@ -1173,21 +1265,65 @@ static bool refineZeroPositiveEdge() {
     motionStateAz = MOTION_DRIVING;
     motionStateAlt = MOTION_DRIVING;
 
+    // Every level transition of the reed pin during the creep, with its time:
+    // the sequence before the counted edge shows the wiring polarity (does a
+    // LOW stretch precede the rising edge?) and the dwell width, the facts
+    // the zero rule above rests on. Sampled at the loop's 5 ms.
+    int azLevel = digitalRead(PIN_PULSE_AZ);
+    int altLevel = digitalRead(PIN_PULSE_ALT);
+    String azTrans = (azLevel == HIGH) ? "H" : "L";
+    String altTrans = (altLevel == HIGH) ? "H" : "L";
+    unsigned long azFirstTransMs = 0;   // creep time to the first level change
+
     bool azDone = false;
     bool altDone = false;
     while (!azDone || !altDone) {
         unsigned long now = millis();
 
-        // The first counted edge off the stop is the zero for that axis.
+        if (!azDone) {
+            int l = digitalRead(PIN_PULSE_AZ);
+            if (l != azLevel && azTrans.length() < 60) {
+                if (azFirstTransMs == 0) azFirstTransMs = now - startTime;
+                azTrans += (l == HIGH) ? ">H@" : ">L@";
+                azTrans += String(now - startTime);
+                azLevel = l;
+            }
+        }
+        if (!altDone) {
+            int l = digitalRead(PIN_PULSE_ALT);
+            if (l != altLevel && altTrans.length() < 60) {
+                altTrans += (l == HIGH) ? ">H@" : ">L@";
+                altTrans += String(now - startTime);
+                altLevel = l;
+            }
+        }
+
+        // The first counted edge off the stop is the zero for that axis -
+        // except when the azimuth rest had already crossed it: reed HIGH at
+        // rest with the falling edge far ahead means the coast carried the
+        // reed just past the edge into the next dwell, so the first edge on
+        // the creep belongs to the NEXT magnet and the counter starts at +1
+        // there, putting the zero on the same magnet a LOW rest reaches.
         if (!azDone && positionAz != azStart) {
             stopMotorAz();
-            positionAz = 0;
+            bool pastEdge = azRestHigh && azFirstTransMs >= HOMING_REST_PAST_EDGE_MS;
+            positionAz = pastEdge ? 1 : 0;
             azDone = true;
+            String m = String("Homing: Az zero ") + (pastEdge ? "one pulse back from" : "on")
+                     + " first edge (reed " + (azRestHigh ? "HIGH" : "LOW") + " at rest, edge after "
+                     + String(now - startTime) + " ms, levels " + azTrans + ")";
+            Serial.println(m);
+            Serial1.println(m);
         }
         if (!altDone && positionAlt != altStart) {
             stopMotorAlt();
             positionAlt = 0;
             altDone = true;
+            String m = String("Homing: Alt zero on first edge (reed ")
+                     + (altRestHigh ? "HIGH" : "LOW") + " at rest, edge after "
+                     + String(now - startTime) + " ms, levels " + altTrans + ")";
+            Serial.println(m);
+            Serial1.println(m);
         }
 
         // If an axis has driven for a few stall-timeouts without an edge, the
@@ -1224,18 +1360,23 @@ void performHoming() {
     // as well as USB, because the controller uses "Drive to limits" to reset
     // its homing-error latch and "Re-approach" to tell the first approach
     // (the accumulated error) from the second (repeatability). #24.
+    // Both approaches slow to creep near the expected zero: the first so its
+    // stall counter (the error since the last homing) is not smeared by the
+    // coast from full speed, which makes first + second approach a clean
+    // consistency test of the zero between homings, the switch as fiducial.
     printAllLn("Homing: Drive to limits...");
     Serial1.println("Homing: Drive to limits...");
-    if (!driveToLimits()) return;
+    if (!driveToLimits(true)) return;
 
     // Phase 2: back off a few degrees (back-off zeros position, then drives positive)
     printAllLn("Homing: Backing off limits...");
     if (!backOffFromLimits(5.0)) return;
 
-    // Phase 3: re-approach limit with ramp-up for accurate zero
+    // Phase 3: re-approach, slowing to creep for the last pulses so the rest
+    // position the zero is taken from is repeatable (see driveToLimits)
     printAllLn("Homing: Re-approach limits...");
     Serial1.println("Homing: Re-approach limits...");
-    if (!driveToLimits()) return;
+    if (!driveToLimits(true)) return;
 
     // Set the zero on the first positive-going edge off the stop, not on the
     // negative stall - see refineZeroPositiveEdge. It zeroes positionAz/Alt.

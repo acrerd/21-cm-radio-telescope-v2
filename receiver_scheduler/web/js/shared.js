@@ -183,6 +183,33 @@
                         info += ' [Tracking]';
                     }
                     text.textContent = info;
+                    // An operator offset on the controller is a hand-applied
+                    // patch on the pointing; it survives homings and nothing
+                    // else shows it, so it is named here whenever it is set.
+                    const o = data.offset;
+                    if (o && (Math.abs(o.alt) >= 0.005 || Math.abs(o.az) >= 0.005)) {
+                        dot.style.background = '#ffa502';
+                        const off = document.createElement('span');
+                        off.style.color = '#ffa502';
+                        off.textContent = ` \u26a0 offset alt ${o.alt >= 0 ? '+' : ''}${o.alt.toFixed(2)}° az ${o.az >= 0 ? '+' : ''}${o.az.toFixed(2)}°`;
+                        text.appendChild(off);
+                    }
+                    // A suspect homing - re-approach a pulse off the zero, or a
+                    // false stall - is shown until the next homing replaces it,
+                    // because the pointing model is only as good as that zero.
+                    if (data.homing && data.homing.level === 'warn') {
+                        dot.style.background = '#ffa502';
+                        const warn = document.createElement('span');
+                        warn.style.color = '#ffa502';
+                        warn.textContent = ' \u26a0 ' + data.homing.summary;
+                        text.appendChild(warn);
+                    } else if (data.homing && data.homing.level === 'pending') {
+                        const note = document.createElement('span');
+                        note.style.color = '#888';
+                        note.textContent = ' \u00b7 ' + data.homing.summary;
+                        text.appendChild(note);
+                    }
+                    text.title = data.homing ? data.homing.summary : '';
                 }
             }).catch(() => {
                 const dot = document.getElementById('telescopeDot');

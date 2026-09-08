@@ -403,9 +403,111 @@ def sync_observer_from_controller():
             log.info("Observer location synced from controller: lat=%.6f lon=%.6f", lat, lon)
 
 
+# The Due reports the encoder counter at the stop on each homing (issue #24)
+# and the controller keeps the last report in /status "last_homing". Two
+# numbers per axis: the *first approach* is the count error accumulated since
+# the previous homing (the stop is the true zero), the *re-approach* after the
+# 5 deg back-off is the repeatability and should read ~0. Read for the
+# operator, because the report is only useful if someone looks at it: on
+# 2026-09-08 a homing landed one pulse (0.5 deg) off the zero the pointing
+# model was fitted to - a Sun track sawtoothed for an hour before anyone knew -
+# and the same homing's altitude first approach was a false stall 55 deg above
+# the stop (first +49.0, re-approach -50.5) on a fast descent from the stow.
+# Neither number reads 0 on a perfect homing, and each has a pulse or two of
+# geometry in it, so the judgement is against a normal *range*, not a value.
+# The zero is set on the first positive-going edge *off* the stop, the
+# single-channel encoder counts the first pulse after a reversal early, the
+# axis coasts a little past the creep that finds the edge, and azimuth
+# absorbs backlash pulses on reversal: so a clean homing after travel reads
+# the stop -2 (alt) to -3 (az) pulses on the first approach (2026-08-27, flat
+# across 0/5/10 reversals), and one started from the zero itself reads 0 to
+# +1 (2026-09-08, three in a row). The re-approach reads a constant -1.0 on
+# both axes: it follows two reversals (into the back-off, then back toward
+# the stop), and after each one the first pulse arrives early, by the width
+# over which the reed switch is closed, so the counter is a pulse ahead per
+# reversal by the time the stop is reached - -2 pulses, every time, from the
+# geometry alone. (A coasting-pulse miscount was suspected first; letting the
+# coast finish before the re-approach, kept in the Due as hygiene, changed
+# nothing - verified 2026-09-08 12:13 UTC.) Benign for the zero, which is set
+# afterwards. What the report *can* show is a false stall (tens of degrees)
+# and gross count loss (many pulses): warn beyond the range plus a pulse and
+# a half, and say which. A one-pulse landing on the other edge is invisible
+# here; only a Sun scan sees that.
+HOMING_FIRST_NORMAL_DEG = (-2.0, 0.5)      # after travel ... from the zero itself
+HOMING_SECOND_NORMAL_DEG = (-1.0, 0.0)     # two early reversal pulses ... none
+HOMING_WARN_DEG = 0.75             # beyond the range by more than a pulse and a half
+HOMING_FALSE_STALL_DEG = 5.0       # a reading this large is a false stall or gross loss
+_homing_report_logged_utc = 0
+
+
+def assess_homing_report(report) -> Optional[dict]:
+    """Judge the controller's last-homing report. None if there is none.
+
+    Returns level 'ok' or 'warn', a one-line summary, and the numbers.
+    """
+    if not isinstance(report, dict) or report.get("utc") is None:
+        return None
+    def num(key):
+        v = report.get(key)
+        return float(v) if isinstance(v, (int, float)) else None
+    first = {"az": num("az_error_first_deg"), "alt": num("alt_error_first_deg")}
+    second = {"az": num("az_error_second_deg"), "alt": num("alt_error_second_deg")}
+    when = datetime.fromtimestamp(int(report["utc"]), timezone.utc).strftime("%H:%M UTC")
+    if any(v is None for v in list(first.values()) + list(second.values())):
+        # The controller stamps the report as the homing starts and fills the
+        # numbers in as each axis reaches its stop: a gap means it is running.
+        return {"level": "pending", "summary": f"Homing in progress since {when}",
+                "utc": int(report["utc"]),
+                "az_first": first["az"], "alt_first": first["alt"],
+                "az_second": second["az"], "alt_second": second["alt"]}
+    def beyond(value, lo_hi):
+        lo, hi = lo_hi
+        return (value - lo) if value < lo else (value - hi) if value > hi else 0.0
+    problems, readings = [], []
+    for axis in ("az", "alt"):
+        f, s = first[axis], second[axis]
+        readings.append(f"{axis} {f:+.1f}/{s:+.1f}")
+        error = beyond(f, HOMING_FIRST_NORMAL_DEG)        # counts lost or gained since the previous homing
+        landing = beyond(s, HOMING_SECOND_NORMAL_DEG)     # re-approach against its usual range
+        if abs(f) >= HOMING_FALSE_STALL_DEG or abs(s) >= HOMING_FALSE_STALL_DEG:
+            problems.append(f"{axis} false stall (first {f:+.1f}, re-approach {s:+.1f})")
+        elif abs(error) > HOMING_WARN_DEG:
+            problems.append(f"{axis} first approach {f:+.1f}, {abs(error):.1f} beyond its normal "
+                            f"{HOMING_FIRST_NORMAL_DEG[0]:+.1f}..{HOMING_FIRST_NORMAL_DEG[1]:+.1f}: counts "
+                            f"{'gained' if error > 0 else 'lost'} since the previous homing")
+        elif abs(landing) > HOMING_WARN_DEG:
+            problems.append(f"{axis} re-approach {s:+.1f}, {abs(landing):.1f} beyond its normal "
+                            f"{HOMING_SECOND_NORMAL_DEG[0]:+.1f}..{HOMING_SECOND_NORMAL_DEG[1]:+.1f}")
+    level = "warn" if problems else "ok"
+    detail = "first/re-approach " + ", ".join(readings)
+    summary = f"Last homing {when}: " + ("; ".join(problems) + " (" + detail + ")" if problems
+                                        else "normal (" + detail + ")")
+    return {"level": level, "summary": summary, "utc": int(report["utc"]),
+            "az_first": first["az"], "alt_first": first["alt"],
+            "az_second": second["az"], "alt_second": second["alt"]}
+
+
+def _note_homing_report(status: Optional[dict]) -> None:
+    """Log a suspect homing once, whichever path fetched the status."""
+    global _homing_report_logged_utc
+    if not status:
+        return
+    verdict = assess_homing_report(status.get("last_homing"))
+    if verdict is None or verdict["level"] == "pending" or verdict["utc"] == _homing_report_logged_utc:
+        return
+    _homing_report_logged_utc = verdict["utc"]
+    if verdict["level"] == "warn":
+        log.warning("%s - the encoder zero may not be where the pointing model expects; "
+                    "a Sun scan will show where it landed", verdict["summary"])
+    else:
+        log.info(verdict["summary"])
+
+
 def srt_get_status() -> Optional[dict]:
     """Get current telescope status (position, tracking, etc)."""
-    return srt_api_call("/status")
+    status = srt_api_call("/status")
+    _note_homing_report(status)
+    return status
 
 
 def srt_get_tracking() -> Optional[dict]:
@@ -3135,7 +3237,8 @@ def _horizon_clear_eta(lat, lon, elev, n, spacing, sectors,
 def _run_calibration_day(params: dict):
     """Run repeated sun scans at a fixed interval until sunset or cancelled."""
     from sun_scan import (get_sun_altaz, parse_obstruction_sectors,
-                          raster_obstruction, save_scan_to_pointing_data)
+                          raster_obstruction, raster_obstruction_over_scan,
+                          save_scan_to_pointing_data)
 
     interval = params.get("interval_minutes", 30)
     cal_day_state.update(running=True, finished=False, phase="starting",
@@ -3186,16 +3289,20 @@ def _run_calibration_day(params: dict):
             # reach is no longer an allowance to add, it is enumerated point by
             # point below. Adding both would count the extent twice.
             sectors = parse_obstruction_sectors(horizon_obstruction_sectors(cfg))
-            bad = raster_obstruction(sun_alt, sun_az,
-                                     params.get("n", 5),
-                                     params.get("grid_spacing_deg", 1.5),
-                                     sectors)
+            # Now and at the end of the raster: the Sun moves ~0.6 deg over it.
+            bad = raster_obstruction_over_scan(
+                float(cfg.get("observer_lat", SITE_LAT_DEG)),
+                float(cfg.get("observer_lon", SITE_LON_DEG)),
+                float(cfg.get("observer_elevation", 50)),
+                params.get("n", 5), params.get("grid_spacing_deg", 1.5),
+                sectors, params.get("integration_time_s", 3.0))
             if bad:
-                log.info("Calibration day: Sun at alt=%.1f° az=%.1f° would put a "
+                log.info("Calibration day: Sun %s at alt=%.1f° az=%.1f° would put a "
                          "raster point at alt=%.1f° az=%.1f° into the measured "
                          "horizon (%.1f° short); waiting for it to clear",
-                         sun_alt, sun_az, bad["alt_deg"], bad["az_deg"],
-                         bad["shortfall_deg"])
+                         "at the end of the scan" if bad["at_end"] else "now",
+                         bad["sun_alt_deg"], bad["sun_az_deg"], bad["alt_deg"],
+                         bad["az_deg"], bad["shortfall_deg"])
                 cal_day_state["phase"] = "waiting_for_clear_horizon"
                 eta = _horizon_clear_eta(lat, lon, elev,
                                          params.get("n", 5),
@@ -5460,13 +5567,24 @@ def api_telescope():
 
     status = srt_get_status()
     tracking = srt_get_tracking()
+    # The operator's sky-frame offset on the controller. It lives in the
+    # controller's RAM, outlives homings and is invisible everywhere else:
+    # a -0.5 deg azimuth patch set by hand on 2026-09-08 to cancel one
+    # homing's landing was still in force four homings later, with nothing
+    # on any page saying so. Shown whenever it is not zero.
+    offset = srt_api_call("/offset") if status is not None else None
+    offset = ({'alt': float(offset.get('offset_alt') or 0.0), 'az': float(offset.get('offset_az') or 0.0)}
+              if isinstance(offset, dict) else None)
 
     return jsonify({
         'configured': True,
         'url': SRT_CONTROLLER_URL,
         'connected': status is not None,
         'status': status,
-        'tracking': tracking
+        'tracking': tracking,
+        'offset': offset,
+        # The last homing, judged (see assess_homing_report), for the status line.
+        'homing': assess_homing_report((status or {}).get('last_homing')),
     })
 
 
@@ -5699,24 +5817,27 @@ def api_sunscan_start():
     warning = None
     if params.get("respect_local_horizon", True):
         try:
-            from sun_scan import (get_sun_altaz, parse_obstruction_sectors,
-                                  raster_obstruction)
+            from sun_scan import (parse_obstruction_sectors,
+                                  raster_obstruction_over_scan)
             cfg = load_config()
-            sun_alt, sun_az = get_sun_altaz(
+            sectors = parse_obstruction_sectors(horizon_obstruction_sectors(cfg))
+            # Checked where the Sun is now and where it will be when the
+            # raster ends: it moves ~0.6 deg in altitude over a 5x5 scan.
+            bad = raster_obstruction_over_scan(
                 float(cfg.get("observer_lat", SITE_LAT_DEG)),
                 float(cfg.get("observer_lon", SITE_LON_DEG)),
-                float(cfg.get("observer_elevation", 50)))
-            sectors = parse_obstruction_sectors(horizon_obstruction_sectors(cfg))
-            bad = raster_obstruction(sun_alt, sun_az, params["n"],
-                                     params["grid_spacing_deg"], sectors)
+                float(cfg.get("observer_elevation", 50)),
+                params["n"], params["grid_spacing_deg"], sectors,
+                params.get("integration_time_s", 3.0))
             if bad:
-                warning = ("the Sun is at alt %.1f° az %.1f°, which puts a raster "
+                warning = ("the Sun %s at alt %.1f° az %.1f° puts a raster "
                            "point at alt %.1f° az %.1f° into the measured horizon, "
                            "%.1f° short of clearing it by a beamwidth. Foliage at "
                            "1420 MHz is a ~290 K source, so that point would drag "
                            "the fitted centroid rather than just adding noise."
-                           % (sun_alt, sun_az, bad["alt_deg"], bad["az_deg"],
-                              bad["shortfall_deg"]))
+                           % ("at the end of the scan" if bad["at_end"] else "now",
+                              bad["sun_alt_deg"], bad["sun_az_deg"],
+                              bad["alt_deg"], bad["az_deg"], bad["shortfall_deg"]))
                 log.warning("Refusing the Sun scan: %s", warning)
                 sun_scan_state["horizon_warning"] = warning
                 return jsonify({'success': False, 'error': warning,

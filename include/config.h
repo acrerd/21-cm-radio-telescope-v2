@@ -84,6 +84,29 @@
 // Safety
 #define DEFAULT_CURRENT_LIMIT   5.0     // Stop motor if current exceeds this (Amps)
 #define DEFAULT_STALL_TIMEOUT   2000    // No pulses for this long = stalled (ms)
+#define HOMING_SETTLE_MS        400     // After the homing back-off: no pulse for this long = coast over
+// The homing re-approach drops to PWM_MIN_SPEED for its last pulses so the
+// mount meets the limit switch slowly. Hitting it at full speed left the rest
+// position scattered over most of a magnet pitch (the coast past a current
+// cut scales with speed squared), which made the first-edge zero land on one
+// magnet or the next by luck - the bistable azimuth zero of 2026-09-08 (#32).
+#define HOMING_SLOW_APPROACH_PULSES 3   // Re-approach at creep speed from this many pulses out (1.5 deg)
+// Merely commanding creep PWM from full speed leaves the mount decelerating
+// on friction alone through most of that zone, so on entering it each axis
+// is stopped for this long first, then creeps: the switch is met at true
+// creep speed whatever the deceleration dynamics.
+#define HOMING_SLOW_BRAKE_MS        400
+// Even at creep the azimuth rest straddles a reed edge: the switch cuts
+// within ~0.07 deg of one, and the ~0.2 deg of remaining scatter lands
+// either just short of it (reed LOW) or just past it (reed HIGH, the next
+// dwell). Five Sun scans on 2026-09-08 split into two clusters one pulse
+// apart, the rest level predicting the cluster 5 for 5. A HIGH rest is
+// "just past the edge" only if the falling edge is still far ahead - a
+// rest at the far end of the previous dwell would read HIGH with the
+// falling edge imminent - so the correction needs the first level change
+// at least this far into the creep (measured 225-235 ms for genuine
+// past-edge rests, under 45 ms for the other case).
+#define HOMING_REST_PAST_EDGE_MS    120
 #define DEFAULT_BACKLASH_AZ     0.0     // Azimuth backlash compensation (degrees)
 
 // =============================================================================
