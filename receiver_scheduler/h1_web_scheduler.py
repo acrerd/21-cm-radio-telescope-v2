@@ -2539,7 +2539,9 @@ def _start_calibration_observation(obs: dict, duration_override: int = None) -> 
         "bandwidth_mhz": obs.get("bandwidth_mhz", 2.4),
         "gain_db": obs.get("gain_db", 40),
         "sdr_type": obs.get("sdr_type", "b210"),
-        "beam_fwhm_deg": 3.0,
+        # Starting guess for the raster's Gaussian fit, and the width the
+        # demo Sun is drawn with: the measured beam, not a placeholder.
+        "beam_fwhm_deg": 5.2,
         "interval_minutes": obs.get("cal_interval_min", 30),
     }
     try:
@@ -2901,7 +2903,7 @@ def _validate_sun_scan_params(raw: dict, include_interval: bool = False) -> dict
         "center_freq_mhz": number("center_freq_mhz", 1420.405752, 0.001, 100000.0),
         "bandwidth_mhz": number("bandwidth_mhz", 2.4, 0.01, 100.0),
         "gain_db": number("gain_db", 40.0, 0.0, 100.0),
-        "beam_fwhm_deg": number("beam_fwhm_deg", 3.0, 0.1, 30.0),
+        "beam_fwhm_deg": number("beam_fwhm_deg", 5.2, 0.1, 30.0),
     }
     if params["n"] % 2 == 0:
         raise ValueError("n must be odd so the raster has a centre point")
@@ -2971,7 +2973,7 @@ def _run_sun_scan(params: dict):
             output_image=image_path,
             slew_timeout=cfg.get("slew_timeout", 300),
             position_tolerance=cfg.get("position_tolerance", 0.5),
-            beam_fwhm_deg=params.get("beam_fwhm_deg", 3.0),
+            beam_fwhm_deg=params.get("beam_fwhm_deg", 5.2),
             progress_callback=_sun_scan_progress,
             cancel_event=sun_scan_cancel,
         )

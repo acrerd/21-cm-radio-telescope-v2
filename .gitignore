@@ -55,3 +55,8 @@ Thumbs.db
 
 # Which observation finished last: runtime state, absolute paths, per-host.
 receiver_scheduler/last_observation.json
+
+# Student ssh instructions: site hostnames and the shared-account workflow,
+# kept on the observatory host only.
+docs/SSH_ACCESS.txt
+docs/ettus3-tunnel.bat

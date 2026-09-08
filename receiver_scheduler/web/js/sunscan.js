@@ -234,11 +234,17 @@
             });
         }
 
-        function fitModel() {
-            document.getElementById('cdModel').innerHTML = '<span style="color:#888;">Fitting model...</span>';
-            fetch('/api/calday/fit', {method: 'POST'}).then(r => r.json()).then(m => {
-                if (m.success) {
+        // Draw a fitted model: either one just returned by /api/calday/fit or
+        // the one already on disk from /api/calday/model. Both carry the same
+        // fields, so one renderer serves both. Rendering must never fit: the
+        // tab used to call fitModel() on open "to re-render", so every visit
+        // re-fitted the same scans, re-stamped fitted_utc and archived another
+        // identical copy (five of them by 2026-09-08 from one set of scans).
+        function renderPointingModel(m) {
                     let html = '<table style="width:100%; font-size:13px; color:#ccc;">';
+                    if (m.fitted_utc) {
+                        html += '<tr><td style="color:#888; padding:4px 8px;">Fitted</td><td>' + m.fitted_utc.replace('T', ' ').replace('Z', ' UTC') + '</td></tr>';
+                    }
                     html += '<tr><td style="color:#888; padding:4px 8px;">Scans used</td><td>' + m.n_scans + '</td></tr>';
                     html += '<tr><td style="color:#888; padding:4px 8px;">Alt zero offset</td><td>' + (m.alt_offset_deg >= 0 ? '+' : '') + m.alt_offset_deg.toFixed(3) + '&deg;</td></tr>';
                     html += '<tr><td style="color:#888; padding:4px 8px;">Az zero offset</td><td>' + (m.az_offset_deg >= 0 ? '+' : '') + m.az_offset_deg.toFixed(3) + '&deg;</td></tr>';
@@ -268,9 +274,17 @@
                     html += '</table>';
                     document.getElementById('cdModel').innerHTML = html;
                     document.getElementById('cdApplyBtn').style.display = 'inline-block';
-                    // Show plot
+                    // Show plot. Only a fit writes the plot file, so a stored
+                    // model can exist without one; hide a broken image.
                     document.getElementById('cdPlotContainer').innerHTML =
-                        '<img src="/api/calday/plot?' + Date.now() + '" style="max-width:100%; border-radius:8px; border:1px solid #333; margin-top:10px;">';
+                        '<img src="/api/calday/plot?' + Date.now() + '" onerror="this.style.display=\'none\'" style="max-width:100%; border-radius:8px; border:1px solid #333; margin-top:10px;">';
+        }
+
+        function fitModel() {
+            document.getElementById('cdModel').innerHTML = '<span style="color:#888;">Fitting model...</span>';
+            fetch('/api/calday/fit', {method: 'POST'}).then(r => r.json()).then(m => {
+                if (m.success) {
+                    renderPointingModel(m);
                     refreshPointingModels();  // the fit just archived a new one
                 } else {
                     document.getElementById('cdModel').innerHTML = '<span style="color:#ff4757;">' + (m.error || 'Fit failed') + '</span>';
@@ -376,9 +390,9 @@
         function loadCalModel() {
             fetch('/api/calday/model').then(r => r.json()).then(m => {
                 if (m.success) {
-                    fitModel();  // re-render
+                    renderPointingModel(m);  // the stored model, never a new fit
                 }
-            });
+            }).catch(() => {});
             fetch('/api/calday/data').then(r => r.json()).then(d => {
                 if (d.data) {
                     cdArchiveCount = d.data.length;

@@ -95,19 +95,8 @@
                         <input autocomplete="off" type="number" id="ssSpacing" min="0.1" max="10" step="0.1" value="1.5">
                     </div>
                     <div class="form-group">
-                        <label>Beam FWHM Hint (degrees)</label>
-                        <input autocomplete="off" type="number" id="ssBeamFwhm" min="0.5" max="20" step="0.1" value="3.0">
-                    </div>
-                    <div class="section-title">Instrument (fixed)</div>
-                    <div id="ssInstrument" class="mono" style="padding:8px 12px; margin-bottom:10px; background:#0f0f23; border:1px solid #333; border-radius:6px; color:#888; font-size:12px;">
-                        Loading&hellip;
-                    </div>
-                    <div style="color:#666; font-size:12px; margin-bottom:12px; max-width:70ch;">
-                        Every scheduled observation records with this tuning, and every
-                        recording carries an H I sub-band and a continuum product from it. It
-                        is changed on the Configuration tab, with a warning, and the bandpass and
-                        gain must be re-measured afterwards. The settings below apply only to
-                        the Sun scan's power meter and the manual console receiver.
+                        <label>Beam FWHM starting guess (degrees)</label>
+                        <input autocomplete="off" type="number" id="ssBeamFwhm" min="0.5" max="20" step="0.1" value="5.2">
                     </div>
                     <div class="section-title">Receiver Settings (Sun scan and console receiver)</div>
                     <div class="form-group">
@@ -139,10 +128,6 @@
                             <input autocomplete="off" type="checkbox" id="ssRespectHorizon" checked>
                             Respect local horizon
                         </label>
-                        <span style="color:#888; font-size:12px;">
-                            Says so if the Sun is behind the measured treeline. Advisory &mdash;
-                            it never stops the scan.
-                        </span>
                     </div>
                     <div style="margin-top:15px; display:flex; gap:10px;">
                         <button title="Raster the Sun now to measure the pointing offset. Refused if any raster point would clip the measured horizon." class="btn btn-primary" id="ssStartBtn" onclick="startSunScan()">Start Sun Scan</button>
