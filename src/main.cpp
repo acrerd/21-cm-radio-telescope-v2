@@ -999,20 +999,58 @@ bool isValidTarget(float altDeg, float azDeg) {
 // makes it the zero. INT32_MIN = not captured (no edge followed the cut).
 static int32_t azCutEdgePosition = INT32_MIN;
 static unsigned long azCutToEdgeMs = 0;
+static float azCutFromA = 0.0f, azCutToA = 0.0f;   // creep level and reading at the cut, for the log
 
+// Eight conversions averaged (~0.3 ms) to take the PWM ripple off a single
+// sample; the cut detector below compares this against an absolute level.
 static float rawCurrentAz() {
-    float v = (ADC_REFERENCE_V / ADC_RESOLUTION_BITS) * analogRead(PIN_CURRENT_AZ);
+    long sum = 0;
+    for (int i = 0; i < 8; i++) sum += analogRead(PIN_CURRENT_AZ);
+    float v = (ADC_REFERENCE_V / ADC_RESOLUTION_BITS) * (sum / 8.0f);
     return (v - currentOffsetAz) / CURRENT_SENSOR_SENSITIVITY;
+}
+
+// Measure the current sensors' zero with the motors stopped and the axes at
+// rest, as the boot does, and take it as the offset for this homing. The raw
+// readings the cut detector compares against an absolute level are then
+// referenced to a zero measured minutes before the cut, not hours (the probe
+// of 2026-09-09 found a constant +0.15 A against the boot zero). The idle
+// tracker carries on from here afterwards. Logged as the shift from the
+// previous zero, so a sensor that has genuinely moved shows in the record.
+static void measureHomingCurrentZero() {
+    stopAllMotors();
+    delay(500);                          // let any coast and braking current die
+    long sumAz = 0, sumAlt = 0;
+    const int samples = 64;
+    for (int i = 0; i < samples; i++) {
+        sumAz += analogRead(PIN_CURRENT_AZ);
+        sumAlt += analogRead(PIN_CURRENT_ALT);
+        delay(2);
+    }
+    float newAz = (ADC_REFERENCE_V / ADC_RESOLUTION_BITS) * ((float)sumAz / samples);
+    float newAlt = (ADC_REFERENCE_V / ADC_RESOLUTION_BITS) * ((float)sumAlt / samples);
+    float shiftAz = (newAz - currentOffsetAz) / CURRENT_SENSOR_SENSITIVITY;
+    float shiftAlt = (newAlt - currentOffsetAlt) / CURRENT_SENSOR_SENSITIVITY;
+    currentOffsetAz = newAz;
+    currentOffsetAlt = newAlt;
+    String m = "Homing: current zero re-measured at rest (shift az "
+             + String(shiftAz, 2) + " A, alt " + String(shiftAlt, 2) + " A)";
+    Serial.println(m);
+    Serial1.println(m);
 }
 
 static bool driveToLimits(bool slowFinal) {
     azCutEdgePosition = INT32_MIN;
     azCutToEdgeMs = 0;
     bool azArmed = false;          // creep current seen after the brake
-    int azLowCount = 0;            // consecutive raw samples below the cut level
+    float azCreepA = 0.0f;         // running mean of the raw current while creeping (for the log)
+    int azLowCount = 0;            // consecutive raw samples below the driving level
     bool azCutSeen = false;
     unsigned long azCutMs = 0;
     int32_t azPosAtCut = 0;
+    int32_t azPosAtFirstLow = 0;   // counter and time at the first low sample: the cut is booked there, not at confirmation
+    unsigned long azMsAtFirstLow = 0;
+    int azEdgesAfterCut = 0;       // counted edges after the cut: more than 2 means it was not a cut
     lastPulseAz = millis();
     lastPulseAlt = millis();
     resetEncoderStats();
@@ -1077,22 +1115,49 @@ static bool driveToLimits(bool slowFinal) {
 
         // Azimuth cut-edge capture: only while creeping (after the brake -
         // the brake itself takes the current to zero), arm on seeing creep
-        // current, detect the cut as three consecutive raw samples below
-        // HOMING_CUT_CURRENT_A, then take the next counter change as the edge.
+        // current, detect the cut as three consecutive readings under the
+        // driving level, then take the next counted edge as the zero.
         if (slowFinal && !azAtLimit && azPwm == PWM_MIN_SPEED) {
             float ia = fabs(rawCurrentAz());
             if (!azArmed) {
-                if (ia > HOMING_CREEP_CURRENT_A) azArmed = true;
+                if (ia > HOMING_CREEP_CURRENT_A) { azArmed = true; azCreepA = ia; }
             } else if (!azCutSeen) {
-                azLowCount = (ia < HOMING_CUT_CURRENT_A) ? azLowCount + 1 : 0;
+                // The cut is the reading falling below the driving level,
+                // absolute, for three consecutive samples. Deliberately NOT a
+                // drop from the creep level or a fraction of it: every creep
+                // starts with a surge (~3.5 A settling to ~1 A on the probe)
+                // and either of those would read the settling as a cut.
+                bool low = (ia < HOMING_CREEP_CURRENT_A);
+                if (!low) azCreepA += 0.1f * (ia - azCreepA);
+                azLowCount = low ? azLowCount + 1 : 0;
+                if (azLowCount == 1) { azPosAtFirstLow = positionAz; azMsAtFirstLow = now; }
                 if (azLowCount >= 3) {
+                    // Confirmed. The cut happened at the FIRST low sample, so
+                    // the counter from there is the reference: an edge arriving
+                    // during the two confirming samples is after the cut, and
+                    // must not be mistaken for one before it.
                     azCutSeen = true;
-                    azCutMs = now;
-                    azPosAtCut = positionAz;
+                    azCutMs = azMsAtFirstLow;
+                    azPosAtCut = azPosAtFirstLow;
+                    azCutFromA = azCreepA;
+                    azCutToA = ia;
                 }
-            } else if (azCutEdgePosition == INT32_MIN && positionAz != azPosAtCut) {
-                azCutEdgePosition = positionAz;
-                azCutToEdgeMs = now - azCutMs;
+            } else if (positionAz != azPosAtCut) {
+                // Edges after the cut. The first is the zero. After a real cut
+                // the axis coasts under a pitch (0-1 edges in 18 of 18), so a
+                // third edge means the motor was still driving: not a cut.
+                // Discard the capture; the fallback creep zero is logged.
+                azEdgesAfterCut = abs((int)(positionAz - azPosAtCut));
+                if (azEdgesAfterCut == 1 && azCutEdgePosition == INT32_MIN) {
+                    azCutEdgePosition = positionAz;
+                    azCutToEdgeMs = now - azCutMs;
+                } else if (azEdgesAfterCut > 2 && azCutEdgePosition != INT32_MIN) {
+                    azCutEdgePosition = INT32_MIN;
+                    String m = "Homing: Az " + String(azEdgesAfterCut)
+                             + " edges followed the supposed current cut - not a cut, capture discarded";
+                    Serial.println(m);
+                    Serial1.println(m);
+                }
             }
         }
 
@@ -1306,7 +1371,8 @@ static bool refineZeroPositiveEdge() {
     if (azFromCut) {
         int32_t coastPulses = positionAz - azCutEdgePosition;
         positionAz -= azCutEdgePosition;
-        String m = "Homing: Az zero on the first edge after the current cut (cut->edge "
+        String m = "Homing: Az zero on the first edge after the current cut (cut "
+                 + String(azCutFromA, 2) + "->" + String(azCutToA, 2) + " A, cut->edge "
                  + String(azCutToEdgeMs) + " ms, coast " + String(coastPulses)
                  + " pulses beyond it, reed " + (azRestHigh ? "HIGH" : "LOW") + " at rest)";
         Serial.println(m);
@@ -1321,9 +1387,11 @@ static bool refineZeroPositiveEdge() {
     lastPulseAz = millis();
     lastPulseAlt = millis();
     unsigned long startTime = millis();
-    analogWrite(PIN_PWM_AZ, PWM_MIN_SPEED);   // slow creep, so the edge is precise
+    if (!azFromCut) {                         // az creeps only on the fallback path
+        analogWrite(PIN_PWM_AZ, PWM_MIN_SPEED);   // slow creep, so the edge is precise
+        motionStateAz = MOTION_DRIVING;
+    }
     analogWrite(PIN_PWM_ALT, PWM_MIN_SPEED);
-    motionStateAz = MOTION_DRIVING;
     motionStateAlt = MOTION_DRIVING;
 
     // Every level transition of the reed pin during the creep, with its time:
@@ -1338,7 +1406,6 @@ static bool refineZeroPositiveEdge() {
 
     bool azDone = azFromCut;      // az already zeroed from the cut edge
     bool altDone = false;
-    if (azDone) analogWrite(PIN_PWM_AZ, PWM_STOP);
     while (!azDone || !altDone) {
         unsigned long now = millis();
 
@@ -1425,6 +1492,7 @@ void performHoming() {
     // stall counter (the error since the last homing) is not smeared by the
     // coast from full speed, which makes first + second approach a clean
     // consistency test of the zero between homings, the switch as fiducial.
+    measureHomingCurrentZero();
     printAllLn("Homing: Drive to limits...");
     Serial1.println("Homing: Drive to limits...");
     if (!driveToLimits(true)) return;
@@ -2061,6 +2129,7 @@ static void probeAzSwitch(int cycles) {
     if (cycles > 12) cycles = 12;
     systemState = STATE_HOMING;          // keep the motion controller out
     azBacklashRemaining = 0;
+    measureHomingCurrentZero();
     unsigned long t0 = millis();
     Serial.println("PROBE START t_ms,level,pos,raw_mA,phase");
 

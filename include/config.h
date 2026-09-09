@@ -90,17 +90,28 @@
 // position scattered over most of a magnet pitch (the coast past a current
 // cut scales with speed squared), which made the first-edge zero land on one
 // magnet or the next by luck - the bistable azimuth zero of 2026-09-08 (#32).
-#define HOMING_SLOW_APPROACH_PULSES 3   // Re-approach at creep speed from this many pulses out (1.5 deg)
+#define HOMING_SLOW_APPROACH_PULSES 5   // Creep from this many pulses out (2.5 deg): enough that a fast first approach's overshoot still leaves the switch inside the creep
 // Merely commanding creep PWM from full speed leaves the mount decelerating
 // on friction alone through most of that zone, so on entering it each axis
 // is stopped for this long first, then creeps: the switch is met at true
 // creep speed whatever the deceleration dynamics.
 #define HOMING_SLOW_BRAKE_MS        400
-// Azimuth cut-edge zero (see azCutEdgePosition in main.cpp): on the slow
-// re-approach the raw motor current sits at ~1.3-1.9 A while creeping and
-// collapses to ~0.15 A when the limit switch cuts it (probe 2026-09-09).
-#define HOMING_CREEP_CURRENT_A      1.0     // raw current that says the axis is creeping (arms the cut detector)
-#define HOMING_CUT_CURRENT_A        0.6     // three consecutive raw samples below this = the switch has cut
+// Azimuth cut-edge zero (see azCutEdgePosition in main.cpp). The switch is a
+// physical interruption of the motor current, so after it engages the true
+// current is zero; what the raw reading shows then (+0.17 A on the probe of
+// 2026-09-09) is the hall sensor's zero offset, re-tracked only while the
+// axis is idle and drifting as the driver warms through a homing. So the cut
+// is detected as a DROP - creep current minus current now - in which that
+// offset cancels: creep draws 1.3-1.9 A and the cut takes it to the floor,
+// a drop of at least 1.1 A today, but the detector does not assume any fixed
+// drop. Arming ("the axis is driving") is the operator's
+// absolute rule: above 0.3 A driving, below it not, the ammeter good to 0.1.
+#define HOMING_CREEP_CURRENT_A      0.3     // raw current above which the axis is driving (arms the cut detector)
+// The cut is the same level, absolute, for three consecutive readings (eight
+// ADC conversions averaged each). Not a drop from the creep level: every
+// creep starts with a surge that settles, and a drop test reads that as a
+// cut. A capture followed by more than two counted edges is discarded - the
+// axis was still driving - and the homing falls back to the creep zero.
 #define DEFAULT_BACKLASH_AZ     0.0     // Azimuth backlash compensation (degrees)
 
 // =============================================================================
