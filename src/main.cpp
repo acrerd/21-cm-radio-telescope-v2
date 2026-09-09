@@ -986,7 +986,33 @@ bool isValidTarget(float altDeg, float azDeg) {
 // to creep speed within HOMING_SLOW_APPROACH_PULSES of it, so the coast past
 // the switch, and with it the rest position the zero is taken from, stays a
 // small fraction of a magnet pitch. Returns false if a fault occurred.
+// The azimuth zero reference (#32). The limit switch cuts the motor current
+// at a repeatable point, but the axis then coasts a further 0.3-0.7 deg
+// even at creep speed - a 3 m dish on low-friction bearings has the
+// momentum - and that coast varies by about a magnet pitch, so any zero
+// taken from the REST position landed on one magnet or the next by luck.
+// The cut itself is sharp (raw current collapses within one sample), and
+// the first counted reed edge after it is the same physical magnet every
+// time (probe of 2026-09-09: six cycles, one edge 92-152 ms after the cut in
+// each, rest scattered over a pitch beyond it). driveToLimits captures the
+// counter value at that edge on the re-approach; refineZeroPositiveEdge
+// makes it the zero. INT32_MIN = not captured (no edge followed the cut).
+static int32_t azCutEdgePosition = INT32_MIN;
+static unsigned long azCutToEdgeMs = 0;
+
+static float rawCurrentAz() {
+    float v = (ADC_REFERENCE_V / ADC_RESOLUTION_BITS) * analogRead(PIN_CURRENT_AZ);
+    return (v - currentOffsetAz) / CURRENT_SENSOR_SENSITIVITY;
+}
+
 static bool driveToLimits(bool slowFinal) {
+    azCutEdgePosition = INT32_MIN;
+    azCutToEdgeMs = 0;
+    bool azArmed = false;          // creep current seen after the brake
+    int azLowCount = 0;            // consecutive raw samples below the cut level
+    bool azCutSeen = false;
+    unsigned long azCutMs = 0;
+    int32_t azPosAtCut = 0;
     lastPulseAz = millis();
     lastPulseAlt = millis();
     resetEncoderStats();
@@ -1048,6 +1074,27 @@ static bool driveToLimits(bool slowFinal) {
         }
         if (!azAtLimit) analogWrite(PIN_PWM_AZ, azPwm);
         if (!altAtLimit) analogWrite(PIN_PWM_ALT, altPwm);
+
+        // Azimuth cut-edge capture: only while creeping (after the brake -
+        // the brake itself takes the current to zero), arm on seeing creep
+        // current, detect the cut as three consecutive raw samples below
+        // HOMING_CUT_CURRENT_A, then take the next counter change as the edge.
+        if (slowFinal && !azAtLimit && azPwm == PWM_MIN_SPEED) {
+            float ia = fabs(rawCurrentAz());
+            if (!azArmed) {
+                if (ia > HOMING_CREEP_CURRENT_A) azArmed = true;
+            } else if (!azCutSeen) {
+                azLowCount = (ia < HOMING_CUT_CURRENT_A) ? azLowCount + 1 : 0;
+                if (azLowCount >= 3) {
+                    azCutSeen = true;
+                    azCutMs = now;
+                    azPosAtCut = positionAz;
+                }
+            } else if (azCutEdgePosition == INT32_MIN && positionAz != azPosAtCut) {
+                azCutEdgePosition = positionAz;
+                azCutToEdgeMs = now - azCutMs;
+            }
+        }
 
         updateFilteredCurrents();
         outputStatusIfChanged();
@@ -1238,22 +1285,36 @@ static bool refineZeroPositiveEdge() {
     int32_t azStart = positionAz;
     int32_t altStart = positionAlt;
     // The azimuth zero was bistable by exactly one pulse across homings
-    // (2026-09-08: two clusters 0.5 deg apart, the homing counters blind to
-    // which). Two causes, both real. At full speed the coast past the switch
-    // scattered the rest over most of a magnet pitch, so "zero on the first
-    // edge" landed on one magnet or the next by luck; the slow re-approach
-    // (driveToLimits slowFinal) cut that scatter to ~0.2 deg. But the switch
-    // cuts within ~0.07 deg of a reed edge, so even the reduced scatter
-    // straddles it: a LOW rest stops just short of the edge, a HIGH rest has
-    // just crossed it, and five Sun scans split into two clusters with the
-    // rest level predicting the cluster 5 for 5. With the scatter this small
-    // the level (guarded by the time to the first level change, see
-    // HOMING_REST_PAST_EDGE_MS) says unambiguously which, and the HIGH case
-    // starts its counter at +1. The same rule applied with the fast approach
-    // was wrong - the scatter then spanned both dwells and the level meant
-    // nothing - which is why it depends on the slow approach being in place.
+    // (2026-09-08/09, issue #32). The probe of 2026-09-09 showed why: the
+    // switch cuts the current at a repeatable point, but the axis coasts a
+    // further 0.3-0.7 deg even at creep, varying by about a pitch, so any
+    // zero taken from where it came to REST - the first edge of this creep,
+    // with or without a rest-level rule - landed on one magnet or the next
+    // by luck. The zero is therefore the first counted edge AFTER THE CUT,
+    // captured in driveToLimits (azCutEdgePosition): the same magnet every
+    // time, the coast beyond it just a known number of pulses. Altitude
+    // keeps the first-edge creep, which has been repeatable on that axis
+    // (0.027 deg rms over the 2026-09-09 scans). The rest level and creep
+    // transitions are still logged for both axes.
     bool azRestHigh = reedRestsHigh(PIN_PULSE_AZ);
     bool altRestHigh = reedRestsHigh(PIN_PULSE_ALT);
+    // Azimuth: the zero is the first counted edge after the current cut on
+    // the re-approach, captured by driveToLimits - the coast past it is then
+    // just a known number of pulses. No creep needed. Falls back to the
+    // first-edge creep below only if no edge followed the cut.
+    bool azFromCut = (azCutEdgePosition != INT32_MIN);
+    if (azFromCut) {
+        int32_t coastPulses = positionAz - azCutEdgePosition;
+        positionAz -= azCutEdgePosition;
+        String m = "Homing: Az zero on the first edge after the current cut (cut->edge "
+                 + String(azCutToEdgeMs) + " ms, coast " + String(coastPulses)
+                 + " pulses beyond it, reed " + (azRestHigh ? "HIGH" : "LOW") + " at rest)";
+        Serial.println(m);
+        Serial1.println(m);
+    } else {
+        Serial.println("Homing: Az no edge followed the current cut - zeroing on the first edge of the creep");
+        Serial1.println("Homing: Az no edge followed the current cut - zeroing on the first edge of the creep");
+    }
     azBacklashRemaining = 0;                 // count the real edge, not gear slack
     digitalWrite(PIN_DIR_AZ, AZ_DIR(HIGH));  // positive: the tracking direction
     digitalWrite(PIN_DIR_ALT, ALT_DIR(HIGH));
@@ -1275,8 +1336,9 @@ static bool refineZeroPositiveEdge() {
     String altTrans = (altLevel == HIGH) ? "H" : "L";
     unsigned long azFirstTransMs = 0;   // creep time to the first level change
 
-    bool azDone = false;
+    bool azDone = azFromCut;      // az already zeroed from the cut edge
     bool altDone = false;
+    if (azDone) analogWrite(PIN_PWM_AZ, PWM_STOP);
     while (!azDone || !altDone) {
         unsigned long now = millis();
 
@@ -1306,11 +1368,10 @@ static bool refineZeroPositiveEdge() {
         // there, putting the zero on the same magnet a LOW rest reaches.
         if (!azDone && positionAz != azStart) {
             stopMotorAz();
-            bool pastEdge = azRestHigh && azFirstTransMs >= HOMING_REST_PAST_EDGE_MS;
-            positionAz = pastEdge ? 1 : 0;
+            positionAz = 0;
             azDone = true;
-            String m = String("Homing: Az zero ") + (pastEdge ? "one pulse back from" : "on")
-                     + " first edge (reed " + (azRestHigh ? "HIGH" : "LOW") + " at rest, edge after "
+            String m = String("Homing: Az zero on first edge of the creep (fallback; reed ")
+                     + (azRestHigh ? "HIGH" : "LOW") + " at rest, edge after "
                      + String(now - startTime) + " ms, levels " + azTrans + ")";
             Serial.println(m);
             Serial1.println(m);
@@ -1981,6 +2042,103 @@ void processSetCommand(const char* param, float value) {
 }
 
 // Process a complete command line
+
+// =============================================================================
+// PROBE - characterise the azimuth limit switch against the reed lattice
+// =============================================================================
+// Test instrument for issue #32. From near the lower azimuth limit, creep OUT
+// 3 deg, settle, creep IN until the switch cuts (pulse silence), rest, and
+// repeat; the whole time streaming, every 4 ms on the USB serial only:
+//   t_ms, reed level, position counter, raw motor current (mA), phase
+// Phases: o = creeping out, s = settled after out, i = creeping in, r = at rest
+// after the cut. Plotted, this shows the dwell widths, where the current cut
+// sits relative to the reed edges, the rest scatter, bounce and the reversal
+// double-trigger directly - the geometry every zeroing rule has been guessing
+// at. Ends 3 deg out so the axis is not left against the switch. Altitude is
+// untouched. Aborts on any fault exactly as homing does.
+static void probeAzSwitch(int cycles) {
+    if (cycles < 1) cycles = 1;
+    if (cycles > 12) cycles = 12;
+    systemState = STATE_HOMING;          // keep the motion controller out
+    azBacklashRemaining = 0;
+    unsigned long t0 = millis();
+    Serial.println("PROBE START t_ms,level,pos,raw_mA,phase");
+
+    auto sample = [&](char phase) {
+        int adc = analogRead(PIN_CURRENT_AZ);
+        float v = (ADC_REFERENCE_V / ADC_RESOLUTION_BITS) * adc;
+        int mA = (int)((v - currentOffsetAz) / CURRENT_SENSOR_SENSITIVITY * 1000.0f);
+        Serial.print(millis() - t0); Serial.print(',');
+        Serial.print(digitalRead(PIN_PULSE_AZ)); Serial.print(',');
+        Serial.print(positionAz); Serial.print(',');
+        Serial.print(mA); Serial.print(',');
+        Serial.println(phase);
+    };
+    auto faulted = [&]() -> bool {
+        FaultCode f = checkFaultFlags();
+        if (f == FAULT_NONE) f = checkCurrentLimits();
+        if (f != FAULT_NONE) {
+            stopAllMotors(); faultCode = f; systemState = STATE_FAULT;
+            Serial.println("PROBE ABORTED: fault");
+            return true;
+        }
+        return false;
+    };
+    auto settle = [&](char phase, unsigned long ms) {
+        unsigned long s = millis();
+        while (millis() - s < ms) { sample(phase); delay(4); }
+    };
+
+    for (int c = 0; c < cycles; c++) {
+        // OUT: creep positive 3 deg by count
+        int32_t target = positionAz + 3 * PULSES_PER_DEGREE;
+        digitalWrite(PIN_DIR_AZ, AZ_DIR(HIGH));
+        lastPulseAz = millis();
+        motionStateAz = MOTION_DRIVING;
+        analogWrite(PIN_PWM_AZ, PWM_MIN_SPEED);
+        unsigned long s = millis();
+        while (positionAz < target && millis() - s < 15000UL) {
+            sample('o'); if (faulted()) return; delay(4);
+            #ifdef SIMULATION_MODE
+            simulatePulses();
+            #endif
+        }
+        stopMotorAz();
+        settle('s', 600);
+
+        // IN: creep negative until the switch cuts - pulses stop for 1 s
+        digitalWrite(PIN_DIR_AZ, AZ_DIR(LOW));
+        lastPulseAz = millis();
+        motionStateAz = MOTION_DRIVING;
+        analogWrite(PIN_PWM_AZ, PWM_MIN_SPEED);
+        s = millis();
+        while ((millis() - lastPulseAz) < 1000UL && millis() - s < 15000UL) {
+            sample('i'); if (faulted()) return; delay(4);
+            #ifdef SIMULATION_MODE
+            simulatePulses();
+            #endif
+        }
+        stopMotorAz();
+        settle('r', 800);
+    }
+    // leave the axis 3 deg out, not against the switch
+    int32_t target = positionAz + 3 * PULSES_PER_DEGREE;
+    digitalWrite(PIN_DIR_AZ, AZ_DIR(HIGH));
+    lastPulseAz = millis();
+    motionStateAz = MOTION_DRIVING;
+    analogWrite(PIN_PWM_AZ, PWM_MIN_SPEED);
+    unsigned long s = millis();
+    while (positionAz < target && millis() - s < 15000UL) {
+        sample('o'); if (faulted()) return; delay(4);
+        #ifdef SIMULATION_MODE
+        simulatePulses();
+        #endif
+    }
+    stopMotorAz();
+    Serial.println("PROBE END");
+    systemState = STATE_IDLE;
+}
+
 void processCommand(const char* buffer) {
     char cmd[16];
     float val1, val2;
@@ -2024,6 +2182,18 @@ void processCommand(const char* buffer) {
             printAllLn("Starting homing sequence...");
             systemState = STATE_HOMING;
             performHoming();
+        }
+    }
+    else if (strEqualsIgnoreCase(cmd, "PROBE")) {
+        // Azimuth switch characterisation (#32): PROBE [cycles]. USB only.
+        if (systemState == STATE_FAULT) {
+            printAllLn("ERROR: Cannot probe while in FAULT state.");
+        } else if (systemState == STATE_HOMING) {
+            printAllLn("Busy.");
+        } else {
+            int n = 3;
+            sscanf(buffer, "%*s %d", &n);
+            probeAzSwitch(n);
         }
     }
     else if (strEqualsIgnoreCase(cmd, "STOP")) {

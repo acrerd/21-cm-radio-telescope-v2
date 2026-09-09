@@ -96,17 +96,11 @@
 // is stopped for this long first, then creeps: the switch is met at true
 // creep speed whatever the deceleration dynamics.
 #define HOMING_SLOW_BRAKE_MS        400
-// Even at creep the azimuth rest straddles a reed edge: the switch cuts
-// within ~0.07 deg of one, and the ~0.2 deg of remaining scatter lands
-// either just short of it (reed LOW) or just past it (reed HIGH, the next
-// dwell). Five Sun scans on 2026-09-08 split into two clusters one pulse
-// apart, the rest level predicting the cluster 5 for 5. A HIGH rest is
-// "just past the edge" only if the falling edge is still far ahead - a
-// rest at the far end of the previous dwell would read HIGH with the
-// falling edge imminent - so the correction needs the first level change
-// at least this far into the creep (measured 225-235 ms for genuine
-// past-edge rests, under 45 ms for the other case).
-#define HOMING_REST_PAST_EDGE_MS    120
+// Azimuth cut-edge zero (see azCutEdgePosition in main.cpp): on the slow
+// re-approach the raw motor current sits at ~1.3-1.9 A while creeping and
+// collapses to ~0.15 A when the limit switch cuts it (probe 2026-09-09).
+#define HOMING_CREEP_CURRENT_A      1.0     // raw current that says the axis is creeping (arms the cut detector)
+#define HOMING_CUT_CURRENT_A        0.6     // three consecutive raw samples below this = the switch has cut
 #define DEFAULT_BACKLASH_AZ     0.0     // Azimuth backlash compensation (degrees)
 
 // =============================================================================
