@@ -178,5 +178,50 @@
     "az_error_sky_deg": -1.1290324024616885,
     "scan_start_timestamp": "2026-09-10T13:57:21.495607+00:00",
     "scan_end_timestamp": "2026-09-10T14:03:52.065243+00:00"
+  },
+  {
+    "timestamp": "2026-09-10T14:30:45.232430+00:00",
+    "sun_alt_deg": 32.12071993060165,
+    "sun_az_deg": 221.3179776381412,
+    "alt_error_deg": -0.44091016873908373,
+    "az_error_deg": -1.2015920711376478,
+    "beam_fwhm_deg": 5.351815267489354,
+    "fit_success": true,
+    "record_version": 2,
+    "alt_error_uncertainty_deg": 0.030777294440258948,
+    "az_error_uncertainty_deg": 0.03723487481798815,
+    "az_error_sky_deg": -1.0176640072715526,
+    "scan_start_timestamp": "2026-09-10T14:27:28.929324+00:00",
+    "scan_end_timestamp": "2026-09-10T14:34:01.535536+00:00"
+  },
+  {
+    "timestamp": "2026-09-10T16:09:52.836354+00:00",
+    "sun_alt_deg": 20.951395250697136,
+    "sun_az_deg": 246.0353257537718,
+    "alt_error_deg": -0.2971907904712816,
+    "az_error_deg": -0.2707973568956147,
+    "beam_fwhm_deg": 5.450609482085688,
+    "fit_success": true,
+    "record_version": 2,
+    "alt_error_uncertainty_deg": 0.03139733827400247,
+    "az_error_uncertainty_deg": 0.03388485692344645,
+    "az_error_sky_deg": -0.2528933455746667,
+    "scan_start_timestamp": "2026-09-10T16:06:38.796931+00:00",
+    "scan_end_timestamp": "2026-09-10T16:13:06.875777+00:00"
+  },
+  {
+    "timestamp": "2026-09-10T16:40:05.329378+00:00",
+    "sun_alt_deg": 16.992329032265314,
+    "sun_az_deg": 252.79948065488887,
+    "alt_error_deg": -0.4007019978348289,
+    "az_error_deg": -0.6460764685128209,
+    "beam_fwhm_deg": 5.389071169854331,
+    "fit_success": true,
+    "record_version": 2,
+    "alt_error_uncertainty_deg": 0.03253488858566519,
+    "az_error_uncertainty_deg": 0.0348944745098248,
+    "az_error_sky_deg": -0.6178712838982148,
+    "scan_start_timestamp": "2026-09-10T16:36:48.704160+00:00",
+    "scan_end_timestamp": "2026-09-10T16:43:21.954595+00:00"
   }
 ]

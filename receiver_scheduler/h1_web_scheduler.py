@@ -6023,7 +6023,20 @@ def api_calday_status():
         'scan_running': sun_scan_state["running"],
         'scan_progress': sun_scan_state["progress"],
         'scan_total': sun_scan_state["total"],
+        # Scans on file in pointing_data.json - the number a fit would use.
+        # scans_completed counts only this run, and resets when the day is
+        # restarted, so a day stopped and relaunched mid-way showed "3 scans"
+        # over twelve on file (2026-09-10).
+        'records_on_file': _pointing_records_on_file(),
     })
+
+
+def _pointing_records_on_file() -> int:
+    try:
+        from sun_scan import load_pointing_data
+        return len(load_pointing_data())
+    except Exception:
+        return 0
 
 
 @app.route('/api/calday/data', methods=['GET'])
@@ -6069,9 +6082,13 @@ def api_calday_clear():
 
 @app.route('/api/calday/fit', methods=['POST'])
 def api_calday_fit():
-    if cal_day_state["running"] or sun_scan_state["running"]:
+    # Fitting is a read of the records on file, so a running calibration day
+    # need not block it between scans - the operator wants to see how the day
+    # is going without stopping it (2026-09-10). Only a raster in progress
+    # blocks, and applying stays behind its own guard.
+    if sun_scan_state["running"]:
         return jsonify({'success': False,
-                        'error': 'Stop calibration before fitting the model'}), 409
+                        'error': 'Wait for the current scan to finish before fitting the model'}), 409
     try:
         from sun_scan import fit_pointing_model, save_pointing_model, generate_calibration_plot
         cfg = load_config()

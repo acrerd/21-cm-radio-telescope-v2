@@ -183,7 +183,10 @@
                     document.getElementById('cdStartBtn').style.display = 'none';
                     document.getElementById('cdStopBtn').style.display = 'inline-block';
                     let info = '<span style="color:#00d4ff;">Running</span> &mdash; ';
-                    info += data.scans_completed + ' scans completed';
+                    info += data.scans_completed + ' scans this run';
+                    if (data.records_on_file !== undefined) {
+                        info += ', ' + data.records_on_file + ' on file';
+                    }
                     if (data.phase === 'waiting_for_sunrise') {
                         info += '<br><span style="color:#ffaa00;">Waiting for the Sun to reach 5&deg; altitude</span>';
                     } else if (data.phase === 'waiting_for_clear_horizon') {
@@ -215,8 +218,9 @@
                     document.getElementById('cdStopBtn').style.display = 'none';
                     if (cdPollTimer) { clearInterval(cdPollTimer); cdPollTimer = null; }
                     let info = '<span style="color:#888;">Idle</span>';
-                    if (cdArchiveCount) {
-                        info += ' &mdash; ' + cdArchiveCount + ' scans on file';
+                    const onFile = (data.records_on_file !== undefined) ? data.records_on_file : cdArchiveCount;
+                    if (onFile) {
+                        info += ' &mdash; ' + onFile + ' scans on file';
                     } else if (data.scans_completed > 0) {
                         info += ' &mdash; ' + data.scans_completed + ' scans collected';
                     }
