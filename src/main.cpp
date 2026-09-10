@@ -213,6 +213,23 @@ volatile int32_t positionAlt = 0;   // Current altitude position
 volatile unsigned long lastPulseAz = 0;
 volatile unsigned long lastPulseAlt = 0;
 
+// Milliseconds since the last accepted pulse on an axis, read race-free:
+// the pulse timestamp first, then the clock, so an ISR landing between the
+// two can only make the answer smaller. Every stall test must use this.
+// The old form, "(now - lastPulseAz) > stallTimeoutMs" with `now` sampled at
+// the top of the loop, wrapped to ~4e9 whenever a pulse's millis() ticked
+// past `now` inside the loop body, and declared the axis at its limit in
+// the middle of a regular full-speed pulse train with the motor at running
+// current. About one pulse in a few thousand: 2026-09-08 (alt, +49 deg on
+// a descent from the stow) and twice on 2026-09-10 (az, +159 and +156.5),
+// each of which sent the re-approach into the switch at full speed and put
+// the azimuth zero two or three pulses beyond the cut edge.
+static inline unsigned long msSincePulse(volatile unsigned long &lastPulse) {
+    unsigned long lp = lastPulse;
+    unsigned long now = millis();
+    return (now >= lp) ? (now - lp) : 0UL;
+}
+
 // Target position (in pulses)
 int32_t targetAz = 0;
 int32_t targetAlt = 0;
@@ -770,13 +787,13 @@ FaultCode checkStall() {
     // since the drive started for the timeout to be meaningful
     if (motionStateAz == MOTION_DRIVING &&
         (now - driveStartTimeAz) > cfg.stallTimeoutMs &&
-        (now - lastPulseAz) > cfg.stallTimeoutMs) {
+        msSincePulse(lastPulseAz) > cfg.stallTimeoutMs) {
         return FAULT_AZ_STALL;
     }
 
     if (motionStateAlt == MOTION_DRIVING &&
         (now - driveStartTimeAlt) > cfg.stallTimeoutMs &&
-        (now - lastPulseAlt) > cfg.stallTimeoutMs) {
+        msSincePulse(lastPulseAlt) > cfg.stallTimeoutMs) {
         return FAULT_ALT_STALL;
     }
 
@@ -1169,7 +1186,7 @@ static bool driveToLimits(bool slowFinal) {
         // cuts current, but a genuine stop does not always read ~0 A (the alt
         // re-approach settles at ~0.8 A), so it cannot gate the decision - a
         // 2026-09-08 attempt to do so faulted a good homing (#32).
-        if (!azAtLimit && (now - lastPulseAz) > cfg.stallTimeoutMs) {
+        if (!azAtLimit && msSincePulse(lastPulseAz) > cfg.stallTimeoutMs) {
             stopMotorAz();
             azAtLimit = true;
             // The counter at the stop IS the net encoder error since the last
@@ -1185,7 +1202,7 @@ static bool driveToLimits(bool slowFinal) {
             Serial.println(m);
             Serial1.println(m);
         }
-        if (!altAtLimit && (now - lastPulseAlt) > cfg.stallTimeoutMs) {
+        if (!altAtLimit && msSincePulse(lastPulseAlt) > cfg.stallTimeoutMs) {
             stopMotorAlt();
             altAtLimit = true;
             String m = "Homing: Altitude limit reached at " + String(positionAlt)
@@ -1269,14 +1286,14 @@ static bool backOffFromLimits(float degrees) {
             printAllLn(getFaultString());
             return false;
         }
-        if ((millis() - lastPulseAz) > cfg.stallTimeoutMs && !azDone) {
+        if (msSincePulse(lastPulseAz) > cfg.stallTimeoutMs && !azDone) {
             stopAllMotors();
             faultCode = FAULT_AZ_STALL;
             systemState = STATE_FAULT;
             printAllLn("Homing ABORTED: Az stall during back-off");
             return false;
         }
-        if ((millis() - lastPulseAlt) > cfg.stallTimeoutMs && !altDone) {
+        if (msSincePulse(lastPulseAlt) > cfg.stallTimeoutMs && !altDone) {
             stopAllMotors();
             faultCode = FAULT_ALT_STALL;
             systemState = STATE_FAULT;
@@ -1304,8 +1321,8 @@ static bool backOffFromLimits(float degrees) {
     // this wait (2026-09-08 12:13 UTC). The zero is set afterwards on the
     // positive edge, so neither matters for pointing.
     unsigned long settleStart = millis();
-    while (((millis() - lastPulseAz) < HOMING_SETTLE_MS ||
-            (millis() - lastPulseAlt) < HOMING_SETTLE_MS) &&
+    while ((msSincePulse(lastPulseAz) < HOMING_SETTLE_MS ||
+            msSincePulse(lastPulseAlt) < HOMING_SETTLE_MS) &&
            (millis() - settleStart) < (unsigned long)cfg.stallTimeoutMs) {
         updateFilteredCurrents();
         outputStatusIfChanged();
@@ -1583,14 +1600,14 @@ void performHoming() {
         }
 
         // Stall detection - if driving but no pulses, motors aren't connected
-        if (motionStateAz == MOTION_DRIVING && (now - lastPulseAz) > cfg.stallTimeoutMs) {
+        if (motionStateAz == MOTION_DRIVING && msSincePulse(lastPulseAz) > cfg.stallTimeoutMs) {
             stopAllMotors();
             faultCode = FAULT_AZ_STALL;
             systemState = STATE_FAULT;
             printAllLn("Homing ABORTED: Azimuth motor not responding");
             return;
         }
-        if (motionStateAlt == MOTION_DRIVING && (now - lastPulseAlt) > cfg.stallTimeoutMs) {
+        if (motionStateAlt == MOTION_DRIVING && msSincePulse(lastPulseAlt) > cfg.stallTimeoutMs) {
             stopAllMotors();
             faultCode = FAULT_ALT_STALL;
             systemState = STATE_FAULT;
@@ -2181,7 +2198,7 @@ static void probeAzSwitch(int cycles) {
         motionStateAz = MOTION_DRIVING;
         analogWrite(PIN_PWM_AZ, PWM_MIN_SPEED);
         s = millis();
-        while ((millis() - lastPulseAz) < 1000UL && millis() - s < 15000UL) {
+        while (msSincePulse(lastPulseAz) < 1000UL && millis() - s < 15000UL) {
             sample('i'); if (faulted()) return; delay(4);
             #ifdef SIMULATION_MODE
             simulatePulses();

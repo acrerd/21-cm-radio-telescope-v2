@@ -1,0 +1,88 @@
+{
+  "alt_offset_deg": -2.1160018512493384,
+  "az_offset_deg": -0.8207324389678761,
+  "tilt_north_deg": -0.860384448488471,
+  "tilt_east_deg": -1.4288541423348813,
+  "rms_alt_deg": 0.017807343016150723,
+  "rms_az_deg": 0.01043865993369936,
+  "n_scans": 4,
+  "n_rejected": 0,
+  "n_superseded": 0,
+  "n_obstructed": 0,
+  "az_coverage_deg": 39.64214473518723,
+  "condition_number": 15.616848011626935,
+  "reduced_chi_squared": 0.1310288281392913,
+  "parameter_errors_deg": {
+    "alt_offset": 0.21849672819254787,
+    "az_offset": 0.05404661520598187,
+    "tilt_north": 0.18530015435200275,
+    "tilt_east": 0.1630587855425275
+  },
+  "pointing_sigma_alt_deg": 0.039946414078422345,
+  "pointing_sigma_xel_deg": 0.03701325368677484,
+  "parameter_significance": {
+    "alt_offset": 9.684364012007698,
+    "az_offset": 15.185639948772177,
+    "tilt_north": 4.643193371841742,
+    "tilt_east": 8.76281604564153
+  },
+  "min_tilt_significance": 4.643193371841742,
+  "alt_coverage_deg": 17.51597231517351,
+  "az_scale": null,
+  "collimation": null,
+  "n_outliers": 0,
+  "outlier_sigma": 3.0,
+  "outlier_azimuths": [],
+  "outlier_altitudes": [],
+  "outlier_alt_errors": [],
+  "outlier_az_errors": [],
+  "outlier_residuals_alt": [],
+  "outlier_residuals_az": [],
+  "outlier_timestamps": [],
+  "residuals_alt": [
+    0.02392122415965281,
+    -0.024386144165763013,
+    -0.007065971178315089,
+    0.007181150319892582
+  ],
+  "residuals_az": [
+    0.005819326303797778,
+    -0.014526634642180847,
+    -0.004788913663316352,
+    0.012963067465438183
+  ],
+  "scan_azimuths": [
+    213.05420006323448,
+    221.80468325801795,
+    245.7026682204355,
+    252.69634479842168
+  ],
+  "scan_altitudes": [
+    35.01916534640993,
+    32.362706702706035,
+    21.57786361646529,
+    17.503193031236417
+  ],
+  "measured_alt_errors": [
+    -0.5916021320772424,
+    -0.5465741718778299,
+    -0.46675405776196743,
+    -0.48872476547848837
+  ],
+  "measured_az_errors": [
+    -1.325251334143923,
+    -1.1467715308505346,
+    -0.7479119940999914,
+    -0.6827440342145608
+  ],
+  "success": true,
+  "terms": {
+    "IE": -2.1160018512493384,
+    "IA": -0.8207324389678761,
+    "AN": -0.860384448488471,
+    "AE": -1.4288541423348813
+  },
+  "site_lat": 55.902426,
+  "site_lon": -4.307865,
+  "fitted_utc": "2026-09-09T16:58:01Z"
+}
