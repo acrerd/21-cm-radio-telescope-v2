@@ -112,23 +112,23 @@
             checkClash();
         }
 
-        // Chronological, always: the server stores the schedule that way and
-        // the page re-sorts whatever it holds before drawing, so a list loaded
-        // from an older file or edited in place never shows out of order.
-        // Undated or untimed entries go last. Sorted in place, since the row
-        // buttons address entries by index into this same array.
+        // Chronological, newest at the top and the oldest at the bottom: one
+        // order for the whole list, so the eye reads down it as back in time
+        // (2026-09-14, at the operator's request; before this the list ran
+        // live entries upward then expired ones below, and a booking made
+        // for later today could sit anywhere). The server stores the schedule
+        // oldest-first; the page re-sorts whatever it holds before drawing,
+        // so a list loaded from an older file or edited in place never shows
+        // out of order. Undated or untimed entries go first - they are
+        // unfinished, not old. Sorted in place, since the row buttons address
+        // entries by index into this same array.
         function sortSchedule() {
-            // Two tiers: what can still run, in start order, then what has
-            // expired, also in start order - the past is history, not the
-            // first thing on the list. Expiry is judged now, so an entry
-            // moves down the moment its slot dies, without a reload.
             const when = obs => {
                 if (!obs.start_time) return Infinity;
                 const t = new Date(`${obs.start_date || localDateStr(new Date())}T${obs.start_time}`).getTime();
                 return Number.isFinite(t) ? t : Infinity;
             };
-            const key = obs => (isExpired(obs) ? 1 : 0);
-            schedule.sort((a, b) => (key(a) - key(b)) || (when(a) - when(b)));
+            schedule.sort((a, b) => when(b) - when(a));
         }
 
         function getObsInterval(obs) {
