@@ -642,6 +642,23 @@ int calculatePWM(int32_t pulsesRemaining, unsigned long driveStartTime) {
 float currentOffsetAz = CURRENT_SENSOR_OFFSET_V;
 float currentOffsetAlt = CURRENT_SENSOR_OFFSET_V;
 
+// XTRACE (USB diagnostic): stream both raw readings against frozen offsets.
+static unsigned long xtraceUntil = 0;
+static float xtraceOffAz = CURRENT_SENSOR_OFFSET_V, xtraceOffAlt = CURRENT_SENSOR_OFFSET_V;
+static void xtraceSample() {
+    if (xtraceUntil == 0) return;
+    if ((long)(millis() - xtraceUntil) >= 0) { xtraceUntil = 0; Serial.println("XTRACE END"); return; }
+    long sa = 0, sb = 0;
+    for (int i = 0; i < 8; i++) { sa += analogRead(PIN_CURRENT_AZ); sb += analogRead(PIN_CURRENT_ALT); }
+    float va = (ADC_REFERENCE_V / ADC_RESOLUTION_BITS) * (sa / 8.0f);
+    float vb = (ADC_REFERENCE_V / ADC_RESOLUTION_BITS) * (sb / 8.0f);
+    Serial.print("X "); Serial.print(millis()); Serial.print(' ');
+    Serial.print((va - xtraceOffAz) / CURRENT_SENSOR_SENSITIVITY, 2); Serial.print(' ');
+    Serial.print((vb - xtraceOffAlt) / CURRENT_SENSOR_SENSITIVITY, 2); Serial.print(' ');
+    Serial.print((int)motionStateAz); Serial.print(' '); Serial.print((int)motionStateAlt); Serial.print(' ');
+    Serial.print(positionAz); Serial.print(' '); Serial.println(positionAlt);
+}
+
 void calibrateCurrentSensors() {
     // Average multiple readings with motors off to find true zero offset
     const int samples = 50;
@@ -693,6 +710,7 @@ float readCurrentAltRaw() {
 // sensor drift (temperature, supply variation) doesn't show up as a constant
 // baseline current. Slow time constant so brief noise doesn't pull the offset.
 #define OFFSET_TRACK_ALPHA 0.005f
+#define OFFSET_TRACK_IDLE_LOOPS 200     // 2 s at the 10 ms loop before the zero is tracked
 
 void updateFilteredCurrents() {
     int adcAz  = analogRead(PIN_CURRENT_AZ);
@@ -700,12 +718,27 @@ void updateFilteredCurrents() {
     float vAz  = (ADC_REFERENCE_V / ADC_RESOLUTION_BITS) * adcAz;
     float vAlt = (ADC_REFERENCE_V / ADC_RESOLUTION_BITS) * adcAlt;
 
-    // Re-zero offsets while idle
-    if (motionStateAz == MOTION_IDLE) {
-        currentOffsetAz += OFFSET_TRACK_ALPHA * (vAz - currentOffsetAz);
-    }
-    if (motionStateAlt == MOTION_IDLE) {
-        currentOffsetAlt += OFFSET_TRACK_ALPHA * (vAlt - currentOffsetAlt);
+    // Re-zero offsets while idle - but only once the axis has been idle for
+    // OFFSET_TRACK_IDLE_LOOPS, and never during a homing. Two lessons from
+    // 2026-09-14: (1) the homing back-off drove both motors with the axes
+    // still marked idle, so this tracker pulled the azimuth zero ~0.4 A
+    // toward the back-off current, and every reading on the re-approach
+    // (creep level, the "0.4 A" left after the cut, the I= at the stall)
+    // carried that error - it was read as crosstalk from the other axis
+    // until an XTRACE with frozen offsets showed the sensor itself at 0.00 A;
+    // (2) the post-slew braking transient pulls it the same way for a
+    // second or two. A homing measures its own zero at rest before the
+    // drives move (measureHomingCurrentZero) and must keep it.
+    static int idleLoopsAz = 0, idleLoopsAlt = 0;
+    idleLoopsAz  = (motionStateAz  == MOTION_IDLE) ? idleLoopsAz  + 1 : 0;
+    idleLoopsAlt = (motionStateAlt == MOTION_IDLE) ? idleLoopsAlt + 1 : 0;
+    if (systemState != STATE_HOMING) {
+        if (idleLoopsAz > OFFSET_TRACK_IDLE_LOOPS) {
+            currentOffsetAz += OFFSET_TRACK_ALPHA * (vAz - currentOffsetAz);
+        }
+        if (idleLoopsAlt > OFFSET_TRACK_IDLE_LOOPS) {
+            currentOffsetAlt += OFFSET_TRACK_ALPHA * (vAlt - currentOffsetAlt);
+        }
     }
 
     float rawAz  = (vAz  - currentOffsetAz)  / CURRENT_SENSOR_SENSITIVITY;
@@ -1167,11 +1200,14 @@ static bool driveToLimits(bool slowFinal) {
                 // zero: it flips it. The USB trace of 2026-09-14 and the probe
                 // of 09-09 both show a reverse-sign transient of 0.5-1 A for
                 // 150-400 ms after every cut (the coasting dish back-driving
-                // the motor), and while the other axis drives, a further
-                // ~0.4 A of crosstalk in the driving sense. Judged by
-                // magnitude the first approach booked its cut 40 ms AFTER the
-                // zero edge (issue #33's missing skip) and the re-approach
-                // only passed because the transient crossed zero on its way.
+                // the motor). Judged by magnitude the first approach booked
+                // its cut 40 ms AFTER the zero edge (issue #33's missing skip)
+                // and the re-approach only passed because the transient
+                // crossed zero on its way. (The re-approach also read ~0.4 A
+                // high throughout - that was the idle zero tracker fed the
+                // back-off current, fixed in updateFilteredCurrents, not
+                // anything the other axis did: an XTRACE with frozen offsets
+                // shows the sensor at 0.00 A after the cut whatever alt does.)
                 // The sign flip is unambiguous. Deliberately NOT a drop from
                 // the creep level or a fraction of it: every creep starts
                 // with a surge (~7 A settling to ~1.5 A) and either of those
@@ -1212,6 +1248,7 @@ static bool driveToLimits(bool slowFinal) {
         }
 
         updateFilteredCurrents();
+        xtraceSample();
         outputStatusIfChanged();
 
         // The limit is a pulse silence of stallTimeoutMs. The motor current at
@@ -1296,12 +1333,18 @@ static bool backOffFromLimits(float degrees) {
     unsigned long startTime = millis();
     analogWrite(PIN_PWM_AZ, PWM_MIN_SPEED);
     analogWrite(PIN_PWM_ALT, PWM_MIN_SPEED);
+    // The axes are driving: say so, or anything keyed on the idle state (the
+    // current-zero tracker, until 2026-09-14) treats the back-off current as
+    // the sensor's zero.
+    motionStateAz = MOTION_DRIVING;
+    motionStateAlt = MOTION_DRIVING;
 
     bool azDone = false;
     bool altDone = false;
 
     while (!azDone || !altDone) {
         updateFilteredCurrents();
+        xtraceSample();
         outputStatusIfChanged();
 
         // Ramp up to full speed (no ramp-down — short distance, hard stop at count)
@@ -1366,6 +1409,7 @@ static bool backOffFromLimits(float degrees) {
             msSincePulse(lastPulseAlt) < HOMING_SETTLE_MS) &&
            (millis() - settleStart) < (unsigned long)cfg.stallTimeoutMs) {
         updateFilteredCurrents();
+        xtraceSample();
         outputStatusIfChanged();
         delay(10);
         #ifdef SIMULATION_MODE
@@ -1636,6 +1680,7 @@ void performHoming() {
         unsigned long now = millis();
 
         updateFilteredCurrents();
+        xtraceSample();
 
         // Output status when it changes
         outputStatusIfChanged();
@@ -2354,6 +2399,19 @@ void processCommand(const char* buffer) {
             performHoming();
         }
     }
+    else if (strEqualsIgnoreCase(cmd, "XTRACE")) {
+        // Sensor cross-check (2026-09-14): XTRACE [seconds]. USB only. Streams
+        // both raw current readings every loop with the zero offsets FROZEN at
+        // the values of this moment, so an offset the idle tracker would
+        // otherwise absorb stays visible. Drive one axis alone meanwhile and
+        // watch the other axis's reading.
+        int n = 60;
+        sscanf(buffer, "%*s %d", &n);
+        xtraceOffAz = currentOffsetAz;
+        xtraceOffAlt = currentOffsetAlt;
+        xtraceUntil = millis() + (unsigned long)n * 1000UL;
+        Serial.println("XTRACE START ms rawAz rawAlt stateAz stateAlt posAz posAlt");
+    }
     else if (strEqualsIgnoreCase(cmd, "PROBE")) {
         // Azimuth switch characterisation (#32): PROBE [cycles]. USB only.
         if (systemState == STATE_FAULT) {
@@ -2700,6 +2758,7 @@ void loop() {
 
     // Update current filter every loop (100Hz at 10ms loop delay)
     updateFilteredCurrents();
+    xtraceSample();
 
     // Safety checks (always run)
     runSafetyChecks();

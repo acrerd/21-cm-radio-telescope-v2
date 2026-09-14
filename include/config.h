@@ -107,9 +107,12 @@
 // three consecutive readings (eight ADC conversions averaged each). Signed,
 // because the cut does not take the reading to zero: it flips it - a reverse
 // transient of 0.5-1 A for 150-400 ms follows every cut (USB trace 2026-09-14,
-// probe 2026-09-09), and the other axis driving adds ~0.4 A of crosstalk in
-// the driving sense. Judged by magnitude the first approach booked its cut
-// after the zero edge had passed. Not a drop from the creep level: every
+// probe 2026-09-09). Judged by magnitude the first approach booked its cut
+// after the zero edge had passed. The two sensors do not interact: with the
+// offsets frozen, the azimuth reading sits at 0.00 A after its cut whatever
+// the altitude motor or its bridge is doing (XTRACE, 2026-09-14). The
+// re-approach's readings used to sit ~0.4 A high because the idle zero
+// tracker ran through the back-off; fixed. Not a drop from the creep level: every
 // creep starts with a surge that settles, and a drop test reads that as a
 // cut. A capture followed by more than two counted edges is discarded - the
 // axis was still driving - and the homing falls back to the creep zero.
