@@ -801,6 +801,22 @@ class TestFlaskAPI:
         listed = client.get('/api/schedule').get_json()
         assert [o['name'] for o in listed] == [started[0]['name']]
 
+    def test_an_entry_can_override_the_receiver_gain_for_a_linearity_test(self, caplog):
+        """gain_db_override (issue #35) changes only the gain of the instrument
+        the entry records with; the legacy gain_db field stays ignored, and
+        the override is logged as a warning."""
+        import tuning
+        base = sched.instrument_in_force()
+        assert sched.instrument_for({'name': 'plain'}) == base
+        assert sched.instrument_for({'name': 'legacy', 'gain_db': 20}) == base
+        with caplog.at_level(logging.WARNING, logger='scheduler'):
+            inst = sched.instrument_for({'name': 'Sun drift 30 dB', 'gain_db_override': 30})
+        assert inst['gain_db'] == 30.0
+        assert {k: v for k, v in inst.items() if k != 'gain_db'} == {k: v for k, v in base.items() if k != 'gain_db'}
+        assert any('30 dB' in r.getMessage() and 'gain_db_override' in r.getMessage() for r in caplog.records)
+        # A non-number is ignored rather than crashing the start.
+        assert sched.instrument_for({'name': 'bad', 'gain_db_override': 'x'}) == base
+
     def test_expired_bookings_are_unticked(self):
         """A dated slot that has ended is unticked by the scheduler itself;
         undated (daily) entries, future slots and entries already unticked

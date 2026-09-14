@@ -2321,7 +2321,15 @@ def start_observation(obs: dict, duration_override: int = None) -> bool:
         # The fixed instrument (issue #27): the tuning is not the entry's to
         # choose. Whatever an old entry still carries in center_freq_mhz,
         # bandwidth_mhz, channels or gain_db is ignored.
-        env['H1_INSTRUMENT'] = json.dumps(instrument_in_force())
+        #
+        # One deliberate exception, `gain_db_override` (issue #35): a
+        # linearity test needs the same source recorded at two receiver
+        # gains without touching the instrument everything else is
+        # calibrated for. The file records the gain it was made with, so the
+        # bandpass and gain calibrations refuse it and it is reduced in
+        # counts - which is what a beam-width comparison needs, and all it
+        # is good for. Logged as a warning so it cannot pass for a normal run.
+        env['H1_INSTRUMENT'] = json.dumps(instrument_for(obs))
         env['H1_INTEGRATION_TIME'] = str(obs.get('integration_time_s', 3.0))
         env['H1_OBS_METADATA'] = json.dumps({
             'obs_name': obs.get('name', ''),
@@ -4762,6 +4770,26 @@ def instrument_in_force():
     with whatever the config overrides (issue #27)."""
     import tuning
     return tuning.fixed_instrument(load_config())
+
+
+def instrument_for(obs: dict) -> dict:
+    """The instrument this entry records with: the one in force, unless the
+    entry carries `gain_db_override` (issue #35 - a receiver-gain linearity
+    test). Any other per-entry tuning field is ignored, as it always was."""
+    import tuning
+    override = obs.get('gain_db_override') if isinstance(obs, dict) else None
+    if override in (None, ''):
+        return instrument_in_force()
+    try:
+        gain = float(override)
+    except (TypeError, ValueError):
+        log.warning("Ignoring gain_db_override=%r on '%s': not a number",
+                    override, obs.get('name', ''))
+        return instrument_in_force()
+    log.warning("'%s' records at %.0f dB receiver gain by the entry's request "
+                "(gain_db_override) - the calibration will not apply to it",
+                obs.get('name', ''), gain)
+    return tuning.fixed_instrument(dict(load_config(), receiver_gain_db=gain))
 
 
 def tuning_instrument_keys():
