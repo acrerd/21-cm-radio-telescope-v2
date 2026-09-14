@@ -453,7 +453,12 @@ def assess_homing_report(report) -> Optional[dict]:
     first = {"az": num("az_error_first_deg"), "alt": num("alt_error_first_deg")}
     second = {"az": num("az_error_second_deg"), "alt": num("alt_error_second_deg")}
     when = datetime.fromtimestamp(int(report["utc"]), timezone.utc).strftime("%H:%M UTC")
-    if any(v is None for v in list(first.values()) + list(second.values())):
+    # A Due that met both switches at creep on the first approach and captured
+    # the azimuth cut edge skips the re-approach (#33): the second-approach
+    # fields are then null by design, not because the homing is still running.
+    skipped = bool(report.get("reapproach_skipped"))
+    pending = any(v is None for v in first.values()) or (not skipped and any(v is None for v in second.values()))
+    if pending:
         # The controller stamps the report as the homing starts and fills the
         # numbers in as each axis reaches its stop: a gap means it is running.
         return {"level": "pending", "summary": f"Homing in progress since {when}",
@@ -466,11 +471,12 @@ def assess_homing_report(report) -> Optional[dict]:
     problems, readings = [], []
     for axis in ("az", "alt"):
         f, s = first[axis], second[axis]
-        readings.append(f"{axis} {f:+.1f}/{s:+.1f}")
+        readings.append(f"{axis} {f:+.1f}/" + ("skipped" if s is None else f"{s:+.1f}"))
         error = beyond(f, HOMING_FIRST_NORMAL_DEG)        # counts lost or gained since the previous homing
-        landing = beyond(s, HOMING_SECOND_NORMAL_DEG)     # re-approach against its usual range
-        if abs(f) >= HOMING_FALSE_STALL_DEG or abs(s) >= HOMING_FALSE_STALL_DEG:
-            problems.append(f"{axis} false stall (first {f:+.1f}, re-approach {s:+.1f})")
+        landing = beyond(s, HOMING_SECOND_NORMAL_DEG) if s is not None else 0.0   # re-approach against its usual range
+        if abs(f) >= HOMING_FALSE_STALL_DEG or (s is not None and abs(s) >= HOMING_FALSE_STALL_DEG):
+            problems.append(f"{axis} false stall (first {f:+.1f}, re-approach "
+                            + ("skipped" if s is None else f"{s:+.1f}") + ")")
         elif abs(error) > HOMING_WARN_DEG:
             problems.append(f"{axis} first approach {f:+.1f}, {abs(error):.1f} beyond its normal "
                             f"{HOMING_FIRST_NORMAL_DEG[0]:+.1f}..{HOMING_FIRST_NORMAL_DEG[1]:+.1f}: counts "
@@ -479,7 +485,8 @@ def assess_homing_report(report) -> Optional[dict]:
             problems.append(f"{axis} re-approach {s:+.1f}, {abs(landing):.1f} beyond its normal "
                             f"{HOMING_SECOND_NORMAL_DEG[0]:+.1f}..{HOMING_SECOND_NORMAL_DEG[1]:+.1f}")
     level = "warn" if problems else "ok"
-    detail = "first/re-approach " + ", ".join(readings)
+    detail = "first/re-approach " + ", ".join(readings) + (
+        "; re-approach skipped: both axes met the switch at creep" if skipped else "")
     summary = f"Last homing {when}: " + ("; ".join(problems) + " (" + detail + ")" if problems
                                         else "normal (" + detail + ")")
     return {"level": level, "summary": summary, "utc": int(report["utc"]),

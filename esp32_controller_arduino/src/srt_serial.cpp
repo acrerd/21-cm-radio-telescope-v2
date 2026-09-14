@@ -22,6 +22,7 @@ SRTSerial::SRTSerial() :
     homingErrAltSecond(NAN),
     homingErrAzSecond(NAN),
     homingSecondApproach(false),
+    homingReapproachSkipped(false),
     homingReportTime(0),
     logHead(0),
     logCount(0) {
@@ -110,6 +111,16 @@ void SRTSerial::handleHomingLine(const String &line) {
         homingErrAltFirst = NAN; homingErrAzFirst = NAN;
         homingErrAltSecond = NAN; homingErrAzSecond = NAN;
         homingSecondApproach = false;
+        homingReapproachSkipped = false;
+        return;
+    }
+    if (line.indexOf("Re-approach skipped") >= 0) {
+        // The first approach met both switches at creep and captured the
+        // azimuth cut edge, so there is no second approach to report: the
+        // second-approach fields stay null and the flag says why. The report
+        // is stamped so a reader waiting for the homing sees it complete.
+        homingReapproachSkipped = true;
+        homingReportTime = time(nullptr);
         return;
     }
     if (line.indexOf("Re-approach") >= 0) {
@@ -139,6 +150,7 @@ String SRTSerial::getHomingReportJSON() {
     j += "\"az_error_first_deg\":" + num(homingErrAzFirst) + ",";
     j += "\"alt_error_second_deg\":" + num(homingErrAltSecond) + ",";
     j += "\"az_error_second_deg\":" + num(homingErrAzSecond) + ",";
+    j += "\"reapproach_skipped\":" + String(homingReapproachSkipped ? "true" : "false") + ",";
     j += "\"utc\":" + String((unsigned long)homingReportTime);
     j += "}";
     return j;

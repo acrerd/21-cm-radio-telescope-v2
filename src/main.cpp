@@ -1016,6 +1016,13 @@ bool isValidTarget(float altDeg, float azDeg) {
 // makes it the zero. INT32_MIN = not captured (no edge followed the cut).
 static int32_t azCutEdgePosition = INT32_MIN;
 static unsigned long azCutToEdgeMs = 0;
+// Whether each axis met its switch at creep speed on the last driveToLimits -
+// stalled while its PWM was PWM_MIN_SPEED inside the slow band. The first
+// approach only slows if the counter it inherited was right; an axis that
+// arrived at full speed has coasted an unknown way past its switch and its
+// rest is no basis for a zero (issue #33).
+static bool azArrivedCreeping = false;
+static bool altArrivedCreeping = false;
 static float azCutFromA = 0.0f, azCutToA = 0.0f;   // creep level and reading at the cut, for the log
 
 // Eight conversions averaged (~0.3 ms) to take the PWM ripple off a single
@@ -1059,8 +1066,11 @@ static void measureHomingCurrentZero() {
 static bool driveToLimits(bool slowFinal) {
     azCutEdgePosition = INT32_MIN;
     azCutToEdgeMs = 0;
+    azArrivedCreeping = false;
+    altArrivedCreeping = false;
     bool azArmed = false;          // creep current seen after the brake
-    float azCreepA = 0.0f;         // running mean of the raw current while creeping (for the log)
+    float azCreepA = 0.0f;         // running mean of the driving current while creeping (for the log)
+    float azDriveSign = 1.0f;      // sign of the raw reading while driving, fixed by the creep's surge
     int azLowCount = 0;            // consecutive raw samples below the driving level
     bool azCutSeen = false;
     unsigned long azCutMs = 0;
@@ -1135,17 +1145,40 @@ static bool driveToLimits(bool slowFinal) {
         // current, detect the cut as three consecutive readings under the
         // driving level, then take the next counted edge as the zero.
         if (slowFinal && !azAtLimit && azPwm == PWM_MIN_SPEED) {
-            float ia = fabs(rawCurrentAz());
+            float iaSigned = rawCurrentAz();
+            float ia = fabs(iaSigned);
+#ifdef HOMING_TRACE
+            // Diagnostic trace of the creep (USB only): ms, counter, reed, signed raw A, detector state
+            Serial.print("T "); Serial.print(now); Serial.print(' '); Serial.print(positionAz);
+            Serial.print(' '); Serial.print(digitalRead(PIN_PULSE_AZ)); Serial.print(' ');
+            Serial.print(iaSigned, 2); Serial.print(' '); Serial.print(azArmed); Serial.print(azCutSeen);
+            Serial.print(' '); Serial.println(azLowCount);
+#endif
             if (!azArmed) {
-                if (ia > HOMING_CREEP_CURRENT_A) { azArmed = true; azCreepA = ia; }
+                // The creep's opening surge fixes the sign of the driving current.
+                if (ia > HOMING_CREEP_CURRENT_A) {
+                    azArmed = true;
+                    azDriveSign = (iaSigned < 0.0f) ? -1.0f : 1.0f;
+                    azCreepA = ia;
+                }
             } else if (!azCutSeen) {
-                // The cut is the reading falling below the driving level,
-                // absolute, for three consecutive samples. Deliberately NOT a
-                // drop from the creep level or a fraction of it: every creep
-                // starts with a surge (~3.5 A settling to ~1 A on the probe)
-                // and either of those would read the settling as a cut.
-                bool low = (ia < HOMING_CREEP_CURRENT_A);
-                if (!low) azCreepA += 0.1f * (ia - azCreepA);
+                // Driving = current in the driving direction above the
+                // driving level, SIGNED. The cut does not take the reading to
+                // zero: it flips it. The USB trace of 2026-09-14 and the probe
+                // of 09-09 both show a reverse-sign transient of 0.5-1 A for
+                // 150-400 ms after every cut (the coasting dish back-driving
+                // the motor), and while the other axis drives, a further
+                // ~0.4 A of crosstalk in the driving sense. Judged by
+                // magnitude the first approach booked its cut 40 ms AFTER the
+                // zero edge (issue #33's missing skip) and the re-approach
+                // only passed because the transient crossed zero on its way.
+                // The sign flip is unambiguous. Deliberately NOT a drop from
+                // the creep level or a fraction of it: every creep starts
+                // with a surge (~7 A settling to ~1.5 A) and either of those
+                // would read the settling as a cut.
+                float drive = azDriveSign * iaSigned;      // positive while driving
+                bool low = (drive < HOMING_CREEP_CURRENT_A);
+                if (!low) azCreepA += 0.1f * (drive - azCreepA);
                 azLowCount = low ? azLowCount + 1 : 0;
                 if (azLowCount == 1) { azPosAtFirstLow = positionAz; azMsAtFirstLow = now; }
                 if (azLowCount >= 3) {
@@ -1157,7 +1190,7 @@ static bool driveToLimits(bool slowFinal) {
                     azCutMs = azMsAtFirstLow;
                     azPosAtCut = azPosAtFirstLow;
                     azCutFromA = azCreepA;
-                    azCutToA = ia;
+                    azCutToA = drive;          // negative: the reverse transient
                 }
             } else if (positionAz != azPosAtCut) {
                 // Edges after the cut. The first is the zero. After a real cut
@@ -1189,6 +1222,7 @@ static bool driveToLimits(bool slowFinal) {
         if (!azAtLimit && msSincePulse(lastPulseAz) > cfg.stallTimeoutMs) {
             stopMotorAz();
             azAtLimit = true;
+            azArrivedCreeping = (azPwm == PWM_MIN_SPEED);
             // The counter at the stop IS the net encoder error since the last
             // homing (the stop is the true zero), so report it rather than
             // overwrite it silently with 0. First approach: the accumulated
@@ -1199,12 +1233,19 @@ static bool driveToLimits(bool slowFinal) {
             String m = "Homing: Azimuth limit reached at " + String(positionAz)
                      + " pulses (" + String((float)positionAz / PULSES_PER_DEGREE, 2) + " deg)"
                      + encoderStats(false) + " I=" + String(filteredCurrentAz, 2) + "A";
+            if (slowFinal) {
+                m += " det[armed=" + String(azArmed ? 1 : 0) + " creep=" + String(azCreepA, 2)
+                   + "A cut=" + String(azCutSeen ? 1 : 0) + " low=" + String(azLowCount)
+                   + " edges=" + String(azEdgesAfterCut) + " cutToStall=" + String(azCutSeen ? (long)(now - azCutMs) : -1L)
+                   + "ms brake=" + String(azBrakeStart ? (long)(now - azBrakeStart) : -1L) + "ms]";
+            }
             Serial.println(m);
             Serial1.println(m);
         }
         if (!altAtLimit && msSincePulse(lastPulseAlt) > cfg.stallTimeoutMs) {
             stopMotorAlt();
             altAtLimit = true;
+            altArrivedCreeping = (altPwm == PWM_MIN_SPEED);
             String m = "Homing: Altitude limit reached at " + String(positionAlt)
                      + " pulses (" + String((float)positionAlt / PULSES_PER_DEGREE, 2) + " deg)"
                      + encoderStats(true) + " I=" + String(filteredCurrentAlt, 2) + "A";
@@ -1534,15 +1575,38 @@ void performHoming() {
     Serial1.println("Homing: Drive to limits...");
     if (!driveToLimits(true)) return;
 
-    // Phase 2: back off a few degrees (back-off zeros position, then drives positive)
-    printAllLn("Homing: Backing off limits...");
-    if (!backOffFromLimits(5.0)) return;
+    // The re-approach exists for the case where the first approach could not
+    // slow down - a counter that was wrong (a boot-home starts at 0 wherever
+    // the mount is; a slew that lost counts) brings the switch before the
+    // slow band, the axis arrives at full speed, and its rest is a coast of
+    // unknown length past the switch. When both axes met their switches at
+    // creep and the azimuth cut edge was captured, the first approach has
+    // already done everything the re-approach would: skip it, and save ~40 s
+    // and one switch impact per homing - eighteen a calibration day (#33).
+    // The ESP32 reports the skip; the scheduler's judgement reads it.
+    bool skipReapproach = (azCutEdgePosition != INT32_MIN) && altArrivedCreeping;
+    {
+        String m = String("Homing: first approach - az cut edge ")
+                 + (azCutEdgePosition != INT32_MIN ? "captured" : "not captured")
+                 + ", az arrived " + (azArrivedCreeping ? "creeping" : "at speed")
+                 + ", alt arrived " + (altArrivedCreeping ? "creeping" : "at speed");
+        Serial.println(m);
+        Serial1.println(m);
+    }
+    if (skipReapproach) {
+        printAllLn("Homing: Re-approach skipped - both axes met the switch at creep and the azimuth cut edge was captured");
+        Serial1.println("Homing: Re-approach skipped - both axes met the switch at creep and the azimuth cut edge was captured");
+    } else {
+        // Phase 2: back off a few degrees (back-off zeros position, then drives positive)
+        printAllLn("Homing: Backing off limits...");
+        if (!backOffFromLimits(5.0)) return;
 
-    // Phase 3: re-approach, slowing to creep for the last pulses so the rest
-    // position the zero is taken from is repeatable (see driveToLimits)
-    printAllLn("Homing: Re-approach limits...");
-    Serial1.println("Homing: Re-approach limits...");
-    if (!driveToLimits(true)) return;
+        // Phase 3: re-approach, slowing to creep for the last pulses so the rest
+        // position the zero is taken from is repeatable (see driveToLimits)
+        printAllLn("Homing: Re-approach limits...");
+        Serial1.println("Homing: Re-approach limits...");
+        if (!driveToLimits(true)) return;
+    }
 
     // Set the zero on the first positive-going edge off the stop, not on the
     // negative stall - see refineZeroPositiveEdge. It zeroes positionAz/Alt.

@@ -44,7 +44,9 @@ def wait_homing(issued_after):
                     lines.append(m)
             d = get(C + '/status')
             h = d.get('last_homing') or {}
-            keys = ('az_error_first_deg', 'alt_error_first_deg', 'az_error_second_deg', 'alt_error_second_deg')
+            keys = ('az_error_first_deg', 'alt_error_first_deg')
+            if not h.get('reapproach_skipped'):
+                keys += ('az_error_second_deg', 'alt_error_second_deg')
             if h.get('utc', 0) >= issued_after and all(h.get(k) is not None for k in keys) and d.get('status') == 'Ready':
                 return d, lines
         except Exception as e:

@@ -935,6 +935,17 @@ class TestFlaskAPI:
                                           "utc": 1788867839})
         assert bad["level"] == "warn"
         assert "alt false stall (first +49.0, re-approach -50.5)" in bad["summary"]
+        # A Due that skipped the re-approach (#33) reports null second-approach
+        # fields with the flag set: complete and normal, not "in progress".
+        skipped = sched.assess_homing_report({"alt_error_first_deg": -1.0, "az_error_first_deg": -0.5,
+                                              "alt_error_second_deg": None, "az_error_second_deg": None,
+                                              "reapproach_skipped": True, "utc": 1788000000})
+        assert skipped["level"] == "ok"
+        assert "re-approach skipped" in skipped["summary"] and "az -0.5/skipped" in skipped["summary"]
+        still = sched.assess_homing_report({"alt_error_first_deg": -1.0, "az_error_first_deg": -0.5,
+                                            "alt_error_second_deg": None, "az_error_second_deg": None,
+                                            "reapproach_skipped": False, "utc": 1788000000})
+        assert still["level"] == "pending"
         assert "az " not in bad["summary"].split("(first/re-approach")[0].replace("az -1.5", "")
         # Counts really lost: the first approach well beyond the range.
         lost = sched.assess_homing_report({"alt_error_first_deg": -4.0, "az_error_first_deg": -1.0,

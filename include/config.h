@@ -97,18 +97,19 @@
 // creep speed whatever the deceleration dynamics.
 #define HOMING_SLOW_BRAKE_MS        400
 // Azimuth cut-edge zero (see azCutEdgePosition in main.cpp). The switch is a
-// physical interruption of the motor current, so after it engages the true
-// current is zero; what the raw reading shows then (+0.17 A on the probe of
-// 2026-09-09) is the hall sensor's zero offset, re-tracked only while the
-// axis is idle and drifting as the driver warms through a homing. So the cut
-// is detected as a DROP - creep current minus current now - in which that
-// offset cancels: creep draws 1.3-1.9 A and the cut takes it to the floor,
-// a drop of at least 1.1 A today, but the detector does not assume any fixed
-// drop. Arming ("the axis is driving") is the operator's
-// absolute rule: above 0.3 A driving, below it not, the ammeter good to 0.1.
-#define HOMING_CREEP_CURRENT_A      0.3     // raw current above which the axis is driving (arms the cut detector)
-// The cut is the same level, absolute, for three consecutive readings (eight
-// ADC conversions averaged each). Not a drop from the creep level: every
+// physical interruption of the motor current. The sensor's zero offset is
+// re-measured at rest at the start of every homing, so the raw reading is
+// referenced to a zero minutes old. Arming ("the axis is driving") is the
+// operator's absolute rule: above 0.3 A driving, below it not, the ammeter
+// good to 0.1 A - applied to the SIGNED current in the driving direction.
+#define HOMING_CREEP_CURRENT_A      0.3     // driving-direction current above which the axis is driving
+// The cut is the driving-direction reading falling below that level for
+// three consecutive readings (eight ADC conversions averaged each). Signed,
+// because the cut does not take the reading to zero: it flips it - a reverse
+// transient of 0.5-1 A for 150-400 ms follows every cut (USB trace 2026-09-14,
+// probe 2026-09-09), and the other axis driving adds ~0.4 A of crosstalk in
+// the driving sense. Judged by magnitude the first approach booked its cut
+// after the zero edge had passed. Not a drop from the creep level: every
 // creep starts with a surge that settles, and a drop test reads that as a
 // cut. A capture followed by more than two counted edges is discarded - the
 // axis was still driving - and the homing falls back to the creep zero.

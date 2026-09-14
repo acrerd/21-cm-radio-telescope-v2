@@ -95,6 +95,7 @@ private:
     float homingErrAltSecond;
     float homingErrAzSecond;
     bool homingSecondApproach;
+    bool homingReapproachSkipped;   // the Due found no need for a re-approach (#33)
     time_t homingReportTime;
 
     // Ring buffer for serial log
