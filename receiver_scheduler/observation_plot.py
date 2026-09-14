@@ -436,6 +436,16 @@ def plot_observation(path, output_path, name="", mode="spectrum",
                          else ", as measured (no ephemeris for the airmass)")
         if group > 1:
             subtitle += "; %d records per point" % group
+        # The professional number for the same day, from the history the
+        # scheduler keeps of NOAA SWPC's RSTN file (no network from here).
+        try:
+            import solar_reference
+            ref = solar_reference.summary_for(float(stamps[0]), solar_reference.history(max_age_s=1e12)) \
+                if stamps.size else None
+        except Exception:                             # noqa: BLE001
+            ref = None
+        if ref:
+            subtitle += "\n" + ref
     elif mode == "drift":
         # The crossing recorded in the file - computed at the start from
         # where the mount actually parked - beats the caller's "middle of

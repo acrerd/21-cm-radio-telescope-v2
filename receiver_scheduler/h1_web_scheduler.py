@@ -43,6 +43,7 @@ from observatory import SITE_HEIGHT_M, SITE_LAT_DEG, SITE_LON_DEG
 # the scheduler cannot import the receiver back (it pulls in GNU Radio at
 # module scope), so the convention lives in a module they can both have.
 import observation_files
+import solar_reference
 # The one place the power meters' centre frequency is written down.
 from tuning import POWER_METER_CENTER_HZ
 import numpy as np
@@ -4709,6 +4710,13 @@ def api_observe_live():
                         name=obs.get('name'),
                         finished=finished,
                         t_sys_k=(cal or {}).get('t_sys_k') if cal_ok else None,
+                        # The professional number to read ours against: the
+                        # RSTN 1415 MHz local-noon flux for the run's day, from
+                        # NOAA SWPC's hourly file (solar_reference). None when
+                        # the observatory has no route out or the day is not
+                        # in yet; never a wait on the network.
+                        reference=(solar_reference.summary_for(records[0]["t"])
+                                   if is_solar else None),
                         started_at=obs.get('started_at'),
                         ended_at=obs.get('ended_at'),
                         ends_at=obs.get('ends_at')))

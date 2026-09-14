@@ -737,6 +737,11 @@
                 text += ' · latest ' + last.toFixed(1) + ' SFU · mean '
                       + mean.toFixed(1) + ' SFU';
                 if (d.t_sys_k) text += ' · T_sys ' + d.t_sys_k.toFixed(0) + ' K subtracted';
+                // The professional measurement for the same day, when the
+                // scheduler could fetch it: the RSTN 1415 MHz local-noon flux
+                // and F10.7 from NOAA SWPC. Stations disagree by 10-20 SFU,
+                // so agreement to within that is agreement.
+                if (d.reference) text += ' · ' + d.reference;
                 // Small, but it grows fast as the Sun sets, so the airmass it
                 // was computed at belongs on screen beside the number.
                 if (d.opacity_applied) {
