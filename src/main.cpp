@@ -194,7 +194,8 @@ typedef enum {
     FAULT_AZ_STALL,
     FAULT_ALT_STALL,
     FAULT_AZ_POSITION_BOUNDS,
-    FAULT_ALT_POSITION_BOUNDS
+    FAULT_ALT_POSITION_BOUNDS,
+    FAULT_HOMING_ABORTED        // STOP received during a homing: position unknown until re-homed
 } FaultCode;
 
 // =============================================================================
@@ -1096,6 +1097,68 @@ static void measureHomingCurrentZero() {
     Serial1.println(m);
 }
 
+// Serial service inside the homing loops (issue #34). performHoming blocks
+// for up to a minute and used to read nothing in that time, so the Due's
+// 128-byte Serial1 ring filled with the controller's STATUS polls after ~16 s
+// and the SAM core discarded everything after: the fragments ("STATUSSTATUS",
+// "TATUS") parsed when the homing ended, and - worse - a STOP sent during a
+// homing was either dropped or executed only after it finished. Every homing
+// loop now pumps both ports: STATUS is answered (so the controller sees live
+// progress instead of a burst afterwards), STOP aborts the homing into a
+// fault that RESET clears (the position is unknown until the next HOME),
+// anything else is refused with "busy". Commands never queue behind a homing.
+static volatile bool homingStopRequested = false;
+static char homingLineUsb[32], homingLineS1[32];
+static int homingLineUsbLen = 0, homingLineS1Len = 0;
+void processCommand(const char* buffer);
+bool strEqualsIgnoreCase(const char* a, const char* b);
+
+static void homingHandleLine(char* line, bool fromSerial1) {
+    while (*line == ' ') line++;
+    if (*line == '\0') return;
+    if (strEqualsIgnoreCase(line, "STATUS")) {
+        cmdFromSerial1 = fromSerial1;
+        processCommand("STATUS");
+        cmdFromSerial1 = false;
+        return;
+    }
+    if (strEqualsIgnoreCase(line, "STOP")) {
+        homingStopRequested = true;
+        return;
+    }
+    String m = String("Homing: busy - ignored '") + line + "'";
+    Serial.println(m);
+    if (fromSerial1) Serial1.println(m);
+}
+
+static void homingPumpPort(Stream& port, char* buf, int& len, bool fromSerial1) {
+    while (port.available() > 0) {
+        char c = (char)port.read();
+        if (c == '\n' || c == '\r') {
+            if (len > 0) { buf[len] = '\0'; homingHandleLine(buf, fromSerial1); }
+            len = 0;
+        } else if (len < 31) {
+            buf[len++] = c;
+        } else {
+            len = 0;            // overlong: not a command, drop the line
+        }
+    }
+}
+
+// Returns true when the homing must stop: motors already off, fault latched.
+static bool homingServiceSerial() {
+    homingPumpPort(Serial, homingLineUsb, homingLineUsbLen, false);
+    #if ENABLE_SERIAL1
+    homingPumpPort(Serial1, homingLineS1, homingLineS1Len, true);
+    #endif
+    if (!homingStopRequested) return false;
+    stopAllMotors();
+    faultCode = FAULT_HOMING_ABORTED;
+    systemState = STATE_FAULT;
+    printAllLn("Homing ABORTED: STOP received - position unknown, RESET then HOME");
+    return true;
+}
+
 static bool driveToLimits(bool slowFinal) {
     azCutEdgePosition = INT32_MIN;
     azCutToEdgeMs = 0;
@@ -1249,6 +1312,7 @@ static bool driveToLimits(bool slowFinal) {
 
         updateFilteredCurrents();
         xtraceSample();
+        if (homingServiceSerial()) return false;
         outputStatusIfChanged();
 
         // The limit is a pulse silence of stallTimeoutMs. The motor current at
@@ -1345,6 +1409,7 @@ static bool backOffFromLimits(float degrees) {
     while (!azDone || !altDone) {
         updateFilteredCurrents();
         xtraceSample();
+        if (homingServiceSerial()) return false;
         outputStatusIfChanged();
 
         // Ramp up to full speed (no ramp-down — short distance, hard stop at count)
@@ -1410,6 +1475,7 @@ static bool backOffFromLimits(float degrees) {
            (millis() - settleStart) < (unsigned long)cfg.stallTimeoutMs) {
         updateFilteredCurrents();
         xtraceSample();
+        if (homingServiceSerial()) return false;
         outputStatusIfChanged();
         delay(10);
         #ifdef SIMULATION_MODE
@@ -1614,6 +1680,8 @@ void performHoming() {
     // stall counter (the error since the last homing) is not smeared by the
     // coast from full speed, which makes first + second approach a clean
     // consistency test of the zero between homings, the switch as fiducial.
+    homingStopRequested = false;
+    homingLineUsbLen = homingLineS1Len = 0;
     measureHomingCurrentZero();
     printAllLn("Homing: Drive to limits...");
     Serial1.println("Homing: Drive to limits...");
@@ -1681,6 +1749,7 @@ void performHoming() {
 
         updateFilteredCurrents();
         xtraceSample();
+        if (homingServiceSerial()) return;
 
         // Output status when it changes
         outputStatusIfChanged();
@@ -2016,6 +2085,7 @@ const char* getFaultString() {
         case FAULT_ALT_STALL:           return "Altitude motor stalled";
         case FAULT_AZ_POSITION_BOUNDS:  return "Azimuth position out of bounds";
         case FAULT_ALT_POSITION_BOUNDS: return "Altitude position out of bounds";
+        case FAULT_HOMING_ABORTED:      return "Homing aborted by STOP - RESET then HOME";
         default:                        return "Unknown fault";
     }
 }

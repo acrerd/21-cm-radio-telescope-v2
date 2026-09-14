@@ -957,12 +957,53 @@ def srt_go_position(name: str, alt: float, az: float) -> bool:
         return False
 
 
+HOME_CONFIRM_S = 2.0        # how long to wait for the controller to log the HOME it sent
+
+
+def _serial_log_keys(entries) -> set:
+    return {(e.get("time"), e.get("dir"), str(e.get("msg", "")).strip())
+            for e in (entries or []) if isinstance(e, dict)}
+
+
+def srt_issue_home(retries: int = 1) -> dict:
+    """Send /home and confirm the controller actually put HOME on the Due's
+    serial line, re-issuing once if it did not.
+
+    The controller logs every command it sends (`/serial/log`, dir "TX"), so
+    the proof that a HOME left the ESP32 is a new TX HOME entry after the
+    request. Twice on 2026-09-14 a /home was answered ok and no homing
+    followed (issue #34); not reproduced since, so this is insurance rather
+    than a fix - and it makes a recurrence show in the log as a fact rather
+    than a timeout. A controller whose log cannot be read is not held up:
+    the caller's wait for the homing catches a lost command as before.
+    """
+    before = _serial_log_keys(srt_api_call("/serial/log"))
+    result = None
+    for attempt in range(retries + 1):
+        result = srt_api_call("/home")
+        if not (result and result.get("ok")):
+            raise RuntimeError(f"SRT controller rejected the homing command: {result}")
+        deadline = time.time() + HOME_CONFIRM_S
+        seen = before
+        while time.time() < deadline:
+            entries = srt_api_call("/serial/log")
+            if not isinstance(entries, list):
+                return result                    # log unreadable: nothing to confirm against
+            seen = _serial_log_keys(entries)
+            if any(d == "TX" and m.upper() == "HOME" for (_t, d, m) in seen - before):
+                return result
+            time.sleep(0.25)
+        log.warning("Calibration: controller answered /home but its serial log shows no HOME "
+                    "sent to the Due within %.0f s%s", HOME_CONFIRM_S,
+                    " - re-issuing" if attempt < retries else "")
+        before = seen
+    return result
+
+
 def srt_home_and_wait(timeout: int = 300,
                       cancel_event: Optional[threading.Event] = None) -> dict:
     """Run the Due physical homing sequence and wait for a new Ready state."""
-    result = srt_api_call("/home")
-    if not (result and result.get("ok")):
-        raise RuntimeError(f"SRT controller rejected the homing command: {result}")
+    srt_issue_home()
 
     log.info("Calibration: physical homing sequence requested")
     started = False
@@ -1072,9 +1113,7 @@ def srt_home_with_report(timeout: int = 300,
 
     Returns the final /status plus a 'counters' entry from _homing_counters.
     """
-    result = srt_api_call("/home")
-    if not (result and result.get("ok")):
-        raise RuntimeError(f"SRT controller rejected the homing command: {result}")
+    srt_issue_home()
     log.info("Physical homing sequence requested (both axes into their stops)")
 
     seen = set()

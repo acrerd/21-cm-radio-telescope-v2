@@ -17,7 +17,7 @@ import threading
 import time
 import logging
 from datetime import datetime, timedelta, timezone
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch, MagicMock, call
 
 import pytest
 
@@ -1564,7 +1564,9 @@ class TestSrtGoPosition:
         result = sched.srt_home_and_wait(timeout=10)
 
         assert result["status"] == "Ready"
-        api.assert_called_once_with("/home")
+        # One HOME; the /serial/log confirmation reads around it (issue #34)
+        # and a controller answering it with a non-list is not waited on.
+        assert [c for c in api.call_args_list if c.args[0] == "/home"] == [call("/home")]
         assert status.call_count == 2
 
     @patch.object(sched, 'srt_api_call', return_value={"ok": True})
@@ -3058,3 +3060,71 @@ class TestSolarSystemDrift:
                "start_time": "13:40", "duration_minutes": 30}
         alt, az = sched.observation_altaz_at(obs, datetime(2026, 8, 26, 13, 55))
         assert 40 < alt < 48 and 185 < az < 200, (alt, az)
+
+
+class TestIssueHome:
+    """/home is confirmed against the controller's own serial log (issue #34):
+    the proof a HOME left the ESP32 is a new TX HOME entry after the request."""
+
+    @staticmethod
+    def _api(log_after_home, ok=True):
+        calls = []
+        state = {"homes": 0}
+        def api(path, *a, **k):
+            calls.append(path)
+            if path == "/home":
+                state["homes"] += 1
+                return {"ok": ok}
+            if path == "/serial/log":
+                old = [{"time": "10:00:00", "dir": "TX", "msg": "HOME"},      # an earlier homing's
+                       {"time": "10:00:01", "dir": "RX", "msg": "Alt:0.0 Az:0.0 Status:Ready"}]
+                return old + log_after_home(state["homes"])
+            return None
+        return api, calls, state
+
+    def test_confirmed_home_is_sent_once(self):
+        api, calls, state = self._api(lambda n: [{"time": "10:05:00", "dir": "TX", "msg": "HOME"}] if n else [])
+        with patch.object(sched, 'srt_api_call', side_effect=api), \
+             patch.object(sched, 'HOME_CONFIRM_S', 0.5):
+            assert sched.srt_issue_home() == {"ok": True}
+        assert state["homes"] == 1
+
+    def test_unlogged_home_is_reissued_once(self, caplog):
+        # The first HOME never shows in the log; the second does.
+        api, calls, state = self._api(lambda n: [{"time": "10:05:03", "dir": "TX", "msg": "HOME"}] if n >= 2 else [])
+        with patch.object(sched, 'srt_api_call', side_effect=api), \
+             patch.object(sched, 'HOME_CONFIRM_S', 0.3), \
+             caplog.at_level(logging.WARNING, logger='scheduler'):
+            sched.srt_issue_home()
+        assert state["homes"] == 2
+        assert any("no HOME sent to the Due" in r.getMessage() for r in caplog.records)
+
+    def test_gives_up_after_the_retry(self, caplog):
+        api, calls, state = self._api(lambda n: [])
+        with patch.object(sched, 'srt_api_call', side_effect=api), \
+             patch.object(sched, 'HOME_CONFIRM_S', 0.3), \
+             caplog.at_level(logging.WARNING, logger='scheduler'):
+            assert sched.srt_issue_home() == {"ok": True}      # the caller's wait decides
+        assert state["homes"] == 2
+
+    def test_an_old_home_entry_does_not_count(self):
+        # Only entries new since the request count: the stale TX HOME from
+        # the earlier homing is in the "before" snapshot.
+        api, calls, state = self._api(lambda n: [])
+        with patch.object(sched, 'srt_api_call', side_effect=api), \
+             patch.object(sched, 'HOME_CONFIRM_S', 0.3):
+            sched.srt_issue_home(retries=0)
+        assert state["homes"] == 1
+
+    def test_unreadable_log_does_not_hold_the_homing(self):
+        def api(path, *a, **k):
+            return {"ok": True} if path == "/home" else None
+        with patch.object(sched, 'srt_api_call', side_effect=api), \
+             patch.object(sched, 'HOME_CONFIRM_S', 5.0):
+            t0 = time.time(); sched.srt_issue_home()
+        assert time.time() - t0 < 1.0
+
+    def test_rejected_home_raises(self):
+        api, calls, state = self._api(lambda n: [], ok=False)
+        with patch.object(sched, 'srt_api_call', side_effect=api), pytest.raises(RuntimeError):
+            sched.srt_issue_home()

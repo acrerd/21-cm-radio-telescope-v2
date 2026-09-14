@@ -237,6 +237,11 @@ void setupWebServer() {
         // Always zero in normal operation; non-zero means a cross-task lock
         // could not be acquired within its timeout and something ran unlocked.
         json += "\"lock_timeouts\":" + String((unsigned long)srtLockTimeouts) + ",";
+        // Lines from the Due that were neither a status line nor a homing
+        // line: the count of spliced or truncated lines on this UART. Grows
+        // when the Due's buffered replies arrive faster than they are read
+        // (issue #34); should stay put in normal running.
+        json += "\"serial_splices\":" + String((unsigned long)srtSerial.getMalformedCount()) + ",";
         // Also always zero in normal operation. Non-zero means status lines are
         // arriving from the Due spliced together, which happens when its UART
         // output outruns this end - see the rate limit in the Due's

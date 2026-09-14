@@ -318,16 +318,21 @@ void updateClockStatus() {
 void updateTracking() {
     unsigned long now = millis();
 
+    // Read whatever the Due has sent, on EVERY pass (the loop runs at ~100 Hz),
+    // not once a second behind the poll gate below. Reading at most five lines
+    // once a second could not keep up with a burst - the Due answering the
+    // polls it had buffered through a homing - and /status then reported the
+    // Due's state from 10-20 s earlier (issue #34). Deliberately before the
+    // lock is taken: these block on the UART, and holding the lock across a
+    // blocking read would stall async_tcp. It takes the lock internally where
+    // needed.
+    srtSerial.readStatus();
+
     // Only poll Due once per second
     if (now - lastTrackingUpdate < 1000) {
         return;
     }
     lastTrackingUpdate = now;
-
-    // Read any available status from Due. Deliberately before the lock is
-    // taken: these block on the UART, and holding the lock across a blocking
-    // read would stall async_tcp. Both take the lock internally where needed.
-    srtSerial.readStatus();
 
     // Request fresh status
     srtSerial.requestStatus();
