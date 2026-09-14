@@ -141,7 +141,12 @@ def continuum_sources():
     return [("Cyg A", cyg.l.deg, cyg.b.deg, 1590.0),
             ("Cas A", cas.l.deg, cas.b.deg, cas_jy),
             ("Tau A", tau.l.deg, tau.b.deg, tau_jy),
-            ("Sun", sun.l.deg, sun.b.deg, 5.0e5),
+            # Quiet Sun near the cycle-25 maximum: RSTN 1415 MHz reads
+            # 88-108 SFU day to day (2026-08-25), this dish measured 112
+            # (08-25) and 94 (09-13). 5.0e5 Jy (50 SFU) was a solar-minimum
+            # value and put the simulated Sun at half of what the dish saw.
+            # 1 SFU = 1e4 Jy. Still quiet-Sun only: a burst is 10-100x.
+            ("Sun", sun.l.deg, sun.b.deg, 9.5e5),
             ("Moon", moon.l.deg, moon.b.deg, 890.0)]
 
 

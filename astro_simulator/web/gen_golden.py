@@ -52,7 +52,7 @@ def fixed_sources():
     return [("Cyg A", cyg.l.deg, cyg.b.deg, 1590.0),
             ("Cas A", cas.l.deg, cas.b.deg, float(cas_jy)),
             ("Tau A", tau.l.deg, tau.b.deg, float(tau_jy)),
-            ("Sun", sun.l.deg, sun.b.deg, 5.0e5),
+            ("Sun", sun.l.deg, sun.b.deg, 9.5e5),      # quiet Sun near solar maximum; as astro_simulator.py
             ("Moon", moon.l.deg, moon.b.deg, 890.0)]
 
 

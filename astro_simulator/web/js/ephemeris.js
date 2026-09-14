@@ -165,7 +165,9 @@ export function continuumSources(jd, decimalYr, site) {
   const sun = sunGalactic(jd);
   const moon = moonGalacticTopo(jd, site);
   return fixed.map(([n, g, f]) => ({ name: n, l: g.l, b: g.b, jy: f }))
-    .concat([{ name: "Sun", l: sun.l, b: sun.b, jy: 5.0e5 },
+    // Quiet Sun near solar maximum, 95 SFU (1 SFU = 1e4 Jy); keep in step
+    // with continuum_sources() in astro_simulator.py and gen_golden.py.
+    .concat([{ name: "Sun", l: sun.l, b: sun.b, jy: 9.5e5 },
              { name: "Moon", l: moon.l, b: moon.b, jy: 890.0 }]);
 }
 
