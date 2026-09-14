@@ -2852,6 +2852,37 @@ def _same_booking(running, due, running_name=''):
     return True
 
 
+def retire_expired_entries(schedule: list, now: datetime) -> list:
+    """Untick every dated entry whose slot has ended. Returns their names.
+
+    A booking is for one slot; once the slot is over, its tick means
+    nothing except that a later edit of the same entry could run it again
+    by surprise, and a list of ticked past entries reads as a list of things
+    still to come. So the scheduler unticks them itself (2026-09-14, at the
+    operator's request), which is also how a finished run shows on the page.
+
+    Only dated entries: an entry with a time and no date runs at that time
+    every day and never expires. Judged by the slot's end, not by whether
+    the run happened - a slot missed because the scheduler was down is over
+    just the same. Mutates in place; the caller saves.
+    """
+    retired = []
+    for obs in schedule:
+        if not obs.get('enabled', True):
+            continue
+        if not obs.get('start_date') or not obs.get('start_time'):
+            continue
+        try:
+            start = datetime.strptime(f"{obs['start_date']} {obs['start_time']}", '%Y-%m-%d %H:%M')
+        except (TypeError, ValueError):
+            continue
+        end = start + timedelta(minutes=float(obs.get('duration_minutes', 30) or 0))
+        if end <= now:
+            obs['enabled'] = False
+            retired.append(obs.get('name', ''))
+    return retired
+
+
 def scheduler_thread():
     """Background thread that checks schedule and starts/stops observations."""
     global scheduler_running
@@ -2866,6 +2897,10 @@ def scheduler_thread():
         try:
             now = datetime.now()
             schedule = load_schedule()
+            retired = retire_expired_entries(schedule, now)
+            if retired:
+                log.info("Unticked %d expired booking(s): %s", len(retired), ", ".join(retired))
+                save_schedule(schedule)
 
             # Say what is scheduled when it *changes*, and not otherwise.
             #

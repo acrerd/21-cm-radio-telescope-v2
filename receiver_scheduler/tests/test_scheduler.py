@@ -801,6 +801,25 @@ class TestFlaskAPI:
         listed = client.get('/api/schedule').get_json()
         assert [o['name'] for o in listed] == [started[0]['name']]
 
+    def test_expired_bookings_are_unticked(self):
+        """A dated slot that has ended is unticked by the scheduler itself;
+        undated (daily) entries, future slots and entries already unticked
+        are left alone (2026-09-14, operator's request)."""
+        now = datetime(2026, 9, 14, 19, 0)
+        schedule = [
+            {'name': 'ended', 'start_date': '2026-09-14', 'start_time': '18:20', 'duration_minutes': 12, 'enabled': True},
+            {'name': 'ends this minute', 'start_date': '2026-09-14', 'start_time': '18:30', 'duration_minutes': 30, 'enabled': True},
+            {'name': 'still to come', 'start_date': '2026-09-14', 'start_time': '20:00', 'duration_minutes': 15, 'enabled': True},
+            {'name': 'daily, no date', 'start_date': '', 'start_time': '18:20', 'duration_minutes': 12, 'enabled': True},
+            {'name': 'already off', 'start_date': '2026-09-13', 'start_time': '09:00', 'duration_minutes': 600, 'enabled': False},
+            {'name': 'last week', 'start_date': '2026-09-07', 'start_time': '14:32', 'duration_minutes': 73},
+        ]
+        retired = sched.retire_expired_entries(schedule, now)
+        assert retired == ['ended', 'ends this minute', 'last week']
+        assert [o.get('enabled', True) for o in schedule] == [False, False, True, True, False, False]
+        # Idempotent: a second pass finds nothing to do, so nothing is saved.
+        assert sched.retire_expired_entries(schedule, now) == []
+
     def test_a_finished_slot_is_not_started_again(self):
         """Stopped by hand or run to the end, a booking's slot is done with:
         the thread must not start it again while the slot is still due
