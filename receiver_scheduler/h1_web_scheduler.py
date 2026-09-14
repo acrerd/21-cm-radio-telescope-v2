@@ -2546,7 +2546,7 @@ def _record_finished_observation(obs: Optional[dict]):
             'bandwidth_mhz': obs.get('bandwidth_mhz'),
             'channels': obs.get('channels'),
             'gain_db': obs.get('gain_db'),
-            'mode': 'drift' if drift else 'spectrum',
+            'mode': plot_mode_for(obs, 'drift' if drift else 'track'),
             # The scan is laid out so the source crosses beam centre at the
             # mid-point; the plot marks it there.
             'transit_minutes': (duration / 2.0) if drift else None,
@@ -4469,6 +4469,22 @@ def api_sun_position():
                     "up": bool(alt > 0.0), "horizon_warning": warning})
 
 
+def plot_mode_for(obs, observation_mode) -> str:
+    """Which plot a *recording* of this observation gets: 'solar', 'drift' or
+    'spectrum'.
+
+    The same rule as live_plot_kind, so the file is drawn the way the run was
+    watched. Until 2026-09-14 a solar track's recording was plotted as its
+    spectrum - a flat continuum that says nothing - while its live view had
+    been flux against the clock; the operator, reasonably, expected the same
+    picture from the file. `observation_mode` is the file's own word for what
+    the mount did ('track'/'drift'), which decides drift against spectrum.
+    """
+    if live_plot_kind(obs) == 'solar':
+        return 'solar'
+    return 'drift' if str(observation_mode) == 'drift' else 'spectrum'
+
+
 def live_plot_kind(obs):
     """Which live plot this observation gets, or None for no plot.
 
@@ -4753,7 +4769,7 @@ def _observation_info(filename):
     mode = a.get('observation_mode')
     if mode is None:
         mode = observation_files.observation_mode(info)
-    info['mode'] = 'drift' if str(mode) == 'drift' else 'spectrum'
+    info['mode'] = plot_mode_for(info, str(mode))
     try:
         info['transit_minutes'] = (float(a['duration_minutes']) / 2.0
                                    if info['mode'] == 'drift' else None)

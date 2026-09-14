@@ -308,18 +308,19 @@ def plot_observation(path, output_path, name="", mode="spectrum",
     """Render a finished observation to a PNG. Returns the output path."""
     if not MATPLOTLIB_AVAILABLE:
         raise RuntimeError("matplotlib is not installed, so no plot can be drawn")
-    # A drift scan is a continuum measurement: the wide product where the
-    # file has one, its single product otherwise, and the H I band cut out
-    # either way (issue #27). A spectrum is the H I product.
-    product = "wide" if mode == "drift" else "h1"
+    # A drift scan or a solar track is a continuum measurement: the wide
+    # product where the file has one, its single product otherwise, and the
+    # H I band cut out either way (issue #27). A spectrum is the H I product.
+    continuum = mode in ("drift", "solar")
+    product = "wide" if continuum else "h1"
     freq_hz, spectra, stamps, taus, header = read_observation(path, product=product)
     continuum_keep = None
-    if mode == "drift":
+    if continuum:
         import drift_fit
         _, _, continuum_keep = drift_fit._band_window(header, freq_hz)
 
     band = requested_band(header)
-    if band is not None and mode != "drift":
+    if band is not None and not continuum:
         keep = (freq_hz >= band[0]) & (freq_hz <= band[1])
         # Only trim if the request actually lies inside what was recorded; a
         # mismatch means the header is not describing this file and the honest
@@ -418,12 +419,24 @@ def plot_observation(path, output_path, name="", mode="spectrum",
     # Say which frame the velocity axis is in, in words, in the header - the
     # axis label carries it too, but a reader asked "what frame is this?"
     # should not have to find it there (2026-08-26).
-    if mode != "drift":
+    if not continuum:
         subtitle += "\n" + velocity_frame_note(lsr, clock_shift, mid)
 
     fig, ax = plt.subplots(figsize=figsize, dpi=dpi)
     secax = None
-    if mode == "drift":
+    if mode == "solar":
+        # The same picture the live view drew while the run was on: flux
+        # against the clock, corrected to above the atmosphere. A solar
+        # track's spectrum is a flat continuum and says nothing.
+        _values, opacity, group = _plot_solar(ax, spectra, stamps, cal_ok)
+        if cal_ok:
+            subtitle += "\nmean %.1f SFU over the run" % float(np.nanmean(_values))
+            subtitle += (", corrected to above the atmosphere (zenith opacity %.3f nepers)"
+                         % rf_calibration.ZENITH_OPACITY_NEPERS if opacity
+                         else ", as measured (no ephemeris for the airmass)")
+        if group > 1:
+            subtitle += "; %d records per point" % group
+    elif mode == "drift":
         # The crossing recorded in the file - computed at the start from
         # where the mount actually parked - beats the caller's "middle of
         # the slot" assumption when the file has one.
@@ -443,7 +456,7 @@ def plot_observation(path, output_path, name="", mode="spectrum",
     # tight_layout does not count it when placing the title, so the two land on
     # top of each other. Reserve the room explicitly.
     ax.set_title(f"{title}\n{subtitle}", fontsize=10,
-                 pad=38 if mode != "drift" else 10)
+                 pad=38 if not continuum else 10)
     _style_dark(fig)
     if secax is not None:
         # A secondary axis is a child axes, and the blanket styling above gives
@@ -713,6 +726,83 @@ def _plot_drift(ax, spectra, stamps, transit_minutes, ylabel="Band power (counts
             ax.axvline(transit_minutes, color=_MARK, lw=1.0, ls="--",
                        label=transit_label)
             ax.legend(fontsize=8, loc="best")
+
+
+_SOLAR_MAX_POINTS = 600     # bin a long run down to about this many points, as the live view does
+
+
+def _sun_altitudes(stamps):
+    """The Sun's elevation at each stamp, from the site position; None if
+    PyEphem is not installed. Sampled at fifty knots and interpolated, as the
+    live view does - elevation moves smoothly and a run holds thousands of
+    records."""
+    try:
+        import ephem
+    except ImportError:
+        return None
+    stamps = np.asarray(stamps, float)
+    if not stamps.size:
+        return None
+    site = ephem.Observer()
+    site.lat, site.lon = str(SITE_LAT_DEG), str(SITE_LON_DEG)
+    site.elevation = SITE_HEIGHT_M
+    knots = np.linspace(stamps[0], stamps[-1], min(50, stamps.size))
+    alts = []
+    for t in knots:
+        # PyEphem wants a naive UTC datetime.
+        site.date = datetime.fromtimestamp(float(t), tz=timezone.utc).replace(tzinfo=None)
+        sun = ephem.Sun()
+        sun.compute(site)
+        alts.append(math.degrees(float(sun.alt)))
+    return np.interp(stamps, knots, alts)
+
+
+def solar_flux_series(spectra, stamps, calibrated):
+    """Per-point (epoch seconds, value, opacity_applied, records per point)
+    for a solar track: the continuum band mean of each record - antenna
+    temperature when calibrated, counts otherwise - converted to solar flux
+    units and corrected to above the atmosphere exactly as the live view is
+    (`/api/observe/live`): the same antenna theorem, the same zenith opacity,
+    applied for display and never to the file."""
+    import rf_calibration
+    from observatory import antenna_temperature_to_flux
+    power = np.nanmean(spectra, axis=1)
+    t = np.asarray(stamps, float)
+    if t.size != power.size or not t.size:
+        t = np.arange(power.size, dtype=float)
+    group = max(1, int(math.ceil(power.size / float(_SOLAR_MAX_POINTS))))
+    if group > 1:
+        keep = (power.size // group) * group
+        power = np.nanmean(power[:keep].reshape(-1, group), axis=1)
+        t = t[:keep].reshape(-1, group).mean(axis=1)
+    opacity = False
+    if not calibrated:
+        return t, power, opacity, group
+    flux = np.array([antenna_temperature_to_flux(v) for v in power], float)
+    alts = _sun_altitudes(t)
+    if alts is not None:
+        trans = np.array([rf_calibration.atmospheric_transmission(a) for a in alts], float)
+        ok = np.isfinite(trans) & (trans > 0.5)
+        if ok.any():
+            flux = np.where(ok, flux / np.where(ok, trans, 1.0), flux)
+            opacity = True
+    return t, flux, opacity, group
+
+
+def _plot_solar(ax, spectra, stamps, calibrated):
+    import matplotlib.dates as mdates
+    t, values, opacity, group = solar_flux_series(spectra, stamps, calibrated)
+    times = [datetime.fromtimestamp(float(s), tz=timezone.utc) for s in t]
+    ax.plot(times, values, color=_ACCENT, lw=1.2, drawstyle="steps-mid")
+    _robust_ylim(ax, values)
+    # Absolute UTC, as the live view labels it: solar activity is matched
+    # against a flare time or a published index, never against "minutes in".
+    ax.xaxis.set_major_formatter(mdates.DateFormatter("%H:%M", tz=timezone.utc))
+    ax.set_xlabel("UTC on %s" % times[0].strftime("%Y-%m-%d"))
+    ax.set_ylabel("Solar flux (SFU, above the atmosphere)" if opacity
+                  else "Solar flux (SFU, T_sys subtracted)" if calibrated
+                  else "Band power (counts, uncalibrated)")
+    return values, opacity, group
 
 
 def recorded_crossing_minutes(header, stamps):
