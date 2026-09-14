@@ -1385,13 +1385,32 @@ static bool refineZeroPositiveEdge() {
     // just a known number of pulses. No creep needed. Falls back to the
     // first-edge creep below only if no edge followed the cut.
     bool azFromCut = (azCutEdgePosition != INT32_MIN);
+    // Which side of its dwell the rest is on decides the counter. Going in,
+    // the counted edge is where the reed ENTERS a 0.25 deg dwell; "coast 0
+    // pulses beyond" holds whether the mount stopped inside that dwell (reed
+    // HIGH) or coasted through it into the gap beyond (reed LOW), because no
+    // further edge is counted either way. But tracking drives positive, and
+    // the positive-going counted edges sit on the OTHER side of each dwell:
+    // from a HIGH rest the first positive edge is the next dwell's entry,
+    // from a LOW rest it is the cut dwell's own entry - one lattice step
+    // earlier for the same counter value. 2026-09-10/11: the four scans a
+    // pulse off were exactly the four homings that rested LOW; the twenty
+    // that rested HIGH were right. So a HIGH rest keeps the counter; a LOW
+    // rest creeps positive to the first counted edge - from there always the
+    // cut dwell's entry - and takes the counter value THERE, which also
+    // holds when the rest sits on the dwell boundary itself.
+    int32_t azCutBase = 0;
+    bool azCreepToEntry = false;
     if (azFromCut) {
         int32_t coastPulses = positionAz - azCutEdgePosition;
-        positionAz -= azCutEdgePosition;
+        azCutBase = positionAz - azCutEdgePosition;      // counter value the rest deserves
+        azCreepToEntry = !azRestHigh;
+        if (!azCreepToEntry) positionAz = azCutBase;
         String m = "Homing: Az zero on the first edge after the current cut (cut "
                  + String(azCutFromA, 2) + "->" + String(azCutToA, 2) + " A, cut->edge "
                  + String(azCutToEdgeMs) + " ms, coast " + String(coastPulses)
-                 + " pulses beyond it, reed " + (azRestHigh ? "HIGH" : "LOW") + " at rest)";
+                 + " pulses beyond it, reed " + (azRestHigh ? "HIGH" : "LOW") + " at rest"
+                 + (azCreepToEntry ? "; coasted through the dwell - creeping to its entry" : "") + ")";
         Serial.println(m);
         Serial1.println(m);
     } else {
@@ -1404,7 +1423,7 @@ static bool refineZeroPositiveEdge() {
     lastPulseAz = millis();
     lastPulseAlt = millis();
     unsigned long startTime = millis();
-    if (!azFromCut) {                         // az creeps only on the fallback path
+    if (!azFromCut || azCreepToEntry) {       // az creeps on the fallback path, or to the dwell entry
         analogWrite(PIN_PWM_AZ, PWM_MIN_SPEED);   // slow creep, so the edge is precise
         motionStateAz = MOTION_DRIVING;
     }
@@ -1421,7 +1440,7 @@ static bool refineZeroPositiveEdge() {
     String altTrans = (altLevel == HIGH) ? "H" : "L";
     unsigned long azFirstTransMs = 0;   // creep time to the first level change
 
-    bool azDone = azFromCut;      // az already zeroed from the cut edge
+    bool azDone = azFromCut && !azCreepToEntry;   // az already zeroed from the cut edge
     bool altDone = false;
     while (!azDone || !altDone) {
         unsigned long now = millis();
@@ -1452,9 +1471,10 @@ static bool refineZeroPositiveEdge() {
         // there, putting the zero on the same magnet a LOW rest reaches.
         if (!azDone && positionAz != azStart) {
             stopMotorAz();
-            positionAz = 0;
+            positionAz = azFromCut ? azCutBase : 0;
             azDone = true;
-            String m = String("Homing: Az zero on first edge of the creep (fallback; reed ")
+            String m = String(azFromCut ? "Homing: Az counter set at the cut dwell's entry (reed "
+                                        : "Homing: Az zero on first edge of the creep (fallback; reed ")
                      + (azRestHigh ? "HIGH" : "LOW") + " at rest, edge after "
                      + String(now - startTime) + " ms, levels " + azTrans + ")";
             Serial.println(m);
