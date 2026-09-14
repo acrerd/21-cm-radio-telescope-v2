@@ -30,9 +30,13 @@ This receiver is designed for radio astronomy observations of neutral hydrogen (
 | `observation_files.py` | Where recordings go and what they are called |
 | `observation_plot.py` | Reads a recording (live or finished, either product, always as counts) and renders it, in kelvin and on an LSR velocity axis |
 | `observatory.py` | Where the telescope is and how big its beam is — plumbing only; the numbers live in `astro_simulator/instrument.py` |
-| `tests/page_sources.py` | Collects the page and every script it loads, for the tests that guard it |
-| `ad9361_filters.py` | Reads the B210's own decimation-filter chain and computes its response |
-| `investigations/lo_shape_*.py`, `investigations/freq_switch_demo.py` | One-off investigations, kept for their reasoning |
+| `solar_reference.py` | The professional solar flux quoted beside ours: reads NOAA SWPC's hourly RSTN local-noon file, keeps a dated history in `data/`, never waits on the network |
+| `ad9361_filters.py` | **Not imported at runtime.** A standalone account of the B210's decimation-filter chain and the passband shape it implies, run by hand; `bandpass.py`'s docstring cites its result (about 4% of the measured response). Kept as the reasoning behind measuring the bandpass rather than modelling it |
+| `investigations/lo_shape_*.py`, `investigations/freq_switch_demo.py` | One-off investigations from the LO-placement work, not imported by anything, kept for their reasoning |
+| `tests/page_sources.py`, `tests/conftest.py` | Test plumbing: collects the operator page and every script it loads; keeps the suite out of the observatory's records |
+| `../tools/` | Hardware-side scripts, none of them part of the observing path: `due_emulator.py` (bench emulator of the Due's serial protocol for ESP32 work), `az_switch_probe_capture.py` (drives the Due's `PROBE` command and records the azimuth limit switch's reed/current trace, issue #32), `homing_scan_experiment.py` (home from the Sun's position then Sun scan, repeated, for homing-repeatability tests) |
+
+`h1_schedule.json`, `pointing_model.json`, `pointing_data.json`, `gain_calibration.json`, `bandpass_template*.json` and `last_observation.json` are the scheduler's state, not code; `data/` holds recordings, plots and diagnostic archives; `horizon_profiles/` and `pointing_models/` are the dated archives of measurements. None of these are tracked by git.
 
 ### State the scheduler keeps
 
@@ -55,19 +59,27 @@ This receiver is designed for radio astronomy observations of neutral hydrogen (
 
 ### Tests
 
-`cd receiver_scheduler && python -m pytest` — 362 tests. `conftest.py` keeps the suite out of the observatory's records: it detaches the loggers from `scheduler.log` and redirects the last-observation pointer, because several tests run the real `stop_observation`. No test may open the B210; stub `sun_scan._B210PowerMeter` if you need the non-demo path.
+`cd receiver_scheduler && python -m pytest` — about 540 tests (2026-09-14). `conftest.py` keeps the suite out of the observatory's records: it detaches the loggers from `scheduler.log` and redirects the last-observation pointer, because several tests run the real `stop_observation`. No test may open the B210; stub `sun_scan._B210PowerMeter` if you need the non-demo path. One test, `TestFlaskAPI::test_post_config`, reaches the live controller and fails on the observatory host for that reason alone.
 
 | File | Covers |
 |------|--------|
-| `test_scheduler.py` | Scheduling, the observation lifecycle, preemption, the API |
+| `test_scheduler.py` | Scheduling, the observation lifecycle, preemption, the API, homing judgements, expired bookings, the per-entry gain override |
 | `test_scheduler_state.py` | That the names describing a running observation agree with each other |
 | `test_exclusion.py` | That only one thing at a time owns the SDR and the mount |
 | `test_sun_scan.py` | Raster geometry, the pointing fit, obstruction handling |
 | `test_horizon_scan.py` | Strip scanning, partial saves, deriving clearance afterwards |
 | `test_horizon_store.py` | The dated archive, choosing which profile is in force, window trimming |
 | `test_rf_calibration.py` | Gain and T_sys fitting, RFI rejection, the LO artefact |
+| `test_rf_goto.py` | Sending the dish to the bandpass field, and refusing to while something else holds it |
 | `test_bandpass.py`, `test_tuning.py` | The instrument response and the tuning plan |
+| `test_fixed_instrument.py` | The fixed instrument: one tuning, two products per recording, and the legacy dataset names |
+| `test_self_contained.py` | That a recording carries everything needed to re-reduce it, and that kelvin written at record time reverse exactly |
 | `test_velocity_frame.py` | The LSR correction and the clock offset |
+| `test_drift_park.py` | Parking a drift scan on the drive grid, against the controller's own reported positions |
+| `test_drift_plot.py` | The drift-scan plot: total power per record, the recorded crossing marked |
+| `test_live_plot.py` | The live plot on the Observe tab and the route table it is served from |
+| `test_solar_recording_plot.py` | A solar track's recording drawn as flux against the clock, the way its live view was |
+| `test_solar_reference.py` | The RSTN reference flux: parsing NOAA's file, the history, never waiting on the network |
 | `test_page_structure.py`, `test_page_javascript.py` | That the operator page has not lost an element, a handler, or a route |
 
 ## Hardware Requirements
