@@ -66,6 +66,6 @@ while t < 86400 * DAYS:
     t += move + T_INT; cur_alt, cur_az = alt[j], az[j]; done[j] = True; n_obs += 1
 print(f"beam {BEAM} deg, grid {SPACING} deg, {T_INT:.0f} s per patch: {N} patches on the grid, {ever.sum()} ever observable from here ({ever.sum()*SPACING*SPACING:.0f} sq deg)")
 print(f"  observed in {DAYS:g} day(s): {done.sum()} of {ever.sum()} observable ({100*done.sum()/ever.sum():.1f}%); integrating {n_obs*T_INT/3600:.1f} h, idle {idle/3600:.1f} h, {n_home} homings")
-print(f"  mount travel: alt {travel_alt:.0f} deg, az {travel_az:.0f} deg; mean move {(86400-idle-n_obs*T_INT-n_home*HOME_COST)/max(n_obs,1):.1f} s per patch")
+print(f"  mount travel: alt {travel_alt:.0f} deg, az {travel_az:.0f} deg; mean move {(86400*DAYS-idle-n_obs*T_INT-n_home*HOME_COST)/max(n_obs,1):.1f} s per patch")
 missed = ever & ~done
 if missed.any(): print(f"  missed: dec range {np.degrees(dec[missed]).min():.0f}..{np.degrees(dec[missed]).max():.0f}, {missed.sum()} patches")
