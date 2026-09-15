@@ -360,7 +360,7 @@ Displays the last N lines of `scheduler.log` with auto-refresh (5 second interva
 | Filename | Output file (auto-generated if empty) |
 
 **The tuning is not an observation parameter.** Since issue #27 the B210 records
-with a **fixed instrument** — LO 1418.905752 MHz, 8 Msps, gain 40 dB — set once
+with a **fixed instrument** — LO 1418.905752 MHz, 8 Msps, gain 30 dB — set once
 in `tuning.py`, overridable only on the Configuration tab (with a warning). The
 centre-frequency, bandwidth, gain and channels boxes are gone from the form.
 Every recording carries **two products**: an H I sub-band (1419.006–1422.306 MHz,

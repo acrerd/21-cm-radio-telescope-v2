@@ -22,7 +22,7 @@ class TestFixedInstrument:
         inst = tuning.fixed_instrument()
         assert inst["lo_hz"] == pytest.approx(1418.905752e6)
         assert inst["sample_rate_hz"] == 8.0e6
-        assert inst["gain_db"] == 40.0
+        assert inst["gain_db"] == 30.0
         assert inst["h1_band_hz"] == pytest.approx([1419.005752e6, 1422.305752e6])
         assert inst["continuum_band_hz"] == pytest.approx([1415.705752e6, 1418.805752e6])
 
@@ -56,7 +56,7 @@ class TestFixedInstrument:
 
     def test_describe_says_the_essentials(self):
         text = tuning.describe_instrument(tuning.fixed_instrument())
-        assert "1418.905752" in text and "8.0 Msps" in text and "40 dB" in text
+        assert "1418.905752" in text and "8.0 Msps" in text and "30 dB" in text
 
 
 def _two_product_file(path, n_records=4, monkeypatch=None):

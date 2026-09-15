@@ -627,7 +627,7 @@ def _measure_power_demo(center_freq: float, sample_rate: float,
 def measure_power(sdr_type: str = "b210",
                   center_freq: float = POWER_METER_CENTER_HZ,
                   sample_rate: float = 2.4e6,
-                  gain: float = 40.0,
+                  gain: float = 30.0,
                   integration_time: float = 1.0,
                   _sim_state: dict | None = None) -> float:
     """Measure total broadband power.
@@ -965,7 +965,7 @@ def sun_scan(
     sdr_type: str = "b210",
     center_freq: float = POWER_METER_CENTER_HZ,
     sample_rate: float = 2.4e6,
-    gain: float = 40.0,
+    gain: float = 30.0,
     output_image: str | None = "sun_scan.png",
     slew_timeout: int | None = None,
     position_tolerance: float = 0.5,
@@ -1350,7 +1350,7 @@ _ENCODER_PULSE_DEG = 0.5
 #
 # Diluted by the points that actually carry centroid information - those within
 # the beam's half-power width, about 9 of the 81 on a 9x9 raster at 1.5 deg
-# spacing with a 5.16 deg beam - not by all 81. Deliberately the conservative
+# spacing with a 4.6 deg beam - not by all 81. Deliberately the conservative
 # choice: any systematic part of the offset, from the mount consistently
 # stopping just past a pulse edge on a raster that always approaches from the
 # same side, is common-mode and does not average down at all. Dividing by 3
@@ -2359,7 +2359,7 @@ def main():
                         help="SDR type (default b210)")
     parser.add_argument("--freq", type=float, default=POWER_METER_CENTER_HZ,
                         help="Centre frequency in Hz (default: mid continuum band, off the H I line)")
-    parser.add_argument("--gain", type=float, default=40.0,
+    parser.add_argument("--gain", type=float, default=30.0,
                         help="SDR gain in dB")
     parser.add_argument("--output", default="sun_scan.png",
                         help="Output image path")

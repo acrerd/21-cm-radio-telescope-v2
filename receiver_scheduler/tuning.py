@@ -53,7 +53,12 @@ H1_REST_FREQ_HZ = 1420.405752e6
 #                         from this tuning; it is the manual GUI's case.
 #   continuum LO-3.2..-0.1 MHz - 3.1 MHz with no hydrogen (v > +330 km/s),
 #                         on the good side of the SAW filter.
-#   gain 40 dB          - has held the Sun at +2000 K.
+#   gain 30 dB          - 40 dB compressed the Sun's peak by ~5.7% (issue #35,
+#                         three Sun drifts 2026-09-15: 30 and 20 dB agree,
+#                         40 does not); 30 dB is linear on the Sun and the
+#                         B210's noise figure there is still negligible
+#                         against the front end. Was 40 dB until 2026-09-15;
+#                         the bandpass and gain calibrations are per gain.
 #
 # These are config values (scheduler_config.json, receiver_* keys) so they can
 # be changed deliberately, and they are the defaults so that a receiver run by
@@ -62,7 +67,7 @@ H1_REST_FREQ_HZ = 1420.405752e6
 
 FIXED_LO_HZ = H1_REST_FREQ_HZ - 1.5e6            # 1418.905752 MHz
 FIXED_SAMPLE_RATE_HZ = 8.0e6
-FIXED_GAIN_DB = 40.0
+FIXED_GAIN_DB = 30.0
 WIDE_CHANNELS = 1024                              # 7.8 kHz per channel
 H1_BAND_HZ = (FIXED_LO_HZ + 0.1e6, FIXED_LO_HZ + 3.4e6)
 # Over the decimated 4 Msps: 3.9 kHz = 0.82 km/s, 845 channels kept across

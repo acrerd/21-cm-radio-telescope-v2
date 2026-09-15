@@ -8,24 +8,33 @@ down in exactly one place rather than once per consumer.
 
 import math
 
-# Beam FWHM, measured rather than derived: 18 solar scans on 2026-08-22 fitted
-# 5.173 +/- 0.020 deg on the 3.0 m dish (receiver_scheduler/sun_scan.py, which
-# fits the width as a free parameter of each raster).
+# Beam, measured rather than derived. The number that matters to every
+# consumer here is the main-lobe SOLID ANGLE, because that is what the antenna
+# theorem turns into a collecting area; the FWHM is its Gaussian equivalent,
+# Omega = 1.133 FWHM^2, kept because the simulators convolve with a Gaussian.
 #
-# That raw figure is the beam *convolved with the Sun*, which is not a point
-# source, so the disk is deconvolved out of it here. The Sun was 0.5271 deg
-# across on the day (pyephem). A uniform disk of diameter d has a per-axis
-# variance of (d/4)^2, so it acts like a Gaussian of FWHM 0.310 deg, and
-# widths add in quadrature: sqrt(5.173^2 - 0.310^2) = 5.164 deg. Confirmed
-# numerically by convolving a uniform disk with a trial beam and refitting
-# with the scans' own estimator, both densely sampled and on the real 9x9
-# raster - all three agree to four decimals.
+# Measured 2026-09-15 (issue #35) from three hour-long drift scans of the Sun
+# at B210 gains of 40, 30 and 20 dB, 352 x 10 s each, +-7.4 deg of drift so
+# the baseline is seen on both sides. Integrating the crossing directly,
+# 2 pi int P(theta) theta dtheta on each side, gives 23.7 sq deg at 30 dB and
+# 23.8 at 20 dB - identical, so the receiver is linear there and that is the
+# antenna: main lobe 23.7 sq deg, Gaussian-equivalent FWHM 4.57 deg (the
+# whole-window Gaussian fits 4.56 +- 0.01). The crossing is not Gaussian: it
+# has the flattened top of a focused aperture (residual against the Gaussian
+# core -0.7%, 1-3 deg +0.7%, 3-5 deg -1.0% of peak), which is why a Gaussian
+# fitted to it is window-dependent (5.13 deg over +-4.7 deg of the same data).
 #
-# The correction is only -0.009 deg, below the 0.020 deg scatter of the
-# measurement itself, and it is insensitive to how much larger the radio Sun
-# is than the optical one: at twice the optical diameter it is still only
-# -0.038 deg. It is applied because it is a known systematic that costs
-# nothing to remove, not because it matters at this precision.
+# This was 5.164 deg from 2026-08-22 to 2026-09-15: 18 solar rasters at 40 dB
+# (5.173 deconvolved of the solar disc) and the 2026-08-27 Sun drift (5.16,
+# but over a +-4.7 deg window whose fitted baseline sat below T_sys). Both
+# were the Sun at 40 dB, where the receiver compresses its peak by ~5.7%
+# (peak/baseline 5.12 at 40 dB against 5.41 at 30), and both were fitted over
+# the core alone. The faint sources (Moon 4.0, Cas A 3.7, scallop 4.3 deg)
+# were closer to the truth all along, and on the corrected solid angle the
+# Sun reads 79 SFU against RSTN's 75 where the old one read 93.
+#
+# The Sun's own disc (0.53 deg) is not deconvolved: a uniform disc of that
+# size widens a 4.56 deg Gaussian by 0.006 deg, below the fit's error.
 #
 # Deliberately not 1.22 lambda/D, which this was until 2026-08-22. That is the
 # first-null radius of the Airy pattern of a *uniformly illuminated* circular
@@ -37,7 +46,7 @@ import math
 # within 5% of this dish by luck rather than by physics, so the error was
 # invisible until the beam was measured.
 #
-# The deconvolved beam corresponds to 1.281 lambda/D. Beam width scales as
+# The measured beam corresponds to 1.134 lambda/D. Beam width scales as
 # lambda/D and this simulator is effectively monochromatic at the HI line - a
 # 2 MHz band is 0.14% in wavelength - so the reference is scaled by diameter
 # alone.
@@ -45,7 +54,7 @@ import math
 # This is the *default*, not a fixed property: both front ends keep an
 # editable beam box, so a user can ask for any width the loaded dataset can
 # support (see DishSimulator.set_beam, which floors it at min_fwhm).
-BEAM_FWHM_REF_DEG = 5.164
+BEAM_FWHM_REF_DEG = 4.57
 BEAM_FWHM_REF_DISH_M = 3.0
 
 DISH_M = 3.0
@@ -135,8 +144,9 @@ def beam_solid_angle_sr(dish_m=DISH_M):
     """Main-beam solid angle for a Gaussian beam of the measured width.
 
     1.133 theta^2 is the exact integral of a 2-D Gaussian expressed through its
-    FWHM (pi/(4 ln 2)), so this follows from the beam having been *measured*
-    rather than assumed - 5.164 deg off eighteen solar scans, deconvolved.
+    FWHM (pi/(4 ln 2)). The FWHM above is the Gaussian equivalent of the
+    *directly integrated* main lobe (23.7 sq deg, three Sun drifts, 2026-09-15),
+    so this returns the measured solid angle, not a model of one.
     """
     fwhm_rad = math.radians(beam_fwhm_deg(dish_m))
     return 1.133 * fwhm_rad ** 2
@@ -148,8 +158,13 @@ def effective_area_m2(dish_m=DISH_M):
     Derived from the measured beam, never from an assumed aperture efficiency:
     that is the same argument that put MAIN_BEAM_EFFICIENCY at 1.0 rather than
     at a number chosen to make an answer come out. For the 3 m dish this gives
-    4.84 m^2 against a physical 7.07, an aperture efficiency of 0.68 - which is
-    an output of the measurement, not an input to it.
+    6.18 m^2 against a physical 7.07, an aperture efficiency of 0.87 - which is
+    an output of the measurement, not an input to it. It is an upper bound:
+    Omega here is the main lobe out to ~7 deg, and the sidelobes and the ~10%
+    of spillover measured by the horizon strip scan lie outside it, so the true
+    A_e is smaller by the main-beam efficiency (of order 0.85-0.9). The 4.84 m^2
+    this gave until 2026-09-15 came from a Gaussian fitted to the core of a
+    compressed Sun (see BEAM_FWHM_REF_DEG).
     """
     lam = C_M_S / H1_REST_FREQ_HZ
     return lam ** 2 / beam_solid_angle_sr(dish_m)

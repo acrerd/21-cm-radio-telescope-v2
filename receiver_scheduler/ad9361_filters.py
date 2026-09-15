@@ -27,7 +27,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 CHAIN_FILE = os.path.join(HERE, "ad9361_chain.json")
 
 
-def capture(sample_rate, bandwidth, center_freq=1421.205752e6, gain=40.0,
+def capture(sample_rate, bandwidth, center_freq=1421.205752e6, gain=30.0,
             path=CHAIN_FILE):
     """Ask the attached B210 for its filter chain and store it."""
     import uhd

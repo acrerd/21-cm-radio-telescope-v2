@@ -95,7 +95,7 @@ _HORIZON_PROFILE_FILE = os.path.join(_SCRIPT_DIR, "horizon_profile.json")
 # and cannot be refitted. If the clearance fraction changes, or the fit
 # improves, raw cuts can be reprocessed without another night on the dish.
 
-DEFAULT_BEAM_FWHM_DEG = 5.8       # as measured by the Sun scans
+DEFAULT_BEAM_FWHM_DEG = horizon_store.beam_margin_deg()   # the measured beam, from instrument.py
 
 
 
@@ -901,7 +901,7 @@ def horizon_strip_scan(az_start: float = 5.0,
                        sdr_type: str = "b210",
                        center_freq: float = POWER_METER_CENTER_HZ,
                        sample_rate: float = 2.4e6,
-                       gain: float = 40.0,
+                       gain: float = 30.0,
                        srt_url: str | None = None,
                        slew_timeout: int = 150,
                        position_tolerance: float = 0.5,

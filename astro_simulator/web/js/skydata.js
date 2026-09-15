@@ -12,7 +12,7 @@ const K_B = 1.380649e-23;
 // the reasoning. Emphatically not 1.22, the Airy first-null radius of a
 // uniformly illuminated aperture, which this used to be. Only reached if a
 // meta.json predating that fix is served.
-const BEAM_FWHM_COEFF = 1.28;
+const BEAM_FWHM_COEFF = 1.134;
 
 // ---- bundle parsing -------------------------------------------------
 const DTYPES = { int16: Int16Array, uint16: Uint16Array,

@@ -290,7 +290,7 @@ def test_clearance_allows_for_the_whole_beam(archive):
     """
     profile = make_profile(floors={0.0: 20.0, 90.0: 20.0, 180.0: 20.0, 270.0: 20.0})
     beam = store.beam_margin_deg()
-    assert beam == pytest.approx(5.16, abs=0.2)
+    assert beam == pytest.approx(4.57, abs=0.2)
 
     assert store.horizon_clearance(profile, 20.0 + beam + 0.1, 0.0)["clear"]
     assert not store.horizon_clearance(profile, 20.0 + beam - 0.1, 0.0)["clear"]

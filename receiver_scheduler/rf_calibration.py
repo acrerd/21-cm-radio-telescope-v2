@@ -12,7 +12,7 @@ HI4PI through the beam that was actually measured off the Sun, so a single
 observation fixes both: within one plane spectrum T_A runs from a fraction of a
 kelvin in the line-free channels to around 100 K at the peak, and a straight line
 through counts against kelvin gives G as its slope and G*T_sys as its intercept.
-Measured spread available for the fit, through a 5.16 degree beam: 0.4 K median
+Measured spread available for the fit, through a 4.6 degree beam: 0.4 K median
 against a 96.9 K peak toward l=80, and 0.1 K against 1.3 K toward the Lockman
 Hole, which is why the plane is the calibrator and the Lockman Hole is the check.
 

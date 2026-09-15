@@ -110,11 +110,11 @@ C_KMS = 299792.458
 SDR_DEFAULTS = {
     'b210': {
         'sample_rate': 2.4e6,
-        'gain': 40,
+        'gain': 30,
     },
     'rtlsdr': {
         'sample_rate': 2.048e6,
-        'gain': 40,
+        'gain': 30,
     },
     'demo': {
         'sample_rate': 2.4e6,
@@ -2215,7 +2215,7 @@ Examples:
         '--gain', '-g',
         type=float,
         default=None,
-        help='RF gain in dB (default: 40 for both SDRs)'
+        help='RF gain in dB (default: 30 for both SDRs)'
     )
     parser.add_argument(
         '--sample-rate', '-r',

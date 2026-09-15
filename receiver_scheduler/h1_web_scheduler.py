@@ -36,7 +36,7 @@ import urllib.error
 import urllib.parse
 
 # The observatory's surveyed position, written down in exactly one place.
-from observatory import SITE_HEIGHT_M, SITE_LAT_DEG, SITE_LON_DEG
+from observatory import SITE_HEIGHT_M, SITE_LAT_DEG, SITE_LON_DEG, beam_fwhm_deg
 
 # Naming and placing recordings. Shared with b210_h1_receiver, which rolls its
 # own files and must land them in the same folder under the same convention -
@@ -2016,7 +2016,7 @@ DEFAULT_OBSERVATION = {
     "duration_minutes": 30,
     "center_freq_mhz": _POWER_METER_CENTER_MHZ,
     "bandwidth_mhz": 2.4,
-    "gain_db": 40,
+    "gain_db": 30,
     "channels": 4096,
     "integration_time_s": 3.0,
     "filename": "",  # Auto-generated if empty
@@ -2710,11 +2710,11 @@ def _start_calibration_observation(obs: dict, duration_override: int = None) -> 
         "integration_time_s": obs.get("integration_time_s", 3.0),
         "center_freq_mhz": obs.get("center_freq_mhz", _POWER_METER_CENTER_MHZ),
         "bandwidth_mhz": obs.get("bandwidth_mhz", 2.4),
-        "gain_db": obs.get("gain_db", 40),
+        "gain_db": obs.get("gain_db", 30),
         "sdr_type": obs.get("sdr_type", "b210"),
         # Starting guess for the raster's Gaussian fit, and the width the
         # demo Sun is drawn with: the measured beam, not a placeholder.
-        "beam_fwhm_deg": 5.2,
+        "beam_fwhm_deg": beam_fwhm_deg(),
         "interval_minutes": obs.get("cal_interval_min", 30),
     }
     try:
@@ -2781,7 +2781,7 @@ def _start_horizon_observation(obs: dict, duration_override: int = None) -> bool
         "integration_time_s": float(obs.get("horizon_integration_s", 2.0)),
         "center_freq_mhz": float(obs.get("center_freq_mhz", _POWER_METER_CENTER_MHZ)),
         "bandwidth_mhz": float(obs.get("bandwidth_mhz", 2.4)),
-        "gain_db": float(obs.get("gain_db", 40)),
+        "gain_db": float(obs.get("gain_db", 30)),
         "sdr_type": obs.get("sdr_type", "b210"),
     }
 
@@ -3110,8 +3110,8 @@ def _validate_sun_scan_params(raw: dict, include_interval: bool = False) -> dict
         "integration_time_s": number("integration_time_s", 3.0, 0.1, 60.0),
         "center_freq_mhz": number("center_freq_mhz", _POWER_METER_CENTER_MHZ, 0.001, 100000.0),
         "bandwidth_mhz": number("bandwidth_mhz", 2.4, 0.01, 100.0),
-        "gain_db": number("gain_db", 40.0, 0.0, 100.0),
-        "beam_fwhm_deg": number("beam_fwhm_deg", 5.2, 0.1, 30.0),
+        "gain_db": number("gain_db", 30.0, 0.0, 100.0),
+        "beam_fwhm_deg": number("beam_fwhm_deg", beam_fwhm_deg(), 0.1, 30.0),
     }
     if params["n"] % 2 == 0:
         raise ValueError("n must be odd so the raster has a centre point")
@@ -3177,11 +3177,11 @@ def _run_sun_scan(params: dict):
             sdr_type=params.get("sdr_type", "b210"),
             center_freq=params.get("center_freq_mhz", _POWER_METER_CENTER_MHZ) * 1e6,
             sample_rate=params.get("bandwidth_mhz", 2.4) * 1e6,
-            gain=params.get("gain_db", 40.0),
+            gain=params.get("gain_db", 30.0),
             output_image=image_path,
             slew_timeout=cfg.get("slew_timeout", 300),
             position_tolerance=cfg.get("position_tolerance", 0.5),
-            beam_fwhm_deg=params.get("beam_fwhm_deg", 5.2),
+            beam_fwhm_deg=params.get("beam_fwhm_deg", beam_fwhm_deg()),
             progress_callback=_sun_scan_progress,
             cancel_event=sun_scan_cancel,
         )
@@ -3236,7 +3236,7 @@ def _run_horizon_scan(params: dict):
             settle_s=params.get("settle_s", 2.0),
             integration_time_s=params.get("integration_time_s", 2.0),
             home_every_strips=params.get("home_every_strips", 2),
-            beam_fwhm_deg=params.get("beam_fwhm_deg", 5.8),
+            beam_fwhm_deg=params.get("beam_fwhm_deg", beam_fwhm_deg()),
             sdr_type=params.get("sdr_type", "b210"),
             center_freq=params.get("center_freq_mhz", _POWER_METER_CENTER_MHZ) * 1e6,
             # Bandwidth is a free choice here rather than a trade-off: at
@@ -3245,7 +3245,7 @@ def _run_horizon_scan(params: dict):
             # samples less spectrum either side of the protected 1420 MHz band,
             # so it is the safer choice against terrestrial RFI.
             sample_rate=params.get("bandwidth_mhz", 2.4) * 1e6,
-            gain=params.get("gain_db", 40.0),
+            gain=params.get("gain_db", 30.0),
             srt_url=SRT_CONTROLLER_URL,
             slew_timeout=SRT_SLEW_TIMEOUT,
             position_tolerance=SRT_POSITION_TOLERANCE,
@@ -3866,7 +3866,7 @@ def _rf_observe(name, glon, glat, duration_s, sdr_type="b210",
         "bandwidth_mhz": bandwidth_mhz,
         "channels": channels,
         "integration_time_s": integration_s,
-        "gain_db": 40,
+        "gain_db": 30,
         "sdr_type": sdr_type,
         "duration_minutes": max(1, int(round(duration_s / 60.0))),
     }

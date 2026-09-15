@@ -14,13 +14,13 @@
     "tsys": 200.0,
     "tint": 60.0,
     "npol": 1,
-    "fwhm": 5.164,
+    "fwhm": 4.57,
     "gain_sigma": 0.00023
   },
   "instrument": {
     "lo_hz": 1418905752.0,
     "sample_rate_hz": 8000000.0,
-    "gain_db": 40.0,
+    "gain_db": 30.0,
     "h1_band_hz": [
       1419005752.0,
       1422305752.0

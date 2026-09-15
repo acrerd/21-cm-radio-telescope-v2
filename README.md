@@ -391,7 +391,7 @@ GNU Radio-based spectrum analyzer for 21 cm observations:
 ```bash
 # Run standalone receiver
 cd receiver_scheduler
-python b210_h1_receiver.py --sdr b210 --gain 40
+python b210_h1_receiver.py --sdr b210 --gain 30
 
 # Or use demo mode without hardware
 python b210_h1_receiver.py --sdr demo
@@ -518,7 +518,7 @@ Every recording goes in `receiver_scheduler/data/observations/`, named for when 
 `track` and `drift` describe the mount rather than the box the entry was typed into: an alt/az observation is a **drift** scan, because the scheduler parks the dish and leaves tracking off.
 
 Since issue #27 the B210 records with a **fixed instrument** (LO 1418.905752 MHz,
-8 Msps, gain 40 dB, set in `tuning.py`) and every file carries **two products** —
+8 Msps, gain 30 dB, set in `tuning.py`) and every file carries **two products** —
 an H I sub-band and a whole-band continuum product — readable while it is still
 being written (HDF5 SWMR):
 

@@ -3,7 +3,7 @@
 
     python tools/survey_plan_sim.py BEAM_DEG GRID_DEG T_INT_S [SLEW_WEIGHT] [DAYS]
 
-e.g. `5.16 2.58 60 1 4` is the Nyquist-sampled four-day programme of issue #37. Reads the active
+e.g. `4.57 2.29 60 1 4` is the Nyquist-sampled four-day programme of issue #37 on the beam measured 2026-09-15. Reads the active
 horizon profile through horizon_store; prints coverage, integration and idle hours, homings and
 mount travel. The chooser is the one the survey observation type should use: the patch that sets
 soonest if any sets within the hour, otherwise the nearest in mount travel (weighted by SLEW_WEIGHT).
@@ -14,7 +14,7 @@ import observatory, horizon_store as hs
 LAT = math.radians(55.902426)
 prof = hs.load_active()
 floors = np.array([hs.horizon_floor(prof, az) for az in range(0, 360)])   # deg, per integer azimuth
-BEAM = float(sys.argv[1]) if len(sys.argv) > 1 else 5.16
+BEAM = float(sys.argv[1]) if len(sys.argv) > 1 else 4.57
 SPACING = float(sys.argv[2]) if len(sys.argv) > 2 else BEAM              # grid spacing (deg); BEAM = one beam per patch
 T_INT = float(sys.argv[3]) if len(sys.argv) > 3 else 60.0                # s per patch
 AZ_RATE, ALT_RATE, MOVE_OVERHEAD = 2.9, 3.9, 1.2                         # deg/s, deg/s, s (settle + polling)
