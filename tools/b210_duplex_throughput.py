@@ -149,7 +149,7 @@ def build(sdr_type, rate_hz, pilot_on, burst_every):
     """
     over = {"sample_rate_hz": rate_hz,
             "receiver_pilot_enabled": bool(pilot_on),
-            "receiver_pilot_burst_every_records": int(burst_every)}
+            "receiver_pilot_burst_every_records": int(burst_every) if burst_every else None}
     inst = fixed_instrument(over)
     fg = rx.TwoProductFlowgraph(sdr_type, inst, strict=(sdr_type != "demo"))
     extras = {}

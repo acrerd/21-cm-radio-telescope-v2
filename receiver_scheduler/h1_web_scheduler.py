@@ -142,7 +142,8 @@ _DEFAULT_CONFIG = {
     # The pilot (issue #30): the B210's TX as the gain and passband
     # reference, part of the instrument. Unset means pilot.PILOT_DEFAULTS.
     "receiver_pilot_enabled": None,
-    "receiver_pilot_burst_every_records": None,
+    "receiver_pilot_burst_interval_s": None,
+    "receiver_pilot_max_duty_cycle": None,
     "receiver_pilot_burst_amplitude": None,
     "receiver_pilot_tx_gain_db": None,
     # `obstruction_sectors` used to live here: a hand-entered
@@ -4878,8 +4879,9 @@ def instrument_for(obs: dict) -> dict:
 
 def tuning_instrument_keys():
     import tuning
-    return set(tuning.INSTRUMENT_KEYS) | {"pilot_enabled", "pilot_burst_every_records",
-                                          "pilot_burst_amplitude", "pilot_tx_gain_db"}
+    return set(tuning.INSTRUMENT_KEYS) | {"pilot_enabled", "pilot_burst_interval_s",
+                                          "pilot_max_duty_cycle", "pilot_burst_amplitude",
+                                          "pilot_tx_gain_db"}
 
 
 def obs_header(obs=None):

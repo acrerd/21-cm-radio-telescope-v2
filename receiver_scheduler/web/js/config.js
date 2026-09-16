@@ -32,7 +32,9 @@
             const en = document.getElementById('cfgPilotEnabled').value;
             out.receiver_pilot_enabled = en === '' ? null : (en === 'true');
             const every = document.getElementById('cfgPilotBurstEvery').value.trim();
-            out.receiver_pilot_burst_every_records = every === '' ? null : parseInt(every);
+            out.receiver_pilot_burst_interval_s = every === '' ? null : parseFloat(every);
+            const duty = document.getElementById('cfgPilotDuty').value.trim();
+            out.receiver_pilot_max_duty_cycle = duty === '' ? null : parseFloat(duty);
             const amp = document.getElementById('cfgPilotAmplitude').value.trim();
             out.receiver_pilot_burst_amplitude = amp === '' ? null : parseFloat(amp);
             const txg = document.getElementById('cfgPilotTxGain').value.trim();
@@ -51,7 +53,9 @@
             const en = cfg.receiver_pilot_enabled;
             document.getElementById('cfgPilotEnabled').value = (en == null || en === '') ? '' : String(!!en);
             document.getElementById('cfgPilotBurstEvery').value =
-                (cfg.receiver_pilot_burst_every_records == null || cfg.receiver_pilot_burst_every_records === '') ? '' : cfg.receiver_pilot_burst_every_records;
+                (cfg.receiver_pilot_burst_interval_s == null || cfg.receiver_pilot_burst_interval_s === '') ? '' : cfg.receiver_pilot_burst_interval_s;
+            document.getElementById('cfgPilotDuty').value =
+                (cfg.receiver_pilot_max_duty_cycle == null || cfg.receiver_pilot_max_duty_cycle === '') ? '' : cfg.receiver_pilot_max_duty_cycle;
             document.getElementById('cfgPilotAmplitude').value =
                 (cfg.receiver_pilot_burst_amplitude == null || cfg.receiver_pilot_burst_amplitude === '') ? '' : cfg.receiver_pilot_burst_amplitude;
             document.getElementById('cfgPilotTxGain').value =
@@ -68,7 +72,7 @@
             for (const [, [id]] of Object.entries(INSTRUMENT_BOXES)) document.getElementById(id).value = '';
             document.getElementById('cfgInstH1Lo').value = '';
             document.getElementById('cfgInstH1Hi').value = '';
-            for (const id of ['cfgPilotEnabled', 'cfgPilotBurstEvery', 'cfgPilotAmplitude', 'cfgPilotTxGain']) {
+            for (const id of ['cfgPilotEnabled', 'cfgPilotBurstEvery', 'cfgPilotDuty', 'cfgPilotAmplitude', 'cfgPilotTxGain']) {
                 document.getElementById(id).value = '';
             }
         }

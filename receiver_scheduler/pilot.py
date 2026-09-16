@@ -83,7 +83,17 @@ H1_REST_FREQ_HZ = 1420.405752e6
 # decides (#30). Nothing here radiates a level by itself.
 PILOT_DEFAULTS = {
     "enabled": True,
-    "burst_every_records": 20,            # one record in this many is a burst; 0 = never
+    # How often a burst is sent. Expressed in TIME, because a record is not a
+    # fixed length: "every 20th record" is a burst a minute at 3 s records and
+    # one every twenty minutes at 60 s. A burst costs exactly one record
+    # whatever its length, so the interval and the duty cycle cannot both be
+    # held at long integrations - the duty cap wins, and an observation that
+    # needs a tighter calibration cadence should use shorter records (the
+    # plots bin them back down anyway) rather than pay a tenth of its samples.
+    # `burst_every_records` overrides the derived number when set; 0 disables.
+    "burst_interval_s": 60.0,
+    "max_duty_cycle": 0.05,
+    "burst_every_records": None,
     "burst_amplitude": 0.5,               # comb's frame peak during a burst, DAC full scale
     # The continuous carrier (issue #30's original single tone), for the fast
     # common-mode gain wobble the bursts cannot reach: they measure the gain
@@ -135,12 +145,18 @@ PILOT_DEFAULTS = {
     # ripple. 1024 bins over 8 MHz resolve delay to 0.125 us out to 64 us.
     "max_delay_us": 10.0,
     # The shape correction divides every record alike, so applying one built
-    # from too few bursts trades the ripple for noise of its own: measured,
-    # a single burst at 5x the noise leaves 0.18% where the ripple was 0.11%
-    # - worse than not correcting. Eight is where it starts paying (0.05%),
-    # thirty reaches 0.03%. Below this the level and tilt are applied alone;
-    # they are good to 0.02% from one burst.
-    "min_shape_bursts": 8,
+    # from too little pilot trades the ripple for noise of its own: measured,
+    # a single 3 s burst at 5x the noise leaves 0.18% where the ripple was
+    # 0.11% - worse than not correcting. The threshold is in **accumulated
+    # pilot seconds**, not bursts, because a burst is one record and records
+    # are not a fixed length: eight 3 s bursts and a third of one 60 s burst
+    # carry the same information, and a burst count would have refused every
+    # correction on a 60 s drift scan while accepting a worse one at 3 s.
+    # 24 s is where it starts paying (0.05% per channel); 76 s reaches the
+    # 0.04% that puts it under a gain fit's thermal floor. Below the
+    # threshold the level and tilt are applied alone; they are good to 0.02%
+    # from a single burst.
+    "min_shape_pilot_s": 24.0,
     "hold_bursts": 3,                     # apply a burst's level this many intervals, then stop
     "burst_off_margin_s": 0.3,            # switch the comb off this long before the record ends
     # Tests: add the frame digitally into the demo source so the recovery
@@ -167,11 +183,15 @@ def config_from(overrides=None):
     cfg["enabled"] = _truthy(cfg["enabled"])
     for k in ("burst_amplitude", "tx_gain_db", "gate_margin", "detect_snr",
               "shape_window_s", "max_delay_us", "burst_off_margin_s", "demo_inject_scale",
-              "tone_hz", "tone_amplitude", "tone_detect_ratio"):
+              "tone_hz", "tone_amplitude", "tone_detect_ratio", "burst_interval_s",
+              "max_duty_cycle", "min_shape_pilot_s"):
         cfg[k] = float(cfg[k])
-    for k in ("burst_every_records", "dc_guard_bins", "hold_bursts", "min_shape_bursts",
-              "tone_guard_bins", "tone_sum_bins"):
+    for k in ("dc_guard_bins", "hold_bursts", "tone_guard_bins", "tone_sum_bins"):
         cfg[k] = int(cfg[k])
+    if cfg["burst_every_records"] not in (None, ""):
+        cfg["burst_every_records"] = int(cfg["burst_every_records"])
+    else:
+        cfg["burst_every_records"] = None
     cfg["tone_enabled"] = _truthy(cfg["tone_enabled"])
     cfg["tone_apply"] = _truthy(cfg["tone_apply"])
     if not (0.0 < cfg["tone_amplitude"] < 1.0):
@@ -181,13 +201,40 @@ def config_from(overrides=None):
     cfg["demo_inject"] = _truthy(cfg["demo_inject"])
     if not (0.0 < cfg["burst_amplitude"] <= 1.0):
         raise ValueError("pilot burst amplitude must be in (0, 1] of full scale")
-    if cfg["burst_every_records"] < 0:
-        raise ValueError("burst_every_records cannot be negative")
-    if cfg["burst_every_records"] == 1:
-        raise ValueError("every record a burst would leave no science")
-    if cfg["burst_every_records"] == 0:
-        cfg["enabled"] = False
+    if cfg["burst_every_records"] is not None:
+        if cfg["burst_every_records"] < 0:
+            raise ValueError("burst_every_records cannot be negative")
+        if cfg["burst_every_records"] == 1:
+            raise ValueError("every record a burst would leave no science")
+        if cfg["burst_every_records"] == 0:
+            cfg["enabled"] = False
+    if not (0.0 < cfg["max_duty_cycle"] <= 0.5):
+        raise ValueError("pilot max duty cycle must be in (0, 0.5]")
+    if cfg["burst_interval_s"] <= 0:
+        raise ValueError("pilot burst interval must be positive")
     return cfg
+
+
+def burst_every(cfg, integration_time_s):
+    """How many records apart the bursts go, for records of this length.
+
+    The target interval in records, floored by the duty cycle - a burst costs
+    one whole record whatever its length, so at 60 s records a 60 s interval
+    would be every record. At 3 s records and the defaults this is 20, a burst
+    a minute at 5%; at 0.5 s records it is 120, still a burst a minute but at
+    0.8%, where a fixed record count would have sent one every ten seconds
+    for nothing.
+    """
+    if not cfg.get("enabled"):
+        return 0
+    if cfg.get("burst_every_records"):
+        return int(cfg["burst_every_records"])
+    tau = float(integration_time_s or 0.0)
+    if tau <= 0:
+        return 0
+    wanted = int(round(cfg["burst_interval_s"] / tau))
+    floor = int(math.ceil(1.0 / cfg["max_duty_cycle"]))
+    return max(2, wanted, floor)
 
 
 def _truthy(v):
@@ -478,7 +525,8 @@ class PilotTracker:
         self.bursts = 0
         self.detected = 0
         self._last = None                   # (t, level, slope)
-        self._shape = deque()               # (t, h) of detected bursts
+        self._shape = deque()               # (t, h, seconds) of detected bursts
+        self._frame_s = None                # seconds per FFT frame, from the plan
         self._interval_s = None             # measured burst spacing
         self._shape_version = 0
         self._shape_mean = None
@@ -506,7 +554,7 @@ class PilotTracker:
             self._interval_s = gap if self._interval_s is None else 0.5 * (self._interval_s + gap)
         self._last = (now, level, slope)
         self.detected += 1
-        self._shape.append((now, est["h"].copy()))
+        self._shape.append((now, est["h"].copy(), n_on * self._frame_seconds()))
         self._prune(now)
         self._shape_mean = None
         self._shape_version += 1
@@ -533,6 +581,19 @@ class PilotTracker:
         self.tone_records += 1
         return lvl, 1
 
+    @property
+    def pilot_seconds(self):
+        """Accumulated burst time inside the shape window."""
+        return float(sum(e[2] for e in self._shape))
+
+    def _frame_seconds(self):
+        """How long one FFT frame lasts, from the plan's own frequency axis."""
+        if self._frame_s is None:
+            spacing = float(np.median(np.diff(self.planned["freq_hz"])))
+            fs = self.planned["nbins"] * spacing
+            self._frame_s = self.planned["nbins"] / fs if fs > 0 else 0.0
+        return self._frame_s
+
     def _prune(self, now):
         while self._shape and now - self._shape[0][0] > self.cfg["shape_window_s"]:
             self._shape.popleft()
@@ -556,15 +617,21 @@ class PilotTracker:
     def shape(self, now):
         """(version, mean response over the shape window), or (version, None).
 
-        None until `min_shape_bursts` have been seen inside the window: one
-        burst's per-bin noise is larger than the ripple it would correct, so
-        applying it early would make the spectra worse, not better.
+        None until `min_shape_pilot_s` of pilot has accumulated inside the
+        window: one short burst's per-bin noise is larger than the ripple it
+        would correct, so applying it early would make the spectra worse, not
+        better. Counted in seconds rather than bursts because a burst is one
+        record and records are not a fixed length.
         """
         self._prune(now)
-        if len(self._shape) < self.cfg["min_shape_bursts"]:
+        if self.pilot_seconds < self.cfg["min_shape_pilot_s"]:
             return self._shape_version, None
         if self._shape_mean is None:
-            self._shape_mean = np.mean([h for _, h in self._shape], axis=0)
+            # Weighted by each burst's own length: a 60 s burst carries
+            # twenty times the information of a 3 s one.
+            w = np.array([e[2] for e in self._shape], dtype=float)
+            w = w / w.sum() if w.sum() > 0 else np.full(len(w), 1.0 / len(w))
+            self._shape_mean = np.tensordot(w, np.array([e[1] for e in self._shape]), axes=1)
         return self._shape_version, self._shape_mean
 
 
@@ -582,11 +649,20 @@ def config_of(header):
         return None
 
 
-def describe(cfg):
+def describe(cfg, integration_time_s=None):
     if not cfg or not cfg.get("enabled"):
         return "pilot off"
-    text = ("pilot: full-band comb burst every %d records at %.2f of full scale, TX gain %.0f dB"
-            % (cfg["burst_every_records"], cfg["burst_amplitude"], cfg["tx_gain_db"]))
+    every = burst_every(cfg, integration_time_s) if integration_time_s else None
+    if every:
+        cadence = ("every %d records (%.0f s, %.0f%% of them)"
+                   % (every, every * integration_time_s, 100.0 / every))
+    elif cfg.get("burst_every_records"):
+        cadence = "every %d records" % cfg["burst_every_records"]
+    else:
+        cadence = ("every %.0f s, at most %.0f%% of records"
+                   % (cfg["burst_interval_s"], 100 * cfg["max_duty_cycle"]))
+    text = ("pilot: full-band comb burst %s at %.2f of full scale, TX gain %.0f dB"
+            % (cadence, cfg["burst_amplitude"], cfg["tx_gain_db"]))
     if cfg.get("tone_enabled"):
         text += ("; continuous carrier at %.3f MHz, %.2f of full scale, %s"
                  % (cfg["tone_hz"] / 1e6, cfg["tone_amplitude"],

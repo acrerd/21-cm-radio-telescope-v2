@@ -556,6 +556,8 @@ class TwoProductFlowgraph(gr.top_block):
             print("  Pilot TX: %.3f Msps at %.6f MHz, gain %.1f dB; %s"
                   % (self.pilot_sink.get_samp_rate() / 1e6, tx_f / 1e6,
                      self.pilot_sink.get_gain(0), pilot_mod.describe(cfg)), flush=True)
+            # the cadence in records is the recorder's business (it knows the
+            # integration time); this is the rule it will apply
             if abs(tx_f - self.center_freq) > 0.5:
                 # Different synthesiser settings on the two sides would let
                 # the tones' phase slip and the coherent sum average away.
@@ -750,7 +752,7 @@ class _OverflowCounter:
 
 def init_hdf5(filename, freq_axis_hz, fft_size, sdr_type, center_freq,
               sample_rate, gain, tuning_plan=None, segment=0, segment_reason='',
-              wide=None, instrument=None, pilot=None):
+              wide=None, instrument=None, pilot=None, pilot_burst_every=0):
     """Create the observation file and its datasets.
 
     Module level and Qt-free so the window and the headless recorder write
@@ -888,6 +890,10 @@ def init_hdf5(filename, freq_axis_hz, fft_size, sdr_type, center_freq,
         nb_p = len(pilot['bins'])
         hf.attrs['pilot_centre_hz'] = float(pilot['centre_hz'])
         hf.attrs['pilot_applied'] = 1
+        # The cadence actually used: the configuration asks for an interval
+        # in seconds, and what that comes to in records depends on this
+        # observation's integration time.
+        hf.attrs['pilot_burst_every_records'] = int(pilot_burst_every)
         hf.create_dataset('pilot_bins_wide', data=np.asarray(pilot['bins'], dtype='int32'))
         hf.create_dataset('pilot_reference', data=np.zeros(nb_p, dtype='complex64'))
         hf.create_dataset('pilot_anchored', data=np.zeros(1, dtype='int8'))
@@ -1415,11 +1421,18 @@ class HeadlessRecorder:
                             sample_rate=self.sample_rate, gain=self.gain,
                             wide={'freq_axis_hz': self.wide_axis_hz,
                                   'channels': self.wide_channels},
-                            instrument=instrument, pilot=self.flowgraph.pilot)
+                            instrument=instrument, pilot=self.flowgraph.pilot,
+                            pilot_burst_every=pilot_mod.burst_every(
+                                self.flowgraph.pilot_cfg, self.integration_time))
         # The pilot's bookkeeping (issue #30): anchored to the calibration's
         # stored reference when it has one for this plan, else to this run's
         # first detected record.
         self.pilot_tracker = None
+        # A burst costs one whole record, so how often to send one depends on
+        # how long a record is: the configuration asks for an interval in
+        # seconds and this is what it comes to here.
+        self._burst_every = pilot_mod.burst_every(self.flowgraph.pilot_cfg,
+                                                  self.integration_time)
         self._record_index = 0
         self._burst_record = False
         self._corr_version = None
@@ -1430,8 +1443,8 @@ class HeadlessRecorder:
                                                         self.flowgraph.pilot, ref)
             if ref is not None:
                 set_pilot_reference(self.hf, ref, anchored=True)
-            print("  Pilot: comb burst every %d records, %s" % (
-                self.flowgraph.pilot_cfg["burst_every_records"],
+            print("  Pilot: comb burst every %d records (%.0f s), %s" % (
+                self._burst_every, self._burst_every * self.integration_time,
                 "anchored to the calibration" if ref is not None
                 else "self-referenced until the calibration stores a pilot reference"),
                 flush=True)
@@ -1449,7 +1462,7 @@ class HeadlessRecorder:
         self._burst_record = False
         if self.pilot_tracker is None:
             return
-        every = int(self.flowgraph.pilot_cfg["burst_every_records"])
+        every = self._burst_every
         if every > 0 and self._record_index % every == every - 1:
             self._burst_record = True
             self.flowgraph.set_burst(True)

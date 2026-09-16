@@ -30,7 +30,7 @@ class TestPlan:
     def test_defaults_are_a_full_band_comb_in_bursts_around_a_continuous_carrier(self):
         inst, p = _plan()
         cfg = inst["pilot"]
-        assert cfg["enabled"] and cfg["burst_every_records"] == 20
+        assert cfg["enabled"] and cfg["burst_interval_s"] == 60.0
         nb = inst["wide_channels"]
         # every bin but the LO guard and the carrier's own neighbourhood
         assert len(p["bins"]) == nb - (2 * cfg["dc_guard_bins"] + 1) - (2 * cfg["tone_guard_bins"] + 1)
@@ -81,6 +81,30 @@ class TestPlan:
             tuning.fixed_instrument({"receiver_pilot_burst_every_records": 1})
         with pytest.raises(ValueError):
             tuning.fixed_instrument({"receiver_pilot_burst_amplitude": 1.5})
+        with pytest.raises(ValueError):
+            tuning.fixed_instrument({"receiver_pilot_max_duty_cycle": 0.9})
+
+    def test_the_cadence_is_a_time_not_a_record_count(self):
+        """A record is not a fixed length: "every 20th record" is a burst a
+        minute at 3 s and one every twenty minutes at 60 s. The interval is
+        asked for in seconds, and met as far as the duty cap allows - a burst
+        costs one whole record whatever its length, so at long integrations
+        the cap wins and the answer is to use shorter records."""
+        cfg = tuning.fixed_instrument()["pilot"]
+        assert pilot.burst_every(cfg, 3.0) == 20            # a minute, 5%
+        assert pilot.burst_every(cfg, 0.5) == 120           # still a minute, 0.8%
+        assert pilot.burst_every(cfg, 10.0) == 20           # the duty cap, 200 s
+        assert pilot.burst_every(cfg, 60.0) == 20           # the duty cap, 20 min
+        for tau in (0.5, 3.0, 10.0, 60.0):                  # never above the cap
+            assert 1.0 / pilot.burst_every(cfg, tau) <= cfg["max_duty_cycle"] + 1e-9
+        # a larger duty buys cadence at long integrations, and an explicit
+        # record count overrides the lot
+        loose = tuning.fixed_instrument({"receiver_pilot_max_duty_cycle": 0.2})["pilot"]
+        assert pilot.burst_every(loose, 60.0) == 5
+        forced = tuning.fixed_instrument({"receiver_pilot_burst_every_records": 7})["pilot"]
+        assert pilot.burst_every(forced, 3.0) == 7
+        assert pilot.burst_every(tuning.fixed_instrument(
+            {"receiver_pilot_enabled": False})["pilot"], 3.0) == 0
 
     def test_the_reference_is_flat_across_the_band(self):
         """A periodic frame under a rectangular window has no leakage at all,
@@ -204,15 +228,21 @@ class TestEstimate:
             xs, _ = _synthetic(p, n, h, noise, rng)
             tr.burst(xs, n, noise, now=1000.0 + 60 * i)
             version, mean = tr.shape(1000.0 + 60 * i)
-            if i + 1 < cfg["min_shape_bursts"]:
-                assert mean is None, "too few bursts to correct with"
+            if mean is None:
+                # below the threshold the tracker refuses, rather than
+                # handing over a shape whose noise exceeds the ripple
+                assert tr.pilot_seconds < cfg["min_shape_pilot_s"]
                 continue
             vec = pilot.correction_vector(mean, p, fine, (lo, hi), h_ref,
                                           max_delay_s=cfg["max_delay_us"] * 1e-6)
             residuals[i + 1] = float(np.std(vec - expect))
-        assert residuals[8] < np.std(expect - 1)               # already worth doing
+        # the first correction offered is the one at the 24 s threshold: nine
+        # bursts of just under 3 s each, and it already beats leaving the ripple
+        first = min(residuals)
+        assert 8 <= first <= 10
+        assert residuals[first] < np.std(expect - 1)
         # and it keeps improving as the averaging says it should, 1/sqrt(N)
-        assert residuals[30] == pytest.approx(residuals[8] * np.sqrt(8 / 30), rel=0.25)
+        assert residuals[30] == pytest.approx(residuals[first] * np.sqrt(first / 30), rel=0.3)
         assert residuals[30] < 0.0004                          # 0.14 K on a 360 K system
         vec = pilot.correction_vector(tr.shape(1000.0 + 60 * 29)[1], p, fine, (lo, hi), h_ref,
                                       max_delay_s=cfg["max_delay_us"] * 1e-6)
@@ -257,9 +287,10 @@ class TestEstimate:
         assert tr.correction(1150.0)[2] == 1                       # still within the hold
         assert tr.correction(1120.0 + 60 * cfg["hold_bursts"] + 100)[2] == 0
         version, mean = tr.shape(1130.0)
-        # two bursts is not enough to correct a passband shape with, and the
-        # tracker says so rather than handing over a noisy one
+        # two 3 s bursts is 6 s of pilot, not the 24 s a shape correction
+        # needs, and the tracker says so rather than handing over a noisy one
         assert mean is None and version == 2 and tr.detected == 2 and tr.bursts == 3
+        assert tr.pilot_seconds == pytest.approx(6.0, rel=0.02)
 
 
 def _file(path, monkeypatch, pilots, calibrated, fine_vec=None, pilot_over=None):
@@ -319,7 +350,7 @@ class TestFile:
             assert list(hf["pilot_ok"][:]) == [0, 0, 0]
             assert list(hf["pilot_level"][:]) == [1.0, 1.0, 1.0]
             assert list(hf["pilot_correction_index"][:]) == [-1, -1, -1]
-            assert json.loads(hf.attrs["pilot"])["burst_every_records"] == 20
+            assert json.loads(hf.attrs["pilot"])["burst_interval_s"] == 60.0
             assert hf["pilot_shape"].shape[0] == 0
 
     def test_kelvin_is_divided_by_factor_and_shape_and_read_back_exactly_without_bursts(self, tmp_path, monkeypatch):
@@ -476,10 +507,10 @@ class TestScheduler:
         client = sched.app.test_client()
         d = client.get("/api/instrument").get_json()
         assert d["pilot"]["enabled"] and "burst" in d["pilot_description"]
-        r = client.post("/api/config", json={"receiver_pilot_burst_every_records": 30})
+        r = client.post("/api/config", json={"receiver_pilot_burst_interval_s": 120})
         assert r.status_code == 200, r.get_json()
-        assert client.get("/api/instrument").get_json()["pilot"]["burst_every_records"] == 30
-        r = client.post("/api/config", json={"receiver_pilot_burst_every_records": 1})
+        assert client.get("/api/instrument").get_json()["pilot"]["burst_interval_s"] == 120.0
+        r = client.post("/api/config", json={"receiver_pilot_max_duty_cycle": 0.9})
         assert r.status_code == 400
         d = client.get("/api/pilot/status").get_json()
         assert d["success"] and "burst" in d["description"]

@@ -794,8 +794,12 @@
                         </select>
                     </div>
                     <div class="form-group">
-                        <label>Pilot burst every <span class="unit">(records)</span></label>
-                        <input autocomplete="off" type="number" id="cfgPilotBurstEvery" step="1" min="2" placeholder="20">
+                        <label>Pilot burst interval <span class="unit">(s)</span></label>
+                        <input autocomplete="off" type="number" id="cfgPilotBurstEvery" step="any" min="1" placeholder="60">
+                    </div>
+                    <div class="form-group">
+                        <label>Pilot max duty <span class="unit">(fraction of records)</span></label>
+                        <input autocomplete="off" type="number" id="cfgPilotDuty" step="any" min="0.005" max="0.5" placeholder="0.05">
                     </div>
                     <div class="form-group">
                         <label>Pilot burst amplitude <span class="unit">(of full scale)</span></label>
@@ -812,7 +816,11 @@
                     correlation on the receive side. Burst records are flagged and dropped from the
                     science; the records between are divided by the latest burst's gain and tilt and
                     by the running passband shape, so the SAW filter's drift and ripple come out as
-                    the data are written. With the transmitter not connected nothing is detected and
+                    the data are written. A burst costs one whole record whatever its length, so the
+                    interval below is met only as far as the duty cap allows: at 3 s records that is
+                    a burst a minute for 5% of the time, at 60 s records one every twenty minutes for
+                    the same 5%. An observation needing a tighter calibration cadence should use
+                    shorter records rather than a larger duty. With the transmitter not connected nothing is detected and
                     nothing is applied; the recording is then identical to one made with the pilot
                     off, less the burst records.
                 </div>

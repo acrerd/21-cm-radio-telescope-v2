@@ -38,7 +38,7 @@ converts kelvin to flux.
 |---|---|---|---|
 | bandpass template | `B(f)` | days, and it goes stale | `bandpass.py` |
 | gain and system temperature | `G`, `T_sys` | hours | `rf_calibration.py` |
-| pilot bursts | changes in `G` and `B(f)` | one burst a minute | `pilot.py` |
+| pilot bursts | changes in `G` and `B(f)` | a burst every 60 s of run, duty permitting | `pilot.py` |
 | pilot carrier | fast common-mode `G` | every record | `pilot.py` |
 | beam solid angle | kelvin → flux | measured once, per feed | `astro_simulator/instrument.py` |
 
@@ -111,13 +111,36 @@ so that **everything downstream of the feed is inside the measurement** — the
 probe, the horn, the SAWbird, the cable down the mount, the converter. Full
 detail in `receiver_scheduler/pilot.py`; the design record is issue #30.
 
-### 4a. Bursts — the passband, once a minute
+### 4a. Bursts — the passband
 
-Every twentieth record the transmitter sends a **full-band comb**, one tone on
-every bin, at a level near the system noise. That record is flagged
-(`pilot_burst = 1`) and **dropped from the science** by `read_observation`, so
-every consumer is safe without knowing about it. Every other record carries
-no comb at all: nothing to exclude, subtract or explain.
+Every so often the transmitter sends a **full-band comb**, one tone on every
+bin, at a level near the system noise, for the length of one record. That
+record is flagged (`pilot_burst = 1`) and **dropped from the science** by
+`read_observation`, so every consumer is safe without knowing about it. Every
+other record carries no comb at all: nothing to exclude, subtract or explain.
+
+**How often is a time, not a record count.** A record is not a fixed length —
+3 s on a solar track, 10 s on a calibration field, 60 s on a drift scan — so
+"every twentieth record" would mean a burst a minute in one case and one every
+twenty minutes in another. The configuration asks for an interval in seconds
+(`burst_interval_s`, 60 s) and the receiver converts it at start-up using that
+observation's integration time. But **a burst costs one whole record whatever
+its length**, so the interval and the cost cannot both be held: a duty cap
+(`max_duty_cycle`, 5%) takes over at long integrations.
+
+| record length | burst every | cost |
+|---|---|---|
+| 0.5 s | 60 s (120 records) | 0.8% |
+| 3 s | 60 s (20 records) | 5% |
+| 10 s | 200 s (20 records) | 5% |
+| 60 s | 20 min (20 records) | 5% |
+
+So an observation that needs a tight calibration cadence should use **shorter
+records** — the plots bin them back down anyway — rather than pay a larger
+fraction of its samples. That matters most for the tilt, which is only
+measured at bursts: on a drift scan the continuum band sits entirely on one
+side of the anchor, so a tilt that changes by 0.1% per MHz between bursts
+moves the band mean by 0.17%.
 
 A burst yields the complex response per bin, and from it:
 
@@ -138,24 +161,32 @@ Three details that are easy to get wrong, each of which cost a rewrite:
   field response and the counts are powers, so the ratio is squared. Fitting
   the amplitude ratio and applying it to counts would be wrong by a factor of
   two in the departure from unity, and invisible at the percent level.
-- **A correction from one burst is worse than none.** Its per-channel noise
-  is 0.18% against a 0.11% ripple, and because the same vector divides every
-  record, that noise is a *systematic*, not something that averages away. A
-  shape built from fewer than eight bursts is refused.
+- **A correction from too little pilot is worse than none.** One 3 s burst
+  gives 0.18% per channel against a 0.11% ripple, and because the same vector
+  divides every record, that noise is a *systematic*, not something that
+  averages away. The threshold is in **accumulated pilot seconds**
+  (`min_shape_pilot_s`, 24 s), not in bursts: a burst is one record, records
+  are not a fixed length, and eight 3 s bursts carry the same information as
+  a third of one 60 s burst. Counting bursts would have refused every
+  correction on a 60 s drift scan while accepting a worse one at 3 s. For the
+  same reason the bursts in the window are averaged **weighted by their own
+  lengths**.
 
 The correction is denoised in the **delay domain**: the response is a few SAW
 echoes at 1.5–6.2 µs, so it is sparse in delay, and keeping only |τ| < 10 µs
 discards most of the per-bin noise and none of the ripple. Simulated, with the
 burst at five times the system noise:
 
-| bursts averaged | residual per channel | on a 360 K system |
+| pilot accumulated | residual per channel | on a 360 K system |
 |---|---|---|
 | the ripple itself, uncorrected | 0.106% | 0.38 K |
-| 8 | 0.053% | 0.19 K |
-| 30 (half an hour) | 0.028% | 0.10 K |
+| 24 s (the threshold) | 0.053% | 0.19 K |
+| 90 s (half an hour at 5% duty) | 0.028% | 0.10 K |
 
 against the 0.15 K thermal floor of a gain fit. The delay filter is worth a
-factor of 2.2 of that.
+factor of 2.2 of that. Note that the accumulated pilot in a half-hour window
+is 90 s whatever the record length, since the duty cycle is what sets it — a
+long record gives fewer but proportionately more precise bursts.
 
 ### 4b. The carrier — the fast wobble, every record
 
