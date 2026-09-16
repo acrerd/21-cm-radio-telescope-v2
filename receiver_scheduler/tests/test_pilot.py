@@ -254,6 +254,39 @@ class TestEstimate:
                                              h_ref, max_delay_s=60e-6)
         assert np.std(unfiltered - expect) > 1.5 * residuals[30]
 
+    def test_a_pilot_that_is_never_there_is_given_up_on(self):
+        """It costs one record an interval for nothing - the state until the
+        dipole is wired - but an intermittent one is a fault to record, not a
+        reason to stop measuring."""
+        inst, p = _plan()
+        cfg = inst["pilot"]
+        rng = np.random.default_rng(21)
+        tr = pilot.PilotTracker(cfg, p, reference_h=np.full(len(p["bins"]), 0.5 + 0j))
+        for i in range(cfg["give_up_after_bursts"]):
+            assert not tr.give_up()
+            xs, noise = _synthetic(p, 23400, np.zeros(len(p["bins"])), 1.0, rng)
+            tr.burst(xs, 23400, noise, now=1000.0 + 60 * i)
+        assert tr.give_up()
+        # one that was seen once is never given up on
+        h_ref, h, noise, n = _response(p, 1.0, 0.0, 0.0, 5.0)
+        seen = pilot.PilotTracker(cfg, p, reference_h=h_ref)
+        xs, _ = _synthetic(p, n, h, noise, rng)
+        seen.burst(xs, n, noise, now=1000.0)
+        for i in range(20):
+            xs, _ = _synthetic(p, n, np.zeros(len(p["bins"])), noise, rng)
+            seen.burst(xs, n, noise, now=1100.0 + 60 * i)
+        assert seen.detected == 1 and not seen.give_up()
+
+    def test_the_burst_switch_off_margin_fits_inside_the_record(self):
+        """At 0.1 s records a flat 0.3 s margin would switch the comb off
+        before it was ever on, and the record would be dropped for a burst
+        that never happened."""
+        cfg = tuning.fixed_instrument()["pilot"]
+        assert pilot.burst_off_margin_s(cfg, 3.0) == pytest.approx(cfg["burst_off_margin_s"])
+        assert pilot.burst_off_margin_s(cfg, 0.1) == pytest.approx(0.025)
+        for tau in (0.05, 0.1, 1.0, 3.0, 60.0):
+            assert 0 < pilot.burst_off_margin_s(cfg, tau) < tau
+
     def test_the_factor_is_the_line_and_is_clamped(self):
         f = np.array([1415e6, 1419e6, 1423e6])
         fac = pilot.factor(1.02, -0.005, f, 1419e6)
@@ -429,6 +462,88 @@ class TestDemoFlowgraph:
         assert est["snr_median"] > 10 * inst["pilot"]["detect_snr"]
 
 
+class TestGate:
+    """The gate decides which blocks held the burst. Its failure modes are the
+    ones that stay invisible until the transmitter is connected."""
+
+    VLEN, PRESUM = 64, 10
+
+    def _gate(self, margin=0.1):
+        if "--headless" not in sys.argv:
+            sys.argv.append("--headless")
+        import b210_h1_receiver as rx
+        return rx._PilotGate(self.VLEN, self.PRESUM, margin)
+
+    def _feed(self, gate, level, blocks):
+        """`blocks` blocks whose mean per-bin power is `level`."""
+        X = np.full((blocks, self.VLEN), 1.0 + 0j, dtype=np.complex64)
+        P = np.full((blocks, self.VLEN), level * self.PRESUM, dtype=np.float32)
+        gate.work([X, P], [])
+
+    def test_a_step_in_received_power_outside_a_burst_does_not_deadlock_it(self):
+        """The bug this guards: the baseline is a median of blocks judged off,
+        so if a step up were judged "on" the baseline would never update again
+        and every science record would be flagged as having caught a burst.
+        The carrier starting a moment after the baseline forms does exactly
+        that step, and so does a slew onto the Sun - 5.4x, eighteen times the
+        margin. Neither is inside an armed window, so neither is judged."""
+        for step in (1.85, 5.4):                       # the carrier; the Sun
+            gate = self._gate()
+            self._feed(gate, 1.0, 40)                  # baseline forms at 1.0
+            self._feed(gate, step, 60)                 # ... then power steps up
+            _, n_on, n, noise = gate.take()
+            assert n_on == 0, "nothing is on outside an armed window"
+            assert noise.mean() > 0
+            # and the baseline followed the step, so a burst on top is still seen
+            gate.arm()
+            self._feed(gate, step * 2.0, 40)
+            _, n_on, _, _ = gate.take()
+            assert n_on > 0
+
+    def test_it_sees_a_burst_on_a_bright_source_where_a_wide_margin_would_not(self):
+        """On the Sun the same comb raises the total power by only 30%,
+        because the Sun is already there: 1 + 0.85 carrier + 5.4 Sun = 7.25,
+        and the comb adds 1.86. A 30% margin would have missed it exactly."""
+        quiet, sun, comb = 1.85, 1.85 + 5.4, 1.86
+        gate = self._gate(margin=0.1)
+        self._feed(gate, sun, 60)
+        gate.arm()
+        self._feed(gate, sun + comb, 40)
+        _, n_on, _, _ = gate.take()
+        assert n_on > 0
+        wide = self._gate(margin=0.3)
+        self._feed(wide, sun, 60)
+        wide.arm()
+        self._feed(wide, sun + comb, 40)
+        _, n_on_wide, _, _ = wide.take()
+        assert n_on_wide == 0                          # the margin we started with
+        # ... while on quiet sky both would have managed it
+        for m in (0.1, 0.3):
+            g = self._gate(margin=m)
+            self._feed(g, quiet, 60)
+            g.arm()
+            self._feed(g, quiet + comb, 40)
+            assert g.take()[1] > 0
+
+    def test_the_release_waits_for_the_power_to_fall_back(self):
+        """So a science record that caught a burst's tail is still counted -
+        the transmit buffers do not empty the moment the comb is commanded
+        off, and that record has to be flagged and dropped."""
+        gate = self._gate()
+        self._feed(gate, 1.0, 40)
+        gate.arm()
+        self._feed(gate, 3.0, 30)
+        gate.release()                                  # commanded off ...
+        self._feed(gate, 3.0, 20)                       # ... but still arriving
+        _, n_on, _, _ = gate.take()
+        assert n_on > 0
+        self._feed(gate, 1.0, 30)                       # now it has gone, and the
+        gate.take()                                     # gate lets go of the window
+        self._feed(gate, 3.0, 30)                       # so a later step is not a burst
+        _, later, _, _ = gate.take()
+        assert later == 0
+
+
 class TestCarrier:
     def test_its_power_is_read_from_the_wide_product_and_needs_no_recovery(self):
         """At ~1000x the noise in its own bin the carrier is simply an excess
@@ -446,6 +561,18 @@ class TestCarrier:
         got = pilot.tone_power(wide, p, cfg)
         assert got["detected"] and got["ratio"] > 100
         assert got["power"] == pytest.approx(400 * noise * 2.1, rel=0.1)
+
+    def test_a_stale_reference_stops_being_used(self):
+        """If the bursts stop, the carrier's reference ages: it would then be
+        carrying the slow drift the burst is supposed to carry, so it stops
+        being applied rather than silently changing meaning."""
+        inst, p = _plan()
+        cfg = inst["pilot"]
+        tr = pilot.PilotTracker(cfg, p, reference_h=None, expected_interval_s=60.0)
+        tr.set_tone_reference(5.0, now=1000.0)
+        assert tr.tone_level({"detected": True, "power": 5.05}, now=1060.0)[1] == 1
+        stale = 1000.0 + cfg["hold_bursts"] * 60.0 + 10
+        assert tr.tone_level({"detected": True, "power": 5.05}, now=stale) == (1.0, 0)
 
     def test_the_level_is_measured_against_the_last_burst_so_nothing_counts_twice(self):
         """The burst's level carries the slow change; the carrier carries only

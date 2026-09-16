@@ -338,23 +338,31 @@ class _PilotGate(gr.sync_block):
     - input 0: the cross-spectrum, sum over the block of F conj(R).
     - input 1: the power spectrum, sum over the block of |F|^2.
 
-    A rectangular window is what makes the reference flat across the band:
-    the frame is periodic at exactly the FFT length, so it has no leakage at
-    all and every bin measures its own response. Through the wide product's
-    Blackman-Harris window the reference instead follows the window in time,
-    which for a swept chirp means zero at both band edges - where the
-    filter's tilt has to be measured.
+    A rectangular window is what makes the pilot's reference flat across the
+    band: the frame is periodic at exactly the FFT length, so it has no
+    leakage at all and every bin measures its own response. Through the wide
+    product's Blackman-Harris window the reference instead follows the window
+    in time, which for a swept chirp means zero at both band edges - where
+    the filter's tilt has to be measured.
 
-    A block is judged on or off by its power against the median of recent
-    off-blocks: a burst near the system-noise level roughly doubles it. So
-    nothing has to be told when a burst starts, the transmit buffers'
-    latency costs nothing, and a science record that caught a burst's tail is
-    known. A block is only *committed* when it and both its neighbours agree,
-    which drops the partial block at each edge of a burst - two blocks in
-    150, where counting a partial one as whole would bias the response by up
-    to 1.3%. A coherent gate would not do: the unknown (fixed) framing offset
-    puts a phase ramp across the band that cancels any whole-band coherent
-    statistic.
+    **The power test only runs inside an armed window.** The recorder arms the
+    gate when it commands a burst and releases it afterwards; outside that
+    window every block counts as off and feeds the baseline. Without the
+    arming the gate deadlocks the first time the received power steps up and
+    stays up - the carrier starting a moment after the baseline formed, or a
+    slew onto the Sun (5.4x) - because every block then reads "on", nothing
+    ever updates the baseline again, and every science record is flagged as
+    having caught a burst and dropped. Arming also lets the margin be small,
+    which matters: on the Sun a burst raises the total power by only 30%,
+    which the original 30% margin would have missed exactly.
+
+    Within the window the *power* still decides, rather than the command, so
+    the transmit buffers' latency costs nothing and a science record that
+    caught a burst's tail is known: the release is requested by the recorder
+    but only takes effect once the power has actually fallen back. A block is
+    committed only when it and both its neighbours agree, which drops the
+    partial block at each edge - two blocks in 150, where counting a partial
+    one as whole would bias the response by up to 1.3%.
 
     take() hands back (X over the committed on-blocks, on-frames, frames,
     mean per-bin power of the committed off-blocks) - the last being the
@@ -363,6 +371,7 @@ class _PilotGate(gr.sync_block):
     """
 
     _BASELINE_BLOCKS = 200            # off-blocks kept for the median
+    _RELEASE_BLOCKS = 5               # quiet blocks before a release takes effect
 
     def __init__(self, vlen, presum, margin):
         gr.sync_block.__init__(self, name="pilot_gate",
@@ -374,6 +383,9 @@ class _PilotGate(gr.sync_block):
         self._lock = threading.Lock()
         self._base = collections.deque(maxlen=self._BASELINE_BLOCKS)
         self._baseline = None
+        self._armed = False
+        self._release_req = False
+        self._quiet = 0
         self._held = []               # (on, X, P) awaiting their neighbours
         self._x = np.zeros(self.vlen, dtype=np.complex128)
         self._noise = np.zeros(self.vlen, dtype=np.float64)
@@ -381,13 +393,32 @@ class _PilotGate(gr.sync_block):
         self._n_off = 0
         self._n = 0
 
+    def arm(self):
+        """A burst has been commanded: judge the blocks from here."""
+        with self._lock:
+            self._armed = True
+            self._release_req = False
+            self._quiet = 0
+
+    def release(self):
+        """The burst has been commanded off: stop judging once it has gone."""
+        with self._lock:
+            self._release_req = True
+            self._quiet = 0
+
     def work(self, input_items, output_items):
         X, P = input_items[0], input_items[1]
         n = min(X.shape[0], P.shape[0])
         with self._lock:
             for i in range(n):
                 power = float(P[i].sum()) / (self.presum * self.vlen)
-                on = (self._baseline is not None) and (power > self._baseline * self._margin)
+                on = (self._armed and self._baseline is not None
+                      and power > self._baseline * self._margin)
+                if self._release_req:
+                    self._quiet = 0 if on else self._quiet + 1
+                    if self._quiet >= self._RELEASE_BLOCKS:
+                        self._armed = False
+                        self._release_req = False
                 self._held.append((on, X[i].astype(np.complex128), P[i].astype(np.float64)))
                 if len(self._held) >= 3:
                     a, b, c = self._held[-3], self._held[-2], self._held[-1]
@@ -532,7 +563,9 @@ class TwoProductFlowgraph(gr.top_block):
         cfg = self.pilot_cfg
         self.pilot_gate = None
         self.pilot_sink = None
-        self.pilot_src = None
+        self.pilot_carrier_src = None
+        self.pilot_comb_src = None
+        self.pilot_comb_gain = None
         self.pilot_inject = None
         self._burst_on = False
         if not cfg["enabled"]:
@@ -541,10 +574,28 @@ class TwoProductFlowgraph(gr.top_block):
         if len(self.pilot["bins"]) == 0:
             self.pilot = None
             return
+        if cfg["tone_enabled"] and self.pilot["tone_bin"] is None:
+            print("  Pilot WARNING: the carrier at %.3f MHz is outside the sampled band "
+                  "or inside the LO guard; running without it"
+                  % (cfg["tone_hz"] / 1e6), flush=True)
         nw = self.wide_channels
+        # The comb is switched with a multiplier rather than by rewriting the
+        # source's data: set_data on a running vector source rewrites 1024
+        # complex samples under the scheduler's feet, where set_k touches one
+        # scalar. The carrier's own source is never touched, so the carrier
+        # is genuinely uninterrupted - which is what makes its power during a
+        # burst the right reference for the records after it.
+        scale = float(cfg["demo_inject_scale"]) if (self.sdr_type != 'b210'
+                                                    and cfg.get("demo_inject")) else 1.0
+        if self.sdr_type == 'b210' or cfg.get("demo_inject"):
+            self.pilot_carrier_src = blocks.vector_source_c(
+                (self.pilot["idle_frame"] * scale).tolist(), True)
+            self.pilot_comb_src = blocks.vector_source_c(
+                (self.pilot["comb_frame"] * scale).tolist(), True)
+            self.pilot_comb_gain = blocks.multiply_const_cc(0.0)
+            self.pilot_tx_add = blocks.add_cc()
         if self.sdr_type == 'b210':
             from gnuradio import uhd
-            self.pilot_src = blocks.vector_source_c(self.pilot["idle_frame"].tolist(), True)
             self.pilot_sink = uhd.usrp_sink(
                 ",".join(("type=b200", "")),
                 uhd.stream_args(cpu_format="fc32", args="", channels=[0]))
@@ -556,16 +607,13 @@ class TwoProductFlowgraph(gr.top_block):
             print("  Pilot TX: %.3f Msps at %.6f MHz, gain %.1f dB; %s"
                   % (self.pilot_sink.get_samp_rate() / 1e6, tx_f / 1e6,
                      self.pilot_sink.get_gain(0), pilot_mod.describe(cfg)), flush=True)
-            # the cadence in records is the recorder's business (it knows the
-            # integration time); this is the rule it will apply
             if abs(tx_f - self.center_freq) > 0.5:
                 # Different synthesiser settings on the two sides would let
                 # the tones' phase slip and the coherent sum average away.
                 print("  Pilot WARNING: TX tuned %.1f Hz from the RX LO; the recovery "
                       "will not accumulate coherently" % (tx_f - self.center_freq), flush=True)
         elif cfg.get("demo_inject"):
-            self.pilot_src = blocks.vector_source_c(self.pilot["idle_frame"].tolist(), True)
-            self.pilot_inject = self.pilot_src
+            self.pilot_inject = self.pilot_tx_add
             self.pilot_adder = blocks.add_cc()
         # The pilot's own FFT, unwindowed: fft_vcc with an empty window is
         # rectangular, which is what keeps the reference flat (see _PilotGate).
@@ -588,25 +636,30 @@ class TwoProductFlowgraph(gr.top_block):
         Between bursts the source plays the idle frame - the continuous
         carrier alone - not silence, so the fast-gain monitor never stops.
         """
-        if self.pilot_src is None or bool(on) == self._burst_on:
+        if self.pilot_comb_gain is None or bool(on) == self._burst_on:
             return
-        frame = self.pilot["frame"] if on else self.pilot["idle_frame"]
-        if self.pilot_inject is not None:
-            frame = frame * float(self.pilot_cfg["demo_inject_scale"])
-        self.pilot_src.set_data(frame.tolist(), [])
+        self.pilot_comb_gain.set_k(1.0 if on else 0.0)
         self._burst_on = bool(on)
+        if self.pilot_gate is not None:
+            # The gate judges power only inside the commanded window, and
+            # lets go of it only once the power has actually fallen back.
+            (self.pilot_gate.arm if on else self.pilot_gate.release)()
 
     def _connect_blocks(self):
         src = self.sdr_source
         if self.throttle is not None:
             self.connect((self.sdr_source, 0), (self.throttle, 0))
             src = self.throttle
+        if self.pilot_comb_gain is not None:
+            self.connect((self.pilot_carrier_src, 0), (self.pilot_tx_add, 0))
+            self.connect((self.pilot_comb_src, 0), (self.pilot_comb_gain, 0))
+            self.connect((self.pilot_comb_gain, 0), (self.pilot_tx_add, 1))
         if self.pilot_inject is not None:
             self.connect((src, 0), (self.pilot_adder, 0))
             self.connect((self.pilot_inject, 0), (self.pilot_adder, 1))
             src = self.pilot_adder
         if self.pilot_sink is not None:
-            self.connect((self.pilot_src, 0), (self.pilot_sink, 0))
+            self.connect((self.pilot_tx_add, 0), (self.pilot_sink, 0))
         if self.pilot_gate is not None:
             self.connect((self.wide_s2v, 0), (self.pilot_fft, 0))
             self.connect((self.pilot_fft, 0), (self.pilot_mult, 0))
@@ -1038,9 +1091,18 @@ def _embed_calibration(hf):
         pass
 
 
-def _pilot_reference_from_calibration(planned):
+def _pilot_reference_from_calibration(planned, instrument=None):
     """The per-bin pilot response stored with the gain calibration, if it was
-    made for this pilot plan (same tone bins); else None (issue #30)."""
+    made for this pilot plan and this tuning; else None (issue #30).
+
+    The tuning check matters as much as the bins. The pilot's level is the
+    *power gain relative to the reference*, so a reference taken at a
+    different receiver gain reads as the gain ratio - a 10 dB override is a
+    factor of ten, outside the sanity band, and every burst would then be
+    refused with no fallback. Same for the LO and the rate, which move the
+    passband under the bins. The calibration's own `applies_to` check makes
+    the same demand of the bandpass and the gain, and for the same reason.
+    """
     import json as _json
     try:
         here = os.path.dirname(os.path.abspath(__file__))
@@ -1051,6 +1113,13 @@ def _pilot_reference_from_calibration(planned):
             return None
         if list(int(b) for b in ref.get("bins", [])) != [int(b) for b in planned["bins"]]:
             return None
+        if instrument is not None:
+            for key, tol in (("gain_db", 0.01), ("lo_hz", 1.0), ("sample_rate_hz", 1.0)):
+                want, have = ref.get(key), instrument.get(key)
+                if want is None or have is None or abs(float(want) - float(have)) > tol:
+                    print("  Pilot: the calibration's reference was taken at a different "
+                          "%s; self-referencing this run instead" % key, flush=True)
+                    return None
         h = np.asarray(ref["response_re"], dtype=float) + 1j * np.asarray(ref["response_im"], dtype=float)
         return h if len(h) == len(planned["bins"]) else None
     except Exception:                                     # noqa: BLE001
@@ -1438,9 +1507,10 @@ class HeadlessRecorder:
         self._corr_version = None
         self._corr_index = -1
         if self.flowgraph.pilot is not None:
-            ref = _pilot_reference_from_calibration(self.flowgraph.pilot)
-            self.pilot_tracker = pilot_mod.PilotTracker(self.flowgraph.pilot_cfg,
-                                                        self.flowgraph.pilot, ref)
+            ref = _pilot_reference_from_calibration(self.flowgraph.pilot, instrument)
+            self.pilot_tracker = pilot_mod.PilotTracker(
+                self.flowgraph.pilot_cfg, self.flowgraph.pilot, ref,
+                expected_interval_s=self._burst_every * self.integration_time)
             if ref is not None:
                 set_pilot_reference(self.hf, ref, anchored=True)
             print("  Pilot: comb burst every %d records (%.0f s), %s" % (
@@ -1460,7 +1530,7 @@ class HeadlessRecorder:
     def _pilot_begin_record(self):
         """Decide whether the record just started is a burst, and switch the comb on if so."""
         self._burst_record = False
-        if self.pilot_tracker is None:
+        if self.pilot_tracker is None or self._burst_every <= 0:
             return
         every = self._burst_every
         if every > 0 and self._record_index % every == every - 1:
@@ -1471,7 +1541,8 @@ class HeadlessRecorder:
         """Switch the comb off a margin before the burst record ends, so the
         transmit buffers have drained before the next record begins."""
         if self._burst_record and self.flowgraph._burst_on:
-            margin = float(self.flowgraph.pilot_cfg["burst_off_margin_s"])
+            margin = pilot_mod.burst_off_margin_s(self.flowgraph.pilot_cfg,
+                                                  self.integration_time)
             if now >= period_start + self.integration_time - margin:
                 self.flowgraph.set_burst(False)
 
@@ -1493,6 +1564,15 @@ class HeadlessRecorder:
                     if not self.pilot_tracker.anchored and not np.any(self.hf['pilot_reference'][:]):
                         set_pilot_reference(self.hf, self.pilot_tracker.reference_h, anchored=False)
                     append_pilot_shape(self.hf, now - tau / 2.0, b['h'])
+                # A pilot that is never there costs a record every interval
+                # for nothing - the state until the vertex dipole is wired -
+                # so stop asking after a few, and say so once.
+                if self.pilot_tracker.give_up() and self._burst_every:
+                    self._burst_every = 0
+                    print("  Pilot: not detected in %d bursts; no more will be sent this "
+                          "run (is the transmitter connected to the vertex dipole?). The "
+                          "carrier keeps running and its power is still recorded."
+                          % self.pilot_tracker.bursts, flush=True)
                 if b['ok'] != self._pilot_reported:
                     self._pilot_reported = b['ok']
                     print("  Pilot burst %s (median SNR %.1f, %d of %d frames on)%s" % (
@@ -1501,11 +1581,11 @@ class HeadlessRecorder:
                 # The carrier runs through the burst too, so its power here is
                 # the level the records after it are measured against.
                 if tone['detected']:
-                    self.pilot_tracker.set_tone_reference(tone['power'])
+                    self.pilot_tracker.set_tone_reference(tone['power'], now)
                 return {'burst': 1, 'ok': 0, 'level': 1.0, 'slope': 0.0, 'snr': b['snr'],
                         'seen': b['ok'], 'corr_index': -1, 'tone_power': tone['power'],
                         'tone_ratio': tone['ratio'], 'tone_ok': 0, 'tone_level': 1.0}
-            tone_level, tone_ok = self.pilot_tracker.tone_level(tone)
+            tone_level, tone_ok = self.pilot_tracker.tone_level(tone, now)
             base = {'tone_power': tone['power'], 'tone_ratio': tone['ratio'],
                     'tone_ok': tone_ok, 'tone_level': tone_level}
             if n_on > 0:

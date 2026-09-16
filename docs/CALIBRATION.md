@@ -149,7 +149,29 @@ A burst yields the complex response per bin, and from it:
 - a **passband correction vector**, averaged over the bursts of the last half
   hour, applied to the same records.
 
-Three details that are easy to get wrong, each of which cost a rewrite:
+**The gate only judges inside an armed window.** The receiver arms it when it
+commands a burst and releases it afterwards; outside that window every block
+counts as off and feeds the running baseline. Without the arming the gate
+deadlocks the first time the received power steps up and stays up — the
+carrier starting a moment after the baseline formed, or a slew onto the Sun,
+which is 5.4 times the sky — because every block then reads "on", the
+baseline never updates again, and every science record is flagged as having
+caught a burst and dropped. Arming also lets the threshold be small, which
+matters: on the Sun the same comb raises the *total* power by only 30%, and
+the margin this started at was 30%. It is now 10%, which is forty times the
+per-block scatter and a third of that step. Inside the window the *power*
+still decides rather than the command, so the transmit buffers' latency costs
+nothing, and the release takes effect only once the power has actually fallen
+back, so a record that caught a burst's tail is still known.
+
+**A pilot that is never detected is given up on.** It would otherwise cost one
+record an interval for nothing, which is the state until the vertex dipole is
+wired. After five undetected bursts with none ever seen the run stops sending
+them and says so once; the carrier keeps running, since it costs no records.
+A pilot seen once is never given up on — an intermittent one is a fault to
+record, not a reason to stop measuring.
+
+Three more details that are easy to get wrong, each of which cost a rewrite:
 
 - **The recovery has its own unwindowed FFT.** The frame is periodic at
   exactly the transform length, so under a rectangular window it has no
@@ -207,7 +229,15 @@ floor.
 
 **It is measured against the last burst**, so the two never count the same
 change twice: at a burst the carrier reads unity by construction, and between
-bursts it carries the departure since.
+bursts it carries the departure since. A reference older than the burst
+level's own hold window is stale and stops being used, rather than quietly
+becoming a measurement of the slow drift the burst is supposed to carry.
+
+**To apply it retrospectively** from a file where `tone_apply` was off: each
+science record's `pilot_tone_power` divided by that of the burst record
+before it is the factor, and `pilot_tone_ok` says whether the carrier was
+detected. Nothing else is needed, which is the point of recording the series
+whether or not it is used.
 
 **It is recorded but not applied by default** (`tone_apply`). Applying it
 corrects a wobble in the SAWbird or the converter, does nothing for an
@@ -285,6 +315,13 @@ temperature of zero, while looking like a perfect calibration.
   known size.
 - **The fast wobble's origin** — receiver, transmitter or atmosphere — which
   decides whether the carrier is applied.
+- **The pilot's own absolute scale.** The gain job does not yet store a
+  `pilot_reference`, so every run is referenced to its own first burst and
+  the pilot removes drift *within* a run, not the offset from the
+  calibration. When that reference is stored it must carry the tuning it was
+  taken at — the receiver refuses one whose gain, local oscillator or rate
+  differ, because the level is a power ratio and a 10 dB gain override would
+  read as a factor of ten and have every burst refused.
 
 ## 8. Operating rules
 

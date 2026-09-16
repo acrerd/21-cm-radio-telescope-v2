@@ -124,9 +124,18 @@ PILOT_DEFAULTS = {
     "tone_apply": False,
     "tx_gain_db": 0.0,                    # the minimum
     "dc_guard_bins": 4,                   # no tone this close to the LO
-    # A burst near the system-noise level roughly doubles a frame's power;
-    # the per-frame scatter is 1/sqrt(N) = 3%, so 30% is a ten-sigma gate.
-    "gate_margin": 0.3,
+    # How far above the baseline a block has to sit to count as holding the
+    # burst. The gate only judges inside an armed window (see _PilotGate), so
+    # this has to beat the per-block scatter - 0.25% over 156 frames of 1024
+    # bins - and nothing else. It must stay well *below* the smallest burst
+    # step, which is not the quiet-sky one: on the Sun the same comb raises
+    # the total power by only 30%, which a 30% margin would have missed
+    # exactly. 10% is 40 sigma on the scatter and a third of that step.
+    "gate_margin": 0.1,
+    # A pilot that is never detected costs one record an interval for
+    # nothing. After this many undetected bursts with none ever seen, the
+    # run stops sending them and says so; the carrier keeps running.
+    "give_up_after_bursts": 5,
     "detect_snr": 8.0,                    # a burst counts as seen at this median per-bin SNR
     # Bursts averaged for the passband correction. The budget: a burst whose
     # power per bin is `ratio` times the noise gives SNR sqrt(n_frames x ratio)
@@ -186,7 +195,8 @@ def config_from(overrides=None):
               "tone_hz", "tone_amplitude", "tone_detect_ratio", "burst_interval_s",
               "max_duty_cycle", "min_shape_pilot_s"):
         cfg[k] = float(cfg[k])
-    for k in ("dc_guard_bins", "hold_bursts", "tone_guard_bins", "tone_sum_bins"):
+    for k in ("dc_guard_bins", "hold_bursts", "tone_guard_bins", "tone_sum_bins",
+              "give_up_after_bursts"):
         cfg[k] = int(cfg[k])
     if cfg["burst_every_records"] not in (None, ""):
         cfg["burst_every_records"] = int(cfg["burst_every_records"])
@@ -196,7 +206,8 @@ def config_from(overrides=None):
     cfg["tone_apply"] = _truthy(cfg["tone_apply"])
     if not (0.0 < cfg["tone_amplitude"] < 1.0):
         raise ValueError("pilot tone amplitude must be in (0, 1) of full scale")
-    if cfg["burst_amplitude"] + cfg["tone_amplitude"] > 0.95:
+    carrier_amp = cfg["tone_amplitude"] if cfg["tone_enabled"] else 0.0
+    if cfg["burst_amplitude"] + carrier_amp > 0.95:
         raise ValueError("burst and tone amplitudes together would run the DAC into its rails")
     cfg["demo_inject"] = _truthy(cfg["demo_inject"])
     if not (0.0 < cfg["burst_amplitude"] <= 1.0):
@@ -213,6 +224,16 @@ def config_from(overrides=None):
     if cfg["burst_interval_s"] <= 0:
         raise ValueError("pilot burst interval must be positive")
     return cfg
+
+
+def burst_off_margin_s(cfg, integration_time_s):
+    """How long before a burst record ends to switch the comb off.
+
+    Capped at a quarter of the record: at 0.1 s records a flat 0.3 s margin
+    would switch the comb off before it was ever on, and the record would be
+    dropped for a burst that never happened.
+    """
+    return min(float(cfg["burst_off_margin_s"]), 0.25 * float(integration_time_s or 0.0))
 
 
 def burst_every(cfg, integration_time_s):
@@ -307,6 +328,7 @@ def plan(cfg, lo_hz, sample_rate_hz, nbins):
 
     reference = np.fft.fftshift(np.fft.fft(comb))
     return {"bins": bins, "frame": (comb + carrier).astype(np.complex64),
+            "comb_frame": comb.astype(np.complex64),
             "idle_frame": carrier.astype(np.complex64),
             "zeros": np.zeros(nbins, dtype=np.complex64),
             "reference": reference, "freq_hz": freq, "centre_hz": lo, "nbins": nbins,
@@ -517,9 +539,15 @@ class PilotTracker:
     mean response of the bursts inside the shape window.
     """
 
-    def __init__(self, cfg, planned, reference_h=None):
+    def __init__(self, cfg, planned, reference_h=None, expected_interval_s=None):
         self.cfg = cfg
         self.planned = planned
+        # What the recorder intends the burst spacing to be. Used until two
+        # bursts have been seen and the real spacing is known: without it the
+        # first burst's level would be held for an arbitrary default rather
+        # than for the interval it belongs to.
+        self._expected_interval_s = (float(expected_interval_s)
+                                     if expected_interval_s else None)
         self.reference_h = None if reference_h is None else np.asarray(reference_h, dtype=complex)
         self.anchored = reference_h is not None
         self.bursts = 0
@@ -531,6 +559,7 @@ class PilotTracker:
         self._shape_version = 0
         self._shape_mean = None
         self._tone_ref = None               # the carrier's power at the last burst
+        self._tone_ref_t = None
         self.tone_records = 0
 
     def burst(self, xspec, n_on, noise_per_bin, now):
@@ -561,19 +590,45 @@ class PilotTracker:
         out.update(ok=1, level=level, slope=slope, level_err=err)
         return out
 
-    def set_tone_reference(self, power):
+    def give_up(self):
+        """True when the pilot has never been seen after enough bursts.
+
+        A pilot that is not there costs one record an interval for nothing -
+        the state until the vertex dipole is wired - so the run stops asking.
+        Never once it has been seen: an intermittent pilot is a fault to
+        record, not a reason to stop measuring.
+        """
+        limit = int(self.cfg["give_up_after_bursts"])
+        return bool(limit and self.detected == 0 and self.bursts >= limit)
+
+    def _interval(self):
+        """The burst spacing: measured once two have been seen, else intended."""
+        return (self._interval_s or self._expected_interval_s
+                or self.cfg["shape_window_s"] / 10.0)
+
+    def set_tone_reference(self, power, now=None):
         """The carrier's power at a burst: the level the records after it are
         measured against, so the burst's own level and the carrier's never
         count the same change twice - at a burst the carrier reads unity by
         construction, and between bursts it carries the departure since."""
         if power and power > 0:
             self._tone_ref = float(power)
+            self._tone_ref_t = now
 
-    def tone_level(self, tone):
+    def tone_level(self, tone, now=None):
         """(level, ok) for a science record's carrier: its power relative to
         the last burst's, which is the fast common-mode gain change since the
-        burst that set `level` and `slope`."""
+        burst that set `level` and `slope`.
+
+        Bounded by the same rule as the burst's own level: a reference older
+        than `hold_bursts` intervals is stale, and the carrier would then be
+        carrying the slow drift the burst is supposed to carry - so it stops
+        being applied rather than silently changing meaning.
+        """
         if not tone.get("detected") or not self._tone_ref:
+            return 1.0, 0
+        if (now is not None and self._tone_ref_t is not None
+                and now - self._tone_ref_t > self.cfg["hold_bursts"] * max(self._interval(), 1.0) + 1.0):
             return 1.0, 0
         lvl = float(tone["power"]) / self._tone_ref
         if not (0.5 < lvl < 2.0):
@@ -609,8 +664,7 @@ class PilotTracker:
         if self._last is None:
             return 1.0, 0.0, 0
         t, level, slope = self._last
-        interval = self._interval_s or self.cfg["shape_window_s"] / 10.0
-        if now - t > self.cfg["hold_bursts"] * max(interval, 1.0) + 1.0:
+        if now - t > self.cfg["hold_bursts"] * max(self._interval(), 1.0) + 1.0:
             return 1.0, 0.0, 0
         return level, slope, 1
 

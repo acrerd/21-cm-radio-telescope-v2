@@ -251,7 +251,7 @@ def read_observation(path, product="h1", drop_bursts=True):
             if "pilot_tone_ok" in hf:
                 header["pilot_tone_records"] = int(np.asarray(hf["pilot_tone_ok"][:n]).sum())
                 header["pilot_tone_applied"] = int(hf.attrs.get("pilot_tone_applied", 0))
-            header["pilot_records_dropped"] = int((~keep).sum() + (spectra.shape[0] - n) * 0)
+            header["pilot_records_dropped"] = int((~keep).sum())
             if drop_bursts and (~keep).any():
                 spectra = spectra[:n][keep]
                 stamps = stamps[:n][keep]
