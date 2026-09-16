@@ -19,7 +19,7 @@ import os
 import re
 import sys
 from datetime import datetime, timezone
-import collections
+import math
 from collections import deque
 
 from gnuradio import gr, fft, blocks, analog, filter
@@ -326,13 +326,13 @@ class _VectorAccumulator(gr.sync_block):
 
 
 class _PilotGate(gr.sync_block):
-    """The pilot's recovery sink (issue #30): decides which blocks held the burst, and sums them.
+    """The pilot's recovery sink (issue #30): finds the comb by its own signature, and sums it.
 
     Fed two C++ branches off the pilot's own *unwindowed* FFT, each already
     summed over `presum` frames in C++ so this Python block runs at the
     flowgraph's sink rate (~50 Hz) rather than at 7800 frames a second. The
-    first version did the per-frame arithmetic here and cost 55-70% of a core
-    - GNU Radio handed it 3.2 frames a call whatever `set_min_noutput_items`
+    first version did per-frame arithmetic here and cost 55-70% of a core -
+    GNU Radio handed it 3.2 frames a call whatever `set_min_noutput_items`
     asked for, so it was call overhead, not work.
 
     - input 0: the cross-spectrum, sum over the block of F conj(R).
@@ -345,81 +345,80 @@ class _PilotGate(gr.sync_block):
     in time, which for a swept chirp means zero at both band edges - where
     the filter's tilt has to be measured.
 
-    **The power test only runs inside an armed window.** The recorder arms the
-    gate when it commands a burst and releases it afterwards; outside that
-    window every block counts as off and feeds the baseline. Without the
-    arming the gate deadlocks the first time the received power steps up and
-    stays up - the carrier starting a moment after the baseline formed, or a
-    slew onto the Sun (5.4x) - because every block then reads "on", nothing
-    ever updates the baseline again, and every science record is flagged as
-    having caught a burst and dropped. Arming also lets the margin be small,
-    which matters: on the Sun a burst raises the total power by only 30%,
-    which the original 30% margin would have missed exactly.
+    **A block holds the comb when it says so coherently.** The cross-spectrum
+    carries a phase ramp across the band - the fixed framing offset between
+    transmit and receive - so its inverse transform peaks at that offset, and
+    the height of that peak against the block's own noise is the statistic.
+    It is *absolute*: the noise comes from the same block's own power, so
+    nothing is compared with a running baseline and nothing depends on how
+    bright the sky is. Measured per 20 ms block: 2.6 sigma with no comb (the
+    expected maximum of 1024 Rayleigh draws), 286 with a full one, 32 with
+    only a twentieth of the block covered, and the same on the Sun as on cold
+    sky. The threshold sits at 8.
 
-    Within the window the *power* still decides, rather than the command, so
-    the transmit buffers' latency costs nothing and a science record that
-    caught a burst's tail is known: the release is requested by the recorder
-    but only takes effect once the power has actually fallen back. A block is
-    committed only when it and both its neighbours agree, which drops the
-    partial block at each edge - two blocks in 150, where counting a partial
-    one as whole would bias the response by up to 1.3%.
+    Two earlier designs are recorded here because both are worse. Judging by
+    the block's *power* against a median of recent blocks works, but it is
+    second-hand: it deadlocks the first time the received power steps up and
+    stays up (a slew onto the Sun, or the carrier starting late) because
+    every block then reads "on" and the baseline never updates again, and its
+    margin has to be large enough to beat the block scatter yet small enough
+    to catch a comb that raises the total power by only 30% when the Sun is
+    in the beam. Trusting the *command* is simpler but silent: the transmit
+    buffers empty tens of milliseconds after the comb is switched off, and a
+    science record that caught that tail would be reduced as sky. The
+    coherent test needs neither a baseline nor the command, and would have
+    caught a 1 ms tail.
+
+    A block is committed only when it and both its neighbours agree, which
+    drops the partial block at each edge of a burst - two blocks in 150,
+    where counting a partial one as whole would bias the response by up to
+    1.3%.
 
     take() hands back (X over the committed on-blocks, on-frames, frames,
-    mean per-bin power of the committed off-blocks) - the last being the
-    noise the burst sat in, measured in the same FFT and per bin, which is
-    what the recovery's SNR needs.
+    per-bin noise power) - the last measured on the off-blocks in the same
+    FFT, carried across records so a record that is entirely burst still has
+    one.
     """
 
-    _BASELINE_BLOCKS = 200            # off-blocks kept for the median
-    _RELEASE_BLOCKS = 5               # quiet blocks before a release takes effect
+    _NOISE_MEMORY = 0.2               # weight of a new record's off-blocks
 
-    def __init__(self, vlen, presum, margin):
+    def __init__(self, vlen, presum, sigma):
         gr.sync_block.__init__(self, name="pilot_gate",
                                in_sig=[(np.complex64, vlen), (np.float32, vlen)],
                                out_sig=None)
         self.vlen = int(vlen)
         self.presum = int(presum)
-        self._margin = 1.0 + float(margin)
+        self._sigma = float(sigma)
         self._lock = threading.Lock()
-        self._base = collections.deque(maxlen=self._BASELINE_BLOCKS)
-        self._baseline = None
-        self._armed = False
-        self._release_req = False
-        self._quiet = 0
         self._held = []               # (on, X, P) awaiting their neighbours
         self._x = np.zeros(self.vlen, dtype=np.complex128)
         self._noise = np.zeros(self.vlen, dtype=np.float64)
+        self._noise_est = None        # per-bin, carried between records
         self._n_on = 0
         self._n_off = 0
         self._n = 0
+        self.peak_sigma = 0.0         # the loudest block since the last take
 
-    def arm(self):
-        """A burst has been commanded: judge the blocks from here."""
-        with self._lock:
-            self._armed = True
-            self._release_req = False
-            self._quiet = 0
-
-    def release(self):
-        """The burst has been commanded off: stop judging once it has gone."""
-        with self._lock:
-            self._release_req = True
-            self._quiet = 0
+    def set_reference_power(self, ref_power):
+        """|R|^2 per bin: zero where the comb has no tone, so the statistic
+        and its noise are both taken over the comb's own bins alone."""
+        self._ref_pow = np.asarray(ref_power, dtype=np.float64)
 
     def work(self, input_items, output_items):
         X, P = input_items[0], input_items[1]
         n = min(X.shape[0], P.shape[0])
         with self._lock:
             for i in range(n):
-                power = float(P[i].sum()) / (self.presum * self.vlen)
-                on = (self._armed and self._baseline is not None
-                      and power > self._baseline * self._margin)
-                if self._release_req:
-                    self._quiet = 0 if on else self._quiet + 1
-                    if self._quiet >= self._RELEASE_BLOCKS:
-                        self._armed = False
-                        self._release_req = False
-                self._held.append((on, X[i].astype(np.complex128), P[i].astype(np.float64)))
+                xb = X[i].astype(np.complex128)
+                pb = P[i].astype(np.float64)
+                # Var(X_j) = (sum of |F_j|^2 over the block) |R_j|^2, so the
+                # delay transform's noise is that summed over the band.
+                var = float((pb * self._ref_pow).sum()) / (self.vlen ** 2)
+                peak = float(np.abs(np.fft.ifft(xb)).max())
+                sigma = peak / math.sqrt(var) if var > 0 else 0.0
+                self.peak_sigma = max(self.peak_sigma, sigma)
+                on = sigma > self._sigma
+                self._held.append((on, xb, pb))
                 if len(self._held) >= 3:
                     a, b, c = self._held[-3], self._held[-2], self._held[-1]
                     if a[0] and b[0] and c[0]:
@@ -428,9 +427,6 @@ class _PilotGate(gr.sync_block):
                     elif not (a[0] or b[0] or c[0]):
                         self._noise += b[2]
                         self._n_off += self.presum
-                        self._base.append(float(b[2].sum()) / (self.presum * self.vlen))
-                        if len(self._base) >= 10:
-                            self._baseline = float(np.median(self._base))
                     del self._held[0]
                 self._n += self.presum
         return n
@@ -439,12 +435,19 @@ class _PilotGate(gr.sync_block):
         """(X over on-blocks, on-frames, frames, per-bin noise power)."""
         with self._lock:
             x, n_on, n = self._x.copy(), self._n_on, self._n
-            noise = (self._noise / self._n_off) if self._n_off else np.zeros(self.vlen)
+            if self._n_off:
+                fresh = self._noise / self._n_off
+                self._noise_est = (fresh if self._noise_est is None else
+                                   (1 - self._NOISE_MEMORY) * self._noise_est
+                                   + self._NOISE_MEMORY * fresh)
+            noise = (self._noise_est if self._noise_est is not None
+                     else np.zeros(self.vlen))
             self._x = np.zeros(self.vlen, dtype=np.complex128)
             self._noise = np.zeros(self.vlen, dtype=np.float64)
             self._n_on = 0
             self._n_off = 0
             self._n = 0
+            self.peak_sigma = 0.0
         return (x if n_on else None), n_on, n, noise
 
 
@@ -628,22 +631,25 @@ class TwoProductFlowgraph(gr.top_block):
         self.pilot_xint = blocks.integrate_cc(presum, nw)
         self.pilot_mag = blocks.complex_to_mag_squared(nw)
         self.pilot_pint = blocks.integrate_ff(presum, nw)
-        self.pilot_gate = _PilotGate(nw, presum, cfg["gate_margin"])
+        self.pilot_gate = _PilotGate(nw, presum, cfg["gate_sigma"])
+        self.pilot_gate.set_reference_power(np.abs(self.pilot["reference"]) ** 2)
 
     def set_burst(self, on):
-        """Comb on or off from the next frame the source hands out.
+        """Comb on or off.
 
-        Between bursts the source plays the idle frame - the continuous
-        carrier alone - not silence, so the fast-gain monitor never stops.
+        The carrier has a source of its own and is never touched, so it runs
+        through the burst uninterrupted - which is what makes its power during
+        a burst the right reference for the records after it. The comb is
+        switched by a multiplier rather than by rewriting a running vector
+        source's samples under the scheduler. The gate is told nothing: it
+        finds the comb by its own coherent signature, so the transmit
+        buffers' latency needs no allowance and a record that caught a tail
+        is known rather than assumed away.
         """
         if self.pilot_comb_gain is None or bool(on) == self._burst_on:
             return
         self.pilot_comb_gain.set_k(1.0 if on else 0.0)
         self._burst_on = bool(on)
-        if self.pilot_gate is not None:
-            # The gate judges power only inside the commanded window, and
-            # lets go of it only once the power has actually fallen back.
-            (self.pilot_gate.arm if on else self.pilot_gate.release)()
 
     def _connect_blocks(self):
         src = self.sdr_source

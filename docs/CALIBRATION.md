@@ -149,20 +149,35 @@ A burst yields the complex response per bin, and from it:
 - a **passband correction vector**, averaged over the bursts of the last half
   hour, applied to the same records.
 
-**The gate only judges inside an armed window.** The receiver arms it when it
-commands a burst and releases it afterwards; outside that window every block
-counts as off and feeds the running baseline. Without the arming the gate
-deadlocks the first time the received power steps up and stays up — the
-carrier starting a moment after the baseline formed, or a slew onto the Sun,
-which is 5.4 times the sky — because every block then reads "on", the
-baseline never updates again, and every science record is flagged as having
-caught a burst and dropped. Arming also lets the threshold be small, which
-matters: on the Sun the same comb raises the *total* power by only 30%, and
-the margin this started at was 30%. It is now 10%, which is forty times the
-per-block scatter and a third of that step. Inside the window the *power*
-still decides rather than the command, so the transmit buffers' latency costs
-nothing, and the release takes effect only once the power has actually fallen
-back, so a record that caught a burst's tail is still known.
+**A block is judged to hold the comb by the comb's own signature**, not by
+the command and not by the power. The cross-spectrum carries a phase ramp
+across the band — the fixed framing offset between transmit and receive — so
+its inverse transform peaks at that offset, and the height of that peak
+against the block's *own* noise is the statistic. Per 20 ms block:
+
+| | statistic |
+|---|---|
+| no comb | 2.6 σ (the expected maximum of 1024 Rayleigh draws) |
+| a twentieth of the block covered | 32 σ |
+| the whole block | 286 σ |
+| the whole block, with the Sun in the beam | 286 σ |
+
+The threshold is 8. Nothing is compared with a running baseline and nothing
+depends on how bright the sky is, which is what makes it safe.
+
+Two earlier designs are recorded here because both were worse, and both were
+built before this one. Judging a block by its **power** against a median of
+recent blocks works, but it is second-hand: it deadlocks the first time the
+received power steps up and stays up — a slew onto the Sun, or the carrier
+starting a moment after the baseline formed — because every block then reads
+"on", the baseline never updates again, and every science record is flagged
+as contaminated and dropped. Its margin also has to beat the per-block
+scatter while still catching a comb that raises the total power by only 30%
+when the Sun is in the beam. Trusting the **command** is simpler still, but
+silent: the transmit buffers empty tens of milliseconds after the comb is
+switched off, and a record that caught that tail would be reduced as sky — a
+comb at five times the noise over 1% of a 3 s record is a 7 K error. The
+coherent test needs neither, and catches a tail a twentieth of a block long.
 
 **A pilot that is never detected is given up on.** It would otherwise cost one
 record an interval for nothing, which is the state until the vertex dipole is

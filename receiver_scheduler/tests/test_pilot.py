@@ -463,85 +463,94 @@ class TestDemoFlowgraph:
 
 
 class TestGate:
-    """The gate decides which blocks held the burst. Its failure modes are the
-    ones that stay invisible until the transmitter is connected."""
+    """The gate decides which 20 ms blocks held the comb. Its failure modes
+    are the ones that stay invisible until the transmitter is connected."""
 
-    VLEN, PRESUM = 64, 10
+    VLEN, PRESUM = 1024, 156
 
-    def _gate(self, margin=0.1):
+    def _gate(self, planned, sigma=8.0):
         if "--headless" not in sys.argv:
             sys.argv.append("--headless")
         import b210_h1_receiver as rx
-        return rx._PilotGate(self.VLEN, self.PRESUM, margin)
+        g = rx._PilotGate(self.VLEN, self.PRESUM, sigma)
+        g.set_reference_power(np.abs(planned["reference"]) ** 2)
+        return g
 
-    def _feed(self, gate, level, blocks):
-        """`blocks` blocks whose mean per-bin power is `level`."""
-        X = np.full((blocks, self.VLEN), 1.0 + 0j, dtype=np.complex64)
-        P = np.full((blocks, self.VLEN), level * self.PRESUM, dtype=np.float32)
+    def _blocks(self, planned, gate, fraction_on, blocks, sky=1.0, ratio=5.0, rng=None):
+        """`blocks` blocks in which `fraction_on` of the frames carried the comb,
+        on a sky `sky` times the reference brightness."""
+        rng = rng or np.random.default_rng(5)
+        bins, R = planned["bins"], planned["reference"]
+        refpow = np.abs(R) ** 2
+        X = np.zeros((blocks, self.VLEN), dtype=np.complex64)
+        P = np.zeros((blocks, self.VLEN), dtype=np.float32)
+        for i in range(blocks):
+            p_row = np.full(self.VLEN, self.PRESUM * sky)
+            x_row = (np.sqrt(self.PRESUM * sky * refpow)
+                     * (rng.standard_normal(self.VLEN) + 1j * rng.standard_normal(self.VLEN))
+                     / np.sqrt(2))
+            if fraction_on:
+                h = np.sqrt(ratio * sky / refpow[bins][0])
+                ramp = np.exp(-2j * np.pi * np.arange(len(bins)) * 137 / self.VLEN)
+                x_row[bins] += fraction_on * self.PRESUM * h * refpow[bins] * ramp
+                p_row[bins] += fraction_on * self.PRESUM * ratio * sky
+            X[i], P[i] = x_row, p_row
         gate.work([X, P], [])
 
-    def test_a_step_in_received_power_outside_a_burst_does_not_deadlock_it(self):
-        """The bug this guards: the baseline is a median of blocks judged off,
-        so if a step up were judged "on" the baseline would never update again
-        and every science record would be flagged as having caught a burst.
-        The carrier starting a moment after the baseline forms does exactly
-        that step, and so does a slew onto the Sun - 5.4x, eighteen times the
-        margin. Neither is inside an armed window, so neither is judged."""
-        for step in (1.85, 5.4):                       # the carrier; the Sun
-            gate = self._gate()
-            self._feed(gate, 1.0, 40)                  # baseline forms at 1.0
-            self._feed(gate, step, 60)                 # ... then power steps up
-            _, n_on, n, noise = gate.take()
-            assert n_on == 0, "nothing is on outside an armed window"
-            assert noise.mean() > 0
-            # and the baseline followed the step, so a burst on top is still seen
-            gate.arm()
-            self._feed(gate, step * 2.0, 40)
-            _, n_on, _, _ = gate.take()
-            assert n_on > 0
+    def test_it_finds_the_comb_by_its_own_signature_not_by_power_or_by_the_command(self):
+        """The statistic is the cross-spectrum's delay peak against the
+        block's own noise, so it is absolute. A power test would have to be
+        judged against a running baseline - which deadlocks the first time
+        the received power steps up and stays up - and the command would be
+        silent about the tail the transmit buffers leave behind."""
+        _, p = _plan()
+        gate = self._gate(p)
+        self._blocks(p, gate, 0.0, 40)
+        _, n_on, n, noise = gate.take()
+        assert n_on == 0 and n > 0 and noise.mean() > 0
+        self._blocks(p, gate, 1.0, 40)
+        _, n_on, n, _ = gate.take()
+        assert n_on > 0.8 * n                       # all but the edge blocks
 
-    def test_it_sees_a_burst_on_a_bright_source_where_a_wide_margin_would_not(self):
-        """On the Sun the same comb raises the total power by only 30%,
-        because the Sun is already there: 1 + 0.85 carrier + 5.4 Sun = 7.25,
-        and the comb adds 1.86. A 30% margin would have missed it exactly."""
-        quiet, sun, comb = 1.85, 1.85 + 5.4, 1.86
-        gate = self._gate(margin=0.1)
-        self._feed(gate, sun, 60)
-        gate.arm()
-        self._feed(gate, sun + comb, 40)
+    def test_it_reads_the_same_on_the_sun_as_on_cold_sky(self):
+        """The comb raises the total power by only 30% with the Sun in the
+        beam, which a power test's margin would have to be under - while
+        still beating the per-block scatter. This one does not care."""
+        _, p = _plan()
+        for sky in (1.0, 6.25):                     # cold sky; the Sun
+            gate = self._gate(p)
+            self._blocks(p, gate, 0.0, 20, sky=sky)
+            assert gate.take()[1] == 0
+            self._blocks(p, gate, 1.0, 30, sky=sky)
+            assert gate.take()[1] > 0
+
+    def test_it_catches_a_tail_a_command_would_have_missed(self):
+        """The transmit buffers empty tens of milliseconds after the comb is
+        switched off. A science record that caught that tail has to be known,
+        or it is reduced as sky: a comb at five times the noise over 1% of a
+        3 s record is a 7 K error."""
+        _, p = _plan()
+        gate = self._gate(p)
+        self._blocks(p, gate, 0.0, 20)
+        gate.take()
+        self._blocks(p, gate, 0.05, 3)              # a twentieth of a block
+        self._blocks(p, gate, 0.0, 20)
         _, n_on, _, _ = gate.take()
         assert n_on > 0
-        wide = self._gate(margin=0.3)
-        self._feed(wide, sun, 60)
-        wide.arm()
-        self._feed(wide, sun + comb, 40)
-        _, n_on_wide, _, _ = wide.take()
-        assert n_on_wide == 0                          # the margin we started with
-        # ... while on quiet sky both would have managed it
-        for m in (0.1, 0.3):
-            g = self._gate(margin=m)
-            self._feed(g, quiet, 60)
-            g.arm()
-            self._feed(g, quiet + comb, 40)
-            assert g.take()[1] > 0
 
-    def test_the_release_waits_for_the_power_to_fall_back(self):
-        """So a science record that caught a burst's tail is still counted -
-        the transmit buffers do not empty the moment the comb is commanded
-        off, and that record has to be flagged and dropped."""
-        gate = self._gate()
-        self._feed(gate, 1.0, 40)
-        gate.arm()
-        self._feed(gate, 3.0, 30)
-        gate.release()                                  # commanded off ...
-        self._feed(gate, 3.0, 20)                       # ... but still arriving
+    def test_partial_blocks_at_the_edges_are_dropped(self):
+        """A block half covered by the burst still reads on, but counting it
+        whole would bias the response by up to 1.3%; it is committed only
+        when both its neighbours agree."""
+        _, p = _plan()
+        gate = self._gate(p)
+        self._blocks(p, gate, 0.0, 10)
+        self._blocks(p, gate, 0.5, 1)               # the leading edge
+        self._blocks(p, gate, 1.0, 20)
+        self._blocks(p, gate, 0.5, 1)               # the trailing edge
+        self._blocks(p, gate, 0.0, 10)
         _, n_on, _, _ = gate.take()
-        assert n_on > 0
-        self._feed(gate, 1.0, 30)                       # now it has gone, and the
-        gate.take()                                     # gate lets go of the window
-        self._feed(gate, 3.0, 30)                       # so a later step is not a burst
-        _, later, _, _ = gate.take()
-        assert later == 0
+        assert n_on == pytest.approx(20 * self.PRESUM, rel=0.01)
 
 
 class TestCarrier:

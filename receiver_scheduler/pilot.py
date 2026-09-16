@@ -124,14 +124,14 @@ PILOT_DEFAULTS = {
     "tone_apply": False,
     "tx_gain_db": 0.0,                    # the minimum
     "dc_guard_bins": 4,                   # no tone this close to the LO
-    # How far above the baseline a block has to sit to count as holding the
-    # burst. The gate only judges inside an armed window (see _PilotGate), so
-    # this has to beat the per-block scatter - 0.25% over 156 frames of 1024
-    # bins - and nothing else. It must stay well *below* the smallest burst
-    # step, which is not the quiet-sky one: on the Sun the same comb raises
-    # the total power by only 30%, which a 30% margin would have missed
-    # exactly. 10% is 40 sigma on the scatter and a third of that step.
-    "gate_margin": 0.1,
+    # How loudly a 20 ms block has to say "the comb is here" to be counted.
+    # The statistic is the height of the cross-spectrum's delay peak against
+    # that block's own noise (see _PilotGate), so it is absolute: nothing is
+    # compared with a running baseline and nothing depends on how bright the
+    # sky is. Measured: 2.6 sigma with no comb (the expected maximum of 1024
+    # Rayleigh draws), 286 with a full block, 32 with a twentieth of one, and
+    # the same on the Sun as on cold sky. 8 sits between them with room.
+    "gate_sigma": 8.0,
     # A pilot that is never detected costs one record an interval for
     # nothing. After this many undetected bursts with none ever seen, the
     # run stops sending them and says so; the carrier keeps running.
@@ -190,10 +190,10 @@ def config_from(overrides=None):
         if nested.get(key) not in (None, ""):
             cfg[key] = nested[key]
     cfg["enabled"] = _truthy(cfg["enabled"])
-    for k in ("burst_amplitude", "tx_gain_db", "gate_margin", "detect_snr",
+    for k in ("burst_amplitude", "tx_gain_db", "detect_snr",
               "shape_window_s", "max_delay_us", "burst_off_margin_s", "demo_inject_scale",
               "tone_hz", "tone_amplitude", "tone_detect_ratio", "burst_interval_s",
-              "max_duty_cycle", "min_shape_pilot_s"):
+              "max_duty_cycle", "min_shape_pilot_s", "gate_sigma"):
         cfg[k] = float(cfg[k])
     for k in ("dc_guard_bins", "hold_bursts", "tone_guard_bins", "tone_sum_bins",
               "give_up_after_bursts"):
