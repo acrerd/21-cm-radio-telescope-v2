@@ -31,7 +31,7 @@ This receiver is designed for radio astronomy observations of neutral hydrogen (
 | `observation_plot.py` | Reads a recording (live or finished, either product, always as counts) and renders it, in kelvin and on an LSR velocity axis |
 | `observatory.py` | Where the telescope is and how big its beam is — plumbing only; the numbers live in `astro_simulator/instrument.py` |
 | `solar_reference.py` | The professional solar flux quoted beside ours: reads NOAA SWPC's hourly RSTN local-noon file, keeps a dated history in `data/`, never waits on the network |
-| `pilot.py` | The **pilot** (issue #30): the B210's own TX as the gain and passband reference — the transmit frame, its reference spectrum, the per-record detection/level/slope estimate, the per-channel factor and its reversal, and the exclusion of tone bins from band means; GNU-Radio-free so the scheduler can reduce with it |
+| `pilot.py` | The **pilot** (issue #30): the B210's own TX as the gain and passband reference, sent as a full-band comb burst every N-th record — the burst frame and its flat rectangular reference, the per-burst response, the power level and tilt, the delay-filtered passband correction and its reversal; GNU-Radio-free so the scheduler can reduce with it |
 | `ad9361_filters.py` | **Not imported at runtime.** A standalone account of the B210's decimation-filter chain and the passband shape it implies, run by hand; `bandpass.py`'s docstring cites its result (about 4% of the measured response). Kept as the reasoning behind measuring the bandpass rather than modelling it |
 | `investigations/lo_shape_*.py`, `investigations/freq_switch_demo.py` | One-off investigations from the LO-placement work, not imported by anything, kept for their reasoning |
 | `tests/page_sources.py`, `tests/conftest.py` | Test plumbing: collects the operator page and every script it loads; keeps the suite out of the observatory's records |
@@ -81,7 +81,7 @@ This receiver is designed for radio astronomy observations of neutral hydrogen (
 | `test_live_plot.py` | The live plot on the Observe tab and the route table it is served from |
 | `test_solar_recording_plot.py` | A solar track's recording drawn as flux against the clock, the way its live view was |
 | `test_solar_reference.py` | The RSTN reference flux: parsing NOAA's file, the history, never waiting on the network |
-| `test_pilot.py` | The pilot: frame and reference against GNU Radio's window, detection and non-detection (the TX unplugged), level and slope recovery, the kelvin write and its exact reversal, tone-bin exclusion only where the pilot was seen, the per-entry switch and the endpoints; a demo-source flowgraph run with and without an injected pilot |
+| `test_pilot.py` | The pilot: the flat rectangular reference (and why the windowed one fails at the band edges), detection and non-detection (the TX unplugged), the framing offset, level and tilt as power quantities, the ripple recovered by averaging bursts and refused from too few, the kelvin write and its exact reversal with the burst records dropped, the per-entry switch and the endpoints; a demo-source flowgraph run that gates a switched burst |
 | `test_page_structure.py`, `test_page_javascript.py` | That the operator page has not lost an element, a handler, or a route |
 
 ## Hardware Requirements

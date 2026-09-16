@@ -4,46 +4,71 @@
 The front end drifts by percent over tens of minutes, and it drifts with a
 *tilt* across the band - the SAW filter's skirt sliding under us with its
 temperature (2026-09-16: a solar track rose 4.2% at one end of the band and
-1.8% at the other in 25 minutes while GOES was quiet). No sky reference can
-follow that on a solar track, so the receiver carries its own: one frame of
-tones, generated digitally, sent from TX/RX through fixed pads and the old
-SRT calibration dipole at the dish's vertex, and received through the feed,
-the SAWbird and everything after it.
+1.8% at the other in 25 minutes while GOES was quiet) - and its multi-transit
+ripple, 0.1-0.15% of the passband with a 160 kHz period, changes from day to
+day, which is why a stored bandpass template leaves 0.5 K of structure in
+every line fit. No sky reference can follow either on a solar track, so the
+receiver carries its own: a comb with a tone on every bin of the band,
+generated digitally, sent from TX/RX through fixed pads and the old SRT
+calibration dipole at the dish's vertex, and received through the feed, the
+SAWbird and everything after it.
+
+**It is sent in bursts.** Every N-th record (default one in twenty) is a
+burst: the comb is on for that record, at a level near the system noise, and
+the record is flagged and dropped from the science. Every other record
+carries no pilot at all - nothing to exclude, subtract or explain. The
+operator's choice (2026-09-16): a continuous weak pilot added only cadence,
+and the drifts are minutes long. What the burst measures is the whole
+passband at once, so the H I band's own SAW ripple is measured rather than
+modelled - the thing a stored template can never follow.
 
 Three facts make the recovery cheap and exact.
 
-- The frame is one wide-FFT length long (1024 samples) and repeats, so any
-  receive frame holds exactly one period, cyclically shifted. TX and RX run
-  from one clock at one rate, so the shift - and every tone's phase - is the
-  same in every frame, and the cross-spectrum of the receive FFT against the
-  known frame's spectrum accumulates coherently: one complex multiply per
-  bin per frame, on the wide FFT the receiver already computes.
-- Every tone sits on a bin centre and the comb tones are spaced by whole
-  bins, more than the Blackman-Harris window's main lobe, so each pilot bin
-  holds one tone and nothing of its neighbours; the recovered magnitude is
-  then independent of the unknown shift.
-- The noise on each cross-spectrum bin is known analytically from the
-  receive power in that bin, so the pilot's presence is a signal-to-noise
-  test with no threshold to tune by eye: the TX unplugged reads as "not
-  detected", and the receiver then applies nothing and says so.
+- The frame is one FFT length long (1024 samples) and repeats, so any receive
+  frame holds exactly one period, cyclically shifted, and **under a
+  rectangular window a periodic signal has no leakage at all**: the reference
+  spectrum is flat across the band, every bin measures its own response, and
+  the cross-spectrum accumulates coherently. The pilot therefore has its own
+  unwindowed FFT (`_PilotGate` in the receiver) rather than borrowing the
+  wide product's Blackman-Harris one - that window multiplies the frame in
+  time, and since a Schroeder chirp sweeps frequency linearly with time, it
+  drives the reference to zero at both band edges, which is exactly where the
+  filter's tilt has to be measured.
+- The framing offset between transmit and receive is unknown but *fixed* (one
+  clock, one rate), so it appears as a phase ramp `exp(-2 pi i j d / N)` and
+  nothing else. It is estimated per burst from the peak of the inverse
+  transform of the cross-spectrum and removed, leaving a proper complex
+  response whose phase is the chain's own - which is what a later look at the
+  SAW's echo structure would need. Everything used for calibration is a
+  magnitude, so a failure to find `d` costs nothing.
+- The pilot's presence is decided *per frame* from the frame's total power,
+  which a burst at the system-noise level roughly doubles against a per-frame
+  scatter of 3%. So the frames a burst actually occupied are counted rather
+  than assumed: the transmit buffers' latency at switch-on and switch-off
+  costs nothing, and a science record that caught the tail of a burst is
+  known and dropped. A power gate rather than a coherent one because the
+  phase ramp above would cancel a whole-band coherent statistic.
 
-What is applied on the fly, per record, is two numbers: the pilot's level
-relative to a reference, and its slope across the band (fractional change
-per MHz), both smoothed over a few records. The kelvin spectra are divided by
-`factor(level, slope, f)`, and both numbers are stored per record so the
-division is exactly reversible (observation_plot.read_observation). The full
-per-bin response is accumulated and written at a slower cadence
-(`shape_interval_s`) for the passband-ripple work, which needs minutes of
-averaging anyway.
+What comes out of a burst: the complex response per bin, `h`; its **level**
+relative to a reference and its **slope** across the band (fraction per MHz);
+and, averaged over the bursts of the last `shape_window_s`, a normalised
+passband **correction vector** on the H I and wide axes - the SAW ripple and
+tilt as they are now. The science records up to the next burst are divided by
+`factor(level, slope, f)` and by the correction vector on the way to kelvin;
+the numbers and vectors applied are stored, so the division is exactly
+reversible (observation_plot.read_observation), which also drops the burst
+records for every consumer.
 
 The reference is the calibration's `pilot_reference` when the gain job has
-stored one at its fit (then the level carries the gain change since the
-calibration), else the run's first detected record (then it removes drift
-within the run only, and the file says `pilot_anchored = 0`).
+stored one at its fit, else the run's first detected burst (then the file
+says `pilot_anchored = 0` and the correction removes drift within the run).
+With the transmitter unconnected - the state until the dipole is wired -
+every burst reads "not detected", nothing is applied, and the file reduces
+identically to one made with the pilot off, less the burst records.
 
-This module is deliberately free of GNU Radio: the receiver builds the
-transmit frame and the reference from it, and the scheduler reduces files
-with it, and neither should need the other's dependencies to do so.
+This module is deliberately free of GNU Radio: the receiver builds the frame
+and the reference from it, and the scheduler reduces files with it, and
+neither should need the other's dependencies to do so.
 """
 import json
 import math
@@ -53,44 +78,51 @@ import numpy as np
 
 H1_REST_FREQ_HZ = 1420.405752e6
 
-# Defaults. Levels are digital: `amplitude` is the frame's peak in units of
-# DAC full scale; what reaches the feed is set by the TX gain and the pads,
-# which the bench run decides (#30). Nothing here radiates a level: with the
-# TX unconnected these settings produce a file identical to one recorded
-# with the pilot off, apart from the per-record "not detected" flags.
+# Defaults. `burst_amplitude` is the frame's peak in DAC full scale; what
+# reaches the feed is set by the TX gain and the pads, which the bench run
+# decides (#30). Nothing here radiates a level by itself.
 PILOT_DEFAULTS = {
     "enabled": True,
-    # "tones": the three tones only; "continuum": tones plus a comb over
-    # every bin outside the H I band; "full": comb over the whole band,
-    # H I included (continuum-only science); "off": no TX, no recovery.
-    "mode": "continuum",
-    "tones_hz": [1415.3e6, 1418.9e6, 1422.6e6],
-    # The tone that will eventually be the strong one for the fast wobble
-    # (#30); until the bench sets levels it is as weak as the others.
-    "strong_tone_hz": 1418.9e6,
-    "strong_tone_relative_db": 0.0,       # relative to a comb tone
-    "comb_spacing_bins": 8,               # wide bins between comb tones
+    "burst_every_records": 20,            # one record in this many is a burst; 0 = never
+    "burst_amplitude": 0.5,               # frame peak during a burst, DAC full scale
     "tx_gain_db": 0.0,                    # the minimum
-    "amplitude": 0.05,                    # frame peak, DAC full scale
-    "shape_interval_s": 60.0,
-    "detect_snr": 4.0,                    # median SNR over pilot bins
-    "level_smooth_records": 3,
-    "slope_smooth_records": 10,
-    "guard_bins": 1,                      # excluded either side of a comb tone
-    "strong_guard_bins": 4,               # either side of the strong tone
-    "dc_guard_bins": 4,                   # no comb tone this close to the LO
-    "h1_guard_hz": 100e3,                 # comb keeps this far from the H I band
+    "dc_guard_bins": 4,                   # no tone this close to the LO
+    # A burst near the system-noise level roughly doubles a frame's power;
+    # the per-frame scatter is 1/sqrt(N) = 3%, so 30% is a ten-sigma gate.
+    "gate_margin": 0.3,
+    "detect_snr": 8.0,                    # a burst counts as seen at this median per-bin SNR
+    # Bursts averaged for the passband correction. The budget: a burst whose
+    # power per bin is `ratio` times the noise gives SNR sqrt(n_frames x ratio)
+    # per bin on the amplitude, so 2/that on the power - at 8 Msps, a 3 s
+    # burst and ratio 5, 0.29% per bin. The SAW ripple is 0.1-0.15% of the
+    # passband, so a single burst cannot see it: what makes it measurable is
+    # averaging bursts (the ripple is stable to r=0.8 over 1.7 h) and the
+    # delay filter below. 30 minutes of one burst a minute, with the filter,
+    # reaches ~0.04% - the thermal floor of a gain fit. Note the correction
+    # divides every record alike, so its own noise is a *systematic*: too
+    # short a window trades the ripple for something no better.
+    "shape_window_s": 1800.0,
+    # The passband's structure is a few SAW multi-transit echoes at 1.5-6.2 us
+    # (measured 2026-09-14), so the response is sparse in delay: keeping only
+    # |delay| below this discards most of the per-bin noise and none of the
+    # ripple. 1024 bins over 8 MHz resolve delay to 0.125 us out to 64 us.
+    "max_delay_us": 10.0,
+    # The shape correction divides every record alike, so applying one built
+    # from too few bursts trades the ripple for noise of its own: measured,
+    # a single burst at 5x the noise leaves 0.18% where the ripple was 0.11%
+    # - worse than not correcting. Eight is where it starts paying (0.05%),
+    # thirty reaches 0.03%. Below this the level and tilt are applied alone;
+    # they are good to 0.02% from one burst.
+    "min_shape_bursts": 8,
+    "hold_bursts": 3,                     # apply a burst's level this many intervals, then stop
+    "burst_off_margin_s": 0.3,            # switch the comb off this long before the record ends
     # Tests: add the frame digitally into the demo source so the recovery
     # can be exercised with no radio.
     "demo_inject": False,
-    "demo_inject_scale": 0.5,
+    "demo_inject_scale": 1.0,
 }
 
-_CONFIG_KEYS = ("enabled", "mode", "tones_hz", "strong_tone_hz", "strong_tone_relative_db",
-                "comb_spacing_bins", "tx_gain_db", "amplitude", "shape_interval_s",
-                "detect_snr", "level_smooth_records", "slope_smooth_records",
-                "guard_bins", "strong_guard_bins", "dc_guard_bins", "h1_guard_hz",
-                "demo_inject", "demo_inject_scale")
+_CONFIG_KEYS = tuple(PILOT_DEFAULTS)
 
 
 def config_from(overrides=None):
@@ -105,23 +137,21 @@ def config_from(overrides=None):
                 cfg[key] = overrides[name]
         if nested.get(key) not in (None, ""):
             cfg[key] = nested[key]
-    cfg["enabled"] = _truthy(cfg["enabled"]) and str(cfg["mode"]).lower() != "off"
-    cfg["mode"] = str(cfg["mode"]).lower()
-    if cfg["mode"] not in ("tones", "continuum", "full", "off"):
-        raise ValueError("pilot mode must be tones, continuum, full or off, not %r" % cfg["mode"])
-    cfg["tones_hz"] = [float(x) for x in cfg["tones_hz"]]
-    for k in ("strong_tone_hz", "strong_tone_relative_db", "tx_gain_db", "amplitude",
-              "shape_interval_s", "detect_snr", "h1_guard_hz", "demo_inject_scale"):
+    cfg["enabled"] = _truthy(cfg["enabled"])
+    for k in ("burst_amplitude", "tx_gain_db", "gate_margin", "detect_snr",
+              "shape_window_s", "max_delay_us", "burst_off_margin_s", "demo_inject_scale"):
         cfg[k] = float(cfg[k])
-    for k in ("comb_spacing_bins", "level_smooth_records", "slope_smooth_records",
-              "guard_bins", "strong_guard_bins", "dc_guard_bins"):
+    for k in ("burst_every_records", "dc_guard_bins", "hold_bursts", "min_shape_bursts"):
         cfg[k] = int(cfg[k])
     cfg["demo_inject"] = _truthy(cfg["demo_inject"])
-    if not (0.0 < cfg["amplitude"] <= 1.0):
-        raise ValueError("pilot amplitude must be in (0, 1] of full scale")
-    if cfg["comb_spacing_bins"] < 4:
-        raise ValueError("comb tones closer than 4 bins leak into each other "
-                         "through the Blackman-Harris window")
+    if not (0.0 < cfg["burst_amplitude"] <= 1.0):
+        raise ValueError("pilot burst amplitude must be in (0, 1] of full scale")
+    if cfg["burst_every_records"] < 0:
+        raise ValueError("burst_every_records cannot be negative")
+    if cfg["burst_every_records"] == 1:
+        raise ValueError("every record a burst would leave no science")
+    if cfg["burst_every_records"] == 0:
+        cfg["enabled"] = False
     return cfg
 
 
@@ -131,164 +161,131 @@ def _truthy(v):
     return bool(v)
 
 
-def blackman_harris(n):
-    """The 4-term Blackman-Harris window as GNU Radio's fft.window.blackmanharris
-    computes it (symmetric, N-1 in the denominator). The reference spectrum
-    has to use the window the receive FFT uses, or the tones' recovered
-    amplitudes are wrong by the window's gain."""
-    m = np.arange(n)
-    d = max(n - 1, 1)
-    return (0.35875 - 0.48829 * np.cos(2 * np.pi * m / d)
-            + 0.14128 * np.cos(4 * np.pi * m / d)
-            - 0.01168 * np.cos(6 * np.pi * m / d))
-
-
 def wide_axis(lo_hz, sample_rate_hz, nbins):
     """The wide product's frequency axis: fftshifted, bin j at lo + (j - N/2) fs/N."""
     return float(lo_hz) + np.fft.fftshift(np.fft.fftfreq(int(nbins), 1.0 / float(sample_rate_hz)))
 
 
-def plan(cfg, lo_hz, sample_rate_hz, nbins, h1_band_hz):
-    """Where the pilot goes and what the receiver correlates against.
+def plan(cfg, lo_hz, sample_rate_hz, nbins):
+    """The burst frame and what the receiver correlates against.
 
-    Returns a dict: `bins` (wide bin indices carrying a tone), `kind` per bin
-    ("tone", "strong", "comb"), `frame` (complex64, one period, peak at
-    cfg amplitude), `reference` (complex, the fftshifted FFT of the windowed
-    frame, i.e. what a receive frame of the pilot alone would give), `excluded`
-    (bool mask over the wide bins that band means must leave out when the
-    pilot is present), `freq_hz` (the wide axis), `centre_hz` (where the
-    slope is anchored).
+    Returns a dict: `bins` (wide bin indices carrying a tone: every bin bar
+    the LO guard), `frame` (complex64, one period, peak at burst_amplitude),
+    `zeros` (the frame sent between bursts), `reference` (the fftshifted
+    *unwindowed* FFT of one frame - flat in magnitude across the band, which
+    is why the recovery has its own rectangular FFT), `freq_hz` (the wide
+    axis), `centre_hz` (where the slope is anchored), `nbins`.
     """
     nbins = int(nbins)
     fs = float(sample_rate_hz)
     lo = float(lo_hz)
     freq = wide_axis(lo, fs, nbins)
     half = nbins // 2
+    bins = np.array([j for j in range(nbins) if abs(j - half) > cfg["dc_guard_bins"]], dtype=int)
+    if not cfg["enabled"]:
+        bins = np.array([], dtype=int)
 
-    def bin_of(f_hz):
-        return int(round((float(f_hz) - lo) * nbins / fs)) + half
-
-    amps = np.zeros(nbins, dtype=float)
-    kind = {}
-    if cfg["enabled"] and cfg["mode"] != "off":
-        strong = bin_of(cfg["strong_tone_hz"])
-        for f in cfg["tones_hz"]:
-            j = bin_of(f)
-            if 0 <= j < nbins:
-                amps[j] = 1.0
-                kind[j] = "tone"
-        if 0 <= strong < nbins:
-            amps[strong] = 10 ** (cfg["strong_tone_relative_db"] / 20.0)
-            kind[strong] = "strong"
-        if cfg["mode"] in ("continuum", "full"):
-            h1_lo, h1_hi = float(h1_band_hz[0]), float(h1_band_hz[1])
-            g = cfg["h1_guard_hz"]
-            step = cfg["comb_spacing_bins"]
-            for j in range(step, nbins - step, step):
-                if abs(j - half) <= cfg["dc_guard_bins"]:
-                    continue
-                if any(abs(j - t) <= cfg["strong_guard_bins"] + 1 for t in kind):
-                    continue
-                if cfg["mode"] == "continuum" and (h1_lo - g) <= freq[j] <= (h1_hi + g):
-                    continue
-                amps[j] = 1.0
-                kind[j] = "comb"
-    bins = np.array(sorted(kind), dtype=int)
-
-    # Schroeder phases over the comb keep the frame's crest factor low; the
-    # tones take phase zero. The frame is the inverse FFT of the (unshifted)
-    # spectrum, scaled to the configured peak.
+    # Schroeder phases: a swept chirp, crest factor ~sqrt(2), so the burst
+    # carries its power without running the DAC into its rails.
     spec = np.zeros(nbins, dtype=complex)
     for i, j in enumerate(bins):
-        phase = math.pi * i * i / max(len(bins), 1) if kind[j] == "comb" else 0.0
-        spec[(j - half) % nbins] = amps[j] * np.exp(1j * phase)
+        spec[(j - half) % nbins] = np.exp(1j * math.pi * i * i / max(len(bins), 1))
     frame = np.fft.ifft(spec) * nbins
     peak = np.abs(frame).max()
     if peak > 0:
-        frame = frame * (cfg["amplitude"] / peak)
+        frame = frame * (cfg["burst_amplitude"] / peak)
     frame = frame.astype(np.complex64)
-
-    # What the receive FFT makes of one frame of pilot alone: window, FFT,
-    # shift - exactly the receiver's wide branch.
-    reference = np.fft.fftshift(np.fft.fft(blackman_harris(nbins) * frame.astype(complex)))
-
-    excluded = np.zeros(nbins, dtype=bool)
-    for j in bins:
-        w = cfg["strong_guard_bins"] if kind[j] == "strong" else cfg["guard_bins"]
-        excluded[max(0, j - w):min(nbins, j + w + 1)] = True
-
-    return {"bins": bins, "kind": [kind[j] for j in bins], "frame": frame,
-            "reference": reference, "excluded": excluded, "freq_hz": freq,
-            "centre_hz": lo, "nbins": nbins}
+    reference = np.fft.fftshift(np.fft.fft(frame.astype(complex)))
+    return {"bins": bins, "frame": frame, "zeros": np.zeros(nbins, dtype=np.complex64),
+            "reference": reference, "freq_hz": freq, "centre_hz": lo, "nbins": nbins}
 
 
-def estimate(xspec, n_frames, planned, wide_power_mean, reference_h=None):
-    """One record's pilot estimate from the accumulated cross-spectrum.
+def estimate(xspec, n_frames, planned, noise_per_bin):
+    """One burst's response from the accumulated cross-spectrum.
 
-    `xspec` is sum over frames of F_j * conj(R_j) for every wide bin, `n_frames`
-    how many frames went into it, `wide_power_mean` the wide product's mean
-    per-bin power over the same frames (the receiver's normalised counts,
-    |F|^2 / N). `reference_h` is the per-pilot-bin response the level is
-    measured against, or None for an absolute reading.
+    `xspec` is the sum over the pilot-on frames of F_j conj(R_j) for every
+    bin of the receiver's unwindowed pilot FFT, `n_frames` how many frames it
+    covers, `noise_per_bin` the mean power per bin of that same FFT measured
+    on the frames the pilot was *off* - the noise the burst sat in.
 
-    Returns a dict with `h` (complex response per pilot bin), `snr` (per bin),
-    `detected`, `level`, `slope` (fraction per MHz about the plan's centre),
-    and `level_err`. With nothing detected, level 1 and slope 0.
+    The fixed framing offset between transmit and receive appears as a phase
+    ramp across the band; it is found from the peak of the inverse transform
+    and removed, so `h` is the chain's own complex response. Magnitudes are
+    unaffected either way.
+
+    Returns `h` (per pilot bin), `snr` (per bin), `snr_median`, `n_frames`,
+    `delay_samples`.
     """
     bins = planned["bins"]
-    nb = planned["nbins"]
-    out = {"detected": False, "level": 1.0, "slope": 0.0, "level_err": float("nan"),
-           "snr_median": 0.0, "h": np.zeros(len(bins), dtype=complex),
-           "snr": np.zeros(len(bins)), "n_frames": int(n_frames)}
+    out = {"h": np.zeros(len(bins), dtype=complex), "snr": np.zeros(len(bins)),
+           "snr_median": 0.0, "n_frames": int(n_frames), "delay_samples": 0}
     if len(bins) == 0 or n_frames <= 0 or xspec is None:
         return out
-    x = np.asarray(xspec, dtype=complex)[bins]
-    r = np.asarray(planned["reference"], dtype=complex)[bins]
+    x = np.asarray(xspec, dtype=complex)
+    r = np.asarray(planned["reference"], dtype=complex)
+    noise = np.asarray(noise_per_bin, dtype=float)
+    if noise.ndim == 0:
+        noise = np.full(planned["nbins"], float(noise))
+    # The framing offset: X carries exp(-2 pi i j d / N) across the band, so
+    # its inverse transform peaks at d.
+    try:
+        d = int(np.argmax(np.abs(np.fft.ifft(np.fft.ifftshift(x)))))
+        x = x * np.exp(2j * np.pi * np.arange(planned["nbins"]) * d / planned["nbins"])
+        out["delay_samples"] = d
+    except (ValueError, FloatingPointError):              # pragma: no cover
+        pass
+    x, r, noise = x[bins], r[bins], noise[bins]
     rp = np.abs(r) ** 2
     good = rp > 0
-    # Recovered response: X = N * H * |R|^2 when the pilot is there.
     h = np.zeros(len(bins), dtype=complex)
     h[good] = x[good] / (n_frames * rp[good])
     # Noise on X: the receive noise in the bin times the reference, summed
-    # over N frames -> sigma^2 = N * P_raw * |R|^2, with P_raw = P_mean * N_bins
-    # undoing the receiver's 1/N normalisation.
-    p_raw = np.asarray(wide_power_mean, dtype=float)[bins] * nb
-    sigma = np.sqrt(np.maximum(n_frames * p_raw * rp, 1e-300))
-    snr = np.abs(x) / sigma
-    out["h"], out["snr"] = h, snr
-    out["snr_median"] = float(np.median(snr[good])) if good.any() else 0.0
+    # over the frames -> sigma^2 = n * P_noise * |R|^2.
+    sigma = np.sqrt(np.maximum(n_frames * noise * rp, 1e-300))
+    out["h"], out["snr"] = h, np.abs(x) / sigma
+    out["snr_median"] = float(np.median(out["snr"][good])) if good.any() else 0.0
     return out
 
 
-def relative(est, planned, reference_h, cfg):
-    """Fill in level and slope from a detected estimate against `reference_h`."""
-    est = dict(est)
-    if est["snr_median"] < cfg["detect_snr"] or reference_h is None:
-        return est
-    bins = planned["bins"]
+def power_ratio(h, reference_h):
+    """The chain's *power* gain relative to the reference, per pilot bin.
+
+    `h` is a field response - X = n H |R|^2, so h = H - and the recorded
+    counts are powers, so everything applied to counts is |h|^2. Fitting the
+    amplitude ratio and applying it to counts would be wrong by a square, and
+    invisible at the percent level where the two differ by a factor of two.
+    """
+    ref = np.abs(np.asarray(reference_h, dtype=complex))
+    out = np.full(len(ref), np.nan)
+    good = ref > 0
+    out[good] = (np.abs(np.asarray(h, dtype=complex)[good]) / ref[good]) ** 2
+    return out
+
+
+def level_and_slope(h, snr, planned, reference_h, cfg):
+    """(level, slope, level_err) of `h` against `reference_h`, or None if the
+    burst was not seen or the numbers are unusable.
+
+    Both are *power* quantities, applicable to counts as they stand: the
+    level is the power gain at the band centre and the slope its fractional
+    change per MHz.
+    """
+    if reference_h is None or float(np.median(snr)) < cfg["detect_snr"]:
+        return None
     ref = np.asarray(reference_h, dtype=complex)
-    ok = (np.abs(ref) > 0) & (est["snr"] > 1.0)
-    if ok.sum() < 1:
-        return est
-    g = np.abs(est["h"][ok]) / np.abs(ref[ok])
-    w = est["snr"][ok] ** 2
-    x = (planned["freq_hz"][bins][ok] - planned["centre_hz"]) / 1e6
-    if ok.sum() >= 3 and np.ptp(x) > 0.5:
-        # Weighted straight line g = a + b x; level is the line at the centre.
-        W = np.sqrt(w)
-        A = np.vstack([W, W * x]).T
-        coef, *_ = np.linalg.lstsq(A, W * g, rcond=None)
-        a, b = float(coef[0]), float(coef[1])
-        slope = b / a if a > 0 else 0.0
-        level = a
-    else:
-        level = float(np.sum(w * g) / np.sum(w))
-        slope = 0.0
-    if not (0.25 < level < 4.0):          # something is badly wrong; do not apply it
-        return est
-    est.update(detected=True, level=level, slope=float(np.clip(slope, -0.2, 0.2)),
-               level_err=float(1.0 / math.sqrt(np.sum(w))) if np.sum(w) > 0 else float("nan"))
-    return est
+    ok = (np.abs(ref) > 0) & (snr > 1.0)
+    if ok.sum() < 3:
+        return None
+    g = power_ratio(h, ref)[ok]
+    w = snr[ok] ** 2
+    x = (planned["freq_hz"][planned["bins"]][ok] - planned["centre_hz"]) / 1e6
+    W = np.sqrt(w)
+    A = np.vstack([W, W * x]).T
+    coef, *_ = np.linalg.lstsq(A, W * g, rcond=None)
+    a, b = float(coef[0]), float(coef[1])
+    if not (0.25 < a < 4.0):
+        return None
+    return a, float(np.clip(b / a, -0.2, 0.2)), float(1.0 / math.sqrt(np.sum(w)))
 
 
 def factor(level, slope, freq_hz, centre_hz):
@@ -299,12 +296,80 @@ def factor(level, slope, freq_hz, centre_hz):
     return np.clip(fac, 0.5, 2.0)
 
 
-class PilotTracker:
-    """Per-record bookkeeping in the receiver: reference, smoothing, shape.
+def delay_filter(p_full, sample_rate_hz, max_delay_s):
+    """Keep only the delays a real passband has (issue #30).
 
-    `update(xspec, n_frames, wide_mean, now)` returns the record's pilot dict
-    with the *applied* (smoothed) level and slope, and `shape_ready(now)`
-    hands over the accumulated per-bin response when the shape interval is up.
+    The response is a few SAW multi-transit echoes plus a smooth shape, so it
+    is sparse in delay: zeroing everything beyond `max_delay_s` throws away
+    most of the per-bin noise and none of the structure. A straight line is
+    taken out first and put back, so the band edges do not have to be
+    periodic for the transform to behave.
+    """
+    p = np.asarray(p_full, dtype=float)
+    n = len(p)
+    x = np.arange(n) - 0.5 * (n - 1)
+    a, b = np.polyfit(x, p, 1)
+    trend = a * x + b
+    resid = p - trend
+    k_max = int(round(float(max_delay_s) * float(sample_rate_hz)))
+    if k_max < 1 or 2 * k_max + 1 >= n:
+        return p
+    spec = np.fft.fft(resid)
+    spec[k_max + 1:n - k_max] = 0.0
+    return trend + np.fft.ifft(spec).real
+
+
+def correction_vector(h_mean, planned, freq_hz, norm_band_hz, reference_h=None,
+                      max_delay_s=10e-6):
+    """The normalised passband correction on an arbitrary axis from a mean response.
+
+    The power ratio to the reference (or the shape itself with no reference),
+    with its straight line removed - `factor` already carries the level and
+    the tilt, and applying either twice would be a bug - then delay-filtered,
+    interpolated onto `freq_hz` and normalised to unit median over
+    `norm_band_hz`. What is left is the ripple and any curvature: the part a
+    stored bandpass template cannot follow from day to day. Clamped like the
+    factor; ones where the axis reaches outside the pilot's bins.
+    """
+    bins = planned["bins"]
+    nb = planned["nbins"]
+    f_wide = planned["freq_hz"]
+    p = np.abs(np.asarray(h_mean, dtype=complex)) ** 2
+    if reference_h is not None:
+        p = power_ratio(h_mean, reference_h)
+    good = np.isfinite(p) & (p > 0)
+    f = np.asarray(freq_hz, dtype=float)
+    vec = np.ones(f.shape, dtype=float)
+    if good.sum() < 16:
+        return vec
+    # Onto the uniform wide grid (the LO guard interpolated across) so the
+    # delay filter has something to transform.
+    p_full = np.interp(np.arange(nb), bins[good], p[good])
+    spacing = float(np.median(np.diff(f_wide)))
+    p_full = delay_filter(p_full, nb * spacing, max_delay_s)
+    # ... and the straight line out: the level and tilt are `factor`'s.
+    x = f_wide - planned["centre_hz"]
+    a, b = np.polyfit(x, p_full, 1)
+    shape = p_full / np.maximum(a * x + b, 1e-12)
+    lo_b, hi_b = f_wide[bins[good]].min(), f_wide[bins[good]].max()
+    inside = (f >= lo_b) & (f <= hi_b)
+    vec[inside] = np.interp(f[inside], f_wide, shape)
+    lo, hi = float(norm_band_hz[0]), float(norm_band_hz[1])
+    band = inside & (f >= lo) & (f <= hi)
+    med = float(np.median(vec[band])) if band.any() else float(np.median(vec[inside]))
+    if med > 0:
+        vec = vec / med
+    vec[~inside] = 1.0
+    return np.clip(vec, 0.5, 2.0)
+
+
+class PilotTracker:
+    """Per-run bookkeeping in the receiver: the reference, the bursts, what to apply.
+
+    `burst(xspec, n_on, noise_per_bin, now)` takes one burst record's
+    accumulation and returns its estimate; `correction(now)` says what a
+    science record now should be divided by, and `shape(now)` hands over the
+    mean response of the bursts inside the shape window.
     """
 
     def __init__(self, cfg, planned, reference_h=None):
@@ -312,56 +377,75 @@ class PilotTracker:
         self.planned = planned
         self.reference_h = None if reference_h is None else np.asarray(reference_h, dtype=complex)
         self.anchored = reference_h is not None
-        self._levels = deque(maxlen=max(1, cfg["level_smooth_records"]))
-        self._slopes = deque(maxlen=max(1, cfg["slope_smooth_records"]))
-        self._shape_sum = np.zeros(len(planned["bins"]), dtype=complex)
-        self._shape_n = 0
-        self._shape_t0 = None
-        self.detected_records = 0
-        self.records = 0
+        self.bursts = 0
+        self.detected = 0
+        self._last = None                   # (t, level, slope)
+        self._shape = deque()               # (t, h) of detected bursts
+        self._interval_s = None             # measured burst spacing
+        self._shape_version = 0
+        self._shape_mean = None
 
-    def update(self, xspec, n_frames, wide_mean, now):
-        self.records += 1
-        est = estimate(xspec, n_frames, self.planned, wide_mean)
-        seen = est["snr_median"] >= self.cfg["detect_snr"]
-        if seen and self.reference_h is None:
+    def burst(self, xspec, n_on, noise_per_bin, now):
+        self.bursts += 1
+        est = estimate(xspec, n_on, self.planned, noise_per_bin)
+        out = {"burst": 1, "ok": 0, "level": 1.0, "slope": 0.0, "snr": float(est["snr_median"]),
+               "n_on": int(n_on), "h": est["h"], "level_err": float("nan"),
+               "delay_samples": est["delay_samples"]}
+        if est["snr_median"] < self.cfg["detect_snr"] or n_on <= 0:
+            return out
+        if self.reference_h is None:
             # First sight of the pilot with nothing to anchor to: this run
             # becomes its own reference, and the file says so.
             self.reference_h = est["h"].copy()
-        est = relative(est, self.planned, self.reference_h, self.cfg)
-        if est["detected"]:
-            self.detected_records += 1
-            self._levels.append(est["level"])
-            self._slopes.append(est["slope"])
-            if self._shape_t0 is None:
-                self._shape_t0 = now
-            self._shape_sum += est["h"]
-            self._shape_n += 1
-            level = float(np.mean(self._levels))
-            slope = float(np.mean(self._slopes))
-        else:
-            # Not there this record: apply nothing, and forget the smoothing
-            # so a return does not drag stale values in.
-            self._levels.clear()
-            self._slopes.clear()
-            level, slope = 1.0, 0.0
-        return {"ok": bool(est["detected"]), "level": level, "slope": slope,
-                "snr": float(est["snr_median"]), "raw_level": float(est["level"]),
-                "raw_slope": float(est["slope"]), "level_err": est["level_err"],
-                "h": est["h"]}
+        ls = level_and_slope(est["h"], est["snr"], self.planned, self.reference_h, self.cfg)
+        if ls is None:
+            return out
+        level, slope, err = ls
+        if self._last is not None:
+            gap = now - self._last[0]
+            self._interval_s = gap if self._interval_s is None else 0.5 * (self._interval_s + gap)
+        self._last = (now, level, slope)
+        self.detected += 1
+        self._shape.append((now, est["h"].copy()))
+        self._prune(now)
+        self._shape_mean = None
+        self._shape_version += 1
+        out.update(ok=1, level=level, slope=slope, level_err=err)
+        return out
 
-    def shape_ready(self, now):
-        """(t_mid, mean response per pilot bin) once the interval is up, else None."""
-        if self._shape_n == 0 or self._shape_t0 is None:
-            return None
-        if now - self._shape_t0 < self.cfg["shape_interval_s"]:
-            return None
-        mean = self._shape_sum / self._shape_n
-        t_mid = 0.5 * (self._shape_t0 + now)
-        self._shape_sum[:] = 0
-        self._shape_n = 0
-        self._shape_t0 = None
-        return t_mid, mean
+    def _prune(self, now):
+        while self._shape and now - self._shape[0][0] > self.cfg["shape_window_s"]:
+            self._shape.popleft()
+
+    def correction(self, now):
+        """What a science record at `now` is divided by.
+
+        (level, slope, ok): the latest detected burst's level and slope while
+        it is recent - within hold_bursts burst intervals - else unit and not
+        ok, so a pilot that vanished stops being applied rather than freezing
+        the last thing it saw.
+        """
+        if self._last is None:
+            return 1.0, 0.0, 0
+        t, level, slope = self._last
+        interval = self._interval_s or self.cfg["shape_window_s"] / 10.0
+        if now - t > self.cfg["hold_bursts"] * max(interval, 1.0) + 1.0:
+            return 1.0, 0.0, 0
+        return level, slope, 1
+
+    def shape(self, now):
+        """(version, mean response over the shape window), or (version, None).
+
+        None until `min_shape_bursts` have been seen inside the window: one
+        burst's per-bin noise is larger than the ripple it would correct, so
+        applying it early would make the spectra worse, not better.
+        """
+        self._prune(now)
+        if len(self._shape) < self.cfg["min_shape_bursts"]:
+            return self._shape_version, None
+        if self._shape_mean is None:
+            self._shape_mean = np.mean([h for _, h in self._shape], axis=0)
+        return self._shape_version, self._shape_mean
 
 
 # ---------------------------------------------------------------------------
@@ -378,46 +462,8 @@ def config_of(header):
         return None
 
 
-def excluded_channels(header, freq_hz, only_if_detected=True):
-    """Which channels of `freq_hz` band means should leave out because a pilot tone sits there.
-
-    Derived from the pilot configuration in the header and the file's own
-    geometry, for any axis (wide or H I). With `only_if_detected` (the
-    default) a file in which the pilot was never seen - the TX unplugged -
-    excludes nothing, so such a file reduces exactly as one recorded with
-    the pilot off. `header["pilot_detected_records"]` is what
-    observation_plot.read_observation fills in.
-    """
-    freq_hz = np.asarray(freq_hz, dtype=float)
-    none = np.zeros(freq_hz.shape, dtype=bool)
-    cfg = config_of(header)
-    if cfg is None or not cfg["enabled"]:
-        return none
-    if only_if_detected and not int(header.get("pilot_detected_records", 0) or 0):
-        return none
-    try:
-        inst = header.get("instrument")
-        inst = json.loads(inst) if isinstance(inst, str) else dict(inst or {})
-        lo = float(header.get("center_freq_hz", inst.get("lo_hz")))
-        fs = float(header.get("sample_rate_hz", inst.get("sample_rate_hz")))
-        nb = int(inst.get("wide_channels", 1024))
-        h1 = header.get("h1_band_hz", inst.get("h1_band_hz"))
-    except (TypeError, ValueError, KeyError):
-        return none
-    p = plan(cfg, lo, fs, nb, h1)
-    # A pilot tone at wide bin j occupies the wide bins the plan excludes;
-    # on any other axis, exclude the channels within those bins' span.
-    width = fs / nb
-    mask = none.copy()
-    for j in np.flatnonzero(p["excluded"]):
-        f0 = p["freq_hz"][j]
-        mask |= np.abs(freq_hz - f0) <= 0.5 * width + 1e-3
-    return mask
-
-
 def describe(cfg):
     if not cfg or not cfg.get("enabled"):
         return "pilot off"
-    return ("pilot %s: tones %s MHz, comb every %d bins, TX gain %.0f dB, amplitude %.2f"
-            % (cfg["mode"], "/".join("%.1f" % (f / 1e6) for f in cfg["tones_hz"]),
-               cfg["comb_spacing_bins"], cfg["tx_gain_db"], cfg["amplitude"]))
+    return ("pilot: full-band comb burst every %d records at %.2f of full scale, TX gain %.0f dB"
+            % (cfg["burst_every_records"], cfg["burst_amplitude"], cfg["tx_gain_db"]))

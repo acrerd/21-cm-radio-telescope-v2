@@ -142,8 +142,8 @@ _DEFAULT_CONFIG = {
     # The pilot (issue #30): the B210's TX as the gain and passband
     # reference, part of the instrument. Unset means pilot.PILOT_DEFAULTS.
     "receiver_pilot_enabled": None,
-    "receiver_pilot_mode": None,
-    "receiver_pilot_amplitude": None,
+    "receiver_pilot_burst_every_records": None,
+    "receiver_pilot_burst_amplitude": None,
     "receiver_pilot_tx_gain_db": None,
     # `obstruction_sectors` used to live here: a hand-entered
     # [az_min, az_max, min_sun_alt] list, in practice the single blanket entry
@@ -4488,6 +4488,8 @@ def _live_records(path):
                 if rec.get("overflows") is not None:
                     item["overflows"] = int(rec["overflows"])
                 if rec.get("pilot_ok") is not None:
+                    item["pilot_burst"] = int(rec.get("pilot_burst", 0))
+                    item["pilot_seen"] = int(rec.get("pilot_seen", 0))
                     item["pilot_ok"] = int(rec["pilot_ok"])
                     item["pilot_level"] = float(rec.get("pilot_level", 1.0))
                     item["pilot_slope"] = float(rec.get("pilot_slope", 0.0))
@@ -4719,6 +4721,11 @@ def api_observe_live():
     # three-hour run, which is the worst kind of wrong: it looks complete.
     # Binning keeps the whole run on screen and averages down the noise that
     # the short integration cost in the first place.
+    # The pilot's burst records (issue #30) are the transmitter, not the sky.
+    pilot_all = list(records)
+    records = [r for r in records if not r.get('pilot_burst')]
+    if not records:
+        records = pilot_all
     group = max(1, int(math.ceil(len(records) / float(limit))))
     # The live trace is a continuum measurement, so where the recording
     # reports the continuum product (fixed instrument) that is what is
@@ -4782,7 +4789,7 @@ def api_observe_live():
                         started_at=obs.get('started_at'),
                         ended_at=obs.get('ended_at'),
                         ends_at=obs.get('ends_at'),
-                        pilot=_pilot_summary(records)))
+                        pilot=_pilot_summary(pilot_all)))
 
 
 def _pilot_summary(records):
@@ -4790,13 +4797,18 @@ def _pilot_summary(records):
     with_pilot = [r for r in records if 'pilot_ok' in r]
     if not with_pilot:
         return None
-    seen = [r for r in with_pilot if r.get('pilot_ok')]
-    latest = with_pilot[-1]
-    return {'records': len(with_pilot), 'detected': len(seen),
+    bursts = [r for r in with_pilot if r.get('pilot_burst') == 1]
+    science = [r for r in with_pilot if not r.get('pilot_burst')]
+    corrected = [r for r in science if r.get('pilot_ok')]
+    latest = science[-1] if science else with_pilot[-1]
+    last_burst = bursts[-1] if bursts else None
+    return {'records': len(with_pilot), 'bursts': len(bursts),
+            'bursts_seen': sum(1 for r in bursts if r.get('pilot_seen')),
+            'corrected': len(corrected),
             'latest_ok': bool(latest.get('pilot_ok')),
             'latest_level': latest.get('pilot_level'),
             'latest_slope': latest.get('pilot_slope'),
-            'latest_snr': latest.get('pilot_snr')}
+            'last_burst_snr': last_burst.get('pilot_snr') if last_burst else None}
 
 
 @app.route('/api/pilot/status', methods=['GET'])
@@ -4866,8 +4878,8 @@ def instrument_for(obs: dict) -> dict:
 
 def tuning_instrument_keys():
     import tuning
-    return set(tuning.INSTRUMENT_KEYS) | {"pilot_enabled", "pilot_mode",
-                                          "pilot_amplitude", "pilot_tx_gain_db"}
+    return set(tuning.INSTRUMENT_KEYS) | {"pilot_enabled", "pilot_burst_every_records",
+                                          "pilot_burst_amplitude", "pilot_tx_gain_db"}
 
 
 def obs_header(obs=None):

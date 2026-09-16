@@ -105,9 +105,6 @@ def _band_window(header, freq_hz):
     lo, hi = float(cont[0]), float(cont[1])
     keep = (freq_hz >= lo) & (freq_hz <= hi) & (np.abs(freq_hz - dc) > DC_MASK_HZ)
     keep &= ~h1_channels(header, freq_hz)
-    # The pilot's bins (issue #30) - only in a file where it was detected.
-    import pilot
-    keep &= ~pilot.excluded_channels(header, freq_hz)
     return lo, hi, keep
 
 

@@ -764,9 +764,14 @@
                 if (d.pilot.latest_ok) {
                     text += ' · pilot: gain ' + ((d.pilot.latest_level - 1) * 100).toFixed(2)
                           + '%, tilt ' + (d.pilot.latest_slope * 100).toFixed(3)
-                          + '%/MHz, applied (' + d.pilot.detected + ' of ' + d.pilot.records + ' records)';
+                          + '%/MHz applied; ' + d.pilot.bursts_seen + ' of ' + d.pilot.bursts
+                          + ' bursts seen, ' + d.pilot.corrected + ' records corrected';
+                } else if (d.pilot.bursts) {
+                    text += ' · pilot: ' + d.pilot.bursts_seen + ' of ' + d.pilot.bursts
+                          + ' bursts detected' + (d.pilot.bursts_seen ? '' : ' (TX not connected?)')
+                          + ', nothing applied';
                 } else {
-                    text += ' · pilot not detected (TX not connected?), nothing applied';
+                    text += ' · pilot: no burst yet';
                 }
             }
             document.getElementById('obvLiveInfo').textContent = text;

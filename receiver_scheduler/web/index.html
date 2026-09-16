@@ -305,11 +305,12 @@
             <div class="card">
                 <div class="section-title">Pilot</div>
                 <div style="color:#888; font-size:12px; margin-bottom:10px; max-width:70ch;">
-                    The receiver's own reference: a frame of tones from the B210's transmitter,
-                    through the vertex dipole and the whole receive chain, recovered by
-                    correlation. Each record is divided by its level and tilt as it is written,
-                    reversibly. Not detected means the transmitter is not connected or the
-                    dipole is not radiating into the feed; nothing is then applied.
+                    The receiver's own reference: one record in every N is a burst of a full-band
+                    comb from the B210's transmitter, through the vertex dipole and the whole receive
+                    chain, recovered by correlation. Burst records are dropped from the science; the
+                    records between are divided by the latest burst's level and tilt and by the
+                    running passband shape, reversibly. Not detected means the transmitter is not
+                    connected or the dipole is not radiating into the feed; nothing is then applied.
                 </div>
                 <div id="rfPilotStatus" class="mono" style="padding:10px 12px; background:#0f0f23; border:1px solid #333; border-radius:6px; color:#888; font-size:12px;">
                     Loading&hellip;
@@ -793,17 +794,12 @@
                         </select>
                     </div>
                     <div class="form-group">
-                        <label>Pilot mode</label>
-                        <select autocomplete="off" id="cfgPilotMode">
-                            <option value="">default (continuum)</option>
-                            <option value="tones">tones only</option>
-                            <option value="continuum">tones + comb outside the H I band</option>
-                            <option value="full">tones + comb over the whole band</option>
-                        </select>
+                        <label>Pilot burst every <span class="unit">(records)</span></label>
+                        <input autocomplete="off" type="number" id="cfgPilotBurstEvery" step="1" min="2" placeholder="20">
                     </div>
                     <div class="form-group">
-                        <label>Pilot amplitude <span class="unit">(of full scale)</span></label>
-                        <input autocomplete="off" type="number" id="cfgPilotAmplitude" step="any" min="0.001" max="1" placeholder="0.05">
+                        <label>Pilot burst amplitude <span class="unit">(of full scale)</span></label>
+                        <input autocomplete="off" type="number" id="cfgPilotAmplitude" step="any" min="0.001" max="1" placeholder="0.5">
                     </div>
                     <div class="form-group">
                         <label>Pilot TX gain <span class="unit">(dB)</span></label>
@@ -811,11 +807,14 @@
                     </div>
                 </div>
                 <div style="color:#888; font-size:12px; margin-bottom:10px; max-width:70ch;">
-                    The pilot is the B210's own transmitter sending a frame of tones through the
-                    vertex dipole into the feed, recovered by correlation on the receive side, so
-                    each record carries the front end's gain and passband tilt at that moment. With
-                    the transmitter not connected nothing is detected and nothing is applied; the
-                    recording is then identical to one made with the pilot off.
+                    The pilot is the B210's own transmitter sending a full-band comb through the
+                    vertex dipole into the feed for one record in every N (a burst), recovered by
+                    correlation on the receive side. Burst records are flagged and dropped from the
+                    science; the records between are divided by the latest burst's gain and tilt and
+                    by the running passband shape, so the SAW filter's drift and ripple come out as
+                    the data are written. With the transmitter not connected nothing is detected and
+                    nothing is applied; the recording is then identical to one made with the pilot
+                    off, less the burst records.
                 </div>
                 <div style="margin-bottom:14px;">
                     <button class="btn btn-secondary" title="Clear every instrument override so the defaults in tuning.py apply again" onclick="resetInstrumentConfig()">Instrument defaults</button>

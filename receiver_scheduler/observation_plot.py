@@ -156,7 +156,7 @@ def has_wide_product(path):
         return False
 
 
-def read_observation(path, product="h1"):
+def read_observation(path, product="h1", drop_bursts=True):
     """Load the spectra, timestamps and frequency axis from a recording.
 
     Finished or still being written: see open_readonly. A live file gives
@@ -167,6 +167,9 @@ def read_observation(path, product="h1"):
     issue #27). A file without a continuum product cannot be reduced as
     continuum, and says so: recordings from before the fixed instrument are
     not carried (the project is still in development).
+
+    The pilot's burst records (issue #30) are dropped unless `drop_bursts`
+    is False; the header says how many there were.
     """
     if not H5PY_AVAILABLE:
         raise RuntimeError("h5py is not installed, so the file cannot be read")
@@ -197,18 +200,24 @@ def read_observation(path, product="h1"):
             correction = np.asarray(hf["bandpass_correction" + suffix][:], dtype=float)
             spectra = ((spectra + float(hf.attrs["applied_t_sys_k"]))
                        * float(hf.attrs["applied_gain_counts_per_k"]) * correction)
-            # The pilot's per-record factor (issue #30), multiplied back so
-            # the counts are what the receiver measured. Records the pilot
-            # was not detected in were written with unit factors.
+            # The pilot (issue #30): the per-record factor and the passband
+            # correction vector are multiplied back so the counts are what
+            # the receiver measured; records nothing was applied to were
+            # written with unit factors.
             if "pilot_level" in hf and int(hf.attrs.get("pilot_applied", 0)):
                 import pilot as _pilot
                 n = min(spectra.shape[0], hf["pilot_level"].shape[0])
                 lev = np.asarray(hf["pilot_level"][:n], dtype=float)
                 slo = np.asarray(hf["pilot_slope"][:n], dtype=float)
                 ok = np.asarray(hf["pilot_ok"][:n], dtype=int)
+                idx = (np.asarray(hf["pilot_correction_index"][:n], dtype=int)
+                       if "pilot_correction_index" in hf else np.full(n, -1))
+                cname = "pilot_correction" + ("_wide" if used == "wide" else "_h1")
                 fc = float(hf.attrs["pilot_centre_hz"])
                 for i in np.flatnonzero(ok):
                     spectra[i] *= _pilot.factor(lev[i], slo[i], freq_hz, fc)
+                    if idx[i] >= 0 and cname in hf:
+                        spectra[i] *= np.asarray(hf[cname][idx[i], :], dtype=float)
         else:
             spectra = np.asarray(hf[linear][:], dtype=float)
         stamps = np.asarray(hf["timestamps"][:], dtype=float)
@@ -223,11 +232,22 @@ def read_observation(path, product="h1"):
         header["product_used"] = used
         if "overflows" in hf:
             header["overflows_total"] = int(np.asarray(hf["overflows"][:]).sum())
-        if "pilot_ok" in hf:
-            # How many records saw the pilot: none means the TX was not
-            # connected, and the reduction then excludes nothing for it.
-            header["pilot_detected_records"] = int(np.asarray(hf["pilot_ok"][:]).sum())
-            header["pilot_records"] = int(hf["pilot_ok"].shape[0])
+        if "pilot_burst" in hf:
+            # The bursts (and any record that caught a burst's tail) are the
+            # pilot's, not the sky's: dropped here for every consumer, with
+            # the counts in the header so a reduction can say what it left out.
+            burst = np.asarray(hf["pilot_burst"][:], dtype=int)
+            n = min(len(burst), spectra.shape[0])
+            keep = burst[:n] == 0
+            header["pilot_bursts"] = int((burst[:n] == 1).sum())
+            header["pilot_bursts_seen"] = int(hf["pilot_shape"].shape[0]) if "pilot_shape" in hf else 0
+            header["pilot_records_corrected"] = int(np.asarray(hf["pilot_ok"][:n]).sum())
+            header["pilot_records_dropped"] = int((~keep).sum() + (spectra.shape[0] - n) * 0)
+            if drop_bursts and (~keep).any():
+                spectra = spectra[:n][keep]
+                stamps = stamps[:n][keep]
+                if taus.size:
+                    taus = taus[:n][keep]
     if spectra.ndim != 2 or spectra.shape[0] == 0:
         raise ValueError("The observation file holds no spectra")
     return freq_hz, spectra, stamps, taus, header

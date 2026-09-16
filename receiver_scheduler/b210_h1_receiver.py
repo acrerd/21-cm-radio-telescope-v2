@@ -19,6 +19,7 @@ import os
 import re
 import sys
 from datetime import datetime, timezone
+import collections
 from collections import deque
 
 from gnuradio import gr, fft, blocks, analog, filter
@@ -324,39 +325,81 @@ class _VectorAccumulator(gr.sync_block):
         return mean, n
 
 
-class _ComplexVectorAccumulator(gr.sync_block):
-    """Sum complex vectors exactly: the pilot's cross-spectrum sink (issue #30).
+class _PilotGate(gr.sync_block):
+    """The pilot's recovery sink (issue #30): a per-frame power gate and a coherent sum.
 
-    Fed by integrate_cc after multiply_const_vcc(conj(reference)), so what
-    arrives is already a sum over a few dozen frames; take() hands back the
-    total and the number of frames it covers.
+    Fed the *unwindowed* FFT of the same frames the wide product uses. A
+    rectangular window is what makes the pilot's reference flat across the
+    band: the frame is periodic at exactly the FFT length, so it has no
+    leakage at all, and every bin measures its own response. Through the wide
+    product's Blackman-Harris window the reference instead follows the window
+    in time, which for a swept chirp means zero at both band edges - where
+    the filter's tilt has to be measured.
+
+    Each frame is judged on or off by its total power: a burst near the
+    system-noise level roughly doubles it, against a per-frame scatter of
+    3%. The baseline is the median of recent off-frames, so nothing has to
+    be told when a burst starts, the transmit buffers' latency costs nothing,
+    and a science record that caught a burst's tail is known. A coherent gate
+    would not do: the unknown (fixed) framing offset puts a phase ramp across
+    the band that cancels any whole-band coherent statistic.
+
+    take() hands back (X over the on-frames, on-frames, frames, mean per-bin
+    power of the off-frames) - the last being the noise the burst sat in,
+    measured in the same FFT, which is what the recovery's SNR needs.
     """
 
-    def __init__(self, vlen, presum):
-        gr.sync_block.__init__(self, name="accumulate_complex",
+    _BASELINE_FRAMES = 400            # off-frames kept for the median
+
+    def __init__(self, vlen, reference, margin):
+        gr.sync_block.__init__(self, name="pilot_gate",
                                in_sig=[(np.complex64, vlen)], out_sig=None)
         self.vlen = int(vlen)
-        self.presum = int(presum)
+        self._ref_conj = np.conj(np.asarray(reference, dtype=np.complex64))
+        self._margin = 1.0 + float(margin)
         self._lock = threading.Lock()
-        self._sum = np.zeros(self.vlen, dtype=np.complex128)
+        self._base = collections.deque(maxlen=self._BASELINE_FRAMES)
+        self._baseline = None
+        self._x = np.zeros(self.vlen, dtype=np.complex128)
+        self._n_on = 0
         self._n = 0
+        self._off_power = 0.0
+        self._n_off = 0
 
     def work(self, input_items, output_items):
-        block = input_items[0]
+        F = input_items[0]
+        power = np.einsum('ij,ij->i', F, F.conj()).real / self.vlen
         with self._lock:
-            self._sum += block.sum(axis=0, dtype=np.complex128)
-            self._n += block.shape[0]
-        return block.shape[0]
+            if self._baseline is None:
+                # Nothing to compare against yet: these frames are the
+                # baseline. The first burst is many records away.
+                on = np.zeros(len(power), dtype=bool)
+            else:
+                on = power > self._baseline * self._margin
+            if on.any():
+                self._x += (F[on] * self._ref_conj).sum(axis=0, dtype=np.complex128)
+                self._n_on += int(on.sum())
+            off = ~on
+            if off.any():
+                self._off_power += float(power[off].sum())
+                self._n_off += int(off.sum())
+                self._base.extend(power[off][::4].tolist())
+                if len(self._base) >= 50:
+                    self._baseline = float(np.median(self._base))
+            self._n += F.shape[0]
+        return F.shape[0]
 
     def take(self):
-        """(summed cross-spectrum, frames) since the last call; (None, 0) if none."""
+        """(X over on-frames, on-frames, frames, off-frame mean power per bin)."""
         with self._lock:
-            if not self._n:
-                return None, 0
-            total = self._sum.copy()
-            self._sum = np.zeros(self.vlen, dtype=np.complex128)
-            n, self._n = self._n * self.presum, 0
-        return total, n
+            x, n_on, n = self._x.copy(), self._n_on, self._n
+            noise = (self._off_power / self._n_off) if self._n_off else (self._baseline or 0.0)
+            self._x = np.zeros(self.vlen, dtype=np.complex128)
+            self._n_on = 0
+            self._n = 0
+            self._off_power = 0.0
+            self._n_off = 0
+        return (x if n_on else None), n_on, n, noise
 
 
 class TwoProductFlowgraph(gr.top_block):
@@ -459,36 +502,35 @@ class TwoProductFlowgraph(gr.top_block):
                                           nh, sb["channel_width_hz"] / 1e3))
 
     def _build_pilot(self):
-        """The pilot (issue #30): a transmit branch and a cross-spectrum branch.
+        """The pilot (issue #30): a transmit branch and a gated cross-spectrum branch.
 
-        Transmit: one wide-FFT frame of tones, repeated forever, into TX/RX of
-        the same B210 at the same rate and LO as the receive side, so every
-        tone lands on a bin centre and keeps its phase from frame to frame.
-        Recovery: the wide FFT's frames multiplied by the conjugate of the
-        frame's own windowed spectrum and summed - one complex multiply per
-        bin per frame. With the TX unconnected the recovery still runs and
-        finds nothing, which the recorder writes down; nothing else changes.
+        Transmit: a repeating wide-FFT frame into TX/RX of the same B210 at
+        the same rate and LO as the receive side - zeros between bursts, the
+        full-band comb during one. Recovery: the wide FFT's frames, gated per
+        frame on the pilot's presence, multiplied by the conjugate of the
+        frame's own windowed spectrum and summed. With the TX unconnected the
+        recovery runs and finds nothing, which the recorder writes down.
 
         In demo mode there is no TX; with `demo_inject` the frame is added
         into the synthetic stream instead so the recovery can be tested.
         """
         cfg = self.pilot_cfg
-        self.pilot_xacc = None
+        self.pilot_gate = None
         self.pilot_sink = None
+        self.pilot_src = None
         self.pilot_inject = None
+        self._burst_on = False
         if not cfg["enabled"]:
             return
-        self.pilot = pilot_mod.plan(cfg, self.center_freq, self.sample_rate,
-                                    self.wide_channels, self.instrument["h1_band_hz"])
+        self.pilot = pilot_mod.plan(cfg, self.center_freq, self.sample_rate, self.wide_channels)
         if len(self.pilot["bins"]) == 0:
-            print("  Pilot: no tone falls inside the sampled band; pilot off", flush=True)
             self.pilot = None
             return
         nw = self.wide_channels
-        frame = self.pilot["frame"]
+        zeros = self.pilot["zeros"]
         if self.sdr_type == 'b210':
             from gnuradio import uhd
-            self.pilot_src = blocks.vector_source_c(frame.tolist(), True)
+            self.pilot_src = blocks.vector_source_c(zeros.tolist(), True)
             self.pilot_sink = uhd.usrp_sink(
                 ",".join(("type=b200", "")),
                 uhd.stream_args(cpu_format="fc32", args="", channels=[0]))
@@ -497,26 +539,35 @@ class TwoProductFlowgraph(gr.top_block):
             self.pilot_sink.set_gain(float(cfg["tx_gain_db"]), 0)
             self.pilot_sink.set_antenna("TX/RX", 0)
             tx_f = self.pilot_sink.get_center_freq(0)
-            print("  Pilot TX: %s; %.3f Msps at %.6f MHz, gain %.1f dB, %d tones, peak %.2f"
-                  % (cfg["mode"], self.pilot_sink.get_samp_rate() / 1e6, tx_f / 1e6,
-                     self.pilot_sink.get_gain(0), len(self.pilot["bins"]), cfg["amplitude"]),
-                  flush=True)
+            print("  Pilot TX: %.3f Msps at %.6f MHz, gain %.1f dB; comb burst every %d records, "
+                  "peak %.2f" % (self.pilot_sink.get_samp_rate() / 1e6, tx_f / 1e6,
+                                 self.pilot_sink.get_gain(0), cfg["burst_every_records"],
+                                 cfg["burst_amplitude"]), flush=True)
             if abs(tx_f - self.center_freq) > 0.5:
                 # Different synthesiser settings on the two sides would let
                 # the tones' phase slip and the coherent sum average away.
                 print("  Pilot WARNING: TX tuned %.1f Hz from the RX LO; the recovery "
                       "will not accumulate coherently" % (tx_f - self.center_freq), flush=True)
         elif cfg.get("demo_inject"):
-            scale = float(cfg["demo_inject_scale"])
-            self.pilot_inject = blocks.vector_source_c((frame * scale).tolist(), True)
+            self.pilot_src = blocks.vector_source_c(zeros.tolist(), True)
+            self.pilot_inject = self.pilot_src
             self.pilot_adder = blocks.add_cc()
-        # Recovery: the wide FFT output is already windowed and shifted, so
-        # the reference is the same operation on one frame of pilot alone.
-        ref = np.conj(self.pilot["reference"]).astype(np.complex64)
-        self.pilot_mult = blocks.multiply_const_vcc(ref.tolist())
-        presum = max(1, int(self.sample_rate / nw / self.SINK_RATE_HZ))
-        self.pilot_integ = blocks.integrate_cc(presum, nw)
-        self.pilot_xacc = _ComplexVectorAccumulator(nw, presum)
+        # The pilot's own FFT, unwindowed: fft_vcc with an empty window is
+        # rectangular, which is what keeps the reference flat (see _PilotGate).
+        # Fanned out from the wide product's framer, so no second
+        # stream_to_vector and the two see exactly the same frames.
+        self.pilot_fft = fft.fft_vcc(nw, True, [], True, 1)
+        self.pilot_gate = _PilotGate(nw, self.pilot["reference"], cfg["gate_margin"])
+
+    def set_burst(self, on):
+        """Comb on or off from the next frame the source hands out (zeros between bursts)."""
+        if self.pilot_src is None or bool(on) == self._burst_on:
+            return
+        frame = self.pilot["frame"] if on else self.pilot["zeros"]
+        if self.pilot_inject is not None:
+            frame = frame * float(self.pilot_cfg["demo_inject_scale"])
+        self.pilot_src.set_data(frame.tolist(), [])
+        self._burst_on = bool(on)
 
     def _connect_blocks(self):
         src = self.sdr_source
@@ -529,10 +580,9 @@ class TwoProductFlowgraph(gr.top_block):
             src = self.pilot_adder
         if self.pilot_sink is not None:
             self.connect((self.pilot_src, 0), (self.pilot_sink, 0))
-        if self.pilot_xacc is not None:
-            self.connect((self.wide_fft, 0), (self.pilot_mult, 0))
-            self.connect((self.pilot_mult, 0), (self.pilot_integ, 0))
-            self.connect((self.pilot_integ, 0), (self.pilot_xacc, 0))
+        if self.pilot_gate is not None:
+            self.connect((self.wide_s2v, 0), (self.pilot_fft, 0))
+            self.connect((self.pilot_fft, 0), (self.pilot_gate, 0))
         self.connect((src, 0), (self.wide_s2v, 0))
         self.connect((self.wide_s2v, 0), (self.wide_fft, 0))
         self.connect((self.wide_fft, 0), (self.wide_mag, 0))
@@ -572,10 +622,10 @@ class TwoProductFlowgraph(gr.top_block):
         return self.h1_acc.take()
 
     def take_pilot(self):
-        """(summed cross-spectrum, frames) since the last call; (None, 0) without a pilot."""
-        if self.pilot_xacc is None:
-            return None, 0
-        return self.pilot_xacc.take()
+        """(X over on-frames, on-frames, frames, off-frame noise per bin) since the last call."""
+        if self.pilot_gate is None:
+            return None, 0, 0, 0.0
+        return self.pilot_gate.take()
 
 
 class _OverflowCounter:
@@ -788,15 +838,16 @@ def init_hdf5(filename, freq_axis_hz, fft_size, sdr_type, center_freq,
         hf.create_dataset('bandpass_valid_wide', data=w_valid)
         hf.create_dataset('overflows', shape=(0,), maxshape=(None,), dtype='int32')
 
-    # The pilot (issue #30). Per record: the level and slope that were
-    # *applied* (unit and zero when the pilot was not detected, so a file
-    # made with the TX unplugged reads back exactly as one without a pilot),
-    # the detection SNR and the ok flag. At the shape interval: the complex
-    # response per pilot bin. `pilot_reference` is the response the level is
-    # measured against - filled in when it is known (SWMR allows writing an
-    # existing dataset, not creating one), zeros until then - and
-    # `pilot_anchored` says whether it came from the calibration or from
-    # this run's first detected record.
+    # The pilot (issue #30). Per record: whether it was a burst (1), a science
+    # record that caught a burst's tail (2) or clean (0); the level and slope
+    # *applied* (unit and zero when nothing was) and the index of the
+    # correction vector applied (-1 for none), the burst detection SNR and
+    # the ok flag. Per detected burst: the complex response per bin. Each
+    # time the applied passband correction changes: the vectors, on both
+    # axes. `pilot_reference` is the response the level is measured against
+    # - filled in when known (SWMR allows writing an existing dataset, not
+    # creating one), zeros until then - and `pilot_anchored` says whether it
+    # came from the calibration or from this run's first detected burst.
     pilot_cfg = None
     if instrument and isinstance(instrument.get('pilot'), dict):
         pilot_cfg = instrument['pilot']
@@ -808,15 +859,22 @@ def init_hdf5(filename, freq_axis_hz, fft_size, sdr_type, center_freq,
         hf.attrs['pilot_centre_hz'] = float(pilot['centre_hz'])
         hf.attrs['pilot_applied'] = 1
         hf.create_dataset('pilot_bins_wide', data=np.asarray(pilot['bins'], dtype='int32'))
-        hf.create_dataset('pilot_excluded_wide', data=np.asarray(pilot['excluded'], dtype=bool))
         hf.create_dataset('pilot_reference', data=np.zeros(nb_p, dtype='complex64'))
         hf.create_dataset('pilot_anchored', data=np.zeros(1, dtype='int8'))
-        for name, dt in (('pilot_level', 'float32'), ('pilot_slope', 'float32'),
-                         ('pilot_snr', 'float32'), ('pilot_ok', 'int8')):
+        for name, dt in (('pilot_burst', 'int8'), ('pilot_level', 'float32'),
+                         ('pilot_slope', 'float32'), ('pilot_snr', 'float32'),
+                         ('pilot_ok', 'int8'), ('pilot_correction_index', 'int32')):
             hf.create_dataset(name, shape=(0,), maxshape=(None,), dtype=dt)
         hf.create_dataset('pilot_shape_time', shape=(0,), maxshape=(None,), dtype='float64')
         hf.create_dataset('pilot_shape', shape=(0, nb_p), maxshape=(None, nb_p),
                           dtype='complex64', chunks=(1, max(nb_p, 1)))
+        n_fine = len(freq_axis_hz)
+        hf.create_dataset('pilot_correction_h1', shape=(0, n_fine), maxshape=(None, n_fine),
+                          dtype='float32', chunks=(1, n_fine))
+        if wide is not None:
+            nw_p = int(wide['channels'])
+            hf.create_dataset('pilot_correction_wide', shape=(0, nw_p), maxshape=(None, nw_p),
+                              dtype='float32', chunks=(1, nw_p))
 
     # Spectra are stored in kelvin when the instrument is calibrated for this
     # tuning, and in raw counts when it is not. The dataset *name* carries the
@@ -1051,15 +1109,19 @@ def append_spectrum(hf, avg_linear, timestamp, integration_time, fft_size,
     timestamp = timestamp - integration_time / 2.0
     name = 'spectra_kelvin' if 'spectra_kelvin' in hf else 'spectra_linear'
     values = avg_linear
-    # The pilot's per-record factor (issue #30): the kelvin write divides by
-    # it, and the two numbers it is made of are stored beside the record so
-    # read_observation can multiply it back exactly. Unit when the pilot is
-    # absent, off, or not detected this record.
-    p_level, p_slope, p_ok, p_snr = 1.0, 0.0, 0, 0.0
+    # The pilot (issue #30): a clean science record with a recent burst
+    # behind it is divided by the burst's level-and-slope factor and by the
+    # current passband correction vector; the numbers and the vector's index
+    # are stored beside the record so read_observation multiplies them back
+    # exactly. Burst records and records that caught a burst's tail are
+    # written as measured and flagged; nothing is applied to them.
+    p_burst, p_level, p_slope, p_ok, p_snr, p_idx = 0, 1.0, 0.0, 0, 0.0, -1
     if pilot is not None and 'pilot_level' in hf:
-        p_ok = 1 if pilot.get('ok') else 0
+        p_burst = int(pilot.get('burst', 0) or 0)
+        p_ok = 1 if (pilot.get('ok') and not p_burst) else 0
         if p_ok:
             p_level, p_slope = float(pilot['level']), float(pilot['slope'])
+            p_idx = int(pilot.get('corr_index', -1))
         p_snr = float(pilot.get('snr', 0.0) or 0.0)
     apply_pilot = ('pilot_level' in hf) and p_ok
     if name == 'spectra_kelvin':
@@ -1069,6 +1131,8 @@ def append_spectrum(hf, avg_linear, timestamp, integration_time, fft_size,
         if apply_pilot:
             divisor = divisor * pilot_mod.factor(p_level, p_slope, hf['frequency_hz'][:],
                                                  hf.attrs['pilot_centre_hz'])
+            if p_idx >= 0 and 'pilot_correction_h1' in hf:
+                divisor = divisor * hf['pilot_correction_h1'][p_idx, :]
         values = avg_linear / divisor - hf.attrs['applied_t_sys_k']
     n = hf[name].shape[0]
     hf[name].resize((n + 1, fft_size))
@@ -1085,6 +1149,8 @@ def append_spectrum(hf, avg_linear, timestamp, integration_time, fft_size,
             if apply_pilot:
                 wdiv = wdiv * pilot_mod.factor(p_level, p_slope, hf['frequency_hz_wide'][:],
                                                hf.attrs['pilot_centre_hz'])
+                if p_idx >= 0 and 'pilot_correction_wide' in hf:
+                    wdiv = wdiv * hf['pilot_correction_wide'][p_idx, :]
             wvalues = wvalues / wdiv - hf.attrs['applied_t_sys_k']
         nw = hf[wname].shape[1]
         hf[wname].resize((n + 1, nw))
@@ -1093,20 +1159,36 @@ def append_spectrum(hf, avg_linear, timestamp, integration_time, fft_size,
         hf['overflows'].resize((n + 1,))
         hf['overflows'][n] = int(overflows)
     if 'pilot_level' in hf:
-        for dname, val in (('pilot_level', p_level), ('pilot_slope', p_slope),
-                           ('pilot_snr', p_snr), ('pilot_ok', p_ok)):
+        for dname, val in (('pilot_burst', p_burst), ('pilot_level', p_level),
+                           ('pilot_slope', p_slope), ('pilot_snr', p_snr), ('pilot_ok', p_ok),
+                           ('pilot_correction_index', p_idx)):
             hf[dname].resize((n + 1,))
             hf[dname][n] = val
     hf.flush()
     _append_live_summary(hf, avg_linear, timestamp, integration_time, n + 1,
                          wide_linear=wide_linear, overflows=overflows,
-                         pilot={'ok': p_ok, 'level': p_level, 'slope': p_slope, 'snr': p_snr}
+                         pilot={'burst': p_burst, 'ok': p_ok, 'level': p_level, 'slope': p_slope,
+                                'snr': p_snr, 'seen': int(bool((pilot or {}).get('seen')))}
                          if 'pilot_level' in hf else None)
     return n + 1
 
 
+def append_pilot_correction(hf, h1_vec, wide_vec):
+    """Store a new applied passband correction (issue #30); returns its index."""
+    if 'pilot_correction_h1' not in hf:
+        return -1
+    n = hf['pilot_correction_h1'].shape[0]
+    hf['pilot_correction_h1'].resize((n + 1, hf['pilot_correction_h1'].shape[1]))
+    hf['pilot_correction_h1'][n, :] = np.asarray(h1_vec, dtype=np.float32)
+    if wide_vec is not None and 'pilot_correction_wide' in hf:
+        hf['pilot_correction_wide'].resize((n + 1, hf['pilot_correction_wide'].shape[1]))
+        hf['pilot_correction_wide'][n, :] = np.asarray(wide_vec, dtype=np.float32)
+    hf.flush()
+    return n
+
+
 def append_pilot_shape(hf, t_mid, response):
-    """One averaged per-bin pilot response at the shape interval (issue #30)."""
+    """One detected burst's per-bin response (issue #30)."""
     if 'pilot_shape' not in hf:
         return
     n = hf['pilot_shape'].shape[0]
@@ -1145,16 +1227,6 @@ def _continuum_channels(hf, freq_axis_hz):
         keep &= np.abs(f - float(hf.attrs['dc_artefact_freq_hz'])) > 60e3
     except Exception:                                     # noqa: BLE001
         pass
-    return keep
-
-
-def _pilot_free(hf, keep, pilot):
-    """`keep` less the wide bins a detected pilot occupies (issue #30)."""
-    if pilot and pilot.get('ok') and 'pilot_excluded_wide' in hf:
-        try:
-            return keep & ~np.asarray(hf['pilot_excluded_wide'][:], dtype=bool)
-        except Exception:                                 # noqa: BLE001
-            return keep
     return keep
 
 
@@ -1207,7 +1279,7 @@ def _append_live_summary(hf, avg_linear, timestamp, integration_time, count,
             # the H I band and the spur cut out, bandpass-corrected where
             # the wide template speaks, on the same gain scale as `median`.
             w = np.asarray(wide_linear, dtype=float)
-            keep = _pilot_free(hf, _continuum_channels(hf, hf['frequency_hz_wide'][:]), pilot)
+            keep = _continuum_channels(hf, hf['frequency_hz_wide'][:])
             try:
                 w_valid = hf['bandpass_valid_wide'][:]
                 if w_valid.any():
@@ -1219,8 +1291,10 @@ def _append_live_summary(hf, avg_linear, timestamp, integration_time, count,
                 record["continuum"] = float(np.median(w[keep]))
             record["overflows"] = int(overflows)
         if pilot is not None:
-            # The pilot as applied this record, so the live view can say
-            # "corrected" or "not detected" and draw the gain trace.
+            # The pilot as applied this record, so the live view can skip the
+            # bursts and say "corrected" or "not detected".
+            record["pilot_burst"] = int(pilot.get("burst", 0))
+            record["pilot_seen"] = int(pilot.get("seen", 0))
             record["pilot_ok"] = int(pilot.get("ok", 0))
             record["pilot_level"] = float(pilot.get("level", 1.0))
             record["pilot_slope"] = float(pilot.get("slope", 0.0))
@@ -1296,16 +1370,21 @@ class HeadlessRecorder:
         # stored reference when it has one for this plan, else to this run's
         # first detected record.
         self.pilot_tracker = None
+        self._record_index = 0
+        self._burst_record = False
+        self._corr_version = None
+        self._corr_index = -1
         if self.flowgraph.pilot is not None:
             ref = _pilot_reference_from_calibration(self.flowgraph.pilot)
             self.pilot_tracker = pilot_mod.PilotTracker(self.flowgraph.pilot_cfg,
                                                         self.flowgraph.pilot, ref)
             if ref is not None:
                 set_pilot_reference(self.hf, ref, anchored=True)
-            print("  Pilot: %d tones, %s" % (len(self.flowgraph.pilot['bins']),
-                  "anchored to the calibration" if ref is not None
-                  else "self-referenced until the calibration stores a pilot reference"),
-                  flush=True)
+            print("  Pilot: comb burst every %d records, %s" % (
+                self.flowgraph.pilot_cfg["burst_every_records"],
+                "anchored to the calibration" if ref is not None
+                else "self-referenced until the calibration stores a pilot reference"),
+                flush=True)
         self._pilot_reported = None
         self.spectrum_count = 0
         self._stop = threading.Event()
@@ -1315,29 +1394,70 @@ class HeadlessRecorder:
         """Signal handler and API: finish the current tick and shut down."""
         self._stop.set()
 
-    def _pilot_record(self, wide_mean, now):
-        """This record's pilot estimate, written into the file's side datasets."""
+    def _pilot_begin_record(self):
+        """Decide whether the record just started is a burst, and switch the comb on if so."""
+        self._burst_record = False
+        if self.pilot_tracker is None:
+            return
+        every = int(self.flowgraph.pilot_cfg["burst_every_records"])
+        if every > 0 and self._record_index % every == every - 1:
+            self._burst_record = True
+            self.flowgraph.set_burst(True)
+
+    def _pilot_tick(self, now, period_start):
+        """Switch the comb off a margin before the burst record ends, so the
+        transmit buffers have drained before the next record begins."""
+        if self._burst_record and self.flowgraph._burst_on:
+            margin = float(self.flowgraph.pilot_cfg["burst_off_margin_s"])
+            if now >= period_start + self.integration_time - margin:
+                self.flowgraph.set_burst(False)
+
+    def _pilot_record(self, now, tau):
+        """This record's pilot outcome, for append_spectrum and the file's side datasets."""
         if self.pilot_tracker is None:
             return None
+        self.flowgraph.set_burst(False)
+        was_burst = self._burst_record
+        self._record_index += 1
         try:
-            xspec, n = self.flowgraph.take_pilot()
-            pil = self.pilot_tracker.update(xspec, n, np.asarray(wide_mean, dtype=float), now)
-            if pil['ok'] and not self.pilot_tracker.anchored and self.hf['pilot_anchored'][0] == 0 \
-                    and not np.any(self.hf['pilot_reference'][:]):
-                set_pilot_reference(self.hf, self.pilot_tracker.reference_h, anchored=False)
-            shape = self.pilot_tracker.shape_ready(now)
-            if shape is not None:
-                append_pilot_shape(self.hf, shape[0], shape[1])
-            # Say once when the pilot appears or disappears; not every record.
-            if pil['ok'] != self._pilot_reported:
-                self._pilot_reported = pil['ok']
-                print("  Pilot %s (median SNR %.1f)%s" % (
-                    "detected" if pil['ok'] else "not detected", pil['snr'],
-                    "" if pil['ok'] else " - recording uncorrected, as with no pilot"), flush=True)
-            return pil
+            xspec, n_on, n_total, noise = self.flowgraph.take_pilot()
+            if was_burst:
+                b = self.pilot_tracker.burst(xspec, n_on, noise, now)
+                if b['ok']:
+                    if not self.pilot_tracker.anchored and not np.any(self.hf['pilot_reference'][:]):
+                        set_pilot_reference(self.hf, self.pilot_tracker.reference_h, anchored=False)
+                    append_pilot_shape(self.hf, now - tau / 2.0, b['h'])
+                if b['ok'] != self._pilot_reported:
+                    self._pilot_reported = b['ok']
+                    print("  Pilot burst %s (median SNR %.1f, %d of %d frames on)%s" % (
+                        "detected" if b['ok'] else "not detected", b['snr'], n_on, n_total,
+                        "" if b['ok'] else " - nothing applied, as with no pilot"), flush=True)
+                return {'burst': 1, 'ok': 0, 'level': 1.0, 'slope': 0.0, 'snr': b['snr'],
+                        'seen': b['ok'], 'corr_index': -1}
+            if n_on > 0:
+                # A science record that caught the tail of a burst: measured,
+                # flagged, dropped downstream.
+                return {'burst': 2, 'ok': 0, 'level': 1.0, 'slope': 0.0, 'snr': 0.0,
+                        'seen': 0, 'corr_index': -1}
+            level, slope, ok = self.pilot_tracker.correction(now)
+            if not ok:
+                return {'burst': 0, 'ok': 0, 'level': 1.0, 'slope': 0.0, 'snr': 0.0,
+                        'seen': 0, 'corr_index': -1}
+            version, h_mean = self.pilot_tracker.shape(now)
+            if h_mean is not None and version != self._corr_version:
+                plan = self.flowgraph.pilot
+                band = self.instrument['h1_band_hz']
+                ref = self.pilot_tracker.reference_h
+                h1_vec = pilot_mod.correction_vector(h_mean, plan, self.freq_axis_hz, band, ref)
+                wide_vec = pilot_mod.correction_vector(h_mean, plan, self.wide_axis_hz, band, ref)
+                self._corr_index = append_pilot_correction(self.hf, h1_vec, wide_vec)
+                self._corr_version = version
+            return {'burst': 0, 'ok': 1, 'level': level, 'slope': slope, 'snr': 0.0,
+                    'seen': 0, 'corr_index': self._corr_index}
         except Exception as exc:                          # noqa: BLE001
             print(f"  Pilot: estimate failed ({exc}); record left uncorrected", flush=True)
-            return {'ok': 0, 'level': 1.0, 'slope': 0.0, 'snr': 0.0}
+            return {'burst': 1 if was_burst else 0, 'ok': 0, 'level': 1.0, 'slope': 0.0,
+                    'snr': 0.0, 'seen': 0, 'corr_index': -1}
 
     def run(self):
         """Acquire until stopped, writing one record per integration time."""
@@ -1349,10 +1469,12 @@ class HeadlessRecorder:
         self.overflows.start()
         self.flowgraph.start()
         period_start = time.time()
+        self._pilot_begin_record()
         try:
             while not self._stop.is_set():
                 self._stop.wait(self.TICK_S)
                 now = time.time()
+                self._pilot_tick(now, period_start)
                 if now - period_start < self.integration_time:
                     continue
                 # The sinks have been summing every spectrum since the last
@@ -1365,13 +1487,14 @@ class HeadlessRecorder:
                     break
                 if h1 is None or wide is None:
                     continue
-                pil = self._pilot_record(wide, now)
+                pil = self._pilot_record(now, now - period_start)
                 self.spectrum_count = append_spectrum(
                     self.hf, np.asarray(h1, dtype=float)[self.h1_keep], now,
                     now - period_start, self.fft_size,
                     wide_linear=np.asarray(wide, dtype=float),
                     overflows=self.overflows.take(), pilot=pil)
                 period_start = now
+                self._pilot_begin_record()
         finally:
             self.flowgraph.stop()
             self.flowgraph.wait()

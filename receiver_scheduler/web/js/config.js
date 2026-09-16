@@ -31,10 +31,10 @@
             // The pilot (issue #30): selects hold '' for the default.
             const en = document.getElementById('cfgPilotEnabled').value;
             out.receiver_pilot_enabled = en === '' ? null : (en === 'true');
-            const mode = document.getElementById('cfgPilotMode').value;
-            out.receiver_pilot_mode = mode === '' ? null : mode;
+            const every = document.getElementById('cfgPilotBurstEvery').value.trim();
+            out.receiver_pilot_burst_every_records = every === '' ? null : parseInt(every);
             const amp = document.getElementById('cfgPilotAmplitude').value.trim();
-            out.receiver_pilot_amplitude = amp === '' ? null : parseFloat(amp);
+            out.receiver_pilot_burst_amplitude = amp === '' ? null : parseFloat(amp);
             const txg = document.getElementById('cfgPilotTxGain').value.trim();
             out.receiver_pilot_tx_gain_db = txg === '' ? null : parseFloat(txg);
             return out;
@@ -50,9 +50,10 @@
             document.getElementById('cfgInstH1Hi').value = band ? band[1] / 1e6 : '';
             const en = cfg.receiver_pilot_enabled;
             document.getElementById('cfgPilotEnabled').value = (en == null || en === '') ? '' : String(!!en);
-            document.getElementById('cfgPilotMode').value = cfg.receiver_pilot_mode || '';
+            document.getElementById('cfgPilotBurstEvery').value =
+                (cfg.receiver_pilot_burst_every_records == null || cfg.receiver_pilot_burst_every_records === '') ? '' : cfg.receiver_pilot_burst_every_records;
             document.getElementById('cfgPilotAmplitude').value =
-                (cfg.receiver_pilot_amplitude == null || cfg.receiver_pilot_amplitude === '') ? '' : cfg.receiver_pilot_amplitude;
+                (cfg.receiver_pilot_burst_amplitude == null || cfg.receiver_pilot_burst_amplitude === '') ? '' : cfg.receiver_pilot_burst_amplitude;
             document.getElementById('cfgPilotTxGain').value =
                 (cfg.receiver_pilot_tx_gain_db == null || cfg.receiver_pilot_tx_gain_db === '') ? '' : cfg.receiver_pilot_tx_gain_db;
             instrumentLoaded = readInstrumentBoxes();
@@ -67,7 +68,7 @@
             for (const [, [id]] of Object.entries(INSTRUMENT_BOXES)) document.getElementById(id).value = '';
             document.getElementById('cfgInstH1Lo').value = '';
             document.getElementById('cfgInstH1Hi').value = '';
-            for (const id of ['cfgPilotEnabled', 'cfgPilotMode', 'cfgPilotAmplitude', 'cfgPilotTxGain']) {
+            for (const id of ['cfgPilotEnabled', 'cfgPilotBurstEvery', 'cfgPilotAmplitude', 'cfgPilotTxGain']) {
                 document.getElementById(id).value = '';
             }
         }

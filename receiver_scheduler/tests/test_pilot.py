@@ -1,16 +1,16 @@
-"""The pilot (issue #30): the B210's TX as the receiver's gain and passband reference.
+"""The pilot (issue #30): the B210's TX as the receiver's gain and passband reference, in bursts.
 
-What these guard: the frame and its reference agree with what the receive
-FFT does; a pilot that is there is found and one that is not (the TX
-unplugged) is reported absent and changes nothing; the level and slope are
-recovered from a synthetic response; the kelvin write divides by them and
-read_observation multiplies them back exactly; the band windows leave the
-tone bins out only in a file where the pilot was seen; and the scheduler
-carries the switch.
+What these guard: the burst frame and its reference agree with what the
+receive FFT does; a burst that is there is found and one that is not (the
+TX unplugged) is reported absent and changes nothing; level, slope and the
+passband correction are recovered from a synthetic response; the kelvin
+write divides by them and read_observation multiplies them back exactly and
+drops the burst records; the per-frame gate counts the frames a burst
+occupied on the demo source; the scheduler carries the switch.
 """
 import json
-import os
 import sys
+import time
 
 import numpy as np
 import pytest
@@ -23,107 +23,170 @@ h5py = pytest.importorskip("h5py")
 
 def _plan(cfg_over=None):
     inst = tuning.fixed_instrument(cfg_over or {})
-    return inst, pilot.plan(inst["pilot"], inst["lo_hz"], inst["sample_rate_hz"],
-                            inst["wide_channels"], inst["h1_band_hz"])
+    return inst, pilot.plan(inst["pilot"], inst["lo_hz"], inst["sample_rate_hz"], inst["wide_channels"])
 
 
 class TestPlan:
-    def test_defaults_are_on_and_keep_out_of_the_h1_band(self):
+    def test_defaults_are_a_full_band_comb_in_bursts(self):
         inst, p = _plan()
-        assert inst["pilot"]["enabled"] and inst["pilot"]["mode"] == "continuum"
-        assert len(p["bins"]) > 3
-        lo, hi = inst["h1_band_hz"]
-        f = p["freq_hz"][p["bins"]]
-        assert not ((f >= lo) & (f <= hi)).any(), "no pilot tone inside the H I band"
-        # the three tones are where the config says, on bin centres
-        for t in inst["pilot"]["tones_hz"]:
-            assert np.abs(f - t).min() < 0.5 * inst["sample_rate_hz"] / inst["wide_channels"]
-
-    def test_tones_only_mode_has_just_the_tones_and_full_covers_the_band(self):
-        inst_t, p_t = _plan({"receiver_pilot_mode": "tones"})
-        assert len(p_t["bins"]) == 3
-        inst_f, p_f = _plan({"receiver_pilot_mode": "full"})
-        lo, hi = inst_f["h1_band_hz"]
-        f = p_f["freq_hz"][p_f["bins"]]
-        assert ((f >= lo) & (f <= hi)).any()
+        cfg = inst["pilot"]
+        assert cfg["enabled"] and cfg["burst_every_records"] == 20
+        nb = inst["wide_channels"]
+        assert len(p["bins"]) == nb - (2 * cfg["dc_guard_bins"] + 1)
+        assert not np.any(p["zeros"])
+        assert np.abs(p["frame"]).max() == pytest.approx(cfg["burst_amplitude"], rel=1e-5)
 
     def test_off_means_off(self):
         inst, p = _plan({"receiver_pilot_enabled": False})
         assert not inst["pilot"]["enabled"] and len(p["bins"]) == 0
-        inst2 = tuning.fixed_instrument({"receiver_pilot_mode": "off"})
+        inst2, _ = _plan({"receiver_pilot_burst_every_records": 0})
         assert not inst2["pilot"]["enabled"]
+        with pytest.raises(ValueError):
+            tuning.fixed_instrument({"receiver_pilot_burst_every_records": 1})
+        with pytest.raises(ValueError):
+            tuning.fixed_instrument({"receiver_pilot_burst_amplitude": 1.5})
 
-    def test_the_window_matches_gnu_radio_and_the_reference_is_isolated_per_bin(self):
-        gr = pytest.importorskip("gnuradio.fft")
-        w_gr = np.asarray(gr.window.blackmanharris(1024))
-        assert np.abs(w_gr - pilot.blackman_harris(1024)).max() < 1e-6
+    def test_the_reference_is_flat_across_the_band(self):
+        """A periodic frame under a rectangular window has no leakage at all,
+        so every bin measures its own response with the same sensitivity.
+
+        This is why the pilot has its own unwindowed FFT: through the wide
+        product's Blackman-Harris window the reference follows the window in
+        *time*, and a swept chirp maps time to frequency, so it collapses to
+        zero at both band edges - exactly where the filter's tilt lives.
+        """
         _, p = _plan()
-        mags = np.abs(p["reference"])
-        on = mags[p["bins"]]
-        near = np.concatenate([p["bins"] + d for d in range(-3, 4)])
-        off = np.delete(mags, np.clip(near, 0, len(mags) - 1))
-        # every tone the same size on its own bin; nothing measurable four bins away
-        assert on.max() / on.min() < 1.01
-        assert off.max() < 1e-4 * on.min()
-
-    def test_frame_peak_is_the_configured_amplitude(self):
-        inst, p = _plan({"receiver_pilot_amplitude": 0.2})
-        assert np.abs(p["frame"]).max() == pytest.approx(0.2, rel=1e-5)
-        with pytest.raises(ValueError):
-            tuning.fixed_instrument({"receiver_pilot_amplitude": 1.5})
-        with pytest.raises(ValueError):
-            tuning.fixed_instrument({"receiver_pilot_mode": "sideways"})
+        on = np.abs(p["reference"])[p["bins"]]
+        assert on.max() / on.min() == pytest.approx(1.0, abs=1e-3)
+        half = p["nbins"] // 2
+        assert np.abs(p["reference"])[half] < 0.05 * on.min()
+        # the windowed alternative, for the record: dead at the edges
+        n = p["nbins"]
+        m = np.arange(n)
+        w = (0.35875 - 0.48829 * np.cos(2 * np.pi * m / (n - 1))
+             + 0.14128 * np.cos(4 * np.pi * m / (n - 1))
+             - 0.01168 * np.cos(6 * np.pi * m / (n - 1)))
+        windowed = np.abs(np.fft.fftshift(np.fft.fft(w * p["frame"].astype(complex))))[p["bins"]]
+        assert windowed.min() < 0.01 * np.median(windowed)
 
 
-def _synthetic(p, n_frames, h, noise_per_bin, rng):
-    """The accumulated cross-spectrum and wide power for a pilot of response `h`
-    (complex, per pilot bin; 0 for absent) in receive noise of the given
-    per-bin FFT power, as the receiver's accumulators would hand them over."""
+def _response(p, level, slope, ripple, ratio):
+    """A field response with the given power level, tilt and SAW ripple, and
+    the per-bin noise power that puts the burst `ratio` times above it."""
+    bins = p["bins"]
+    f = (p["freq_hz"][bins] - p["centre_hz"]) / 1e6
+    h_ref = np.full(len(bins), 0.5 + 0j)
+    gain_power = level * (1 + slope * f) * (1 + ripple * np.cos(2 * np.pi * f / 0.16))
+    h = h_ref * np.sqrt(gain_power)
+    noise = float(np.median(np.abs(h) ** 2 * np.abs(p["reference"][bins]) ** 2)) / ratio
+    return h_ref, h, noise, 23400          # frames in a 3 s record at 8 Msps
+
+
+def _synthetic(p, n_frames, h, noise_per_bin, rng, delay=0):
+    """The accumulated cross-spectrum for a burst of response `h` (complex, per
+    pilot bin; 0 for absent) in receive noise of the given per-bin power, as
+    the receiver's gate would hand it over - with the framing offset `delay`
+    the real thing has."""
     nb = p["nbins"]
     R = p["reference"]
     xspec = np.zeros(nb, dtype=complex)
-    # Noise on X_j: sum over N frames of n_j conj(R_j) -> variance N * P * |R|^2.
     sig = np.sqrt(n_frames * noise_per_bin) * np.abs(R)
     xspec += sig * (rng.standard_normal(nb) + 1j * rng.standard_normal(nb)) / np.sqrt(2)
     xspec[p["bins"]] += n_frames * np.asarray(h) * np.abs(R[p["bins"]]) ** 2
-    wide_mean = np.full(nb, noise_per_bin / nb)          # the receiver's |F|^2 / N
-    return xspec, wide_mean
+    if delay:
+        xspec = xspec * np.exp(-2j * np.pi * np.arange(nb) * delay / nb)
+    return xspec, noise_per_bin
 
 
 class TestEstimate:
-    def test_nothing_there_is_reported_absent_and_applies_nothing(self):
+    def test_nothing_there_is_reported_absent(self):
         inst, p = _plan()
         rng = np.random.default_rng(3)
-        xs, wm = _synthetic(p, 23400, np.zeros(len(p["bins"])), 1.0, rng)
-        est = pilot.estimate(xs, 23400, p, wm)
+        xs, noise = _synthetic(p, 23400, np.zeros(len(p["bins"])), 1.0, rng)
+        est = pilot.estimate(xs, 23400, p, noise)
         assert est["snr_median"] < 2.5
-        est = pilot.relative(est, p, np.ones(len(p["bins"])), inst["pilot"])
-        assert not est["detected"] and est["level"] == 1.0 and est["slope"] == 0.0
+        assert pilot.level_and_slope(est["h"], est["snr"], p, np.ones(len(p["bins"])), inst["pilot"]) is None
 
-    def test_a_pilot_twenty_db_under_the_noise_is_found_at_the_predicted_snr(self):
+    def test_a_burst_at_the_noise_level_is_found_at_the_predicted_snr(self):
+        """A burst whose power per bin equals the noise power gives SNR
+        sqrt(frames) per bin: 153 per 3 s burst at 8 Msps, so 0.65% per bin."""
         inst, p = _plan()
         rng = np.random.default_rng(4)
-        n = 23400                                        # one 3 s record at 8 Msps
-        # tone amplitude such that its power in the bin is 1% of the noise power
-        a = 0.1 / np.abs(p["reference"][p["bins"]][0])
-        h = np.full(len(p["bins"]), a)
-        xs, wm = _synthetic(p, n, h, 1.0, rng)
-        est = pilot.estimate(xs, n, p, wm)
-        assert est["snr_median"] == pytest.approx(np.sqrt(n) * 0.1, rel=0.15)
+        n = 23400
+        a = 1.0 / np.abs(p["reference"][p["bins"]][0])        # tone power = noise power in the bin
+        xs, noise = _synthetic(p, n, np.full(len(p["bins"]), a), 1.0, rng)
+        est = pilot.estimate(xs, n, p, noise)
+        assert est["snr_median"] == pytest.approx(np.sqrt(n), rel=0.1)
 
-    def test_level_and_slope_are_recovered_against_a_reference(self):
+    def test_the_framing_offset_is_found_and_removed(self):
+        inst, p = _plan()
+        rng = np.random.default_rng(11)
+        n = 23400
+        a = 1.0 / np.abs(p["reference"][p["bins"]][0])
+        h = np.full(len(p["bins"]), a * np.exp(0.3j))
+        xs, noise = _synthetic(p, n, h, 1.0, rng, delay=137)
+        est = pilot.estimate(xs, n, p, noise)
+        assert est["delay_samples"] == 137
+        # with the ramp removed the response is the flat one it started as
+        ph = np.angle(est["h"])
+        assert np.std(np.unwrap(ph)) < 0.05
+        assert est["snr_median"] == pytest.approx(np.sqrt(n), rel=0.1)
+
+    def test_level_and_slope_are_power_quantities_recovered_from_one_burst(self):
+        """The counts are powers, so what divides them is |h|^2 - fitting the
+        amplitude ratio and applying it to counts would be wrong by a square."""
         inst, p = _plan()
         rng = np.random.default_rng(5)
-        n = 23400 * 10
-        ref = np.full(len(p["bins"]), 0.5 + 0j)
-        f = (p["freq_hz"][p["bins"]] - p["centre_hz"]) / 1e6
-        level, slope = 1.03, -0.004                      # +3%, tilted -0.4% per MHz
-        h = ref * level * (1 + slope * f)
-        xs, wm = _synthetic(p, n, h, 1.0, rng)
-        est = pilot.relative(pilot.estimate(xs, n, p, wm), p, ref, inst["pilot"])
-        assert est["detected"]
-        assert est["level"] == pytest.approx(level, abs=0.002)
-        assert est["slope"] == pytest.approx(slope, abs=0.0005)
+        level, slope = 1.03, -0.004                       # in power, as applied
+        h_ref, h, noise, n = _response(p, level, slope, ripple=0.0, ratio=5.0)
+        xs, _ = _synthetic(p, n, h, noise, rng, delay=42)
+        est = pilot.estimate(xs, n, p, noise)
+        lv, sl, err = pilot.level_and_slope(est["h"], est["snr"], p, h_ref, inst["pilot"])
+        assert lv == pytest.approx(level, abs=0.002)
+        assert sl == pytest.approx(slope, abs=0.0005)
+        # the same numbers fitted on the amplitude ratio would be half the
+        # departure from unity - the bug this guards
+        assert abs((lv - 1) - 2 * (np.sqrt(lv) - 1)) < 0.001
+
+    def test_the_ripple_is_recovered_by_averaging_bursts_and_one_burst_is_refused(self):
+        """The SAW ripple, 0.1-0.15% of the passband and changing day to day,
+        is the residual a stored template cannot follow. One burst's per-bin
+        noise is larger than it; thirty, delay-filtered, take a 0.38 K ripple
+        down to 0.10 K, below the 0.15 K thermal floor of a gain fit."""
+        inst, p = _plan()
+        cfg = inst["pilot"]
+        rng = np.random.default_rng(7)
+        lo, hi = inst["h1_band_hz"]
+        fine = np.linspace(lo, hi, 845)
+        ff = (fine - p["centre_hz"]) / 1e6
+        expect = 1 + 0.0015 * np.cos(2 * np.pi * ff / 0.16)
+        expect = expect / np.median(expect)
+        h_ref, h, noise, n = _response(p, 1.03, -0.004, ripple=0.0015, ratio=5.0)
+        tr = pilot.PilotTracker(cfg, p, reference_h=h_ref)
+        residuals = {}
+        for i in range(30):
+            xs, _ = _synthetic(p, n, h, noise, rng)
+            tr.burst(xs, n, noise, now=1000.0 + 60 * i)
+            version, mean = tr.shape(1000.0 + 60 * i)
+            if i + 1 < cfg["min_shape_bursts"]:
+                assert mean is None, "too few bursts to correct with"
+                continue
+            vec = pilot.correction_vector(mean, p, fine, (lo, hi), h_ref,
+                                          max_delay_s=cfg["max_delay_us"] * 1e-6)
+            residuals[i + 1] = float(np.std(vec - expect))
+        assert residuals[8] < np.std(expect - 1)               # already worth doing
+        # and it keeps improving as the averaging says it should, 1/sqrt(N)
+        assert residuals[30] == pytest.approx(residuals[8] * np.sqrt(8 / 30), rel=0.25)
+        assert residuals[30] < 0.0004                          # 0.14 K on a 360 K system
+        vec = pilot.correction_vector(tr.shape(1000.0 + 60 * 29)[1], p, fine, (lo, hi), h_ref,
+                                      max_delay_s=cfg["max_delay_us"] * 1e-6)
+        assert np.corrcoef(vec - 1, expect - 1)[0, 1] > 0.9
+        assert np.median(vec) == pytest.approx(1.0, abs=1e-6)
+        # the delay filter is what makes it affordable: the same bursts
+        # without it leave twice the residual
+        unfiltered = pilot.correction_vector(tr.shape(1000.0 + 60 * 29)[1], p, fine, (lo, hi),
+                                             h_ref, max_delay_s=60e-6)
+        assert np.std(unfiltered - expect) > 1.5 * residuals[30]
 
     def test_the_factor_is_the_line_and_is_clamped(self):
         f = np.array([1415e6, 1419e6, 1423e6])
@@ -131,29 +194,39 @@ class TestEstimate:
         assert fac == pytest.approx([1.02 * 1.02, 1.02, 1.02 * 0.98])
         assert pilot.factor(9.0, 0.0, f, 1419e6).max() == 2.0
 
-    def test_the_tracker_self_references_on_first_sight_and_forgets_smoothing_on_loss(self):
+    def test_the_tracker_holds_a_burst_then_lets_go(self):
         inst, p = _plan()
         cfg = inst["pilot"]
         rng = np.random.default_rng(6)
-        n = 23400 * 4
-        a = 0.3 / np.abs(p["reference"][p["bins"]][0])
+        n = 23400
+        a = 1.0 / np.abs(p["reference"][p["bins"]][0])
         tr = pilot.PilotTracker(cfg, p, reference_h=None)
-        assert not tr.anchored
-        xs, wm = _synthetic(p, n, np.full(len(p["bins"]), a), 1.0, rng)
-        r1 = tr.update(xs, n, wm, now=1000.0)
-        assert r1["ok"] and r1["level"] == pytest.approx(1.0, abs=0.01)
-        xs, wm = _synthetic(p, n, np.full(len(p["bins"]), 1.05 * a), 1.0, rng)
-        r2 = tr.update(xs, n, wm, now=1003.0)
-        assert r2["ok"] and 1.0 < r2["level"] < 1.05          # smoothed over the two
-        xs, wm = _synthetic(p, n, np.zeros(len(p["bins"])), 1.0, rng)
-        r3 = tr.update(xs, n, wm, now=1006.0)
-        assert not r3["ok"] and r3["level"] == 1.0 and r3["slope"] == 0.0
-        assert tr.detected_records == 2 and tr.records == 3
-        assert tr.shape_ready(1006.0) is None                 # interval not up
-        assert tr.shape_ready(1000.0 + cfg["shape_interval_s"] + 1) is not None
+        assert tr.correction(0.0) == (1.0, 0.0, 0)
+        xs, noise = _synthetic(p, n, np.full(len(p["bins"]), a), 1.0, rng)
+        b1 = tr.burst(xs, n, noise, now=1000.0)
+        assert b1["ok"] and b1["level"] == pytest.approx(1.0, abs=0.01) and not tr.anchored
+        lvl, slp, ok = tr.correction(1030.0)
+        assert ok and lvl == pytest.approx(1.0, abs=0.01)
+        # the response raised by 5% in *amplitude* is 10.25% in power, which
+        # is what the level means and what divides the counts
+        xs, noise = _synthetic(p, n, np.full(len(p["bins"]), 1.05 * a), 1.0, rng)
+        b2 = tr.burst(xs, n, noise, now=1060.0)
+        assert b2["ok"] and b2["level"] == pytest.approx(1.05 ** 2, abs=0.01)
+        assert tr.correction(1090.0)[0] == pytest.approx(1.05 ** 2, abs=0.01)
+        # a vanished pilot: the burst reads absent, and after hold_bursts
+        # intervals nothing is applied any more
+        xs, noise = _synthetic(p, n, np.zeros(len(p["bins"])), 1.0, rng)
+        b3 = tr.burst(xs, n, noise, now=1120.0)
+        assert not b3["ok"]
+        assert tr.correction(1150.0)[2] == 1                       # still within the hold
+        assert tr.correction(1120.0 + 60 * cfg["hold_bursts"] + 100)[2] == 0
+        version, mean = tr.shape(1130.0)
+        # two bursts is not enough to correct a passband shape with, and the
+        # tracker says so rather than handing over a noisy one
+        assert mean is None and version == 2 and tr.detected == 2 and tr.bursts == 3
 
 
-def _file(path, monkeypatch, pilots, calibrated):
+def _file(path, monkeypatch, pilots, calibrated, fine_vec=None):
     """A two-product file as the recorder writes it, with the given per-record
     pilot dicts; calibrated=True fakes a template and gain that apply."""
     import b210_h1_receiver as rx
@@ -167,8 +240,7 @@ def _file(path, monkeypatch, pilots, calibrated):
         monkeypatch.setattr(bandpass, "load_bandpass", lambda *a, **k: None)
         monkeypatch.setattr(rf_calibration, "load_calibration", lambda *a, **k: None)
     inst = tuning.fixed_instrument()
-    p = pilot.plan(inst["pilot"], inst["lo_hz"], inst["sample_rate_hz"],
-                   inst["wide_channels"], inst["h1_band_hz"])
+    p = pilot.plan(inst["pilot"], inst["lo_hz"], inst["sample_rate_hz"], inst["wide_channels"])
     lo, hi = inst["h1_band_hz"]
     f_h1 = np.linspace(lo, hi, 300)
     f_wide = pilot.wide_axis(inst["lo_hz"], inst["sample_rate_hz"], inst["wide_channels"])
@@ -177,6 +249,11 @@ def _file(path, monkeypatch, pilots, calibrated):
                       instrument=inst, pilot=p)
     raw_h1, raw_w = [], []
     try:
+        if fine_vec is not None:
+            idx = rx.append_pilot_correction(hf, fine_vec, np.ones(len(f_wide)))
+            for pil in pilots:
+                if pil.get("ok"):
+                    pil["corr_index"] = idx
         for i, pil in enumerate(pilots):
             h1 = np.full(len(f_h1), 0.003) * (1 + 0.01 * i)
             wide = np.full(len(f_wide), 0.002) * (1 + 0.01 * i)
@@ -188,98 +265,92 @@ def _file(path, monkeypatch, pilots, calibrated):
     return f_h1, f_wide, np.array(raw_h1), np.array(raw_w), p
 
 
+ABSENT_BURST = {"burst": 1, "ok": 0, "level": 1.0, "slope": 0.0, "snr": 0.9, "seen": 0, "corr_index": -1}
+CLEAN = {"burst": 0, "ok": 0, "level": 1.0, "slope": 0.0, "snr": 0.0, "seen": 0, "corr_index": -1}
+
+
 class TestFile:
     def test_layout_and_the_unplugged_tx_writes_unit_factors(self, tmp_path, monkeypatch):
         path = str(tmp_path / "p.h5")
-        absent = {"ok": 0, "level": 1.0, "slope": 0.0, "snr": 0.9}
-        _file(path, monkeypatch, [absent] * 3, calibrated=False)
+        _file(path, monkeypatch, [CLEAN, ABSENT_BURST, CLEAN], calibrated=False)
         with h5py.File(path, "r") as hf:
-            for name in ("pilot_level", "pilot_slope", "pilot_snr", "pilot_ok", "pilot_shape",
-                         "pilot_shape_time", "pilot_bins_wide", "pilot_excluded_wide",
+            for name in ("pilot_burst", "pilot_level", "pilot_slope", "pilot_snr", "pilot_ok",
+                         "pilot_correction_index", "pilot_shape", "pilot_shape_time",
+                         "pilot_correction_h1", "pilot_correction_wide", "pilot_bins_wide",
                          "pilot_reference", "pilot_anchored"):
                 assert name in hf, name
+            assert list(hf["pilot_burst"][:]) == [0, 1, 0]
             assert list(hf["pilot_ok"][:]) == [0, 0, 0]
             assert list(hf["pilot_level"][:]) == [1.0, 1.0, 1.0]
-            assert json.loads(hf.attrs["pilot"])["mode"] == "continuum"
+            assert list(hf["pilot_correction_index"][:]) == [-1, -1, -1]
+            assert json.loads(hf.attrs["pilot"])["burst_every_records"] == 20
             assert hf["pilot_shape"].shape[0] == 0
-            assert not np.any(hf["pilot_reference"][:]) and hf["pilot_anchored"][0] == 0
 
-    def test_kelvin_is_divided_by_the_factor_and_read_back_exactly(self, tmp_path, monkeypatch):
+    def test_kelvin_is_divided_by_factor_and_shape_and_read_back_exactly_without_bursts(self, tmp_path, monkeypatch):
         from observation_plot import read_observation
         path = str(tmp_path / "k.h5")
-        pilots = [{"ok": 0, "level": 1.0, "slope": 0.0, "snr": 1.0},
-                  {"ok": 1, "level": 1.03, "slope": -0.004, "snr": 20.0},
-                  {"ok": 1, "level": 0.98, "slope": 0.002, "snr": 18.0}]
-        f_h1, f_wide, raw_h1, raw_w, p = _file(path, monkeypatch, pilots, calibrated=True)
+        fine_vec = 1 + 0.003 * np.cos(np.linspace(0, 40, 300))
+        pilots = [dict(CLEAN),
+                  {"burst": 1, "ok": 0, "level": 1.0, "slope": 0.0, "snr": 150.0, "seen": 1, "corr_index": -1},
+                  {"burst": 0, "ok": 1, "level": 1.03, "slope": -0.004, "snr": 0.0, "seen": 0},
+                  {"burst": 2, "ok": 0, "level": 1.0, "slope": 0.0, "snr": 0.0, "seen": 0, "corr_index": -1},
+                  {"burst": 0, "ok": 1, "level": 0.98, "slope": 0.002, "snr": 0.0, "seen": 0}]
+        f_h1, f_wide, raw_h1, raw_w, p = _file(path, monkeypatch, pilots, calibrated=True, fine_vec=fine_vec)
         with h5py.File(path, "r") as hf:
             assert "spectra_kelvin" in hf and int(hf.attrs["pilot_applied"]) == 1
             k = hf["spectra_kelvin"][:]
             fc = float(hf.attrs["pilot_centre_hz"])
-            # record 0: no pilot, the plain conversion; record 1: divided by the line
             assert k[0] == pytest.approx(raw_h1[0] / 2.0e-6 - 300.0, rel=1e-6)
-            expect = raw_h1[1] / (2.0e-6 * pilot.factor(1.03, -0.004, f_h1, fc)) - 300.0
-            assert k[1] == pytest.approx(expect, rel=1e-6)
-            assert list(hf["pilot_level"][:]) == pytest.approx([1.0, 1.03, 0.98])
+            expect = raw_h1[2] / (2.0e-6 * pilot.factor(1.03, -0.004, f_h1, fc) * fine_vec) - 300.0
+            assert k[2] == pytest.approx(expect, rel=1e-5)
+            assert list(hf["pilot_correction_index"][:]) == [-1, -1, 0, -1, 0]
+            assert list(hf["pilot_burst"][:]) == [0, 1, 0, 2, 0]
         f, counts, stamps, taus, header = read_observation(path)
-        assert counts == pytest.approx(raw_h1, rel=1e-6)                 # exact reversal
+        # exact reversal, and the burst and the contaminated record dropped
+        assert counts.shape[0] == 3 and len(stamps) == 3 and len(taus) == 3
+        assert counts == pytest.approx(raw_h1[[0, 2, 4]], rel=1e-5)
+        assert header["pilot_bursts"] == 1 and header["pilot_records_corrected"] == 2
+        assert header["pilot_records_dropped"] == 2
+        _, all_counts, _, _, _ = read_observation(path, drop_bursts=False)
+        assert all_counts.shape[0] == 5
         fw, cw, _, _, hw = read_observation(path, product="wide")
-        assert cw == pytest.approx(raw_w, rel=1e-6)
-        assert header["pilot_detected_records"] == 2 and header["pilot_records"] == 3
+        assert cw == pytest.approx(raw_w[[0, 2, 4]], rel=1e-5)
 
-    def test_band_windows_leave_the_tones_out_only_where_the_pilot_was_seen(self, tmp_path, monkeypatch):
-        import drift_fit
-        from observation_plot import read_observation
-        absent = {"ok": 0, "level": 1.0, "slope": 0.0, "snr": 0.9}
-        seen = {"ok": 1, "level": 1.0, "slope": 0.0, "snr": 15.0}
-        path_a = str(tmp_path / "a.h5")
-        path_b = str(tmp_path / "b.h5")
-        _, f_wide, _, _, p = _file(path_a, monkeypatch, [absent] * 2, calibrated=False)
-        _file(path_b, monkeypatch, [seen] * 2, calibrated=False)
-        fw, sw, _, _, ha = read_observation(path_a, product="wide")
-        _, _, _, _, hb = read_observation(path_b, product="wide")
-        _, _, keep_a = drift_fit._band_window(ha, fw)
-        _, _, keep_b = drift_fit._band_window(hb, fw)
-        # nothing excluded for the unplugged TX; the tone bins gone once it was seen
-        assert not pilot.excluded_channels(ha, fw).any()
-        excl = pilot.excluded_channels(hb, fw)
-        assert excl.any() and excl[p["bins"]].all()
-        assert keep_a.sum() > keep_b.sum()
-        assert not (keep_b & excl).any()
-        # and on the fine axis the same tones are excluded by frequency
-        fh = np.linspace(1415e6, 1423e6, 4000)
-        assert pilot.excluded_channels(hb, fh).any()
-
-    def test_the_live_sidecar_says_what_the_pilot_did(self, tmp_path, monkeypatch):
+    def test_the_live_sidecar_marks_bursts(self, tmp_path, monkeypatch):
         path = str(tmp_path / "s.h5")
-        _file(path, monkeypatch, [{"ok": 1, "level": 1.02, "slope": 0.001, "snr": 12.0}], calibrated=False)
-        rec = json.loads(open(str(tmp_path / "s.live.jsonl")).readline())
-        assert rec["pilot_ok"] == 1 and rec["pilot_level"] == pytest.approx(1.02)
-        assert "continuum" in rec
+        _file(path, monkeypatch, [ABSENT_BURST, {"burst": 0, "ok": 1, "level": 1.02, "slope": 0.001,
+                                                 "snr": 0.0, "seen": 0, "corr_index": -1}], calibrated=False)
+        lines = [json.loads(l) for l in open(str(tmp_path / "s.live.jsonl"))]
+        assert lines[0]["pilot_burst"] == 1 and lines[0]["pilot_seen"] == 0
+        assert lines[1]["pilot_burst"] == 0 and lines[1]["pilot_ok"] == 1
+        assert lines[1]["pilot_level"] == pytest.approx(1.02)
 
 
 class TestDemoFlowgraph:
-    def test_an_injected_pilot_is_found_and_none_is_not(self):
-        """The recovery branch end to end on the demo source: with the frame
-        added digitally the pilot is detected; without, it is not (the state
-        the telescope is in until the dipole is wired)."""
-        import time
+    def test_the_gate_counts_the_frames_a_burst_occupied(self):
+        """The recovery end to end on the demo source: with the comb switched
+        on for part of the run the power gate counts those frames and the
+        burst is detected; with it off nothing is (the state until the dipole
+        is wired)."""
         if "--headless" not in sys.argv:
             sys.argv.append("--headless")
         import b210_h1_receiver as rx
-        results = {}
-        for inject in (True, False):
-            inst = tuning.fixed_instrument({"receiver_pilot_demo_inject": inject})
-            fg = rx.TwoProductFlowgraph("demo", inst, strict=False)
-            assert fg.pilot is not None and fg.pilot_sink is None
-            fg.start()
-            time.sleep(1.5)
-            wide, _ = fg.take_wide()
-            xs, n = fg.take_pilot()
-            fg.stop(); fg.wait()
-            est = pilot.estimate(xs, n, fg.pilot, wide)
-            results[inject] = est["snr_median"]
-        assert results[True] >= 5 * inst["pilot"]["detect_snr"]
-        assert results[False] < inst["pilot"]["detect_snr"]
+        inst = tuning.fixed_instrument({"receiver_pilot_demo_inject": True})
+        fg = rx.TwoProductFlowgraph("demo", inst, strict=False)
+        assert fg.pilot is not None and fg.pilot_sink is None and fg.pilot_gate is not None
+        fg.start()
+        time.sleep(1.5)
+        _, n_on, n_total, noise = fg.take_pilot()
+        assert n_on == 0 and n_total > 1000 and noise > 0        # comb off: nothing gated on
+        fg.set_burst(True)
+        time.sleep(1.0)
+        fg.set_burst(False)
+        time.sleep(0.5)
+        xs, n_on, n_total, noise = fg.take_pilot()
+        fg.stop(); fg.wait()
+        assert 0 < n_on < n_total                                # on for part of the interval
+        est = pilot.estimate(xs, n_on, fg.pilot, noise)
+        assert est["snr_median"] > 10 * inst["pilot"]["detect_snr"]
 
 
 class TestScheduler:
@@ -301,11 +372,19 @@ class TestScheduler:
         sched.app.config["TESTING"] = True
         client = sched.app.test_client()
         d = client.get("/api/instrument").get_json()
-        assert d["pilot"]["enabled"] and "pilot" in d["pilot_description"]
-        r = client.post("/api/config", json={"receiver_pilot_mode": "tones"})
+        assert d["pilot"]["enabled"] and "burst" in d["pilot_description"]
+        r = client.post("/api/config", json={"receiver_pilot_burst_every_records": 30})
         assert r.status_code == 200, r.get_json()
-        assert client.get("/api/instrument").get_json()["pilot"]["mode"] == "tones"
-        r = client.post("/api/config", json={"receiver_pilot_mode": "sideways"})
+        assert client.get("/api/instrument").get_json()["pilot"]["burst_every_records"] == 30
+        r = client.post("/api/config", json={"receiver_pilot_burst_every_records": 1})
         assert r.status_code == 400
         d = client.get("/api/pilot/status").get_json()
-        assert d["success"] and "pilot" in d["description"]
+        assert d["success"] and "burst" in d["description"]
+
+    def test_the_live_summary_counts_bursts_and_corrections(self, sched):
+        recs = [{"pilot_ok": 0, "pilot_burst": 1, "pilot_seen": 1, "pilot_snr": 120.0},
+                {"pilot_ok": 1, "pilot_burst": 0, "pilot_level": 1.02, "pilot_slope": 0.001},
+                {"pilot_ok": 1, "pilot_burst": 0, "pilot_level": 1.01, "pilot_slope": 0.0}]
+        s = sched._pilot_summary(recs)
+        assert s["bursts"] == 1 and s["bursts_seen"] == 1 and s["corrected"] == 2
+        assert s["latest_ok"] and s["latest_level"] == pytest.approx(1.01)

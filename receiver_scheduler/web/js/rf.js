@@ -60,15 +60,17 @@
                     html += '<div style="color:#ffa502;">' + last.error + '</div>';
                 } else {
                     html += '<div>' + (last.running ? 'Recording now: ' : 'Last recording: ') + last.file
-                          + ' &mdash; detected in ' + last.detected + ' of ' + last.records + ' records</div>';
+                          + ' &mdash; ' + last.bursts_seen + ' of ' + last.bursts + ' bursts detected, '
+                          + last.corrected + ' of ' + last.records + ' records corrected</div>';
                     if (last.latest_ok) {
-                        html += '<div>latest: level ' + ((last.latest_level - 1) * 100).toFixed(2)
-                              + '%, tilt ' + (last.latest_slope * 100).toFixed(3)
-                              + '%/MHz, SNR ' + last.latest_snr.toFixed(1) + '</div>';
-                    } else {
-                        html += '<div style="color:#ffa502;">latest record: not detected'
-                              + (last.latest_snr != null ? ' (SNR ' + last.latest_snr.toFixed(1) + ')' : '')
+                        html += '<div>applied now: level ' + ((last.latest_level - 1) * 100).toFixed(2)
+                              + '%, tilt ' + (last.latest_slope * 100).toFixed(3) + '%/MHz</div>';
+                    } else if (last.bursts) {
+                        html += '<div style="color:#ffa502;">nothing applied'
+                              + (last.last_burst_snr != null ? ' (last burst SNR ' + last.last_burst_snr.toFixed(1) + ')' : '')
                               + ' &mdash; the transmitter is not connected, or the dipole is not radiating into the feed</div>';
+                    } else {
+                        html += '<div>no burst in this recording yet</div>';
                     }
                 }
                 box.innerHTML = html;
