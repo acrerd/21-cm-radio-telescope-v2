@@ -123,6 +123,13 @@ def fixed_instrument(overrides: dict | None = None) -> dict:
     inst["h1_band_hz"] = [float(inst["h1_band_hz"][0]), float(inst["h1_band_hz"][1])]
     inst["continuum_band_hz"] = [float(inst["continuum_band_hz"][0]),
                                  float(inst["continuum_band_hz"][1])]
+    # The pilot (issue #30) travels with the instrument: it is part of what
+    # the receiver does with the B210, and a file has to know what was sent
+    # to recover it. `overrides` may carry receiver_pilot_* config keys or a
+    # nested `pilot` dict (an entry's `pilot_off` becomes enabled=False in
+    # the scheduler's instrument_for).
+    import pilot as _pilot
+    inst["pilot"] = _pilot.config_from(overrides)
     return inst
 
 
@@ -165,7 +172,8 @@ def describe_instrument(inst: dict) -> str:
                plan["band_hz"][0] / 1e6, plan["band_hz"][1] / 1e6, plan["channels"],
                plan["channel_width_hz"] / 1e3,
                inst["continuum_band_hz"][0] / 1e6, inst["continuum_band_hz"][1] / 1e6,
-               inst["wide_channels"]))
+               inst["wide_channels"])
+            + ("; " + __import__("pilot").describe(inst["pilot"]) if inst.get("pilot") else ""))
 
 # How far the LO sits from the line. 0.8 MHz is 169 km/s at 21 cm, which clears
 # the H I of any ordinary galactic sightline, so the DC artefact never lands in

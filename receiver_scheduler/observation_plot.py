@@ -197,6 +197,18 @@ def read_observation(path, product="h1"):
             correction = np.asarray(hf["bandpass_correction" + suffix][:], dtype=float)
             spectra = ((spectra + float(hf.attrs["applied_t_sys_k"]))
                        * float(hf.attrs["applied_gain_counts_per_k"]) * correction)
+            # The pilot's per-record factor (issue #30), multiplied back so
+            # the counts are what the receiver measured. Records the pilot
+            # was not detected in were written with unit factors.
+            if "pilot_level" in hf and int(hf.attrs.get("pilot_applied", 0)):
+                import pilot as _pilot
+                n = min(spectra.shape[0], hf["pilot_level"].shape[0])
+                lev = np.asarray(hf["pilot_level"][:n], dtype=float)
+                slo = np.asarray(hf["pilot_slope"][:n], dtype=float)
+                ok = np.asarray(hf["pilot_ok"][:n], dtype=int)
+                fc = float(hf.attrs["pilot_centre_hz"])
+                for i in np.flatnonzero(ok):
+                    spectra[i] *= _pilot.factor(lev[i], slo[i], freq_hz, fc)
         else:
             spectra = np.asarray(hf[linear][:], dtype=float)
         stamps = np.asarray(hf["timestamps"][:], dtype=float)
@@ -211,6 +223,11 @@ def read_observation(path, product="h1"):
         header["product_used"] = used
         if "overflows" in hf:
             header["overflows_total"] = int(np.asarray(hf["overflows"][:]).sum())
+        if "pilot_ok" in hf:
+            # How many records saw the pilot: none means the TX was not
+            # connected, and the reduction then excludes nothing for it.
+            header["pilot_detected_records"] = int(np.asarray(hf["pilot_ok"][:]).sum())
+            header["pilot_records"] = int(hf["pilot_ok"].shape[0])
     if spectra.ndim != 2 or spectra.shape[0] == 0:
         raise ValueError("The observation file holds no spectra")
     return freq_hz, spectra, stamps, taus, header

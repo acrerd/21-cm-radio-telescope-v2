@@ -139,6 +139,12 @@ _DEFAULT_CONFIG = {
     "receiver_wide_channels": None,
     "receiver_h1_band_hz": None,
     "receiver_h1_channels": None,
+    # The pilot (issue #30): the B210's TX as the gain and passband
+    # reference, part of the instrument. Unset means pilot.PILOT_DEFAULTS.
+    "receiver_pilot_enabled": None,
+    "receiver_pilot_mode": None,
+    "receiver_pilot_amplitude": None,
+    "receiver_pilot_tx_gain_db": None,
     # `obstruction_sectors` used to live here: a hand-entered
     # [az_min, az_max, min_sun_alt] list, in practice the single blanket entry
     # [[45, 120, 30]] read off one calibration day. It was always a stand-in
@@ -4481,6 +4487,11 @@ def _live_records(path):
                     item["continuum"] = float(rec["continuum"])
                 if rec.get("overflows") is not None:
                     item["overflows"] = int(rec["overflows"])
+                if rec.get("pilot_ok") is not None:
+                    item["pilot_ok"] = int(rec["pilot_ok"])
+                    item["pilot_level"] = float(rec.get("pilot_level", 1.0))
+                    item["pilot_slope"] = float(rec.get("pilot_slope", 0.0))
+                    item["pilot_snr"] = float(rec.get("pilot_snr", 0.0))
                 entry["records"].append(item)
             except (ValueError, KeyError, TypeError):
                 continue
@@ -4725,6 +4736,14 @@ def api_observe_live():
         if lost:
             point['overflows'] = lost
             overflowed += 1
+        # The pilot as applied over the chunk (issue #30): the mean level
+        # and slope of the records that saw it, and how many did.
+        seen = [r for r in chunk if r.get('pilot_ok')]
+        if any('pilot_ok' in r for r in chunk):
+            point['pilot_ok'] = len(seen)
+            if seen:
+                point['pilot_level'] = sum(r['pilot_level'] for r in seen) / len(seen)
+                point['pilot_slope'] = sum(r['pilot_slope'] for r in seen) / len(seen)
         if cal_ok:
             t_a = counts / cal['gain_counts_per_k'] - cal['t_sys_k']
             point['t_a_k'] = t_a
@@ -4762,7 +4781,55 @@ def api_observe_live():
                                    if is_solar else None),
                         started_at=obs.get('started_at'),
                         ended_at=obs.get('ended_at'),
-                        ends_at=obs.get('ends_at')))
+                        ends_at=obs.get('ends_at'),
+                        pilot=_pilot_summary(records)))
+
+
+def _pilot_summary(records):
+    """What the pilot (issue #30) did over these live records, for the caption."""
+    with_pilot = [r for r in records if 'pilot_ok' in r]
+    if not with_pilot:
+        return None
+    seen = [r for r in with_pilot if r.get('pilot_ok')]
+    latest = with_pilot[-1]
+    return {'records': len(with_pilot), 'detected': len(seen),
+            'latest_ok': bool(latest.get('pilot_ok')),
+            'latest_level': latest.get('pilot_level'),
+            'latest_slope': latest.get('pilot_slope'),
+            'latest_snr': latest.get('pilot_snr')}
+
+
+@app.route('/api/pilot/status', methods=['GET'])
+def api_pilot_status():
+    """The pilot (issue #30): its configuration in force and what the current
+    or last recording saw of it, from the live sidecar."""
+    import pilot as pilot_mod
+    inst = instrument_in_force()
+    cfg = inst.get('pilot') or {}
+    last = None
+    try:
+        obs = current_observation if (current_observation and current_observation.get('output_file')) \
+            else _load_last_observation()
+        path = (obs or {}).get('output_file')
+        if path:
+            side = os.path.splitext(path)[0] + '.live.jsonl'
+            if os.path.exists(side):
+                records = []
+                with open(side) as fh:
+                    for line in fh:
+                        try:
+                            records.append(json.loads(line))
+                        except ValueError:
+                            continue
+                summary = _pilot_summary(records)
+                if summary:
+                    summary['file'] = os.path.basename(path)
+                    summary['running'] = bool(current_observation and current_observation.get('output_file') == path)
+                last = summary
+    except Exception as exc:                              # noqa: BLE001
+        last = {'error': str(exc)}
+    return jsonify({'success': True, 'config': cfg,
+                    'description': pilot_mod.describe(cfg), 'last': last})
 
 
 def instrument_in_force():
@@ -4777,24 +4844,30 @@ def instrument_for(obs: dict) -> dict:
     entry carries `gain_db_override` (issue #35 - a receiver-gain linearity
     test). Any other per-entry tuning field is ignored, as it always was."""
     import tuning
+    cfg = load_config()
     override = obs.get('gain_db_override') if isinstance(obs, dict) else None
-    if override in (None, ''):
-        return instrument_in_force()
-    try:
-        gain = float(override)
-    except (TypeError, ValueError):
-        log.warning("Ignoring gain_db_override=%r on '%s': not a number",
-                    override, obs.get('name', ''))
-        return instrument_in_force()
-    log.warning("'%s' records at %.0f dB receiver gain by the entry's request "
-                "(gain_db_override) - the calibration will not apply to it",
-                obs.get('name', ''), gain)
-    return tuning.fixed_instrument(dict(load_config(), receiver_gain_db=gain))
+    if override not in (None, ''):
+        try:
+            gain = float(override)
+            log.warning("'%s' records at %.0f dB receiver gain by the entry's request "
+                        "(gain_db_override) - the calibration will not apply to it",
+                        obs.get('name', ''), gain)
+            cfg = dict(cfg, receiver_gain_db=gain)
+        except (TypeError, ValueError):
+            log.warning("Ignoring gain_db_override=%r on '%s': not a number",
+                        override, obs.get('name', ''))
+    # The pilot (issue #30) is on for every observation unless the entry
+    # asks for it off - a drift scan whose author wants the band untouched.
+    if isinstance(obs, dict) and obs.get('pilot_off'):
+        log.info("'%s' records with the pilot off by the entry's request", obs.get('name', ''))
+        cfg = dict(cfg, receiver_pilot_enabled=False)
+    return tuning.fixed_instrument(cfg)
 
 
 def tuning_instrument_keys():
     import tuning
-    return set(tuning.INSTRUMENT_KEYS)
+    return set(tuning.INSTRUMENT_KEYS) | {"pilot_enabled", "pilot_mode",
+                                          "pilot_amplitude", "pilot_tx_gain_db"}
 
 
 def obs_header(obs=None):
@@ -6412,6 +6485,8 @@ def api_instrument():
                                  / plan['channel_width_hz'])),
         'continuum_band_mhz': [inst['continuum_band_hz'][0] / 1e6,
                                inst['continuum_band_hz'][1] / 1e6],
+        'pilot': inst.get('pilot'),
+        'pilot_description': __import__('pilot').describe(inst.get('pilot')),
         'wide_channels': inst['wide_channels'],
         'wide_channel_khz': inst['sample_rate_hz'] / inst['wide_channels'] / 1e3,
         'overridden': sorted(k for k in tuning.INSTRUMENT_KEYS

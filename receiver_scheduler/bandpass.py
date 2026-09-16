@@ -198,6 +198,9 @@ def fit_bandpass(freq_hz, spectra, header, degree=DEFAULT_DEGREE,
     keep = (inside
             & (np.abs(freq_hz - H1_REST_FREQ_HZ) > line_mask_hz)
             & (np.abs(freq_hz - cfg["lo_hz"]) > dc_mask_hz))
+    # A detected pilot's tones are instrument, not response (issue #30).
+    import pilot
+    keep &= ~pilot.excluded_channels(header, freq_hz)
     if keep.sum() < 10 * (degree + 1):
         raise ValueError("too few unmasked channels (%d) to fit order %d"
                          % (keep.sum(), degree))

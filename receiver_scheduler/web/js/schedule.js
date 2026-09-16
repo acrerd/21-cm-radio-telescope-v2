@@ -482,7 +482,7 @@
                         ${obs.horizon_note && !obs.horizon_blocked ? '<div class="field"><div class="field-label">Local horizon</div><div class="field-value" style="color:#ffa502;">' + obs.horizon_note + '</div></div>' : ''}
                         <div class="field"><div class="field-label">Coordinates</div><div class="field-value">${formatCoordDisplay(obs)}</div></div>
                         <div class="field"><div class="field-label">Instrument</div><div class="field-value">fixed · H I + continuum</div></div>
-                        <div class="field"><div class="field-label">Cal / End</div><div class="field-value">${obs.calibrator ? 'CAL' : '-'} / ${({home:'Home',stow:'Stow'})[obs.end_action] || '-'}${obs.home_first ? ' · homes first' : ''}</div></div>
+                        <div class="field"><div class="field-label">Cal / End</div><div class="field-value">${obs.calibrator ? 'CAL' : '-'} / ${({home:'Home',stow:'Stow'})[obs.end_action] || '-'}${obs.home_first ? ' · homes first' : ''}${obs.pilot_off ? ' · pilot off' : ''}</div></div>
                         <div class="field"><div class="field-label">Integration</div><div class="field-value">${obs.integration_time_s}s</div></div>
                     </div>
                     <div class="schedule-actions">
@@ -558,6 +558,8 @@
             // Off unless asked for: a homing costs three minutes of the slot
             // and drives both axes into their stops.
             document.getElementById('obsHomeFirst').checked = obs.home_first === true;
+            // The pilot (issue #30) is on unless this entry says otherwise.
+            document.getElementById('obsPilotOff').checked = obs.pilot_off === true;
             document.getElementById('obsFilename').value = obs.filename || '';
             document.getElementById('obsCalGridN').value = obs.cal_grid_n || 5;
             document.getElementById('obsCalSpacing').value = obs.cal_spacing_deg || 1.5;
@@ -697,6 +699,7 @@
                 respect_local_horizon:
                     document.getElementById('obsRespectHorizon').checked,
                 home_first: document.getElementById('obsHomeFirst').checked,
+                pilot_off: document.getElementById('obsPilotOff').checked,
                 filename: document.getElementById('obsFilename').value,
                 cal_grid_n: parseInt(document.getElementById('obsCalGridN').value) || 5,
                 cal_spacing_deg: parseFloat(document.getElementById('obsCalSpacing').value) || 1.5,

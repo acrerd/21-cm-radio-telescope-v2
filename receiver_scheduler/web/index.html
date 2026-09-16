@@ -303,6 +303,20 @@
             </div>
 
             <div class="card">
+                <div class="section-title">Pilot</div>
+                <div style="color:#888; font-size:12px; margin-bottom:10px; max-width:70ch;">
+                    The receiver's own reference: a frame of tones from the B210's transmitter,
+                    through the vertex dipole and the whole receive chain, recovered by
+                    correlation. Each record is divided by its level and tilt as it is written,
+                    reversibly. Not detected means the transmitter is not connected or the
+                    dipole is not radiating into the feed; nothing is then applied.
+                </div>
+                <div id="rfPilotStatus" class="mono" style="padding:10px 12px; background:#0f0f23; border:1px solid #333; border-radius:6px; color:#888; font-size:12px;">
+                    Loading&hellip;
+                </div>
+            </div>
+
+            <div class="card">
                 <div class="section-title">Progress</div>
                 <div id="rfProgress" style="color:#888; font-size:13px;">Idle.</div>
             </div>
@@ -770,6 +784,38 @@
                         <label>Continuum channels</label>
                         <input autocomplete="off" type="number" id="cfgInstWideCh" step="1" min="64" placeholder="1024">
                     </div>
+                    <div class="form-group">
+                        <label>Pilot</label>
+                        <select autocomplete="off" id="cfgPilotEnabled">
+                            <option value="">default (on)</option>
+                            <option value="true">on</option>
+                            <option value="false">off</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>Pilot mode</label>
+                        <select autocomplete="off" id="cfgPilotMode">
+                            <option value="">default (continuum)</option>
+                            <option value="tones">tones only</option>
+                            <option value="continuum">tones + comb outside the H I band</option>
+                            <option value="full">tones + comb over the whole band</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>Pilot amplitude <span class="unit">(of full scale)</span></label>
+                        <input autocomplete="off" type="number" id="cfgPilotAmplitude" step="any" min="0.001" max="1" placeholder="0.05">
+                    </div>
+                    <div class="form-group">
+                        <label>Pilot TX gain <span class="unit">(dB)</span></label>
+                        <input autocomplete="off" type="number" id="cfgPilotTxGain" step="any" min="0" max="89" placeholder="0">
+                    </div>
+                </div>
+                <div style="color:#888; font-size:12px; margin-bottom:10px; max-width:70ch;">
+                    The pilot is the B210's own transmitter sending a frame of tones through the
+                    vertex dipole into the feed, recovered by correlation on the receive side, so
+                    each record carries the front end's gain and passband tilt at that moment. With
+                    the transmitter not connected nothing is detected and nothing is applied; the
+                    recording is then identical to one made with the pilot off.
                 </div>
                 <div style="margin-bottom:14px;">
                     <button class="btn btn-secondary" title="Clear every instrument override so the defaults in tuning.py apply again" onclick="resetInstrumentConfig()">Instrument defaults</button>
@@ -1098,6 +1144,10 @@
                         <label style="display:flex; align-items:center; gap:8px; cursor:pointer;">
                             <input autocomplete="off" type="checkbox" id="obsHomeFirst">
                             Home the mount first
+                        </label>
+                        <label style="display:flex; align-items:center; gap:8px; cursor:pointer; margin-top:6px;">
+                            <input autocomplete="off" type="checkbox" id="obsPilotOff">
+                            Pilot off for this entry
                         </label>
                         <span style="color:#888; font-size:12px;">
                             Runs the physical homing sequence (both axes into their limit

@@ -48,7 +48,35 @@
             return (mins / 1440).toFixed(1) + ' days ago';
         }
 
+        function rfRefreshPilot() {
+            fetch('/api/pilot/status').then(r => r.json()).then(d => {
+                const box = document.getElementById('rfPilotStatus');
+                if (!box || !d.success) return;
+                let html = '<div style="color:#00d4ff;">' + d.description + '</div>';
+                const last = d.last;
+                if (!last) {
+                    html += '<div>No recording with a pilot yet.</div>';
+                } else if (last.error) {
+                    html += '<div style="color:#ffa502;">' + last.error + '</div>';
+                } else {
+                    html += '<div>' + (last.running ? 'Recording now: ' : 'Last recording: ') + last.file
+                          + ' &mdash; detected in ' + last.detected + ' of ' + last.records + ' records</div>';
+                    if (last.latest_ok) {
+                        html += '<div>latest: level ' + ((last.latest_level - 1) * 100).toFixed(2)
+                              + '%, tilt ' + (last.latest_slope * 100).toFixed(3)
+                              + '%/MHz, SNR ' + last.latest_snr.toFixed(1) + '</div>';
+                    } else {
+                        html += '<div style="color:#ffa502;">latest record: not detected'
+                              + (last.latest_snr != null ? ' (SNR ' + last.latest_snr.toFixed(1) + ')' : '')
+                              + ' &mdash; the transmitter is not connected, or the dipole is not radiating into the feed</div>';
+                    }
+                }
+                box.innerHTML = html;
+            }).catch(() => {});
+        }
+
         function rfRefresh() {
+            rfRefreshPilot();
             fetch('/api/rf/status').then(r => r.json()).then(d => {
                 if (!d.success) return;
                 const bp = document.getElementById('rfBandpassStatus');

@@ -28,6 +28,15 @@
             const hi = document.getElementById('cfgInstH1Hi').value.trim();
             out.receiver_h1_band_hz = (lo === '' && hi === '') ? null
                 : [parseFloat(lo) * 1e6, parseFloat(hi) * 1e6];
+            // The pilot (issue #30): selects hold '' for the default.
+            const en = document.getElementById('cfgPilotEnabled').value;
+            out.receiver_pilot_enabled = en === '' ? null : (en === 'true');
+            const mode = document.getElementById('cfgPilotMode').value;
+            out.receiver_pilot_mode = mode === '' ? null : mode;
+            const amp = document.getElementById('cfgPilotAmplitude').value.trim();
+            out.receiver_pilot_amplitude = amp === '' ? null : parseFloat(amp);
+            const txg = document.getElementById('cfgPilotTxGain').value.trim();
+            out.receiver_pilot_tx_gain_db = txg === '' ? null : parseFloat(txg);
             return out;
         }
 
@@ -39,6 +48,13 @@
             const band = cfg.receiver_h1_band_hz;
             document.getElementById('cfgInstH1Lo').value = band ? band[0] / 1e6 : '';
             document.getElementById('cfgInstH1Hi').value = band ? band[1] / 1e6 : '';
+            const en = cfg.receiver_pilot_enabled;
+            document.getElementById('cfgPilotEnabled').value = (en == null || en === '') ? '' : String(!!en);
+            document.getElementById('cfgPilotMode').value = cfg.receiver_pilot_mode || '';
+            document.getElementById('cfgPilotAmplitude').value =
+                (cfg.receiver_pilot_amplitude == null || cfg.receiver_pilot_amplitude === '') ? '' : cfg.receiver_pilot_amplitude;
+            document.getElementById('cfgPilotTxGain').value =
+                (cfg.receiver_pilot_tx_gain_db == null || cfg.receiver_pilot_tx_gain_db === '') ? '' : cfg.receiver_pilot_tx_gain_db;
             instrumentLoaded = readInstrumentBoxes();
         }
 
@@ -51,6 +67,9 @@
             for (const [, [id]] of Object.entries(INSTRUMENT_BOXES)) document.getElementById(id).value = '';
             document.getElementById('cfgInstH1Lo').value = '';
             document.getElementById('cfgInstH1Hi').value = '';
+            for (const id of ['cfgPilotEnabled', 'cfgPilotMode', 'cfgPilotAmplitude', 'cfgPilotTxGain']) {
+                document.getElementById(id).value = '';
+            }
         }
 
         function loadConfig() {

@@ -757,6 +757,18 @@
             } else {
                 text += ' · no gain calibration for this tuning, so counts: ' + (d.why || '');
             }
+            // The pilot (issue #30): whether the records are being divided by
+            // the front end's measured level and tilt, or the transmitter is
+            // simply not there. Absent from files made before it existed.
+            if (d.pilot) {
+                if (d.pilot.latest_ok) {
+                    text += ' · pilot: gain ' + ((d.pilot.latest_level - 1) * 100).toFixed(2)
+                          + '%, tilt ' + (d.pilot.latest_slope * 100).toFixed(3)
+                          + '%/MHz, applied (' + d.pilot.detected + ' of ' + d.pilot.records + ' records)';
+                } else {
+                    text += ' · pilot not detected (TX not connected?), nothing applied';
+                }
+            }
             document.getElementById('obvLiveInfo').textContent = text;
         }
 
