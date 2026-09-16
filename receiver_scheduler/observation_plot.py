@@ -218,6 +218,12 @@ def read_observation(path, product="h1", drop_bursts=True):
                     spectra[i] *= _pilot.factor(lev[i], slo[i], freq_hz, fc)
                     if idx[i] >= 0 and cname in hf:
                         spectra[i] *= np.asarray(hf[cname][idx[i], :], dtype=float)
+                # The continuous carrier's flat factor, where it was applied
+                # (`pilot_tone_applied`; the level is stored as 1.0 when not).
+                if "pilot_tone_level" in hf:
+                    tl = np.asarray(hf["pilot_tone_level"][:n], dtype=float)
+                    for i in np.flatnonzero(tl != 1.0):
+                        spectra[i] *= tl[i]
         else:
             spectra = np.asarray(hf[linear][:], dtype=float)
         stamps = np.asarray(hf["timestamps"][:], dtype=float)
@@ -242,6 +248,9 @@ def read_observation(path, product="h1", drop_bursts=True):
             header["pilot_bursts"] = int((burst[:n] == 1).sum())
             header["pilot_bursts_seen"] = int(hf["pilot_shape"].shape[0]) if "pilot_shape" in hf else 0
             header["pilot_records_corrected"] = int(np.asarray(hf["pilot_ok"][:n]).sum())
+            if "pilot_tone_ok" in hf:
+                header["pilot_tone_records"] = int(np.asarray(hf["pilot_tone_ok"][:n]).sum())
+                header["pilot_tone_applied"] = int(hf.attrs.get("pilot_tone_applied", 0))
             header["pilot_records_dropped"] = int((~keep).sum() + (spectra.shape[0] - n) * 0)
             if drop_bursts and (~keep).any():
                 spectra = spectra[:n][keep]

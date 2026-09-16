@@ -1,20 +1,19 @@
 #!/usr/bin/env python3
 """Can the B210 and its USB link carry the pilot? Full-duplex throughput test (issue #30).
 
-Runs the fixed instrument's real receive graph (TwoProductFlowgraph: wide and
-H I products at the observatory's rate) and, on the same device, a transmit
-stream at the same rate - one FFT frame of samples repeated forever, exactly
-as the pilot will be sent - plus the cross-spectrum branch the pilot recovery
-will need (one complex multiply-accumulate per wide bin per frame). It then
-counts what UHD complains about and what the host spends.
+Runs the fixed instrument's real flowgraph (TwoProductFlowgraph: wide and H I
+products at the observatory's rate) with the pilot exactly as a scheduled
+observation runs it - the transmit stream, its own unwindowed FFT, and the
+gate - switching bursts on and off during the run so the swap is inside the
+measurement. It then counts what UHD complains about and what the host spends.
 
-Nothing is radiated: the transmit frame is all zeros unless --amplitude is
-given, and the TX gain is the minimum. The zeros still cross the USB link and
+The transmit gain is the minimum and, until the vertex dipole is wired,
+nothing is connected to the port; the samples still cross the USB link and
 the DAC path at full rate, which is what is being tested.
 
     python tools/b210_duplex_throughput.py                 # 8 Msps, 120 s
     python tools/b210_duplex_throughput.py --rates 8 16 --seconds 180
-    python tools/b210_duplex_throughput.py --no-tx         # the receive graph alone, for comparison
+    python tools/b210_duplex_throughput.py --no-pilot      # the receive graph alone, for comparison
     python tools/b210_duplex_throughput.py --sdr demo      # graph plumbing only, no radio
 
 Reports, per rate: RX overflows (UHD's 'O' and its "N overflows occurred"
@@ -140,78 +139,24 @@ class _MarkCounter:
                 pass
 
 
-class _ComplexVectorAccumulator(gr.sync_block):
-    """Sum complex vectors: the cross-spectrum branch's sink."""
+def build(sdr_type, rate_hz, pilot_on, burst_every):
+    """The real observing flowgraph, with the pilot as it will run.
 
-    def __init__(self, vlen):
-        gr.sync_block.__init__(self, "cross-spectrum accumulator",
-                               in_sig=[(np.complex64, vlen)], out_sig=None)
-        self._sum = np.zeros(vlen, dtype=np.complex128)
-        self._n = 0
-        self._lock = threading.Lock()
-
-    def work(self, input_items, output_items):
-        with self._lock:
-            self._sum += input_items[0].sum(axis=0)
-            self._n += len(input_items[0])
-        return len(input_items[0])
-
-    def take(self):
-        with self._lock:
-            s, n = self._sum.copy(), self._n
-            self._sum[:] = 0
-            self._n = 0
-        return s, n
-
-
-def pilot_frame(nbins, amplitude, tone_bins=()):
-    """One FFT frame of the transmit waveform: zeros, or the given tone bins at `amplitude`.
-
-    Tones are placed on bin centres, so every RX frame holds a whole number
-    of cycles of each - the frame-synchronous condition the pilot relies on.
+    The pilot's transmit branch, its own unwindowed FFT and its gate are part
+    of TwoProductFlowgraph now (issue #30), so there is nothing to bolt on
+    here: the case with the pilot off is the receive graph alone, and the
+    case with it on is exactly what a scheduled observation runs.
     """
-    frame = np.zeros(nbins, dtype=np.complex64)
-    if amplitude > 0 and tone_bins:
-        spec = np.zeros(nbins, dtype=np.complex128)
-        for b in tone_bins:
-            spec[b % nbins] = 1.0
-        frame = (np.fft.ifft(spec) * nbins).astype(np.complex64)
-        frame *= amplitude / np.abs(frame).max()
-    return frame
-
-
-def build(sdr_type, rate_hz, tx, cross, amplitude, tx_gain_db):
-    inst = fixed_instrument({"sample_rate_hz": rate_hz})
+    over = {"sample_rate_hz": rate_hz,
+            "receiver_pilot_enabled": bool(pilot_on),
+            "receiver_pilot_burst_every_records": int(burst_every)}
+    inst = fixed_instrument(over)
     fg = rx.TwoProductFlowgraph(sdr_type, inst, strict=(sdr_type != "demo"))
-    nbins = int(inst["wide_channels"])
     extras = {}
-    if cross:
-        # The recovery the pilot will need, at full cost even though the
-        # reference here is arbitrary: conj(reference spectrum) times each
-        # wide FFT frame, summed.
-        ref = np.exp(2j * np.pi * np.random.default_rng(1).random(nbins)).astype(np.complex64)
-        mult = blocks.multiply_const_vcc(np.conj(ref))
-        presum = max(1, int(fg.sample_rate / nbins / fg.SINK_RATE_HZ))
-        integ = blocks.integrate_cc(presum, nbins)
-        acc = _ComplexVectorAccumulator(nbins)
-        fg.connect((fg.wide_fft, 0), (mult, 0))
-        fg.connect((mult, 0), (integ, 0))
-        fg.connect((integ, 0), (acc, 0))
-        extras.update(mult=mult, integ=integ, cross_acc=acc, cross_presum=presum)
-    if tx and sdr_type == "b210":
-        from gnuradio import uhd
-        frame = pilot_frame(nbins, amplitude, tone_bins=(nbins // 4, nbins // 2, 3 * nbins // 4))
-        src = blocks.vector_source_c(frame.tolist(), True)
-        sink = uhd.usrp_sink(",".join(("type=b200", "")),
-                             uhd.stream_args(cpu_format="fc32", args="", channels=[0]))
-        sink.set_samp_rate(fg.sample_rate)
-        sink.set_center_freq(fg.center_freq, 0)
-        sink.set_gain(tx_gain_db, 0)
-        sink.set_antenna("TX/RX", 0)
-        fg.connect((src, 0), (sink, 0))
-        extras.update(tx_src=src, tx_sink=sink,
-                      tx_actual=(sink.get_samp_rate(), sink.get_center_freq(0), sink.get_gain(0)))
-    return fg, nbins, extras
+    if fg.pilot is not None and fg.pilot_sink is not None:
+        extras["tx_actual"] = (fg.pilot_sink.get_samp_rate(),
+                               fg.pilot_sink.get_center_freq(0), fg.pilot_sink.get_gain(0))
+    return fg, int(inst["wide_channels"]), extras
 
 
 def thread_cpu(proc, before):
@@ -232,19 +177,18 @@ def thread_cpu(proc, before):
     return out, now
 
 
-def run_once(args, rate_hz, tx, cross):
+def run_once(args, rate_hz, pilot_on):
     import psutil
     proc = psutil.Process()
-    label = f"{rate_hz/1e6:.0f} Msps, TX {'on' if tx else 'off'}, cross-spectrum {'on' if cross else 'off'}"
+    label = f"{rate_hz/1e6:.0f} Msps, pilot {'on (bursts + carrier)' if pilot_on else 'off'}"
     print(f"\n=== {label} ===", flush=True)
     marks = _MarkCounter()
     marks.start()
     try:
-        fg, nbins, extras = build(args.sdr, rate_hz, tx, cross, args.amplitude, args.tx_gain)
+        fg, nbins, extras = build(args.sdr, rate_hz, pilot_on, args.burst_every)
         if "tx_actual" in extras:
             r, f, g = extras["tx_actual"]
-            print(f"  TX: {r/1e6:.3f} Msps at {f/1e6:.6f} MHz, gain {g:.1f} dB, "
-                  f"frame amplitude {args.amplitude}", flush=True)
+            print(f"  TX: {r/1e6:.3f} Msps at {f/1e6:.6f} MHz, gain {g:.1f} dB", flush=True)
         fg.start()
         t0 = time.time()
         time.sleep(min(5.0, args.seconds / 4))          # let the pipeline fill before counting
@@ -256,16 +200,24 @@ def run_once(args, rate_hz, tx, cross):
         _, thr_before = thread_cpu(proc, {})
         proc.cpu_percent(None)
         t_start = time.time()
-        wide_n = h1_n = cross_n = 0
+        wide_n = h1_n = bursts = 0
         while time.time() - t_start < args.seconds:
-            time.sleep(1.0)
+            # A burst every `burst_every` seconds, switched exactly as the
+            # recorder switches it, so the swap is inside the measurement.
+            if pilot_on and args.burst_every > 0:
+                fg.set_burst(True)
+                time.sleep(min(1.0, args.seconds / 10))
+                fg.set_burst(False)
+                bursts += 1
+                time.sleep(max(0.0, args.burst_every - 1.0))
+            else:
+                time.sleep(1.0)
             _, n = fg.take_wide()
             wide_n += n
             _, n = fg.take_h1()
             h1_n += n
-            if "cross_acc" in extras:
-                _, n = extras["cross_acc"].take()
-                cross_n += n * extras["cross_presum"]      # integrated vectors -> frames
+            if fg.pilot_gate is not None:
+                fg.take_pilot()
         elapsed = time.time() - t_start
         cpu_total = proc.cpu_percent(None)
         by_thread, _ = thread_cpu(proc, thr_before)
@@ -288,8 +240,8 @@ def run_once(args, rate_hz, tx, cross):
     print(f"  RX overflows: {o}   TX underruns: {u}   late/seq/dropped: {other}")
     print(f"  wide frames accumulated: {wide_n} of {frames_expected:.0f} expected ({wide_pct:.1f}%)")
     print(f"  H I frames accumulated:  {h1_n} of {h1_expected:.0f} expected ({h1_pct:.1f}%)")
-    if cross:
-        print(f"  cross-spectrum frames:   {cross_n} ({100*cross_n/frames_expected:.1f}%)")
+    if pilot_on:
+        print(f"  pilot bursts switched:   {bursts}")
     print(f"  process CPU: {cpu_total:.0f}% of one core; hottest threads:")
     for cpu, name in by_thread[:6]:
         if cpu > 0.05:
@@ -304,11 +256,9 @@ def main():
     p.add_argument("--rates", nargs="+", type=float, default=[8.0], help="sample rates to try, Msps")
     p.add_argument("--seconds", type=float, default=120.0, help="measurement time per case")
     p.add_argument("--sdr", default="b210", choices=("b210", "demo"))
-    p.add_argument("--no-tx", action="store_true", help="receive graph only")
-    p.add_argument("--no-cross", action="store_true", help="leave out the cross-spectrum branch")
-    p.add_argument("--amplitude", type=float, default=0.0,
-                   help="TX frame amplitude, 0..1 full scale; 0 sends zeros (default, nothing radiated)")
-    p.add_argument("--tx-gain", type=float, default=0.0, help="TX gain, dB (default the minimum)")
+    p.add_argument("--no-pilot", action="store_true", help="receive graph alone, for comparison")
+    p.add_argument("--burst-every", type=float, default=5.0,
+                   help="seconds between switched bursts during the run (0 = never switch)")
     p.add_argument("--force", action="store_true", help="run even if the scheduler reports an observation")
     args = p.parse_args([a for a in sys.argv[1:] if a != "--headless"])
 
@@ -320,7 +270,7 @@ def main():
             print("  (scheduler not answering; assuming the radio is free)")
     results = []
     for r in args.rates:
-        results.append(run_once(args, r * 1e6, tx=not args.no_tx, cross=not args.no_cross))
+        results.append(run_once(args, r * 1e6, pilot_on=not args.no_pilot))
     print("\nSummary: " + ", ".join(f"{r:.0f} Msps {'PASS' if ok else 'FAIL'}" for r, ok in zip(args.rates, results)))
     sys.exit(0 if all(results) else 1)
 

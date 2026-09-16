@@ -326,79 +326,94 @@ class _VectorAccumulator(gr.sync_block):
 
 
 class _PilotGate(gr.sync_block):
-    """The pilot's recovery sink (issue #30): a per-frame power gate and a coherent sum.
+    """The pilot's recovery sink (issue #30): decides which blocks held the burst, and sums them.
 
-    Fed the *unwindowed* FFT of the same frames the wide product uses. A
-    rectangular window is what makes the pilot's reference flat across the
-    band: the frame is periodic at exactly the FFT length, so it has no
-    leakage at all, and every bin measures its own response. Through the wide
-    product's Blackman-Harris window the reference instead follows the window
-    in time, which for a swept chirp means zero at both band edges - where
-    the filter's tilt has to be measured.
+    Fed two C++ branches off the pilot's own *unwindowed* FFT, each already
+    summed over `presum` frames in C++ so this Python block runs at the
+    flowgraph's sink rate (~50 Hz) rather than at 7800 frames a second. The
+    first version did the per-frame arithmetic here and cost 55-70% of a core
+    - GNU Radio handed it 3.2 frames a call whatever `set_min_noutput_items`
+    asked for, so it was call overhead, not work.
 
-    Each frame is judged on or off by its total power: a burst near the
-    system-noise level roughly doubles it, against a per-frame scatter of
-    3%. The baseline is the median of recent off-frames, so nothing has to
-    be told when a burst starts, the transmit buffers' latency costs nothing,
-    and a science record that caught a burst's tail is known. A coherent gate
-    would not do: the unknown (fixed) framing offset puts a phase ramp across
-    the band that cancels any whole-band coherent statistic.
+    - input 0: the cross-spectrum, sum over the block of F conj(R).
+    - input 1: the power spectrum, sum over the block of |F|^2.
 
-    take() hands back (X over the on-frames, on-frames, frames, mean per-bin
-    power of the off-frames) - the last being the noise the burst sat in,
-    measured in the same FFT, which is what the recovery's SNR needs.
+    A rectangular window is what makes the reference flat across the band:
+    the frame is periodic at exactly the FFT length, so it has no leakage at
+    all and every bin measures its own response. Through the wide product's
+    Blackman-Harris window the reference instead follows the window in time,
+    which for a swept chirp means zero at both band edges - where the
+    filter's tilt has to be measured.
+
+    A block is judged on or off by its power against the median of recent
+    off-blocks: a burst near the system-noise level roughly doubles it. So
+    nothing has to be told when a burst starts, the transmit buffers'
+    latency costs nothing, and a science record that caught a burst's tail is
+    known. A block is only *committed* when it and both its neighbours agree,
+    which drops the partial block at each edge of a burst - two blocks in
+    150, where counting a partial one as whole would bias the response by up
+    to 1.3%. A coherent gate would not do: the unknown (fixed) framing offset
+    puts a phase ramp across the band that cancels any whole-band coherent
+    statistic.
+
+    take() hands back (X over the committed on-blocks, on-frames, frames,
+    mean per-bin power of the committed off-blocks) - the last being the
+    noise the burst sat in, measured in the same FFT and per bin, which is
+    what the recovery's SNR needs.
     """
 
-    _BASELINE_FRAMES = 400            # off-frames kept for the median
+    _BASELINE_BLOCKS = 200            # off-blocks kept for the median
 
-    def __init__(self, vlen, reference, margin):
+    def __init__(self, vlen, presum, margin):
         gr.sync_block.__init__(self, name="pilot_gate",
-                               in_sig=[(np.complex64, vlen)], out_sig=None)
+                               in_sig=[(np.complex64, vlen), (np.float32, vlen)],
+                               out_sig=None)
         self.vlen = int(vlen)
-        self._ref_conj = np.conj(np.asarray(reference, dtype=np.complex64))
+        self.presum = int(presum)
         self._margin = 1.0 + float(margin)
         self._lock = threading.Lock()
-        self._base = collections.deque(maxlen=self._BASELINE_FRAMES)
+        self._base = collections.deque(maxlen=self._BASELINE_BLOCKS)
         self._baseline = None
+        self._held = []               # (on, X, P) awaiting their neighbours
         self._x = np.zeros(self.vlen, dtype=np.complex128)
+        self._noise = np.zeros(self.vlen, dtype=np.float64)
         self._n_on = 0
-        self._n = 0
-        self._off_power = 0.0
         self._n_off = 0
+        self._n = 0
 
     def work(self, input_items, output_items):
-        F = input_items[0]
-        power = np.einsum('ij,ij->i', F, F.conj()).real / self.vlen
+        X, P = input_items[0], input_items[1]
+        n = min(X.shape[0], P.shape[0])
         with self._lock:
-            if self._baseline is None:
-                # Nothing to compare against yet: these frames are the
-                # baseline. The first burst is many records away.
-                on = np.zeros(len(power), dtype=bool)
-            else:
-                on = power > self._baseline * self._margin
-            if on.any():
-                self._x += (F[on] * self._ref_conj).sum(axis=0, dtype=np.complex128)
-                self._n_on += int(on.sum())
-            off = ~on
-            if off.any():
-                self._off_power += float(power[off].sum())
-                self._n_off += int(off.sum())
-                self._base.extend(power[off][::4].tolist())
-                if len(self._base) >= 50:
-                    self._baseline = float(np.median(self._base))
-            self._n += F.shape[0]
-        return F.shape[0]
+            for i in range(n):
+                power = float(P[i].sum()) / (self.presum * self.vlen)
+                on = (self._baseline is not None) and (power > self._baseline * self._margin)
+                self._held.append((on, X[i].astype(np.complex128), P[i].astype(np.float64)))
+                if len(self._held) >= 3:
+                    a, b, c = self._held[-3], self._held[-2], self._held[-1]
+                    if a[0] and b[0] and c[0]:
+                        self._x += b[1]
+                        self._n_on += self.presum
+                    elif not (a[0] or b[0] or c[0]):
+                        self._noise += b[2]
+                        self._n_off += self.presum
+                        self._base.append(float(b[2].sum()) / (self.presum * self.vlen))
+                        if len(self._base) >= 10:
+                            self._baseline = float(np.median(self._base))
+                    del self._held[0]
+                self._n += self.presum
+        return n
 
     def take(self):
-        """(X over on-frames, on-frames, frames, off-frame mean power per bin)."""
+        """(X over on-blocks, on-frames, frames, per-bin noise power)."""
         with self._lock:
             x, n_on, n = self._x.copy(), self._n_on, self._n
-            noise = (self._off_power / self._n_off) if self._n_off else (self._baseline or 0.0)
+            noise = (self._noise / self._n_off) if self._n_off else np.zeros(self.vlen)
             self._x = np.zeros(self.vlen, dtype=np.complex128)
+            self._noise = np.zeros(self.vlen, dtype=np.float64)
             self._n_on = 0
-            self._n = 0
-            self._off_power = 0.0
             self._n_off = 0
+            self._n = 0
         return (x if n_on else None), n_on, n, noise
 
 
@@ -527,10 +542,9 @@ class TwoProductFlowgraph(gr.top_block):
             self.pilot = None
             return
         nw = self.wide_channels
-        zeros = self.pilot["zeros"]
         if self.sdr_type == 'b210':
             from gnuradio import uhd
-            self.pilot_src = blocks.vector_source_c(zeros.tolist(), True)
+            self.pilot_src = blocks.vector_source_c(self.pilot["idle_frame"].tolist(), True)
             self.pilot_sink = uhd.usrp_sink(
                 ",".join(("type=b200", "")),
                 uhd.stream_args(cpu_format="fc32", args="", channels=[0]))
@@ -539,17 +553,16 @@ class TwoProductFlowgraph(gr.top_block):
             self.pilot_sink.set_gain(float(cfg["tx_gain_db"]), 0)
             self.pilot_sink.set_antenna("TX/RX", 0)
             tx_f = self.pilot_sink.get_center_freq(0)
-            print("  Pilot TX: %.3f Msps at %.6f MHz, gain %.1f dB; comb burst every %d records, "
-                  "peak %.2f" % (self.pilot_sink.get_samp_rate() / 1e6, tx_f / 1e6,
-                                 self.pilot_sink.get_gain(0), cfg["burst_every_records"],
-                                 cfg["burst_amplitude"]), flush=True)
+            print("  Pilot TX: %.3f Msps at %.6f MHz, gain %.1f dB; %s"
+                  % (self.pilot_sink.get_samp_rate() / 1e6, tx_f / 1e6,
+                     self.pilot_sink.get_gain(0), pilot_mod.describe(cfg)), flush=True)
             if abs(tx_f - self.center_freq) > 0.5:
                 # Different synthesiser settings on the two sides would let
                 # the tones' phase slip and the coherent sum average away.
                 print("  Pilot WARNING: TX tuned %.1f Hz from the RX LO; the recovery "
                       "will not accumulate coherently" % (tx_f - self.center_freq), flush=True)
         elif cfg.get("demo_inject"):
-            self.pilot_src = blocks.vector_source_c(zeros.tolist(), True)
+            self.pilot_src = blocks.vector_source_c(self.pilot["idle_frame"].tolist(), True)
             self.pilot_inject = self.pilot_src
             self.pilot_adder = blocks.add_cc()
         # The pilot's own FFT, unwindowed: fft_vcc with an empty window is
@@ -557,13 +570,25 @@ class TwoProductFlowgraph(gr.top_block):
         # Fanned out from the wide product's framer, so no second
         # stream_to_vector and the two see exactly the same frames.
         self.pilot_fft = fft.fft_vcc(nw, True, [], True, 1)
-        self.pilot_gate = _PilotGate(nw, self.pilot["reference"], cfg["gate_margin"])
+        # Both branches summed in C++ over the same presum the other products
+        # use, so the Python sink runs at the flowgraph's sink rate.
+        presum = max(1, int(self.sample_rate / nw / self.SINK_RATE_HZ))
+        ref = np.conj(np.asarray(self.pilot["reference"], dtype=np.complex64))
+        self.pilot_mult = blocks.multiply_const_vcc(ref.tolist())
+        self.pilot_xint = blocks.integrate_cc(presum, nw)
+        self.pilot_mag = blocks.complex_to_mag_squared(nw)
+        self.pilot_pint = blocks.integrate_ff(presum, nw)
+        self.pilot_gate = _PilotGate(nw, presum, cfg["gate_margin"])
 
     def set_burst(self, on):
-        """Comb on or off from the next frame the source hands out (zeros between bursts)."""
+        """Comb on or off from the next frame the source hands out.
+
+        Between bursts the source plays the idle frame - the continuous
+        carrier alone - not silence, so the fast-gain monitor never stops.
+        """
         if self.pilot_src is None or bool(on) == self._burst_on:
             return
-        frame = self.pilot["frame"] if on else self.pilot["zeros"]
+        frame = self.pilot["frame"] if on else self.pilot["idle_frame"]
         if self.pilot_inject is not None:
             frame = frame * float(self.pilot_cfg["demo_inject_scale"])
         self.pilot_src.set_data(frame.tolist(), [])
@@ -582,7 +607,12 @@ class TwoProductFlowgraph(gr.top_block):
             self.connect((self.pilot_src, 0), (self.pilot_sink, 0))
         if self.pilot_gate is not None:
             self.connect((self.wide_s2v, 0), (self.pilot_fft, 0))
-            self.connect((self.pilot_fft, 0), (self.pilot_gate, 0))
+            self.connect((self.pilot_fft, 0), (self.pilot_mult, 0))
+            self.connect((self.pilot_mult, 0), (self.pilot_xint, 0))
+            self.connect((self.pilot_xint, 0), (self.pilot_gate, 0))
+            self.connect((self.pilot_fft, 0), (self.pilot_mag, 0))
+            self.connect((self.pilot_mag, 0), (self.pilot_pint, 0))
+            self.connect((self.pilot_pint, 0), (self.pilot_gate, 1))
         self.connect((src, 0), (self.wide_s2v, 0))
         self.connect((self.wide_s2v, 0), (self.wide_fft, 0))
         self.connect((self.wide_fft, 0), (self.wide_mag, 0))
@@ -861,9 +891,14 @@ def init_hdf5(filename, freq_axis_hz, fft_size, sdr_type, center_freq,
         hf.create_dataset('pilot_bins_wide', data=np.asarray(pilot['bins'], dtype='int32'))
         hf.create_dataset('pilot_reference', data=np.zeros(nb_p, dtype='complex64'))
         hf.create_dataset('pilot_anchored', data=np.zeros(1, dtype='int8'))
+        if pilot.get('tone_bin') is not None:
+            hf.attrs['pilot_tone_hz'] = float(pilot['tone_hz'])
+            hf.attrs['pilot_tone_applied'] = 1 if pilot_cfg.get('tone_apply') else 0
         for name, dt in (('pilot_burst', 'int8'), ('pilot_level', 'float32'),
                          ('pilot_slope', 'float32'), ('pilot_snr', 'float32'),
-                         ('pilot_ok', 'int8'), ('pilot_correction_index', 'int32')):
+                         ('pilot_ok', 'int8'), ('pilot_correction_index', 'int32'),
+                         ('pilot_tone_power', 'float32'), ('pilot_tone_level', 'float32'),
+                         ('pilot_tone_ok', 'int8')):
             hf.create_dataset(name, shape=(0,), maxshape=(None,), dtype=dt)
         hf.create_dataset('pilot_shape_time', shape=(0,), maxshape=(None,), dtype='float64')
         hf.create_dataset('pilot_shape', shape=(0, nb_p), maxshape=(None, nb_p),
@@ -1116,6 +1151,7 @@ def append_spectrum(hf, avg_linear, timestamp, integration_time, fft_size,
     # exactly. Burst records and records that caught a burst's tail are
     # written as measured and flagged; nothing is applied to them.
     p_burst, p_level, p_slope, p_ok, p_snr, p_idx = 0, 1.0, 0.0, 0, 0.0, -1
+    p_tone_power, p_tone_level, p_tone_ok = 0.0, 1.0, 0
     if pilot is not None and 'pilot_level' in hf:
         p_burst = int(pilot.get('burst', 0) or 0)
         p_ok = 1 if (pilot.get('ok') and not p_burst) else 0
@@ -1123,7 +1159,16 @@ def append_spectrum(hf, avg_linear, timestamp, integration_time, fft_size,
             p_level, p_slope = float(pilot['level']), float(pilot['slope'])
             p_idx = int(pilot.get('corr_index', -1))
         p_snr = float(pilot.get('snr', 0.0) or 0.0)
+        p_tone_power = float(pilot.get('tone_power', 0.0) or 0.0)
+        # The carrier's factor is flat across the band - it is the fast
+        # common-mode gain - and is applied only when the entry says so
+        # (`tone_apply`), which waits on the bench correlation test.
+        if pilot.get('tone_ok') and not p_burst:
+            p_tone_ok = 1
+            p_tone_level = float(pilot.get('tone_level', 1.0))
     apply_pilot = ('pilot_level' in hf) and p_ok
+    apply_tone = ('pilot_tone_level' in hf) and p_tone_ok and int(hf.attrs.get('pilot_tone_applied', 0))
+    tone_div = p_tone_level if apply_tone else 1.0
     if name == 'spectra_kelvin':
         # counts -> kelvin, with the correction the file already carries, so
         # what is written is exactly what the stored numbers reverse.
@@ -1133,7 +1178,7 @@ def append_spectrum(hf, avg_linear, timestamp, integration_time, fft_size,
                                                  hf.attrs['pilot_centre_hz'])
             if p_idx >= 0 and 'pilot_correction_h1' in hf:
                 divisor = divisor * hf['pilot_correction_h1'][p_idx, :]
-        values = avg_linear / divisor - hf.attrs['applied_t_sys_k']
+        values = avg_linear / (divisor * tone_div) - hf.attrs['applied_t_sys_k']
     n = hf[name].shape[0]
     hf[name].resize((n + 1, fft_size))
     hf['timestamps'].resize((n + 1,))
@@ -1151,7 +1196,7 @@ def append_spectrum(hf, avg_linear, timestamp, integration_time, fft_size,
                                                hf.attrs['pilot_centre_hz'])
                 if p_idx >= 0 and 'pilot_correction_wide' in hf:
                     wdiv = wdiv * hf['pilot_correction_wide'][p_idx, :]
-            wvalues = wvalues / wdiv - hf.attrs['applied_t_sys_k']
+            wvalues = wvalues / (wdiv * tone_div) - hf.attrs['applied_t_sys_k']
         nw = hf[wname].shape[1]
         hf[wname].resize((n + 1, nw))
         hf[wname][n, :] = wvalues.astype(np.float32)
@@ -1161,14 +1206,19 @@ def append_spectrum(hf, avg_linear, timestamp, integration_time, fft_size,
     if 'pilot_level' in hf:
         for dname, val in (('pilot_burst', p_burst), ('pilot_level', p_level),
                            ('pilot_slope', p_slope), ('pilot_snr', p_snr), ('pilot_ok', p_ok),
-                           ('pilot_correction_index', p_idx)):
+                           ('pilot_correction_index', p_idx),
+                           ('pilot_tone_power', p_tone_power),
+                           ('pilot_tone_level', p_tone_level if apply_tone else 1.0),
+                           ('pilot_tone_ok', p_tone_ok)):
             hf[dname].resize((n + 1,))
             hf[dname][n] = val
     hf.flush()
     _append_live_summary(hf, avg_linear, timestamp, integration_time, n + 1,
                          wide_linear=wide_linear, overflows=overflows,
                          pilot={'burst': p_burst, 'ok': p_ok, 'level': p_level, 'slope': p_slope,
-                                'snr': p_snr, 'seen': int(bool((pilot or {}).get('seen')))}
+                                'snr': p_snr, 'seen': int(bool((pilot or {}).get('seen'))),
+                                'tone_ok': p_tone_ok, 'tone_level': p_tone_level,
+                                'tone_ratio': float((pilot or {}).get('tone_ratio', 0.0) or 0.0)}
                          if 'pilot_level' in hf else None)
     return n + 1
 
@@ -1412,14 +1462,17 @@ class HeadlessRecorder:
             if now >= period_start + self.integration_time - margin:
                 self.flowgraph.set_burst(False)
 
-    def _pilot_record(self, now, tau):
+    def _pilot_record(self, wide_mean, now, tau):
         """This record's pilot outcome, for append_spectrum and the file's side datasets."""
         if self.pilot_tracker is None:
             return None
         self.flowgraph.set_burst(False)
         was_burst = self._burst_record
         self._record_index += 1
+        cfg = self.flowgraph.pilot_cfg
         try:
+            tone = pilot_mod.tone_power(np.asarray(wide_mean, dtype=float),
+                                        self.flowgraph.pilot, cfg)
             xspec, n_on, n_total, noise = self.flowgraph.take_pilot()
             if was_burst:
                 b = self.pilot_tracker.burst(xspec, n_on, noise, now)
@@ -1432,17 +1485,25 @@ class HeadlessRecorder:
                     print("  Pilot burst %s (median SNR %.1f, %d of %d frames on)%s" % (
                         "detected" if b['ok'] else "not detected", b['snr'], n_on, n_total,
                         "" if b['ok'] else " - nothing applied, as with no pilot"), flush=True)
+                # The carrier runs through the burst too, so its power here is
+                # the level the records after it are measured against.
+                if tone['detected']:
+                    self.pilot_tracker.set_tone_reference(tone['power'])
                 return {'burst': 1, 'ok': 0, 'level': 1.0, 'slope': 0.0, 'snr': b['snr'],
-                        'seen': b['ok'], 'corr_index': -1}
+                        'seen': b['ok'], 'corr_index': -1, 'tone_power': tone['power'],
+                        'tone_ratio': tone['ratio'], 'tone_ok': 0, 'tone_level': 1.0}
+            tone_level, tone_ok = self.pilot_tracker.tone_level(tone)
+            base = {'tone_power': tone['power'], 'tone_ratio': tone['ratio'],
+                    'tone_ok': tone_ok, 'tone_level': tone_level}
             if n_on > 0:
                 # A science record that caught the tail of a burst: measured,
                 # flagged, dropped downstream.
-                return {'burst': 2, 'ok': 0, 'level': 1.0, 'slope': 0.0, 'snr': 0.0,
-                        'seen': 0, 'corr_index': -1}
+                return dict(base, burst=2, ok=0, level=1.0, slope=0.0, snr=0.0,
+                            seen=0, corr_index=-1, tone_ok=0, tone_level=1.0)
             level, slope, ok = self.pilot_tracker.correction(now)
             if not ok:
-                return {'burst': 0, 'ok': 0, 'level': 1.0, 'slope': 0.0, 'snr': 0.0,
-                        'seen': 0, 'corr_index': -1}
+                return dict(base, burst=0, ok=0, level=1.0, slope=0.0, snr=0.0,
+                            seen=0, corr_index=-1)
             version, h_mean = self.pilot_tracker.shape(now)
             if h_mean is not None and version != self._corr_version:
                 plan = self.flowgraph.pilot
@@ -1452,8 +1513,8 @@ class HeadlessRecorder:
                 wide_vec = pilot_mod.correction_vector(h_mean, plan, self.wide_axis_hz, band, ref)
                 self._corr_index = append_pilot_correction(self.hf, h1_vec, wide_vec)
                 self._corr_version = version
-            return {'burst': 0, 'ok': 1, 'level': level, 'slope': slope, 'snr': 0.0,
-                    'seen': 0, 'corr_index': self._corr_index}
+            return dict(base, burst=0, ok=1, level=level, slope=slope, snr=0.0,
+                        seen=0, corr_index=self._corr_index)
         except Exception as exc:                          # noqa: BLE001
             print(f"  Pilot: estimate failed ({exc}); record left uncorrected", flush=True)
             return {'burst': 1 if was_burst else 0, 'ok': 0, 'level': 1.0, 'slope': 0.0,
@@ -1487,7 +1548,7 @@ class HeadlessRecorder:
                     break
                 if h1 is None or wide is None:
                     continue
-                pil = self._pilot_record(now, now - period_start)
+                pil = self._pilot_record(wide, now, now - period_start)
                 self.spectrum_count = append_spectrum(
                     self.hf, np.asarray(h1, dtype=float)[self.h1_keep], now,
                     now - period_start, self.fft_size,

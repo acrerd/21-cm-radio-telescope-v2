@@ -27,14 +27,50 @@ def _plan(cfg_over=None):
 
 
 class TestPlan:
-    def test_defaults_are_a_full_band_comb_in_bursts(self):
+    def test_defaults_are_a_full_band_comb_in_bursts_around_a_continuous_carrier(self):
         inst, p = _plan()
         cfg = inst["pilot"]
         assert cfg["enabled"] and cfg["burst_every_records"] == 20
         nb = inst["wide_channels"]
-        assert len(p["bins"]) == nb - (2 * cfg["dc_guard_bins"] + 1)
-        assert not np.any(p["zeros"])
-        assert np.abs(p["frame"]).max() == pytest.approx(cfg["burst_amplitude"], rel=1e-5)
+        # every bin but the LO guard and the carrier's own neighbourhood
+        assert len(p["bins"]) == nb - (2 * cfg["dc_guard_bins"] + 1) - (2 * cfg["tone_guard_bins"] + 1)
+        assert p["tone_bin"] not in set(p["bins"].tolist())
+        # the idle frame is the carrier alone; the burst frame is comb plus
+        # the same carrier, so the carrier is never interrupted
+        assert np.abs(p["idle_frame"]).max() == pytest.approx(cfg["tone_amplitude"], rel=1e-5)
+        assert np.abs(p["frame"] - p["idle_frame"]).max() == pytest.approx(
+            cfg["burst_amplitude"], rel=1e-5)
+        assert np.abs(p["frame"]).max() < 0.95                      # inside the DAC's rails
+
+    def test_the_carrier_is_outside_every_measured_band(self):
+        """It has to live somewhere nothing measures, or it comes back as
+        exclusion machinery. The 800 kHz below the continuum band is free, and
+        the analogue bandwidth is twice the sample rate so nothing rolls off."""
+        inst, p = _plan()
+        f = p["tone_hz"]
+        assert not (inst["continuum_band_hz"][0] <= f <= inst["continuum_band_hz"][1])
+        assert not (inst["h1_band_hz"][0] <= f <= inst["h1_band_hz"][1])
+        assert inst["lo_hz"] - 0.5 * inst["sample_rate_hz"] < f < inst["continuum_band_hz"][0]
+        # and far enough from the continuum edge that a strong carrier cannot
+        # leak into it through the window
+        assert (inst["continuum_band_hz"][0] - f) > 20 * inst["sample_rate_hz"] / inst["wide_channels"]
+
+    def test_the_carrier_is_the_right_strength_relative_to_the_comb(self):
+        """The pads set the absolute level; the digital ratio is what decides
+        whether both hit their targets at once. Wanted: the carrier at 0.85 of
+        the whole band's noise power (issue #30's fast-wobble budget) while a
+        comb tone is ~2x the noise in its bin, so the burst record stays
+        inside the linearity the Sun drifts proved at 30 dB."""
+        inst, p = _plan()
+        carrier = float(np.mean(np.abs(p["idle_frame"]) ** 2))
+        comb_per_bin = float(np.mean(np.abs(p["frame"] - p["idle_frame"]) ** 2)) / len(p["bins"])
+        ratio = carrier / comb_per_bin
+        wanted = 0.85 * inst["wide_channels"] / 2.0
+        assert ratio == pytest.approx(wanted, rel=0.35)
+        # what that means at the receiver: the continuous level and the burst's
+        comb_total = comb_per_bin * len(p["bins"]) / carrier * 0.85
+        assert 1.5 < 1 + 0.85 < 2.0                                  # continuous, x normal
+        assert 1 + 0.85 + comb_total < 5.0                           # during a burst
 
     def test_off_means_off(self):
         inst, p = _plan({"receiver_pilot_enabled": False})
@@ -226,7 +262,7 @@ class TestEstimate:
         assert mean is None and version == 2 and tr.detected == 2 and tr.bursts == 3
 
 
-def _file(path, monkeypatch, pilots, calibrated, fine_vec=None):
+def _file(path, monkeypatch, pilots, calibrated, fine_vec=None, pilot_over=None):
     """A two-product file as the recorder writes it, with the given per-record
     pilot dicts; calibrated=True fakes a template and gain that apply."""
     import b210_h1_receiver as rx
@@ -239,7 +275,7 @@ def _file(path, monkeypatch, pilots, calibrated, fine_vec=None):
     else:
         monkeypatch.setattr(bandpass, "load_bandpass", lambda *a, **k: None)
         monkeypatch.setattr(rf_calibration, "load_calibration", lambda *a, **k: None)
-    inst = tuning.fixed_instrument()
+    inst = tuning.fixed_instrument(pilot_over or {})
     p = pilot.plan(inst["pilot"], inst["lo_hz"], inst["sample_rate_hz"], inst["wide_channels"])
     lo, hi = inst["h1_band_hz"]
     f_h1 = np.linspace(lo, hi, 300)
@@ -327,11 +363,16 @@ class TestFile:
 
 
 class TestDemoFlowgraph:
-    def test_the_gate_counts_the_frames_a_burst_occupied(self):
+    def test_the_gate_counts_the_blocks_a_burst_occupied(self):
         """The recovery end to end on the demo source: with the comb switched
-        on for part of the run the power gate counts those frames and the
+        on for part of the run the power gate counts those blocks and the
         burst is detected; with it off nothing is (the state until the dipole
-        is wired)."""
+        is wired).
+
+        The flowgraph is stopped in a finally: a GNU Radio top block destroyed
+        while still running calls std::terminate, which takes the whole test
+        process with it - one failed assertion here brought down the suite.
+        """
         if "--headless" not in sys.argv:
             sys.argv.append("--headless")
         import b210_h1_receiver as rx
@@ -339,18 +380,80 @@ class TestDemoFlowgraph:
         fg = rx.TwoProductFlowgraph("demo", inst, strict=False)
         assert fg.pilot is not None and fg.pilot_sink is None and fg.pilot_gate is not None
         fg.start()
-        time.sleep(1.5)
-        _, n_on, n_total, noise = fg.take_pilot()
-        assert n_on == 0 and n_total > 1000 and noise > 0        # comb off: nothing gated on
-        fg.set_burst(True)
-        time.sleep(1.0)
-        fg.set_burst(False)
-        time.sleep(0.5)
-        xs, n_on, n_total, noise = fg.take_pilot()
-        fg.stop(); fg.wait()
+        try:
+            time.sleep(1.5)
+            _, n_on, n_total, noise = fg.take_pilot()
+            assert n_on == 0 and n_total > 1000                  # comb off: nothing gated on
+            assert np.all(noise >= 0) and noise.mean() > 0       # per bin, from the off blocks
+            fg.set_burst(True)
+            time.sleep(1.0)
+            fg.set_burst(False)
+            time.sleep(0.5)
+            xs, n_on, n_total, noise = fg.take_pilot()
+        finally:
+            fg.stop()
+            fg.wait()
         assert 0 < n_on < n_total                                # on for part of the interval
         est = pilot.estimate(xs, n_on, fg.pilot, noise)
         assert est["snr_median"] > 10 * inst["pilot"]["detect_snr"]
+
+
+class TestCarrier:
+    def test_its_power_is_read_from_the_wide_product_and_needs_no_recovery(self):
+        """At ~1000x the noise in its own bin the carrier is simply an excess
+        in the channels it occupies, which the wide product already records."""
+        inst, p = _plan()
+        cfg = inst["pilot"]
+        rng = np.random.default_rng(12)
+        nb = inst["wide_channels"]
+        noise = 3.0e-6
+        wide = rng.exponential(noise, nb)                 # power spectrum of noise
+        assert not pilot.tone_power(wide, p, cfg)["detected"]        # nothing there
+        # a carrier spread over the window's main lobe
+        for d, w in ((-2, 0.05), (-1, 0.5), (0, 1.0), (1, 0.5), (2, 0.05)):
+            wide[p["tone_bin"] + d] += 400 * noise * w
+        got = pilot.tone_power(wide, p, cfg)
+        assert got["detected"] and got["ratio"] > 100
+        assert got["power"] == pytest.approx(400 * noise * 2.1, rel=0.1)
+
+    def test_the_level_is_measured_against_the_last_burst_so_nothing_counts_twice(self):
+        """The burst's level carries the slow change; the carrier carries only
+        what happened since, so at a burst it reads unity by construction."""
+        inst, p = _plan()
+        tr = pilot.PilotTracker(inst["pilot"], p, reference_h=None)
+        assert tr.tone_level({"detected": True, "power": 5.0}) == (1.0, 0)   # no reference yet
+        tr.set_tone_reference(5.0)
+        assert tr.tone_level({"detected": True, "power": 5.0})[0] == pytest.approx(1.0)
+        lvl, ok = tr.tone_level({"detected": True, "power": 5.05})
+        assert ok and lvl == pytest.approx(1.01)
+        assert tr.tone_level({"detected": False, "power": 5.05}) == (1.0, 0)
+        assert tr.tone_level({"detected": True, "power": 50.0}) == (1.0, 0)  # absurd, refused
+
+    def test_it_is_recorded_but_not_applied_until_the_bench_test_says_so(self, tmp_path, monkeypatch):
+        """Applying it corrects a wobble in the SAWbird or the B210, does
+        nothing for an atmospheric one, and substitutes the transmit chain's
+        own. So the series is recorded always and applied only on request."""
+        from observation_plot import read_observation
+        rec = {"burst": 0, "ok": 1, "level": 1.0, "slope": 0.0, "snr": 0.0, "seen": 0,
+               "corr_index": -1, "tone_power": 5.0, "tone_ratio": 400.0,
+               "tone_ok": 1, "tone_level": 1.02}
+        off = str(tmp_path / "off.h5")
+        _f, _fw, raw, _rw, _p = _file(off, monkeypatch, [dict(rec)], calibrated=True)
+        with h5py.File(off, "r") as hf:
+            assert int(hf.attrs["pilot_tone_applied"]) == 0
+            assert hf["pilot_tone_power"][0] == pytest.approx(5.0)
+            assert hf["pilot_tone_level"][0] == 1.0          # measured, not applied
+            assert hf["spectra_kelvin"][0] == pytest.approx(raw[0] / 2.0e-6 - 300.0, rel=1e-6)
+        on = str(tmp_path / "on.h5")
+        _f, _fw, raw, _rw, _p = _file(on, monkeypatch, [dict(rec)], calibrated=True,
+                                      pilot_over={"receiver_pilot_tone_apply": True})
+        with h5py.File(on, "r") as hf:
+            assert int(hf.attrs["pilot_tone_applied"]) == 1
+            assert hf["pilot_tone_level"][0] == pytest.approx(1.02)
+            assert hf["spectra_kelvin"][0] == pytest.approx(raw[0] / (2.0e-6 * 1.02) - 300.0, rel=1e-6)
+        _, counts, _, _, header = read_observation(on)
+        assert counts[0] == pytest.approx(raw[0], rel=1e-6)   # and reversed exactly
+        assert header["pilot_tone_records"] == 1 and header["pilot_tone_applied"] == 1
 
 
 class TestScheduler:

@@ -84,7 +84,34 @@ H1_REST_FREQ_HZ = 1420.405752e6
 PILOT_DEFAULTS = {
     "enabled": True,
     "burst_every_records": 20,            # one record in this many is a burst; 0 = never
-    "burst_amplitude": 0.5,               # frame peak during a burst, DAC full scale
+    "burst_amplitude": 0.5,               # comb's frame peak during a burst, DAC full scale
+    # The continuous carrier (issue #30's original single tone), for the fast
+    # common-mode gain wobble the bursts cannot reach: they measure the gain
+    # at one instant a minute and the wobble is white on 60 s scales. It runs
+    # in every record, burst ones included, and is measured incoherently - at
+    # ~1000x the noise in its own bin it needs no recovery branch, only the
+    # channels of the wide product it already lands in. Placed in the 800 kHz
+    # between the low edge of the sampled band and the continuum band, where
+    # nothing is measured, so no exclusion machinery comes back; the analogue
+    # bandwidth is twice the sample rate, so there is no roll-off there. It
+    # does sit in the SAW skirt - which is why it carries only the fast part,
+    # the bursts tracking the skirt's own slow motion.
+    "tone_enabled": True,
+    "tone_hz": 1415.3e6,
+    "tone_amplitude": 0.25,               # carrier frame peak; what matters is
+                                          # its ratio to a comb tone (~250 in
+                                          # power), the pads setting the absolute
+    "tone_guard_bins": 6,                 # comb tones left out around the carrier
+    "tone_sum_bins": 2,                   # bins either side summed for its power
+    "tone_detect_ratio": 10.0,            # excess over the local noise to believe it
+    # Whether the carrier's level is *applied* on the fly. Off until the bench
+    # correlation test (issue #30, runs 1-5) says the wobble is downstream of
+    # the vertex dipole: a carrier corrects a wobble in the SAWbird or the
+    # B210, does nothing for an atmospheric one, and would substitute the
+    # transmit chain's own wobble for the receive chain's. The series is
+    # recorded either way, so the decision can be made on real data and
+    # applied at reduction.
+    "tone_apply": False,
     "tx_gain_db": 0.0,                    # the minimum
     "dc_guard_bins": 4,                   # no tone this close to the LO
     # A burst near the system-noise level roughly doubles a frame's power;
@@ -139,10 +166,18 @@ def config_from(overrides=None):
             cfg[key] = nested[key]
     cfg["enabled"] = _truthy(cfg["enabled"])
     for k in ("burst_amplitude", "tx_gain_db", "gate_margin", "detect_snr",
-              "shape_window_s", "max_delay_us", "burst_off_margin_s", "demo_inject_scale"):
+              "shape_window_s", "max_delay_us", "burst_off_margin_s", "demo_inject_scale",
+              "tone_hz", "tone_amplitude", "tone_detect_ratio"):
         cfg[k] = float(cfg[k])
-    for k in ("burst_every_records", "dc_guard_bins", "hold_bursts", "min_shape_bursts"):
+    for k in ("burst_every_records", "dc_guard_bins", "hold_bursts", "min_shape_bursts",
+              "tone_guard_bins", "tone_sum_bins"):
         cfg[k] = int(cfg[k])
+    cfg["tone_enabled"] = _truthy(cfg["tone_enabled"])
+    cfg["tone_apply"] = _truthy(cfg["tone_apply"])
+    if not (0.0 < cfg["tone_amplitude"] < 1.0):
+        raise ValueError("pilot tone amplitude must be in (0, 1) of full scale")
+    if cfg["burst_amplitude"] + cfg["tone_amplitude"] > 0.95:
+        raise ValueError("burst and tone amplitudes together would run the DAC into its rails")
     cfg["demo_inject"] = _truthy(cfg["demo_inject"])
     if not (0.0 < cfg["burst_amplitude"] <= 1.0):
         raise ValueError("pilot burst amplitude must be in (0, 1] of full scale")
@@ -167,37 +202,100 @@ def wide_axis(lo_hz, sample_rate_hz, nbins):
 
 
 def plan(cfg, lo_hz, sample_rate_hz, nbins):
-    """The burst frame and what the receiver correlates against.
+    """The frames the transmitter sends and what the receiver correlates against.
 
-    Returns a dict: `bins` (wide bin indices carrying a tone: every bin bar
-    the LO guard), `frame` (complex64, one period, peak at burst_amplitude),
-    `zeros` (the frame sent between bursts), `reference` (the fftshifted
-    *unwindowed* FFT of one frame - flat in magnitude across the band, which
-    is why the recovery has its own rectangular FFT), `freq_hz` (the wide
-    axis), `centre_hz` (where the slope is anchored), `nbins`.
+    Two frames, both periodic at the FFT length so neither leaks:
+
+    - `idle_frame`, sent in every record - the continuous carrier alone, or
+      zeros with the carrier disabled.
+    - `frame`, sent during a burst - the comb on every bin but the LO guard
+      and the carrier's own neighbourhood, *plus* the same carrier at the
+      same level. The carrier is never interrupted, which is what a fast-gain
+      monitor needs, and its power therefore reads cleanly out of every
+      record including the bursts - which is what makes it the right
+      reference for the records between them.
+
+    Also `bins` (the comb's), `reference` (the fftshifted unwindowed FFT of
+    the comb part alone - flat in magnitude, which is why the recovery has
+    its own rectangular FFT), `tone_bin`, `freq_hz`, `centre_hz`, `nbins`.
     """
     nbins = int(nbins)
     fs = float(sample_rate_hz)
     lo = float(lo_hz)
     freq = wide_axis(lo, fs, nbins)
     half = nbins // 2
-    bins = np.array([j for j in range(nbins) if abs(j - half) > cfg["dc_guard_bins"]], dtype=int)
-    if not cfg["enabled"]:
-        bins = np.array([], dtype=int)
+
+    tone_bin = None
+    if cfg["enabled"] and cfg["tone_enabled"]:
+        j = int(round((float(cfg["tone_hz"]) - lo) * nbins / fs)) + half
+        if 0 <= j < nbins and abs(j - half) > cfg["dc_guard_bins"] + cfg["tone_sum_bins"]:
+            tone_bin = j
+
+    bins = []
+    if cfg["enabled"]:
+        for j in range(nbins):
+            if abs(j - half) <= cfg["dc_guard_bins"]:
+                continue
+            if tone_bin is not None and abs(j - tone_bin) <= cfg["tone_guard_bins"]:
+                continue
+            bins.append(j)
+    bins = np.array(bins, dtype=int)
 
     # Schroeder phases: a swept chirp, crest factor ~sqrt(2), so the burst
     # carries its power without running the DAC into its rails.
     spec = np.zeros(nbins, dtype=complex)
     for i, j in enumerate(bins):
         spec[(j - half) % nbins] = np.exp(1j * math.pi * i * i / max(len(bins), 1))
-    frame = np.fft.ifft(spec) * nbins
-    peak = np.abs(frame).max()
+    comb = np.fft.ifft(spec) * nbins
+    peak = np.abs(comb).max()
     if peak > 0:
-        frame = frame * (cfg["burst_amplitude"] / peak)
-    frame = frame.astype(np.complex64)
-    reference = np.fft.fftshift(np.fft.fft(frame.astype(complex)))
-    return {"bins": bins, "frame": frame, "zeros": np.zeros(nbins, dtype=np.complex64),
-            "reference": reference, "freq_hz": freq, "centre_hz": lo, "nbins": nbins}
+        comb = comb * (cfg["burst_amplitude"] / peak)
+
+    carrier = np.zeros(nbins, dtype=complex)
+    if tone_bin is not None:
+        cspec = np.zeros(nbins, dtype=complex)
+        cspec[(tone_bin - half) % nbins] = 1.0
+        carrier = np.fft.ifft(cspec) * nbins
+        carrier = carrier * (cfg["tone_amplitude"] / np.abs(carrier).max())
+
+    reference = np.fft.fftshift(np.fft.fft(comb))
+    return {"bins": bins, "frame": (comb + carrier).astype(np.complex64),
+            "idle_frame": carrier.astype(np.complex64),
+            "zeros": np.zeros(nbins, dtype=np.complex64),
+            "reference": reference, "freq_hz": freq, "centre_hz": lo, "nbins": nbins,
+            "tone_bin": tone_bin,
+            "tone_hz": None if tone_bin is None else float(freq[tone_bin])}
+
+
+def tone_power(wide_mean, planned, cfg):
+    """The continuous carrier's power in this record, from the wide product.
+
+    At ~1000x the noise in its own bin the carrier needs no coherent
+    recovery: it is simply the excess over the local noise in the channels it
+    occupies, which the wide product already records. The window spreads it
+    over its main lobe, so `tone_sum_bins` either side are summed, and the
+    noise is the median of the bins just outside that.
+
+    Returns {'power', 'noise', 'ratio', 'detected'}; power is the excess in
+    the receiver's normalised counts.
+    """
+    out = {"power": 0.0, "noise": 0.0, "ratio": 0.0, "detected": False}
+    j = planned.get("tone_bin")
+    if j is None or wide_mean is None:
+        return out
+    w = np.asarray(wide_mean, dtype=float)
+    n = len(w)
+    k = int(cfg["tone_sum_bins"])
+    lo_i, hi_i = max(0, j - k), min(n, j + k + 1)
+    near = np.concatenate([w[max(0, j - 20):max(0, j - k - 2)], w[min(n, j + k + 3):min(n, j + 21)]])
+    if near.size < 4:
+        return out
+    noise = float(np.median(near))
+    excess = float(w[lo_i:hi_i].sum() - noise * (hi_i - lo_i))
+    out.update(power=excess, noise=noise,
+               ratio=(excess / noise if noise > 0 else 0.0))
+    out["detected"] = bool(out["ratio"] > cfg["tone_detect_ratio"])
+    return out
 
 
 def estimate(xspec, n_frames, planned, noise_per_bin):
@@ -384,6 +482,8 @@ class PilotTracker:
         self._interval_s = None             # measured burst spacing
         self._shape_version = 0
         self._shape_mean = None
+        self._tone_ref = None               # the carrier's power at the last burst
+        self.tone_records = 0
 
     def burst(self, xspec, n_on, noise_per_bin, now):
         self.bursts += 1
@@ -412,6 +512,26 @@ class PilotTracker:
         self._shape_version += 1
         out.update(ok=1, level=level, slope=slope, level_err=err)
         return out
+
+    def set_tone_reference(self, power):
+        """The carrier's power at a burst: the level the records after it are
+        measured against, so the burst's own level and the carrier's never
+        count the same change twice - at a burst the carrier reads unity by
+        construction, and between bursts it carries the departure since."""
+        if power and power > 0:
+            self._tone_ref = float(power)
+
+    def tone_level(self, tone):
+        """(level, ok) for a science record's carrier: its power relative to
+        the last burst's, which is the fast common-mode gain change since the
+        burst that set `level` and `slope`."""
+        if not tone.get("detected") or not self._tone_ref:
+            return 1.0, 0
+        lvl = float(tone["power"]) / self._tone_ref
+        if not (0.5 < lvl < 2.0):
+            return 1.0, 0
+        self.tone_records += 1
+        return lvl, 1
 
     def _prune(self, now):
         while self._shape and now - self._shape[0][0] > self.cfg["shape_window_s"]:
@@ -465,5 +585,10 @@ def config_of(header):
 def describe(cfg):
     if not cfg or not cfg.get("enabled"):
         return "pilot off"
-    return ("pilot: full-band comb burst every %d records at %.2f of full scale, TX gain %.0f dB"
+    text = ("pilot: full-band comb burst every %d records at %.2f of full scale, TX gain %.0f dB"
             % (cfg["burst_every_records"], cfg["burst_amplitude"], cfg["tx_gain_db"]))
+    if cfg.get("tone_enabled"):
+        text += ("; continuous carrier at %.3f MHz, %.2f of full scale, %s"
+                 % (cfg["tone_hz"] / 1e6, cfg["tone_amplitude"],
+                    "applied" if cfg.get("tone_apply") else "recorded only"))
+    return text
