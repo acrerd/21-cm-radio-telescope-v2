@@ -42,7 +42,36 @@
             return out;
         }
 
+        // The grey hint in each empty instrument box is the *default* it would
+        // use - so it has to come from the instrument, not from the markup.
+        // Hard-coded in index.html it went stale the moment the receiver gain
+        // changed: the gain box read "30" for the two days after it had come
+        // down to 20, which is worse than no hint, because somebody restoring
+        // "the default" would type 30 and silently create an override at the
+        // wrong gain. A placeholder is only visible while its box is empty,
+        // and an empty box means no override, so the value in force *is* the
+        // default exactly when the hint is on screen.
+        function fillInstrumentPlaceholders() {
+            fetch('/api/instrument').then(r => r.json()).then(d => {
+                if (!d || !d.success) return;
+                const set = (id, v, n) => {
+                    const el = document.getElementById(id);
+                    if (el && Number.isFinite(Number(v))) el.placeholder = Number(v).toFixed(n);
+                };
+                set('cfgInstLo', d.lo_mhz, 6);
+                set('cfgInstRate', d.sample_rate_mhz, 0);
+                set('cfgInstGain', d.gain_db, 0);
+                set('cfgInstH1Ch', d.h1_channels, 0);
+                set('cfgInstWideCh', d.wide_channels, 0);
+                if (Array.isArray(d.h1_band_mhz)) {
+                    set('cfgInstH1Lo', d.h1_band_mhz[0], 6);
+                    set('cfgInstH1Hi', d.h1_band_mhz[1], 6);
+                }
+            }).catch(() => { /* keep the markup's hints */ });
+        }
+
         function fillInstrumentBoxes(cfg) {
+            fillInstrumentPlaceholders();
             for (const [key, [id, scale]] of Object.entries(INSTRUMENT_BOXES)) {
                 const v = cfg[key];
                 document.getElementById(id).value = (v == null || v === '') ? '' : (Number(v) / scale);

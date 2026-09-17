@@ -289,3 +289,42 @@ def test_the_famous_targets_are_the_simulator_targets():
             "%s must save as an ephemeris object, not fixed coordinates" % name)
 
     assert len(extras) == 5, "unexpected extra rows beyond the continuum sources"
+
+def test_the_instrument_hints_match_the_instrument():
+    """The grey placeholder in each empty instrument box says what the default
+    is. Hard-coded in the markup it goes stale the moment the tuning changes -
+    the gain hint read 30 for the two days after the receiver came down to 20,
+    which is worse than no hint at all: somebody restoring "the default" would
+    type 30 and silently create an override at the wrong gain.
+
+    config.js fills these from /api/instrument at load, so what the markup
+    carries is only the fallback for an unreachable API. It still has to be
+    right, and this is what notices when it is not.
+    """
+    import re
+
+    import tuning
+
+    inst = tuning.fixed_instrument()
+    html = open(os.path.join(PKG, "web", "index.html")).read()
+
+    def hint(box_id):
+        m = re.search(r'id="%s"[^>]*placeholder="([^"]+)"' % box_id, html)
+        assert m, "no placeholder on %s" % box_id
+        return float(m.group(1))
+
+    assert hint("cfgInstGain") == pytest.approx(inst["gain_db"])
+    assert hint("cfgInstRate") == pytest.approx(inst["sample_rate_hz"] / 1e6)
+    assert hint("cfgInstLo") == pytest.approx(inst["lo_hz"] / 1e6, abs=1e-6)
+    assert hint("cfgInstH1Ch") == pytest.approx(inst["h1_channels"])
+    assert hint("cfgInstWideCh") == pytest.approx(inst["wide_channels"])
+    assert hint("cfgInstH1Lo") == pytest.approx(inst["h1_band_hz"][0] / 1e6, abs=1e-6)
+    assert hint("cfgInstH1Hi") == pytest.approx(inst["h1_band_hz"][1] / 1e6, abs=1e-6)
+
+
+def test_config_fills_the_hints_from_the_instrument():
+    """...and the live path that makes the markup only a fallback."""
+    js = open(os.path.join(PKG, "web", "js", "config.js")).read()
+    assert "fillInstrumentPlaceholders" in js
+    assert "/api/instrument" in js
+    assert ".placeholder =" in js
