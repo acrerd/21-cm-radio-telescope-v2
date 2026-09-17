@@ -23,7 +23,7 @@ worse, so nobody rebuilds them.
 A recorded spectrum is
 
 ```
-counts(f, t)  =  G(t) · B(f, t) · [ T_sys(t) + T_A(f, t) ]
+counts(f, t)  =  G(t) · B(f, t) · [ T_sys(t) + g(t) · T_A(f, t) ]
 ```
 
 | term | is | measured |
@@ -32,8 +32,15 @@ counts(f, t)  =  G(t) · B(f, t) · [ T_sys(t) + T_A(f, t) ]
 | `T_sys` | everything the instrument and its surroundings add: the SAWbird's 59 K, spillover onto the ground, the atmosphere, the cable | 340–372 K |
 | `B(f, t)` | the **shape** of the response across the band, normalised to unit median: the SAW filter's passband, and that filter's multi-transit echo ripple | — |
 | `G(t)` | the **level**, counts per kelvin | ~8–9×10⁻⁷ |
+| `g(t)` | the **beam's gain on the source**, where the source is small against the beam: 1 when the beam is centred, less when the mount is pointed off | 0.984–1.000 |
 
-Four calibrations measure these, on four different timescales, and a fifth
+Note where `g` sits in that line. It multiplies `T_A` and **not** `T_sys`,
+because the system temperature does not care where the dish is looking. Every
+other term multiplies the whole bracket. That one difference decides the order
+everything is applied in, and getting it wrong costs the ratio of the two —
+22% on the Sun.
+
+Five calibrations measure these, on five different timescales, and a sixth
 converts kelvin to flux.
 
 | what | measures | good for | where |
@@ -42,11 +49,16 @@ converts kelvin to flux.
 | gain and system temperature | `G`, `T_sys` | hours | `rf_calibration.py` |
 | pilot bursts | changes in `G` and `B(f)` | one burst per 60 s of run, duty permitting | `pilot.py` |
 | pilot carrier | fast common-mode `G` | every record | `pilot.py` |
+| tracking scallop | `g(t)` on a tracked compact source | one observation, fitted from its own records | `scallop.py` |
 | beam solid angle | kelvin → flux | once, per feed | `astro_simulator/instrument.py` |
 
 The first two are **measured beforehand, on separate jobs, and stored on
 disk**. The two pilot calibrations are **measured inside the observation
-itself**. The beam is measured once and rarely changes.
+itself**, at write time. The scallop is measured inside the observation too,
+but **afterwards, in the reduction** — everything it needs is derivable from
+the file, so it is never written and an old recording improves the day the
+pointing model or the measured beam does. The beam solid angle is measured
+once and rarely changes.
 
 ---
 
@@ -93,12 +105,29 @@ the detail.
     subtracted, and written in kelvin — with every factor stored beside it.
     Burst records are written uncorrected and flagged. (§7)
 
-**Afterwards**
+**Afterwards, in the reduction**
 
 11. `read_observation` multiplies all of it back, drops the burst records, and
-    hands back counts. (§8)
-12. Plots and fits work from those counts, and say on their face what was and
-    was not applied. (§9)
+    hands back counts — **except the pilot when asked for `keep_pilot=True`**,
+    which a plot does and a fit does not, because the pilot is the only
+    correction that cannot be rebuilt from the file. (§8, §10)
+12. The bandpass and the gain are re-applied from the stored template, `T_sys`
+    is subtracted, and the channels outside the continuum window are dropped.
+    What is left is **antenna temperature**. (§5)
+13. On a tracked compact source, the **tracking scallop** — the beam walking
+    ±0.25° across the source as the drive crosses encoder pulses — is fitted
+    from the run's own records and divided out. This is `g(t)` from §1, so it
+    happens **here**, after `T_sys` is subtracted, and never on the counts.
+    (§5)
+14. Kelvin becomes flux through the measured beam solid angle, and solar work
+    is corrected to above the atmosphere. (§5)
+15. Plots and fits say on their face what was and was not applied — which
+    pointing model the scallop used, how many records the pilot reached, and
+    the reason whenever either was refused. (§9)
+
+Steps 11–15 are all reversible-by-omission: none of them writes to the
+recording, so a file re-reduces from scratch every time and improves when the
+template, the pointing model or the measured beam does.
 
 ---
 
@@ -346,23 +375,6 @@ and has been stable since. The bandpass template (<1%) and the master clock
 rate are ruled out. Until the pilot-on/pilot-off test settles it, do not
 compare a gain fitted before that date with one fitted after.
 
-### Kelvin to flux
-
-`A_e = λ²/Ω`, the antenna theorem, with the **measured** main-lobe solid angle
-— 23.7 square degrees, a Gaussian-equivalent 4.57°, integrated directly from
-three Sun drifts at 40, 30 and 20 dB on 2026-09-15. That gives 6.18 m² against
-a physical 7.07, and it is an **upper bound**: the sidelobes and the ~10%
-spillover lie outside the integrated lobe, so the true effective area is
-smaller by the main-beam efficiency. On this scale the Sun reads 79 SFU
-against the reference network's 75, Cas A 1.15 times its model and the Moon
-1.20 times a 225 K disc.
-
-Solar work is corrected to above the atmosphere with the same zenith opacity
-the drift fits use, and the professional measurement for the same day — the
-RSTN 1415 MHz local-noon flux from NOAA SWPC — is quoted beside ours on the
-plot. The stations disagree by 10–20 SFU with each other, so agreement to
-within that is agreement.
-
 ### The tracking scallop
 
 `receiver_scheduler/scallop.py`. Everything above calibrates the *receiver*.
@@ -432,6 +444,23 @@ It is applied in the reduction, for display only, so recordings stay raw and
 re-reduce with a better beam or a better pointing model.
 `receiver_scheduler/solar_flux_scallop.ipynb` walks the whole reduction from
 the recorded file, step by step, and reproduces the plot.
+
+### Kelvin to flux
+
+`A_e = λ²/Ω`, the antenna theorem, with the **measured** main-lobe solid angle
+— 23.7 square degrees, a Gaussian-equivalent 4.57°, integrated directly from
+three Sun drifts at 40, 30 and 20 dB on 2026-09-15. That gives 6.18 m² against
+a physical 7.07, and it is an **upper bound**: the sidelobes and the ~10%
+spillover lie outside the integrated lobe, so the true effective area is
+smaller by the main-beam efficiency. On this scale the Sun reads 79 SFU
+against the reference network's 75, Cas A 1.15 times its model and the Moon
+1.20 times a 225 K disc.
+
+Solar work is corrected to above the atmosphere with the same zenith opacity
+the drift fits use, and the professional measurement for the same day — the
+RSTN 1415 MHz local-noon flux from NOAA SWPC — is quoted beside ours on the
+plot. The stations disagree by 10–20 SFU with each other, so agreement to
+within that is agreement.
 
 ---
 
@@ -615,6 +644,18 @@ Everything in the divisor travels in the file. Nothing is left implicit.
 | `pilot_centre_hz`, `pilot_tone_hz`, `pilot_burst_every_records` | what `factor()` needs to be reversed, and the cadence actually used |
 | `instrument`, `h1_band_hz`, `continuum_band_hz` | the fixed instrument (issue #27) |
 | `beam_fwhm_deg`, `effective_area_m2` | the beam in force, for flux |
+| `pointing_terms` | the pointing model in force, as JSON — what the scallop needs to reconstruct the drive demand. Written from 2026-09-17; absent on an earlier file, and empty if the controller could not be read |
+| `site_lat_deg`, `site_lon_deg`, `site_height_m`, `object_name`, `observation_mode` | enough to recompute where the source was, and whether the mount was tracking it |
+
+**The scallop is not in this list, and that is deliberate.** Everything it
+needs — the ephemeris, the pointing model, the beam, the record times — is
+either in the file or derivable from it, so the correction is recomputed on
+every reduction rather than baked in. A recording therefore carries no trace
+of it and needs no undoing: fit a better pointing model, or measure the beam
+again, and every old solar track improves. The two pilot corrections are the
+opposite case — they are measured from the run's own bursts and can never be
+recovered later — which is why those *are* written, and why `keep_pilot`
+exists (§10).
 
 A file is opened SWMR once every dataset and attribute exists, which is why
 all of the above is written **before** the first record — including the
@@ -672,13 +713,28 @@ Three cards, from `/api/rf/status` and `/api/pilot/status`:
   For a drift scan it is a different fit — total power against the simulator's
   predicted drift curve — and comes back `applicable: false`, drawn and
   reported but never applied as the per-channel calibration.
+- **The tracking scallop gets a line of its own** on a solar track's plot,
+  from `scallop.plot_caption`. Either *"tracking scallop removed: 1.60% p-p,
+  alt 1.20x; az 1.04x the 4.57 deg beam, phase +0.060/-0.036 deg [terms last
+  fitted model]"*, or *"tracking scallop left in: …"* with the reason. It
+  names the **pointing model** it used, because a recording made before
+  `pointing_terms` was stored is reduced against a later model and that is an
+  assumption, not a measurement. The line is never omitted on a run where the
+  correction could apply — a de-scalloped trace and an uncorrected one look
+  alike, which is exactly why the caption exists.
 - **The live view** (`/api/observe/live`) captions the running trace with
   *"pilot: gain x%, tilt y%/MHz applied; N of M bursts seen, K records
-  corrected"*, and drops burst records from the trace.
+  corrected"*, and drops burst records from the trace. It does **not** apply
+  the scallop: the fit needs roughly twenty minutes of records before it will
+  commit, so a live trace would sit uncorrected for the first third of a run
+  and then visibly step. The 30 s re-plot of the file beside it does apply it,
+  so the two disagree by up to 1.6% mid-run, deliberately. Revisit once the
+  amplitudes prove stable enough to be constants rather than fitted per run.
 
-**Known gap:** the static recording plot says nothing about the pilot — only
-the live caption and the RF card do. A file's `pilot_*` datasets are the
-record of what happened; the plot is not.
+**Known gap:** the static recording plot's pilot line reports only how many
+records the pilot reached, not the size of what it applied — the level and
+tilt are on the live caption and the RF card. A file's `pilot_*` datasets are
+the full record of what happened.
 
 ---
 
@@ -772,6 +828,18 @@ beam does.
   re-reduce 22% lower on the corrected solid angle.
 - A gain fitted before 2026-09-16 evening is not comparable with one fitted
   after, until the pilot's total-power step is explained.
+- **The scallop correction is only as good as the pointing model.** It removes
+  the drive's 0.5° quantisation and nothing else, so a stale model leaves its
+  own residual behind — and if the model is wrong enough the fit loses the
+  phase and refuses, which the caption says. Recordings made from 2026-09-17
+  carry `pointing_terms`; anything earlier is reduced against whatever
+  `pointing_model.json` holds now, so re-check the caption before quoting a
+  number off an old file.
+- **Photometry of a tracked compact source needs short records.** The scallop
+  is fitted, and a run under about twenty minutes is refused rather than
+  extrapolated. It also does not apply to a drift scan, where the mount is
+  parked and never crosses a pulse boundary, nor to a field observed for its
+  diffuse emission, where the beam stays full however far it is offset.
 
 ---
 
