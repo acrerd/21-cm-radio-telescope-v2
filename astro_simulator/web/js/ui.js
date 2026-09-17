@@ -500,6 +500,28 @@ export function setupUI(cfg) {
     map.draw();
   });
 
+  // Which named target, if any, the current pointing is on. The menu writes
+  // the coordinates to two decimals, so anything within a beam's-eye 0.05 deg
+  // is that target; beyond it the operator has moved and the booking falls
+  // back to naming the coordinates. Both lists are searched - the H I targets
+  // and the continuum sources the sky model carries - and the nearest wins,
+  // since a couple of them sit within a degree of each other.
+  const TARGET_MATCH_DEG = 0.05;
+  function namedTarget(glon, glat) {
+    let best = "", bestSep = TARGET_MATCH_DEG;
+    for (const [name, l, b] of TARGETS) {
+      const s = sepDeg(glon, glat, l, b);
+      if (s < bestSep) { best = name; bestSep = s; }
+    }
+    for (const s of sky.sources) {
+      // Sun and Moon are in here too, and they are handled as objects rather
+      // than as a fixed position - the caller asks for them first.
+      const d = sepDeg(glon, glat, s.l, s.b);
+      if (d < bestSep) { best = s.name; bestSep = d; }
+    }
+    return best;
+  }
+
   // ---- realise: hand the simulated observation to the telescope -----
   // Only reachable when this page is served by the scheduler, which is what
   // makes it same origin with the API; main.js unhides the button after
@@ -521,8 +543,18 @@ export function setupUI(cfg) {
     let object = "";
     if (sepDeg(p.glon, p.glat, sun.l, sun.b) < 0.3) object = "sun";
     else if (sepDeg(p.glon, p.glat, moon.l, moon.b) < 1.0) object = "moon";
+    // The target's own name, so the booking reads "Lockman Hole spectrum"
+    // rather than "Spectrum l=150.0 b=+53.0" - the name says what the field is
+    // for and the coordinates do not. Matched by position rather than
+    // remembered from the click, the same way the Sun and Moon are above, so
+    // it cannot go stale: edit the l/b boxes off the target and the name stops
+    // being sent rather than following the coordinates onto a different patch
+    // of sky. It is also then applied to coordinates typed in by hand, which
+    // is right - l=150, b=+53 *is* the Lockman Hole however you got there.
+    const targetName = object ? "" : namedTarget(p.glon, p.glat);
     const what = object ? object[0].toUpperCase() + object.slice(1)
-                        : `l=${p.glon.toFixed(2)}°, b=${p.glat.toFixed(2)}°`;
+                        : (targetName ||
+                           `l=${p.glon.toFixed(2)}°, b=${p.glat.toFixed(2)}°`);
     els.scheduleBtn.disabled = true;
     message(`Schedule: booking a ${drift ? "drift scan" : "tracked spectrum"} of ${what}...`);
     try {
@@ -531,7 +563,7 @@ export function setupUI(cfg) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           l: p.glon, b: p.glat, mode: drift ? "cont" : "hi",
-          object,
+          object, target_name: targetName,
           scan_minutes: Number.isFinite(scan) ? scan : 240,
           // The page's clock, pinned or live: a spectrum starts then, a
           // drift scan is centred on the next transit after it.

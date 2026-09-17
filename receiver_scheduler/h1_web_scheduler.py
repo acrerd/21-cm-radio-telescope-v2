@@ -3595,6 +3595,27 @@ def _clamped(name, value, default):
     return int(round(v)) if isinstance(default, int) else v
 
 
+_TARGET_NAME_MAX = 60
+
+
+def _clean_target_name(raw):
+    """A simulator target's name, fit to put in an entry name and a recording.
+
+    It arrives from a web page and ends up in the schedule, the log and the
+    HDF5 `obs_name` attribute, so it is stripped of control characters,
+    collapsed to single spaces and capped. It never reaches a filename - those
+    carry only the time and the mode, deliberately (`observation_files.py`) -
+    so there is no path to traverse, but a newline in the scheduler log would
+    still be a small forgery.
+    """
+    if not isinstance(raw, str):
+        return ''
+    # Non-printables become spaces rather than vanishing, so "Lock\nman" reads
+    # as two words and not as one made-up one.
+    cleaned = ''.join(ch if ch.isprintable() else ' ' for ch in raw)
+    return ' '.join(cleaned.split())[:_TARGET_NAME_MAX]
+
+
 def _record_observe_params(body, glon, glat, mode):
     """Store what the simulator was simulating, in observation terms."""
     global observe_params
@@ -3609,6 +3630,10 @@ def _record_observe_params(body, glon, glat, mode):
         'mode': 'drift' if mode == 'cont' else 'spectrum',
         'l': round(glon, 4),
         'b': round(glat, 4),
+        # The simulator's name for the target, when the operator picked one and
+        # has not moved off it. Empty otherwise, and the Observe tab keeps its
+        # own placeholder rather than inventing a name from coordinates.
+        'name': _clean_target_name(body.get('target_name')),
         'center_freq_mhz': _clamped('center_freq_mhz',
                                     body.get('center_freq_mhz'), 1420.405752),
         'bandwidth_mhz': _clamped('bandwidth_mhz', body.get('bandwidth_mhz'), 2.4),
@@ -5502,9 +5527,18 @@ def api_simulator_schedule():
     else:
         epoch = _next_whole_minute(max(epoch, now + timedelta(seconds=SIMULATOR_LEAD_S)))
 
+    what = 'drift' if drift else 'spectrum'
+    target_name = _clean_target_name(body.get('target_name'))
     if object_name:
         # e.g. "Sun drift" / "Sun spectrum"; the l/b are not used for a body.
-        name = object_name.capitalize() + (' drift' if drift else ' spectrum')
+        name = object_name.capitalize() + ' ' + what
+    elif target_name:
+        # The simulator's own name for the target the operator picked, e.g.
+        # "Lockman Hole spectrum". Worth carrying: it says what the field is
+        # for, which l=150.0 b=+53.0 does not, and it becomes the recording's
+        # obs_name. The simulator only sends it while the coordinates still
+        # match that target, so it cannot go stale against an edited box.
+        name = '%s %s' % (target_name, what)
     else:
         name = ('Drift scan' if drift else 'Spectrum') + ' l=%.1f b=%+.1f' % (glon, glat)
     entry = {
