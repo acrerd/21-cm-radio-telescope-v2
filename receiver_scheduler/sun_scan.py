@@ -47,7 +47,9 @@ except ImportError:
 
 try:
     import matplotlib
-    matplotlib.use("Agg")
+    # Headless unless a notebook kernel owns the display - see plot_backend.
+    from plot_backend import use_headless
+    use_headless()
     import matplotlib.patheffects as pe
     import matplotlib.pyplot as plt
     from matplotlib.colors import Normalize

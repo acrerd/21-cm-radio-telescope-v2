@@ -56,7 +56,9 @@ except ImportError:            # pragma: no cover - environment dependent
 
 try:
     import matplotlib
-    matplotlib.use("Agg")
+    # Headless unless a notebook kernel owns the display - see plot_backend.
+    from plot_backend import use_headless
+    use_headless()
     import matplotlib.pyplot as plt
     MATPLOTLIB_AVAILABLE = True
 except ImportError:            # pragma: no cover - environment dependent
@@ -1274,7 +1276,8 @@ def plot_drift_fit(fit, output_path, figsize=(16.0, 9.0), dpi=120):
     wrong in a way a correlation coefficient cannot show. Both against UTC.
     """
     import matplotlib
-    matplotlib.use("Agg")
+    from plot_backend import use_headless
+    use_headless()
     import matplotlib.pyplot as plt
     import matplotlib.dates as mdates
     from datetime import datetime, timezone
