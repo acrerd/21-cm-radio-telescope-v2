@@ -461,7 +461,7 @@ class TestGenerateFilename:
     @patch.object(sched, 'get_config_value', return_value="/tmp/test_data")
     def test_the_name_says_nothing_the_file_already_says(self, mock_config):
         """The regression this rewrite exists to prevent."""
-        obs = {"name": "Cas A", "coord_system": "radec", "calibrator": True,
+        obs = {"name": "Cas A", "coord_system": "radec",
                "object_name": "sun", "center_freq_mhz": 1420.405}
         name = os.path.basename(sched.generate_filename(obs))
         for leaked in ("cas", "_cal", "sun", "1420"):
@@ -1533,30 +1533,6 @@ class TestSrtPointTelescope:
 
 
 # =============================================================================
-# srt_set_calibrator (with mocked network)
-# =============================================================================
-
-class TestSrtSetCalibrator:
-    """Tests for calibrator control."""
-
-    @patch.object(sched, 'SRT_CONTROLLER_URL', None)
-    def test_no_controller(self):
-        assert sched.srt_set_calibrator(True) is True
-
-    @patch.object(sched, 'SRT_CONTROLLER_URL', "http://fake")
-    @patch.object(sched, 'srt_api_call', return_value={"ok": True})
-    def test_turn_on(self, mock_api):
-        assert sched.srt_set_calibrator(True) is True
-        mock_api.assert_called_once_with("/calibrator", {"on": "1"})
-
-    @patch.object(sched, 'SRT_CONTROLLER_URL', "http://fake")
-    @patch.object(sched, 'srt_api_call', return_value={"ok": True})
-    def test_turn_off(self, mock_api):
-        assert sched.srt_set_calibrator(False) is True
-        mock_api.assert_called_once_with("/calibrator", {"on": "0"})
-
-
-# =============================================================================
 # srt_go_position (with mocked network)
 # =============================================================================
 
@@ -2214,7 +2190,6 @@ class TestHomeFirst:
              patch.object(sched, 'srt_point_telescope',
                           side_effect=lambda obs: (order.append('point'), True)[1]), \
              patch.object(sched, 'srt_wait_for_slew', return_value=True), \
-             patch.object(sched, 'srt_set_calibrator', return_value=True), \
              patch.object(sched, 'generate_filename', return_value='/tmp/h.h5'):
             assert sched.start_observation(dict(self.OBS)) is True
         assert order == ['home', 'point']
@@ -2243,7 +2218,6 @@ class TestHomeFirst:
         with patch.object(sched, 'srt_home_with_report') as home, \
              patch.object(sched, 'srt_point_telescope', return_value=True), \
              patch.object(sched, 'srt_wait_for_slew', return_value=True), \
-             patch.object(sched, 'srt_set_calibrator', return_value=True), \
              patch.object(sched, 'generate_filename', return_value='/tmp/h.h5'):
             assert sched.start_observation(obs) is True
         home.assert_not_called()
@@ -2295,7 +2269,6 @@ class TestNonBlockingStart:
 
         with patch.object(sched, 'srt_point_telescope', return_value=True), \
              patch.object(sched, 'srt_wait_for_slew', side_effect=fake_wait), \
-             patch.object(sched, 'srt_set_calibrator', return_value=True), \
              patch.object(sched, 'generate_filename', return_value='/tmp/s.h5'):
             assert sched.start_observation(dict(self.OBS)) is True
 
@@ -2312,7 +2285,6 @@ class TestNonBlockingStart:
 
         with patch.object(sched, 'srt_point_telescope', return_value=True), \
              patch.object(sched, 'srt_wait_for_slew', side_effect=fake_wait), \
-             patch.object(sched, 'srt_set_calibrator', return_value=True), \
              patch.object(sched, 'generate_filename', return_value='/tmp/s.h5'):
             assert sched.start_observation(dict(self.OBS)) is False
 

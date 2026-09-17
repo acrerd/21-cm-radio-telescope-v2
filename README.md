@@ -408,7 +408,6 @@ Tabbed web interface that coordinates telescope pointing and data recording:
 - **Start Receiver:** Starts the B210 receiver manually for warm-up/testing and reports whether the receiver is idle, manually started, or owned by a scheduled observation
 - **Coordinate Systems:** Alt/Az, RA/Dec (J2000), Galactic, Drift Scan (fixed pointing computed from a source and beam-crossing time), Solar System objects (Sun/Moon), and Satellite (TLE)
 - **Satellite Tracking:** Fetch TLEs from CelesTrak, compute next pass, track via 1 Hz position updates
-- **Calibrator Control:** Per-observation noise source on/off, with `_cal` filename suffix
 - **End Actions:** Stay, Go Home, or Stow telescope after observation
 - **Firmware Update:** Requests the local scheduler service to build and upload WT32 firmware over Ethernet OTA
 

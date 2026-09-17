@@ -354,7 +354,6 @@ Displays the last N lines of `scheduler.log` with auto-refresh (5 second interva
 | Instrument | **Shown, not set** — the fixed instrument (see below) |
 | Integration Time | Seconds per record |
 | SDR Type | B210, RTL-SDR, or Demo |
-| Calibrator | Turn noise source on/off for this observation |
 | Respect local horizon | Advisory check against the measured horizon; trims a scheduled entry |
 | Home the mount first | Run the physical homing before pointing, recording the count error |
 | When Done | Action after observation ends: Stay, Go Home (Alt 0°, Az 0°), or Stow (Alt 90°, Az 180°) |
@@ -427,7 +426,6 @@ The Configuration tab also exposes firmware update settings. The controller UI's
 All scheduler activity is logged to both the console (INFO level) and `scheduler.log` (DEBUG level):
 - Observation start/stop events
 - Telescope commands and slew status
-- Calibrator state changes
 - Preemption events
 - Schedule loading and clash detection
 - Errors with full tracebacks

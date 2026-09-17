@@ -43,7 +43,6 @@
             integration_time_s: 3.0,
             filename: "",
             sdr_type: "b210",
-            calibrator: false,
             end_action: "none",
             enabled: true,
             drift_frame: "radec",

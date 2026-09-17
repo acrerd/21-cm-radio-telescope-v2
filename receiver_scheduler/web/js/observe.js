@@ -132,7 +132,6 @@
                 end_action: document.getElementById('obvEndAction').value,
                 respect_local_horizon:
                     document.getElementById('obvRespectHorizon').checked,
-                calibrator: false,
                 enabled: true,
                 // No date or time: for a Run Now start the scheduler reads the
                 // drift beam-crossing time as now + half the duration, which is

@@ -482,7 +482,7 @@
                         ${obs.horizon_note && !obs.horizon_blocked ? '<div class="field"><div class="field-label">Local horizon</div><div class="field-value" style="color:#ffa502;">' + obs.horizon_note + '</div></div>' : ''}
                         <div class="field"><div class="field-label">Coordinates</div><div class="field-value">${formatCoordDisplay(obs)}</div></div>
                         <div class="field"><div class="field-label">Instrument</div><div class="field-value">fixed · H I + continuum</div></div>
-                        <div class="field"><div class="field-label">Cal / End</div><div class="field-value">${obs.calibrator ? 'CAL' : '-'} / ${({home:'Home',stow:'Stow'})[obs.end_action] || '-'}${obs.home_first ? ' · homes first' : ''}${obs.pilot_off ? ' · pilot off' : ''}</div></div>
+                        <div class="field"><div class="field-label">End</div><div class="field-value">${({home:'Home',stow:'Stow'})[obs.end_action] || '-'}${obs.home_first ? ' · homes first' : ''}${obs.pilot_off ? ' · pilot off' : ''}</div></div>
                         <div class="field"><div class="field-label">Integration</div><div class="field-value">${obs.integration_time_s}s</div></div>
                     </div>
                     <div class="schedule-actions">
@@ -549,7 +549,6 @@
             showInstrument('obsInstrumentNote');
             document.getElementById('obsIntegration').value = obs.integration_time_s ?? DEFAULTS.integration_time_s;
             document.getElementById('obsSdrType').value = obs.sdr_type || DEFAULTS.sdr_type;
-            document.getElementById('obsCalibrator').value = obs.calibrator ? 'on' : 'off';
             document.getElementById('obsEndAction').value = obs.end_action || 'none';
             // Entries saved before this field existed have it undefined, and
             // default to on - safe because the check only ever warns.
@@ -694,7 +693,6 @@
                 duration_minutes: duration,
                 integration_time_s: parseFloat(document.getElementById('obsIntegration').value),
                 sdr_type: document.getElementById('obsSdrType').value,
-                calibrator: document.getElementById('obsCalibrator').value === 'on',
                 end_action: document.getElementById('obsEndAction').value,
                 respect_local_horizon:
                     document.getElementById('obsRespectHorizon').checked,

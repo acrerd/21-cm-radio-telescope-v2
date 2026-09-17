@@ -925,19 +925,6 @@ def srt_wait_for_slew(timeout: Optional[int] = None,
     return False
 
 
-def srt_set_calibrator(on: bool) -> bool:
-    """Turn the calibrator noise source on or off."""
-    if not SRT_CONTROLLER_URL:
-        return True
-    result = srt_api_call("/calibrator", {"on": "1" if on else "0"})
-    if result and result.get('ok'):
-        log.info("Calibrator %s", "ON" if on else "OFF")
-        return True
-    else:
-        log.error("Failed to set calibrator: %s", result)
-        return False
-
-
 def srt_go_position(name: str, alt: float, az: float) -> bool:
     """Send telescope to a named position.
 
@@ -2034,7 +2021,6 @@ DEFAULT_OBSERVATION = {
     "integration_time_s": 3.0,
     "filename": "",  # Auto-generated if empty
     "sdr_type": "b210",
-    "calibrator": False,
     "end_action": "none",
     # Check the pointing against the measured horizon and say so in the log if
     # the target is behind the trees. Advisory - it never stops the run. On for
@@ -2120,7 +2106,7 @@ def generate_filename(obs: dict) -> str:
     """Where this observation records: <observations>/YYYYMMDD_HHMMSS_<mode>.h5
 
     The name carries the time and whether the mount tracked or sat parked, and
-    nothing else. The target name, the calibrator flag, the coordinates, the
+    nothing else. The target name, the coordinates, the
     tuning and the calibration in force are all attributes inside the file, so
     putting any of them in the name only creates a second copy that can
     disagree with the first - after a rename, or after the schedule entry is
@@ -2320,10 +2306,6 @@ def start_observation(obs: dict, duration_override: int = None) -> bool:
             if warning:
                 log.warning("Local horizon: %s", warning)
 
-        # Set calibrator state
-        if SRT_CONTROLLER_URL:
-            srt_set_calibrator(obs.get('calibrator', False))
-
         if start_abort.is_set():
             log.info("Observation start aborted")
             return False
@@ -2362,7 +2344,6 @@ def start_observation(obs: dict, duration_override: int = None) -> bool:
             'coord2_deg': obs.get('coord2_deg', 0),
             'coord2_min': obs.get('coord2_min', 0),
             'coord2_sec': obs.get('coord2_sec', 0.0),
-            'calibrator': obs.get('calibrator', False),
             'duration_minutes': obs.get('duration_minutes', 30),
             'start_date': obs.get('start_date', ''),
             'start_time': obs.get('start_time', ''),
@@ -2661,10 +2642,6 @@ def stop_observation() -> bool:
 
         # Stop satellite tracking if active
         stop_satellite_tracking()
-
-        # Ensure calibrator is off when observation ends
-        if SRT_CONTROLLER_URL and current_observation and current_observation.get('calibrator'):
-            srt_set_calibrator(False)
 
         # This booking's slot is finished with, however the run ended -
         # duration complete or stopped by hand. Without this a slot that was
@@ -5554,7 +5531,7 @@ def api_simulator_schedule():
         'coord2_deg': round(glat, 4), 'coord2_min': 0, 'coord2_sec': 0,
         # No tuning: the fixed instrument's (issue #27), whatever the
         # simulator page was showing.
-        'sdr_type': 'b210', 'calibrator': False,
+        'sdr_type': 'b210',
         'end_action': 'none', 'respect_local_horizon': True,
         'filename': '', 'enabled': True,
         'drift_frame': ('object' if object_name else 'galactic'),
