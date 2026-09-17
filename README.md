@@ -556,7 +556,8 @@ raw = (spectra + attrs['applied_t_sys_k']) * attrs['applied_gain_counts_per_k'] 
 
 If the receiver frequency, sample rate, or FFT size changes during a run, the receiver closes the current file and opens a new one so every file stays internally consistent. The new file is named like any other; the reason for the split is recorded in its `segment` and `segment_reason` attributes.
 
-See `receiver_scheduler/read_h1_data.ipynb` for a complete analysis example.
+See `notebooks/read_h1_data.ipynb` for a complete analysis example, and
+`notebooks/solar_flux_scallop.ipynb` for the whole reduction of a solar track.
 
 ---
 
@@ -617,8 +618,11 @@ See `receiver_scheduler/read_h1_data.ipynb` for a complete analysis example.
 │   ├── observation_files.py # Where a recording goes and what it is called
 │   ├── data/observations/  # Every recording: <date>_<time>_<track|drift>.h5
 │   ├── horizon_profiles/   # Every horizon scan, by date, one chosen
-│   ├── read_h1_data.ipynb  # Jupyter notebook for reading/plotting HDF5 data
 │   └── README.md           # Receiver/scheduler documentation
+│
+├── notebooks/              # Worked data-reduction examples, run from anywhere
+│   ├── read_h1_data.ipynb  # Open a recording, see what is in it, plot it
+│   └── solar_flux_scallop.ipynb # A solar track: band power -> SFU, scallop removed
 │
 ├── astro_simulator/        # Sky simulator (HI4PI + continuum)
 │   ├── instrument.py       # Surveyed site, measured beam - the one copy

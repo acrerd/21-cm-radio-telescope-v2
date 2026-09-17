@@ -52,7 +52,6 @@ This receiver is designed for radio astronomy observations of neutral hydrogen (
 | `horizon_profiles/` | Every horizon scan, kept by date, with `active.json` naming the one in force |
 | `horizon_profile.json` | A mirror of whichever horizon profile is active, for older readers |
 | `last_observation.json` | Points at the last run, so the Observe tab survives a restart |
-| `read_h1_data.ipynb` | Jupyter notebook for reading/plotting the HDF5 files |
 | `requirements.txt` | Python package dependencies |
 | `start_srt_software.sh` | Starts VS Code, Firefox, Stellarium, and optional window layout |
 | `start_platformio_monitor.sh` | Single-instance serial monitor with device wait and lock retry handling |
@@ -633,7 +632,7 @@ Uncalibrated counts still want `10*np.log10(...)` for display; kelvin does not â
 a temperature is already linear in the thing you care about, and taking its
 logarithm throws away the calibration you just gained.
 
-See `read_h1_data.ipynb` for a more complete example with metadata display and zoomed H I views.
+See `../notebooks/read_h1_data.ipynb` for a more complete example with metadata display and zoomed H I views, and `../notebooks/solar_flux_scallop.ipynb` for a solar track reduced end to end.
 
 ## Troubleshooting
 

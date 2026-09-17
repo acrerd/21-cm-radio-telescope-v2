@@ -442,8 +442,8 @@ run on the wrong series, and the first figures quoted for this work were.
 
 It is applied in the reduction, for display only, so recordings stay raw and
 re-reduce with a better beam or a better pointing model.
-`receiver_scheduler/solar_flux_scallop.ipynb` walks the whole reduction from
-the recorded file, step by step, and reproduces the plot.
+`notebooks/solar_flux_scallop.ipynb` walks the whole reduction from the
+recorded file, step by step, and reproduces the plot.
 
 ### Kelvin to flux
 
