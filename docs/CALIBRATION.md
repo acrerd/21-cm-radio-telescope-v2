@@ -413,11 +413,25 @@ small against the beam: diffuse emission fills the beam however far it is
 offset, so `applies_to` says yes for a tracked Sun, Moon or Jupiter and asks
 for anything else. A drift scan has no scallop at all, the mount being parked.
 
-On the 2026-09-17 solar track it takes the residual rms from 0.395% to 0.267%
-of a 1636 K Sun — 6.5 K to 4.4 K — and the folded modulation from 0.82% to
-0.26% in altitude and 0.58% to 0.10% in azimuth. It is applied in the
-reduction, for display only, so recordings stay raw and re-reduce with a
-better beam or a better pointing model.
+On the finished 2026-09-17 solar track — 3261 records over 165 minutes, band
+mean over the 397 continuum channels, antenna temperature — it takes the
+folded modulation from **0.87% to 0.24%** in altitude and **0.58% to 0.10%**
+in azimuth, and the residual rms about an 8th-order trend from **0.562% to
+0.458%** of a 1631 K Sun, 9.2 K to 7.5 K. The correction applied spans 1.60%
+peak to peak and its mean is 0.57%, so every point also comes up by that much:
+the run reads 74.7 SFU where uncorrected it would read 74.3.
+
+Quote those on **antenna temperature**, never on counts. The scallop multiplies
+the source alone, so on total power its fractional depth is diluted by
+`T_A/(T_sys+T_A)` — 0.82 here — and a residual computed on counts flatters the
+correction by that factor. The pipeline gets this right (`plot_observation`
+converts to kelvin before `_plot_solar`); it is the diagnostic that is easy to
+run on the wrong series, and the first figures quoted for this work were.
+
+It is applied in the reduction, for display only, so recordings stay raw and
+re-reduce with a better beam or a better pointing model.
+`receiver_scheduler/solar_flux_scallop.ipynb` walks the whole reduction from
+the recorded file, step by step, and reproduces the plot.
 
 ---
 
