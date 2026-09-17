@@ -2,6 +2,10 @@
 # Install with: pip install -r requirements.txt
 # Note: GNU Radio and UHD are provided by radioconda and cannot be pip-installed.
 #       Install radioconda first: https://github.com/ryanvolz/radioconda
+#
+# On a low-memory host, install one at a time: resolving the whole list at
+# once was killed by the OOM killer on the observatory machine (2026-09-17).
+#   pip install --only-binary=:all: <package>
 
 # Web scheduler
 flask>=3.0
@@ -10,10 +14,20 @@ flask>=3.0
 h5py>=3.0
 numpy>=1.24
 
+# Reduction and plotting. matplotlib draws every stored plot, so it is not
+# optional even headless (observation_plot.py). scipy and astropy are imported
+# inside the functions that need them - the velocity frame, the drift fit, the
+# horizon edge - so the scheduler starts without them and fails later, on the
+# one path that wanted them. Install them.
+matplotlib>=3.6
+scipy>=1.10
+astropy>=5.0
+
 # Receiver GUI
 pyqtgraph>=0.13
 
-# Satellite tracking (TLE propagation and pass prediction)
+# Satellite tracking (TLE propagation and pass prediction), and the ephemeris
+# the tracking-scallop correction reconstructs the drive demand from.
 ephem>=4.0
 
 # Testing

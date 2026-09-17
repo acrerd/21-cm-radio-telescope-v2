@@ -26,13 +26,20 @@ SRT_ROOT=/path/to/21-cm-radio-telescope-v2 jupyter lab   # from anywhere else
 Recordings are read from `receiver_scheduler/data/observations/`. Nothing here
 writes to the observatory's data — any output lands beside the notebook.
 
-Use the radioconda interpreter (`/home/astro/radioconda/bin/python` on the
-observatory host). `read_h1_data.ipynb` needs only `h5py`, `numpy` and
-`matplotlib`; `solar_flux_scallop.ipynb` also imports `scallop.py` and
-`observation_plot.py` from `receiver_scheduler/`, and `ephem` through them,
+Either interpreter works: the observatory's radioconda
+(`/home/astro/radioconda/bin/python`) or the project venv (`.venv`). Both were
+checked against the same recording and give the same numbers.
+
+`read_h1_data.ipynb` needs only `h5py`, `numpy` and `matplotlib`.
+`solar_flux_scallop.ipynb` also imports `scallop.py` and `observation_plot.py`
+from `receiver_scheduler/` — and `ephem`, `scipy` and `astropy` through them —
 because reconstructing where the mount was *commanded* to point means
-reproducing the firmware's own transform — a hand copy in a notebook would
+reproducing the firmware's own transform, and a hand copy in a notebook would
 drift away from the firmware silently.
+
+For a fresh venv, `receiver_scheduler/requirements.txt` covers all of it.
+Install one package at a time on the observatory host; resolving the whole list
+in one pip run was killed by the OOM killer there.
 
 ## A recording still being written
 
