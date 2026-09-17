@@ -131,9 +131,10 @@ def test_the_solar_recording_renders_as_flux_against_the_clock(tmp_path, monkeyp
     captured = {}
     real = observation_plot._plot_solar
 
-    def spy(ax, spectra, stamps, calibrated):
+    def spy(ax, spectra, stamps, calibrated, **kw):
         captured["n"] = spectra.shape[0]
-        result = real(ax, spectra, stamps, calibrated)
+        captured["header"] = kw.get("header")
+        result = real(ax, spectra, stamps, calibrated, **kw)
         captured["xlabel"] = ax.get_xlabel()
         captured["ylabel"] = ax.get_ylabel()
         return result

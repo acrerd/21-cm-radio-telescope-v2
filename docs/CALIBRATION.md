@@ -363,6 +363,62 @@ RSTN 1415 MHz local-noon flux from NOAA SWPC — is quoted beside ours on the
 plot. The stations disagree by 10–20 SFU with each other, so agreement to
 within that is agreement.
 
+### The tracking scallop
+
+`receiver_scheduler/scallop.py`. Everything above calibrates the *receiver*.
+This one calibrates the **mount**, and on a tracked compact source it is the
+largest single systematic left in the photometry.
+
+The Due rounds every commanded position to one encoder pulse, 0.5°. `round()`
+is the firmware's own arithmetic, so the pointing error swings ±0.25° rather
+than running 0 → 0.5 (issue #7), and the beam's gain follows the square of it:
+a **scallop**, not a sawtooth. Both axes do it at once, at their own rates —
+altitude steps every ~10.7 minutes on the Sun, azimuth every ~1.6 — and
+neither is slow enough to be absorbed by a baseline. Measured on the
+2026-09-17 solar track, folded on the drive's own quantisation phase:
+
+| axis | period | peak-to-peak | a sawtooth would give |
+|---|---|---|---|
+| altitude | 10.7 min | 0.82% | 3.32% |
+| azimuth | 1.64 min | 0.58% | 2.27% |
+
+The correction is fitted from the observation's own records, not taken from
+the beam, and two measured facts are why. The amplitude comes out 10–40% above
+what a 4.57° Gaussian predicts, because the beam is flat-topped and the
+scallop only ever probes the middle quarter-degree of it. And the phase of the
+dip sits 0.04–0.07° from where the pointing model puts it, which is the
+model's own residual at that part of the sky — **a correction applied at the
+wrong phase adds modulation rather than removing it**, so the fit carries a
+phase offset per axis and searches it. Each axis is judged separately against
+`MIN_SIGMA` (4) and against the beam's predicted curvature; an axis that fails
+either is left in rather than carried, because a negative fitted amplitude
+applied would amplify that axis instead of flattening it.
+
+Reconstructing where the mount was *commanded* to point needs the pointing
+model that was in force. The scheduler now writes it into every recording as
+`pointing_terms`; a file made before that (or when the controller could not be
+read) falls back to the model this installation last fitted, from
+`pointing_model.json`, and the plot says which was used. **It never runs with
+no model at all** — without one the reconstructed demand is over a degree out
+and varies across the sky, so the quantisation phase is wrong and the fit
+returns a *negative* amplitude, which is exactly how the fallback came to be
+written: the same track the code fitted at 37σ with the terms in hand reported
+"not detected" through the plot path without them.
+
+Two limits on where it is applied. It multiplies the **source**, not the
+system temperature — `counts = G·B·(T_sys + g·T_A)` — so it belongs after
+T_sys is subtracted and never on the counts, which is also why it is not part
+of the receiver's write-time chain. And it is meaningful only for a source
+small against the beam: diffuse emission fills the beam however far it is
+offset, so `applies_to` says yes for a tracked Sun, Moon or Jupiter and asks
+for anything else. A drift scan has no scallop at all, the mount being parked.
+
+On the 2026-09-17 solar track it takes the residual rms from 0.395% to 0.267%
+of a 1636 K Sun — 6.5 K to 4.4 K — and the folded modulation from 0.82% to
+0.26% in altitude and 0.58% to 0.10% in azimuth. It is applied in the
+reduction, for display only, so recordings stay raw and re-reduce with a
+better beam or a better pointing model.
+
 ---
 
 ## 6. What the recovery is used for
@@ -624,6 +680,13 @@ burst records and reports how many in the header. What comes back is counts.
 already been applied to is circular: it would return unity and a system
 temperature of zero, while looking like a perfect calibration.
 
+The **tracking scallop** needs no undoing: it is applied in the reduction and
+never written, so it is absent from the file by construction. The same is true
+of the LSR velocity axis and the atmospheric-opacity correction on solar flux
+— all three are properties of where the dish was pointed rather than of the
+receiver, and all three improve when the ephemeris, the pointing model or the
+beam does.
+
 ---
 
 ## 11. What is not calibrated, and what it would take
@@ -644,6 +707,15 @@ temperature of zero, while looking like a perfect calibration.
   known size.
 - **The fast wobble's origin** — receiver, transmitter or atmosphere — which
   decides whether the carrier is applied.
+- **What is left under the tracking scallop.** Taking it out leaves 0.27% rms
+  on the Sun where the radiometer equation and `GAIN_INSTABILITY` together
+  predict about 0.08% per record. So something of the same order as the
+  scallop is still there, and the obvious candidate is the rest of the
+  pointing residual: the correction assumes the only error is the
+  quantisation, while the model itself is good to a few hundredths of a degree
+  and drifts with the structure's temperature. A second scallop fit on a
+  *second* tracked source the same day would separate a mount effect from a
+  receiver one.
 - **The pilot's own absolute scale.** The gain job does not yet store a
   `pilot_reference`, so every run is referenced to its own first burst
   (`pilot_anchored = 0`) and the pilot removes drift *within* a run, not the

@@ -474,7 +474,17 @@ def plot_observation(path, output_path, name="", mode="spectrum",
         # The same picture the live view drew while the run was on: flux
         # against the clock, corrected to above the atmosphere. A solar
         # track's spectrum is a flat continuum and says nothing.
-        _values, opacity, group = _plot_solar(ax, spectra, stamps, cal_ok)
+        scallop_report = {}
+        _values, opacity, group = _plot_solar(ax, spectra, stamps, cal_ok,
+                                              header=header,
+                                              scallop_report=scallop_report)
+        # The caption names the pointing model too: a recording made before the
+        # terms were embedded is reduced against the model this installation
+        # last fitted, which is an assumption and has to show on the plot.
+        import scallop
+        line = scallop.plot_caption(scallop_report)
+        if line:
+            subtitle += "\n" + line
         if cal_ok:
             subtitle += "\nmean %.1f SFU over the run" % float(np.nanmean(_values))
             subtitle += (", corrected to above the atmosphere (zenith opacity %.3f nepers)"
@@ -813,19 +823,33 @@ def _sun_altitudes(stamps):
     return np.interp(stamps, knots, alts)
 
 
-def solar_flux_series(spectra, stamps, calibrated):
+def solar_flux_series(spectra, stamps, calibrated, header=None, scallop_report=None):
     """Per-point (epoch seconds, value, opacity_applied, records per point)
     for a solar track: the continuum band mean of each record - antenna
     temperature when calibrated, counts otherwise - converted to solar flux
     units and corrected to above the atmosphere exactly as the live view is
     (`/api/observe/live`): the same antenna theorem, the same zenith opacity,
-    applied for display and never to the file."""
+    applied for display and never to the file.
+
+    With a `header`, the **tracking scallop** is taken out first (`scallop.py`):
+    the beam walks a quarter of a degree either side of the source as the drive
+    crosses encoder pulses, which on the 2026-09-17 solar track cost 0.8% of
+    the source peak to peak in altitude and 0.6% in azimuth. It is fitted from
+    this run's own records and applied per record, *before* binning, and only
+    to a tracked compact source. `scallop_report`, if a dict is passed, is
+    filled in with what was done - the caller puts it on the plot."""
     import rf_calibration
     from observatory import antenna_temperature_to_flux
     power = np.nanmean(spectra, axis=1)
     t = np.asarray(stamps, float)
     if t.size != power.size or not t.size:
         t = np.arange(power.size, dtype=float)
+    if calibrated and header is not None and t.size == power.size:
+        # Per record, on the source term alone, before any binning.
+        import scallop
+        power, report = scallop.correct(power, t, header)
+        if scallop_report is not None:
+            scallop_report.update(report)
     group = max(1, int(math.ceil(power.size / float(_SOLAR_MAX_POINTS))))
     if group > 1:
         keep = (power.size // group) * group
@@ -845,9 +869,11 @@ def solar_flux_series(spectra, stamps, calibrated):
     return t, flux, opacity, group
 
 
-def _plot_solar(ax, spectra, stamps, calibrated):
+def _plot_solar(ax, spectra, stamps, calibrated, header=None, scallop_report=None):
     import matplotlib.dates as mdates
-    t, values, opacity, group = solar_flux_series(spectra, stamps, calibrated)
+    t, values, opacity, group = solar_flux_series(spectra, stamps, calibrated,
+                                                 header=header,
+                                                 scallop_report=scallop_report)
     times = [datetime.fromtimestamp(float(s), tz=timezone.utc) for s in t]
     ax.plot(times, values, color=_ACCENT, lw=1.2, drawstyle="steps-mid")
     _robust_ylim(ax, values)

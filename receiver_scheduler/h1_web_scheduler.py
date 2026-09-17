@@ -2377,6 +2377,12 @@ def start_observation(obs: dict, duration_override: int = None) -> bool:
             # the plot marks and the fit should use, rather than the slot's
             # mid-point. Absent when the controller's model could not be
             # read at the start.
+            # The pointing model in force, so the drive position the mount
+            # was commanded to can be reconstructed afterwards - which is
+            # what the tracking-scallop correction needs (scallop.py). The
+            # model is refitted every few weeks, so a file that does not
+            # carry its own is reduced against a later one and says so.
+            'pointing_terms': _pointing_terms_json(),
             'drift_drive_alt': obs.get('drift_drive_alt', ''),
             'drift_drive_az': obs.get('drift_drive_az', ''),
             'drift_crossing_time': obs.get('drift_crossing_time', ''),
@@ -4849,6 +4855,21 @@ def api_pilot_status():
         last = {'error': str(exc)}
     return jsonify({'success': True, 'config': cfg,
                     'description': pilot_mod.describe(cfg), 'last': last})
+
+
+def _pointing_terms_json():
+    """The controller's pointing terms as JSON, for the recording's metadata.
+
+    Empty string when the controller cannot be read: the recording is worth
+    more than its provenance, and the reduction falls back to the terms in
+    force when it runs, saying so.
+    """
+    try:
+        terms = srt_pointing_terms()
+        return json.dumps(terms) if terms else ''
+    except Exception as exc:                              # noqa: BLE001
+        log.debug("pointing terms unavailable for the recording metadata: %s", exc)
+        return ''
 
 
 def instrument_in_force():
