@@ -53,12 +53,26 @@ H1_REST_FREQ_HZ = 1420.405752e6
 #                         from this tuning; it is the manual GUI's case.
 #   continuum LO-3.2..-0.1 MHz - 3.1 MHz with no hydrogen (v > +330 km/s),
 #                         on the good side of the SAW filter.
-#   gain 30 dB          - 40 dB compressed the Sun's peak by ~5.7% (issue #35,
-#                         three Sun drifts 2026-09-15: 30 and 20 dB agree,
-#                         40 does not); 30 dB is linear on the Sun and the
-#                         B210's noise figure there is still negligible
-#                         against the front end. Was 40 dB until 2026-09-15;
-#                         the bandpass and gain calibrations are per gain.
+#   gain 20 dB          - 40 dB compressed the Sun's peak by ~5.7% (issue #35,
+#                         three Sun drifts 2026-09-15: 30 and 20 dB agree to
+#                         0.66% on peak/baseline, 40 does not). 40 -> 30 on
+#                         2026-09-15; 30 -> 20 on 2026-09-17, for the pilot's
+#                         headroom (issue #30): the compression is DOWNSTREAM
+#                         of this setting - dropping it is what fixed the Sun -
+#                         so every 10 dB off multiplies the total power the
+#                         chain will take before compressing by ten, and the
+#                         comb can be driven ten times harder for a 3.1x
+#                         better passband correction. It costs ~4 K of T_sys
+#                         (357 -> 361 K, from the same two Sun drifts) and
+#                         nothing in quantisation: per-channel noise on the
+#                         off-Sun part of those drifts sits 1.07/1.11/1.08 x
+#                         the radiometer equation at 40/30/20 dB, so 20 dB is
+#                         if anything the cleanest of the three.
+#                         The GAIN calibration is per receiver gain and
+#                         refuses across one; the bandpass template checks
+#                         only the LO and rate, since it is normalised to
+#                         unit median and compression takes the whole band
+#                         down together. Re-measure both after a change.
 #
 # These are config values (scheduler_config.json, receiver_* keys) so they can
 # be changed deliberately, and they are the defaults so that a receiver run by
@@ -67,7 +81,7 @@ H1_REST_FREQ_HZ = 1420.405752e6
 
 FIXED_LO_HZ = H1_REST_FREQ_HZ - 1.5e6            # 1418.905752 MHz
 FIXED_SAMPLE_RATE_HZ = 8.0e6
-FIXED_GAIN_DB = 30.0
+FIXED_GAIN_DB = 20.0
 WIDE_CHANNELS = 1024                              # 7.8 kHz per channel
 H1_BAND_HZ = (FIXED_LO_HZ + 0.1e6, FIXED_LO_HZ + 3.4e6)
 # Over the decimated 4 Msps: 3.9 kHz = 0.82 km/s, 845 channels kept across

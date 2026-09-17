@@ -146,6 +146,12 @@ _DEFAULT_CONFIG = {
     "receiver_pilot_max_duty_cycle": None,
     "receiver_pilot_burst_amplitude": None,
     "receiver_pilot_tx_gain_db": None,
+    # The carrier's amplitude is exposed beside the transmit gain because the
+    # two are not independent: they share one TX chain, so raising the gain
+    # raises the carrier - which runs in every science record - along with the
+    # comb. Changing one without the other is the mistake this key exists to
+    # make avoidable.
+    "receiver_pilot_tone_amplitude": None,
     # `obstruction_sectors` used to live here: a hand-entered
     # [az_min, az_max, min_sun_alt] list, in practice the single blanket entry
     # [[45, 120, 30]] read off one calibration day. It was always a stand-in
@@ -4881,7 +4887,7 @@ def tuning_instrument_keys():
     import tuning
     return set(tuning.INSTRUMENT_KEYS) | {"pilot_enabled", "pilot_burst_interval_s",
                                           "pilot_max_duty_cycle", "pilot_burst_amplitude",
-                                          "pilot_tx_gain_db"}
+                                          "pilot_tx_gain_db", "pilot_tone_amplitude"}
 
 
 def obs_header(obs=None):

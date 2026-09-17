@@ -108,9 +108,20 @@ PILOT_DEFAULTS = {
     # the bursts tracking the skirt's own slow motion.
     "tone_enabled": True,
     "tone_hz": 1415.3e6,
-    "tone_amplitude": 0.25,               # carrier frame peak; what matters is
-                                          # its ratio to a comb tone (~250 in
-                                          # power), the pads setting the absolute
+    # Carrier frame peak. Cut from 0.25 to 0.079 on 2026-09-17 when `tx_gain_db`
+    # went up 10 dB: the two share one TX chain and one sink, so the transmit
+    # gain moves both, and the carrier runs in EVERY record. At 0.25 the
+    # carrier is 46% of the comb's mean power - the comb is peak-limited by its
+    # Schroeder crest factor of 1.35 while a CW tone has a crest of 1.0 - which
+    # at the design point is 2.24x the total system noise sitting in the band
+    # continuously. Carried along by the 10 dB it would have been 23x, in every
+    # science record: most of the new headroom spent, and a strong in-band CW
+    # tone is the classic source of intermodulation products, which land back
+    # across the measured band rather than staying in their own unmeasured bin.
+    # 0.25/sqrt(10) holds the carrier exactly where it was while the comb goes
+    # up tenfold. It has precision to spare either way: ~2300x the per-bin
+    # noise, good to 6.5e-5 per 60 s record, which is the thermal floor.
+    "tone_amplitude": 0.0791,
     "tone_guard_bins": 6,                 # comb tones left out around the carrier
     "tone_sum_bins": 2,                   # bins either side summed for its power
     "tone_detect_ratio": 10.0,            # excess over the local noise to believe it
@@ -122,7 +133,23 @@ PILOT_DEFAULTS = {
     # recorded either way, so the decision can be made on real data and
     # applied at reduction.
     "tone_apply": False,
-    "tx_gain_db": 0.0,                    # the minimum
+    # Transmit gain. 0 dB (the minimum) until 2026-09-17, when the receiver
+    # gain came down to 20 dB and handed the comb 10 dB of headroom: the
+    # residual of the passband correction goes as 1/sqrt(comb power), so ten
+    # times the power is 3.1x better - 0.037 K against 0.117 K on a 360 K
+    # system, a quarter of the 0.15 K thermal floor of a gain fit, which is
+    # where the SAW ripple stops being a term in the budget. Verified in
+    # simulation to ratio 100: the scaling holds (3.13x measured against 3.16x
+    # predicted at ratio 50), every burst is still detected, and neither the
+    # per-channel factor nor the correction vector reaches its 0.5-2 clip.
+    # NOT pushed further: at ratio 100 the return is already bending away from
+    # 1/sqrt (4.35x against 4.47x predicted) for a term the science can no
+    # longer see, and the burst would sit where the third-order extrapolation
+    # behind the compression estimate is doing more work than one measured
+    # point should. PROVISIONAL: the pads between the TX port and the vertex
+    # dipole set the absolute level, and the dipole is not wired yet, so this
+    # is trimmed on the bench against a MEASURED comb-to-noise ratio of 50.
+    "tx_gain_db": 10.0,
     "dc_guard_bins": 4,                   # no tone this close to the LO
     # How loudly a 20 ms block has to say "the comb is here" to be counted.
     # The statistic is the height of the cross-spectrum's delay peak against

@@ -20,7 +20,7 @@
   "instrument": {
     "lo_hz": 1418905752.0,
     "sample_rate_hz": 8000000.0,
-    "gain_db": 30.0,
+    "gain_db": 20.0,
     "h1_band_hz": [
       1419005752.0,
       1422305752.0

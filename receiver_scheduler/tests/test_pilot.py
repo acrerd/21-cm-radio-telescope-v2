@@ -57,20 +57,33 @@ class TestPlan:
 
     def test_the_carrier_is_the_right_strength_relative_to_the_comb(self):
         """The pads set the absolute level; the digital ratio is what decides
-        whether both hit their targets at once. Wanted: the carrier at 0.85 of
-        the whole band's noise power (issue #30's fast-wobble budget) while a
-        comb tone is ~2x the noise in its bin, so the burst record stays
-        inside the linearity the Sun drifts proved at 30 dB."""
+        whether both hit their targets at once.
+
+        Wanted since 2026-09-17: a comb tone at ~50x the noise in its own bin,
+        which the receiver gain coming down to 20 dB is what affords, while the
+        carrier stays at the 2.24x of whole-band noise power it already ran at.
+
+        The carrier is held rather than carried up with the transmit gain
+        because it runs in EVERY record, not just the bursts. Both come off one
+        TX chain, so +10 dB moves both, and at the old 0.25 amplitude the
+        carrier would have gone to 23x of band noise continuously - most of the
+        new headroom spent, and a strong in-band CW tone is where
+        intermodulation products come from, landing back across the measured
+        band rather than staying in their own unmeasured bin.
+        """
         inst, p = _plan()
+        n = inst["wide_channels"]
         carrier = float(np.mean(np.abs(p["idle_frame"]) ** 2))
         comb_per_bin = float(np.mean(np.abs(p["frame"] - p["idle_frame"]) ** 2)) / len(p["bins"])
-        ratio = carrier / comb_per_bin
-        wanted = 0.85 * inst["wide_channels"] / 2.0
-        assert ratio == pytest.approx(wanted, rel=0.35)
-        # what that means at the receiver: the continuous level and the burst's
-        comb_total = comb_per_bin * len(p["bins"]) / carrier * 0.85
-        assert 1.5 < 1 + 0.85 < 2.0                                  # continuous, x normal
-        assert 1 + 0.85 + comb_total < 5.0                           # during a burst
+        COMB_RATIO = 50.0                     # the design target, per comb bin
+        # what each comes to at the receiver, in units of whole-band noise power
+        carrier_x = carrier / comb_per_bin * COMB_RATIO / n
+        comb_x = COMB_RATIO * len(p["bins"]) / n
+        assert carrier_x == pytest.approx(2.24, rel=0.2)
+        assert 1 + carrier_x < 4.0                            # every science record
+        # during a burst - and still an order below where the chain compresses
+        # at 20 dB (x637, extrapolated from the 40 dB Sun drift's 8.45% deficit)
+        assert 1 + carrier_x + comb_x < 637 / 10.0
 
     def test_off_means_off(self):
         inst, p = _plan({"receiver_pilot_enabled": False})
