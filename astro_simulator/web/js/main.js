@@ -156,6 +156,20 @@ async function boot() {
       })
       .catch(() => {});
 
+    // T_sys from the gain calibration in force. Same terms as the two fetches
+    // around it: the scheduler holds the measurement, so the page asks for it
+    // where it exists and keeps meta.json's snapshot where it does not. Worth
+    // asking rather than baking in, because the gain is refitted every few
+    // weeks - and T_sys is the largest term in the noise this page draws, so a
+    // stale one makes a simulated spectrum quieter than any real one.
+    fetch("/api/rf/status")
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => {
+        const t = d && d.gain && d.gain.t_sys_k;
+        if (Number.isFinite(t)) ui.setMeasuredTsys(t);
+      })
+      .catch(() => {});
+
     // The measured horizon, for the same reason and on the same terms: it is
     // the scheduler that holds it, so the button exists exactly where the data
     // does. What arrives is whichever profile is *in force* - the scheduler

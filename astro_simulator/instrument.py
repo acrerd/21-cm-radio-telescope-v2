@@ -6,7 +6,9 @@ without importing matplotlib and astropy, and so the measured beam is written
 down in exactly one place rather than once per consumer.
 """
 
+import json
 import math
+import os
 
 # Beam, measured rather than derived. The number that matters to every
 # consumer here is the main-lobe SOLID ANGLE, because that is what the antenna
@@ -118,6 +120,47 @@ MAIN_BEAM_EFFICIENCY = 1.0
 # differences on a settled run are the measurement; keep it honest the same
 # way if remeasuring.
 GAIN_INSTABILITY = 2.3e-4
+
+# The system temperature to simulate with when nothing better is known: the
+# receiver has never measured below ~340 K, so 200 K (the old default) drew a
+# sky quieter than this telescope can deliver, and a student comparing a
+# simulated spectrum with a real one found the real one inexplicably noisy.
+# Only used when no gain calibration is on disk - see measured_t_sys_k.
+T_SYS_FALLBACK_K = 350.0
+
+# Where the scheduler keeps the fitted gain. Read by path rather than by
+# importing the scheduler, the same boundary horizon_store.py observes: this
+# layer is the one everything else may depend on, so it must not depend back.
+_GAIN_CALIBRATION = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "receiver_scheduler", "gain_calibration.json")
+
+
+def measured_t_sys_k(default=T_SYS_FALLBACK_K):
+    """The system temperature the last gain fit measured, for the simulator.
+
+    The simulator's job is to show what *this* telescope would record, and
+    T_sys is the largest term in the noise it draws. Taking it from the
+    calibration in force rather than from a round number means a simulated
+    spectrum and a real one are comparable without anyone remembering to set a
+    box - and it follows a re-calibration on its own, since this reads the
+    file rather than caching a value.
+
+    It is a starting value, not a constraint: every simulator still lets the
+    operator type a different T_sys, which is the point of simulating.
+
+    Returns `default` when the file is missing or unreadable, which is the
+    normal case for a checkout with no observatory behind it.
+    """
+    try:
+        with open(_GAIN_CALIBRATION) as fh:
+            t_sys = float(json.load(fh)["t_sys_k"])
+    except (OSError, ValueError, TypeError, KeyError):
+        return float(default)
+    # A fit against its own floor is not a measurement (rf_calibration clamps
+    # at MIN_T_SYS_K), and a runaway is worse than the default.
+    return t_sys if 50.0 < t_sys < 5000.0 else float(default)
+
 
 SITE_NAME = "Acre Road"
 SITE_LAT_DEG = 55.902426

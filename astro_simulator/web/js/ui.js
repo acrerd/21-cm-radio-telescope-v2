@@ -647,5 +647,20 @@ export function setupUI(cfg) {
   applyModeBand(state.mode);
   updateMapTitle();
   updateInfo();
-  return { message, point, applyParams };
+  // The measured system temperature, when the scheduler is there to be asked.
+  // meta.json carries a snapshot for the static build, but the gain is refitted
+  // every few weeks and a baked-in number goes quietly stale; served by the
+  // scheduler the page takes the calibration in force instead. Only applied
+  // while the box still holds what it was initialised with, so it never
+  // overwrites a value the operator typed.
+  function setMeasuredTsys(tsysK) {
+    if (!Number.isFinite(tsysK) || tsysK <= 0) return false;
+    const shown = boxes.ts.value.trim();
+    if (shown !== "" && shown !== `${sky.tsys}`) return false;   // operator's
+    boxes.ts.value = `${Math.round(tsysK * 10) / 10}`;
+    applyParams();
+    return true;
+  }
+
+  return { message, point, applyParams, setMeasuredTsys };
 }

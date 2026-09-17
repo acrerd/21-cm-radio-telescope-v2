@@ -174,7 +174,12 @@ def write_meta():
         # 1.22 lambda/D.
         "defaults": {"bw_mhz": 2.0, "dish_m": DISH_M,
                      "eta": instrument.MAIN_BEAM_EFFICIENCY,
-                     "tsys": 200.0, "tint": 60.0, "npol": 1,
+                     # The measured T_sys, so the static build starts
+                     # where the telescope actually is. Served by the
+                     # scheduler, the page then asks for the live value
+                     # (main.js) and this is only the fallback.
+                     "tsys": round(instrument.measured_t_sys_k(), 1),
+                     "tint": 60.0, "npol": 1,
                      "fwhm": round(beam_fwhm_deg(DISH_M), 3),
                      # Fractional receiver gain fluctuation per sample - the
                      # measured reason a drift scan never reaches the

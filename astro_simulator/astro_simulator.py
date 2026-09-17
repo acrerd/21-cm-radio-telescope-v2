@@ -46,7 +46,8 @@ from hi4pi_data import ensure_file
 from horizon_store import horizon_castellation, load_active, profile_date
 from instrument import (GAIN_INSTABILITY, MAIN_BEAM_EFFICIENCY, SITE_HEIGHT_M,
                         SITE_LAT_DEG, SITE_LON_DEG,
-                        SITE_NAME as SITE_NAME_DEFAULT, beam_fwhm_deg)
+                        SITE_NAME as SITE_NAME_DEFAULT, beam_fwhm_deg,
+                        measured_t_sys_k)
 
 # the cursor moving outside the Mollweide ellipse makes matplotlib's
 # inverse projection hit arcsin(|x| > 1); harmless, so keep it quiet
@@ -632,10 +633,15 @@ def main():
                    help="Main-beam eff. (1.0: the measured beam is taken as the "
                         "whole pattern, so point sources are upper limits)")
     p.add_argument("--nchan", type=int, help="Spectrometer channels")
-    p.add_argument("--tsys", type=float, default=200.0,
-                   help="Tsys (K) for the noise (default 200; 0 = ideal "
-                        "receiver, source self-noise only; clear the "
-                        "box in the GUI to disable noise)")
+    # Starts at what the last gain fit measured, so a simulated spectrum
+    # is comparable with a real one without anyone setting a box; still
+    # editable, which is the point of simulating.
+    p.add_argument("--tsys", type=float, default=measured_t_sys_k(),
+                   help="Tsys (K) for the noise (default: the measured "
+                        "T_sys from the gain calibration in force, "
+                        "%.0f K now; 0 = ideal receiver, source "
+                        "self-noise only; clear the box in the GUI to "
+                        "disable noise)" % measured_t_sys_k())
     p.add_argument("--tint", type=float, default=60.0, help="Integration (s)")
     p.add_argument("--npol", type=int, default=1, help="Polarisations")
     p.add_argument("--controller", default="http://192.168.50.120",
