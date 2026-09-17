@@ -694,6 +694,20 @@ burst records and reports how many in the header. What comes back is counts.
 already been applied to is circular: it would return unity and a system
 temperature of zero, while looking like a perfect calibration.
 
+**The pilot is the exception, and `keep_pilot` is why.** Everything else
+reversed here can be put back from the stored template — the bandpass and the
+gain belong to the instrument, not to the run. The pilot does not: it is
+measured from that run's own bursts, and nothing outside the file knows the
+answer, so reversing it and not re-applying it discards it for good. A *fit*
+must still see raw counts, so the default reverses it and `bandpass.py`,
+`drift_fit.py` and `rf_calibration.py` take that default. A *plot* asks for
+`keep_pilot=True`, and `plot_observation` does. The header carries
+`pilot_kept` so a caption cannot claim a correction that was thrown away, and
+the subtitle names the number of records it reached. Until the vertex dipole
+is wired every factor is unity and the two paths agree exactly, which is
+precisely why this had to be caught by reading rather than by looking at a
+plot.
+
 The **tracking scallop** needs no undoing: it is applied in the reduction and
 never written, so it is absent from the file by construction. The same is true
 of the LSR velocity axis and the atmospheric-opacity correction on solar flux

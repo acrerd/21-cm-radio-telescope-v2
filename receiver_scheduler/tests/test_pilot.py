@@ -429,6 +429,51 @@ class TestFile:
         fw, cw, _, _, hw = read_observation(path, product="wide")
         assert cw == pytest.approx(raw_w[[0, 2, 4]], rel=1e-5)
 
+    def test_keep_pilot_leaves_the_correction_in_for_a_plot(self, tmp_path, monkeypatch):
+        """A *fit* needs raw counts or it is circular. A *plot* needs the
+        pilot left in, because it is the one correction that cannot be
+        rebuilt from the file afterwards - it is measured from that run's own
+        bursts and the stored template knows nothing about it. Reversing it
+        and never re-applying it is how it would be silently discarded."""
+        from observation_plot import read_observation
+        path = str(tmp_path / "keep.h5")
+        fine_vec = 1 + 0.003 * np.cos(np.linspace(0, 40, 300))
+        pilots = [dict(CLEAN),
+                  {"burst": 0, "ok": 1, "level": 1.03, "slope": -0.004, "snr": 0.0, "seen": 0},
+                  {"burst": 0, "ok": 1, "level": 0.98, "slope": 0.002, "snr": 0.0, "seen": 0}]
+        f_h1, _, raw_h1, _, _ = _file(path, monkeypatch, pilots, calibrated=True,
+                                      fine_vec=fine_vec)
+        with h5py.File(path, "r") as hf:
+            fc = float(hf.attrs["pilot_centre_hz"])
+
+        _, raw, _, _, h_raw = read_observation(path)
+        _, kept, _, _, h_kept = read_observation(path, keep_pilot=True)
+
+        # Record 0 had nothing applied, so both agree exactly.
+        assert kept[0] == pytest.approx(raw[0], rel=1e-6)
+        # Records 1 and 2 did: kept = raw / (factor * shape), the divisor the
+        # receiver used, so the pilot's drift really is out of the series.
+        for i, (lev, slo) in enumerate(((1.03, -0.004), (0.98, 0.002)), start=1):
+            divisor = pilot.factor(lev, slo, f_h1, fc) * fine_vec
+            assert kept[i] == pytest.approx(raw[i] / divisor, rel=1e-5)
+            assert not np.allclose(kept[i], raw[i])
+
+        # And the answer travels with the data, so a caption cannot claim a
+        # correction that was thrown away.
+        assert h_kept["pilot_kept"] is True and h_raw["pilot_kept"] is False
+        assert h_kept["pilot_records_corrected"] == 2
+
+    def test_the_plot_path_keeps_the_pilot_and_says_so(self, tmp_path, monkeypatch):
+        """The whole reason for the flag: plot_observation reverses the pilot
+        through read_observation and re-applies bandpass and gain from the
+        stored template. Before 2026-09-17 it never put the pilot back, which
+        with the transmitter unwired was a no-op and would have become a
+        silently wrong answer the day the dipole was connected."""
+        import inspect
+        import observation_plot
+        src = inspect.getsource(observation_plot.plot_observation)
+        assert "keep_pilot=True" in src, "the plot path must not discard the pilot"
+
     def test_the_live_sidecar_marks_bursts(self, tmp_path, monkeypatch):
         path = str(tmp_path / "s.h5")
         _file(path, monkeypatch, [ABSENT_BURST, {"burst": 0, "ok": 1, "level": 1.02, "slope": 0.001,

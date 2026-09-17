@@ -156,7 +156,7 @@ def has_wide_product(path):
         return False
 
 
-def read_observation(path, product="h1", drop_bursts=True):
+def read_observation(path, product="h1", drop_bursts=True, keep_pilot=False):
     """Load the spectra, timestamps and frequency axis from a recording.
 
     Finished or still being written: see open_readonly. A live file gives
@@ -170,6 +170,20 @@ def read_observation(path, product="h1", drop_bursts=True):
 
     The pilot's burst records (issue #30) are dropped unless `drop_bursts`
     is False; the header says how many there were.
+
+    `keep_pilot` leaves the pilot's own correction **in**, so what comes back
+    is counts as the receiver would have measured them had its gain and
+    passband not drifted. That is what a *plot* wants, and it is the one thing
+    reversing everything gets wrong: the pilot is the only correction this
+    pipeline cannot rebuild from the file, because it is measured from the
+    bursts in that run and nothing outside it knows the answer. The bandpass
+    and the gain are re-applied downstream from the stored template, so
+    reversing those is free; reversing the pilot throws it away for good.
+
+    It stays off by default, because a **fit** must see raw counts. Fitting a
+    gain from spectra a gain has already been applied to is circular, and the
+    pilot is a gain correction like any other. `bandpass.py`, `drift_fit.py`
+    and `rf_calibration.py` therefore take the default and should keep it.
     """
     if not H5PY_AVAILABLE:
         raise RuntimeError("h5py is not installed, so the file cannot be read")
@@ -204,7 +218,7 @@ def read_observation(path, product="h1", drop_bursts=True):
             # correction vector are multiplied back so the counts are what
             # the receiver measured; records nothing was applied to were
             # written with unit factors.
-            if "pilot_level" in hf and int(hf.attrs.get("pilot_applied", 0)):
+            if "pilot_level" in hf and int(hf.attrs.get("pilot_applied", 0)) and not keep_pilot:
                 import pilot as _pilot
                 n = min(spectra.shape[0], hf["pilot_level"].shape[0])
                 lev = np.asarray(hf["pilot_level"][:n], dtype=float)
@@ -248,6 +262,10 @@ def read_observation(path, product="h1", drop_bursts=True):
             header["pilot_bursts"] = int((burst[:n] == 1).sum())
             header["pilot_bursts_seen"] = int(hf["pilot_shape"].shape[0]) if "pilot_shape" in hf else 0
             header["pilot_records_corrected"] = int(np.asarray(hf["pilot_ok"][:n]).sum())
+            # Whether what is being handed back still carries it. A reduction
+            # that says "bandpass corrected" and silently dropped the pilot
+            # would be the worst of both, so the answer travels with the data.
+            header["pilot_kept"] = bool(keep_pilot and int(hf.attrs.get("pilot_applied", 0)))
             if "pilot_tone_ok" in hf:
                 header["pilot_tone_records"] = int(np.asarray(hf["pilot_tone_ok"][:n]).sum())
                 header["pilot_tone_applied"] = int(hf.attrs.get("pilot_tone_applied", 0))
@@ -359,7 +377,13 @@ def plot_observation(path, output_path, name="", mode="spectrum",
     # H I band cut out either way (issue #27). A spectrum is the H I product.
     continuum = mode in ("drift", "solar")
     product = "wide" if continuum else "h1"
-    freq_hz, spectra, stamps, taus, header = read_observation(path, product=product)
+    # keep_pilot: a plot wants the receiver's own drift taken out, and the
+    # pilot is the only correction that cannot be rebuilt afterwards - it is
+    # measured from that run's bursts and nothing outside the file knows it.
+    # The bandpass and the gain below are re-applied from the stored template,
+    # so reversing those costs nothing; reversing the pilot would discard it.
+    freq_hz, spectra, stamps, taus, header = read_observation(path, product=product,
+                                                              keep_pilot=True)
     continuum_keep = None
     if continuum:
         import drift_fit
@@ -387,6 +411,13 @@ def plot_observation(path, output_path, name="", mode="spectrum",
         # the skirts - is dropped from a drift plot before the band mean.
         spectra = np.where(continuum_keep[None, :], spectra, np.nan)
         bandpass_note += "; continuum only, H I band excluded"
+    # Say whether the pilot is in this reduction, and on how many records. With
+    # the transmitter unwired nothing is detected, so this stays silent rather
+    # than claiming a correction of unity.
+    n_pilot = int(header.get("pilot_records_corrected", 0) or 0)
+    if header.get("pilot_kept") and n_pilot:
+        bandpass_note += ("; pilot applied to %d of %d records"
+                          % (n_pilot, spectra.shape[0] + int(header.get("pilot_bursts", 0) or 0)))
     spectra, n_patched, patched_at = patch_dc_artefact(freq_hz, spectra, header)
 
     # If a gain calibration applies to this tuning, put the spectrum in kelvin.
