@@ -39,6 +39,10 @@ reproducing the firmware's own transform, and a hand copy in a notebook would
 drift away from the firmware silently.
 
 For a fresh venv, `receiver_scheduler/requirements.txt` covers all of it.
+`solar_flux_rstn.ipynb` draws **interactive** figures — drag to zoom, pan,
+the house to go back — when the kernel has `ipympl`, which the project `.venv`
+does. In a kernel without it the figures come out static and the first cell
+says so; set `INTERACTIVE = False` there for static figures anyway.
 Install one package at a time on the observatory host; resolving the whole list
 in one pip run was killed by the OOM killer there.
 
