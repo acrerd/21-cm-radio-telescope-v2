@@ -53,13 +53,26 @@ C_M_S = 299792458.0
 MIN_T_SYS_K = 50.0
 
 # Preferred floor on target altitude. Lower is worse but not fatal, and the
-# reason matters: ground spillover is *additive*, so it lands in T_sys and leaves
-# the slope - the counts-per-kelvin gain, which is what most of this is for -
-# largely alone. What a low target really costs is atmospheric attenuation
-# multiplying the sky, and at 1420 MHz that is about 3% at airmass 3. So a low
-# calibration is a good G with an elevation-specific T_sys, not a bad
-# calibration, and refusing to produce one is worse than producing one and
-# saying what it is.
+# reason matters. Three things change with elevation and all are *additive*, so
+# they land in T_sys and leave the slope - the counts-per-kelvin gain, which is
+# what most of this is for - largely alone:
+#
+#   atmospheric emission   ~2.7 K at the zenith times the airmass: hotter LOW
+#   near-horizon ground    the main beam and near sidelobes clipping ground and
+#                          trees, within a few beamwidths of it: hotter LOW
+#   feed spillover         the feed faces the dish, so what misses the rim goes
+#                          *away* from the pointing: hotter HIGH, where it sees
+#                          ground all the way round
+#
+# The last goes the opposite way to the other two. Calling all three
+# "spillover" is how this file came to say spillover grows towards the horizon,
+# which is backwards for a prime-focus dish (corrected by the operator,
+# 2026-09-18, after it had been got wrong several times).
+#
+# What a low target really costs is atmospheric attenuation multiplying the sky,
+# about 3% at airmass 3 at 1420 MHz. So a low calibration is a good G with an
+# elevation-specific T_sys, not a bad calibration, and refusing to produce one is
+# worse than producing one and saying what it is.
 MIN_TARGET_ALT_DEG = 25.0
 
 # Two bands for reporting a hot system, not a claim that it is broken. The
@@ -86,12 +99,23 @@ VERY_HIGH_T_SYS_K = 300.0
 #     T_sys = (L - 1) * T_amb + L * T_rx
 #
 # so a measured T_sys inverts to a loss. It is the honest reading of an excess
-# that has survived the alternatives: ground spillover was excluded by
-# measurement (baseline power at altitude 34 and 78.5 agreed to 3.6%, and
-# spillover grows towards the horizon), the beam efficiency by argument (the
-# beam is measured and the sidelobes see sky), and the missing continuum by
-# arithmetic (0.7 K here). A corroded probe or connector is a constant loss,
-# which is exactly the elevation-independent excess that was left.
+# that has survived the alternatives. Feed spillover cannot supply it on the
+# energy budget alone: at a ~10% spillover fraction it is ~30 K even pointing at
+# the zenith, where it is largest (the feed looks back past the rim at the
+# ground), against a ~250 K excess. The beam efficiency is excluded by argument
+# (the beam is measured and the sidelobes see sky), and the missing continuum by
+# arithmetic (0.7 K here). A corroded probe or connector is what is left - the
+# operator's suspicion (2026-09-18) is galvanic corrosion where the rigid-coax
+# monopole passes through the aluminium feed casting.
+#
+# Do NOT argue the excess away from its elevation dependence. An earlier version
+# of this comment did - "baseline power at altitude 34 and 78.5 agreed to 3.6%,
+# and spillover grows towards the horizon" - with the direction backwards and
+# the time uncontrolled. T_sys drifts several kelvin an hour at fixed geometry
+# (2026-09-18: -7 K in 1.3 h on one field with the elevation held to 1 deg), so
+# any two readings at different elevations and different times confound the two.
+# The elevation dependence is unmeasured until it is taken fast, high-low-high
+# within minutes.
 #
 # The inversion assumes the whole excess is loss at ambient, so it is an upper
 # bound on the loss rather than a measurement of it. What makes it testable
