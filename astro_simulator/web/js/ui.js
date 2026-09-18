@@ -85,8 +85,31 @@ export function setupUI(cfg) {
     // Centre and width, nothing else: the channel count has its own box.
     els.bandText.textContent =
       `${(sky.fc / 1e6).toFixed(3)} MHz, BW ${(sky.bwHz / 1e6).toFixed(1)} MHz`;
-    els.ncGroup.hidden = cont;
-    els.sdGroup.hidden = !cont;
+    // Greyed out rather than hidden: the unused box stays where it is, so the
+    // row does not jump when the map changes, and it says why it is idle. (It
+    // was meant to be hidden, and never was - .pgroup sets display:flex, which
+    // overrides the hidden attribute, so both boxes always showed.)
+    setIdle(els.ncGroup, boxes.nc, cont, 'channels apply to a spectrum (the H I map)',
+            cont ? '' : channelsNote());
+    setIdle(els.sdGroup, boxes.sd, !cont, 'scan length applies to a drift scan (the continuum map)');
+  }
+
+  function setIdle(group, input, idle, whyIdle, whenActive = '') {
+    group.classList.toggle('idle', idle);
+    input.disabled = idle;
+    group.title = idle ? whyIdle : whenActive;
+  }
+
+  // The channel count is the simulation's, never the booking's: every
+  // recording is made at the fixed instrument's resolution (scheduler issue
+  // #27), so the box previews a binning rather than choosing one.
+  function channelsNote() {
+    const inst = sky.instrument;
+    const kHz = inst && inst.h1_channel_hz ? (inst.h1_channel_hz / 1e3).toFixed(1) : null;
+    return kHz
+      ? `Simulation only: the telescope records ${nativeChannels()} channels of ${kHz} kHz. ` +
+        'Bin the recording afterwards for coarser.'
+      : 'Simulation only: the telescope records at its own fixed resolution.';
   }
 
   function writeBack(box, val, label) {
@@ -599,6 +622,11 @@ export function setupUI(cfg) {
             `for ${e.duration_minutes} min`);
       }
       for (const n of d.horizon_notes || []) message(`  local horizon: ${n}`);
+      // The scheduler records at the fixed instrument's resolution whatever
+      // was asked for; say so rather than let the recording surprise anyone.
+      const native = nativeChannels();
+      if (!drift && sky.nchan && sky.nchan !== native)
+        message(`  booked at the instrument's ${native} channels, not the ${sky.nchan} shown`);
       // The schedule list and the status line live in the page that embeds
       // this one; ask it to refresh so the change shows without a tab
       // round-trip.
