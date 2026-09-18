@@ -1,0 +1,6 @@
+# Notebooks are committed without outputs or execution counts: the outputs are
+# large, change on every run, and belong to whoever ran it. The filter is
+# nbstripout; each clone registers it once (see notebooks/README.md). Working
+# copies keep their outputs - only what git stores is stripped.
+*.ipynb filter=nbstripout
+*.ipynb diff=ipynb

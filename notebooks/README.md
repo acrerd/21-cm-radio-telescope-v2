@@ -46,6 +46,21 @@ says so; set `INTERACTIVE = False` there for static figures anyway.
 Install one package at a time on the observatory host; resolving the whole list
 in one pip run was killed by the OOM killer there.
 
+## Outputs are not committed
+
+Git stores every notebook stripped of its outputs and execution counts
+(`.gitattributes` names the `nbstripout` filter), so run them as freely as you
+like: your working copy keeps its figures, the repository never sees them, and
+a notebook you have only run shows as unchanged. The filter is registered per
+clone, once — it is already done on the observatory host:
+
+```
+.venv/bin/python -m pip install nbstripout
+.venv/bin/python -m nbstripout --install
+```
+
+Without that, a clone commits notebooks as they are, outputs and all.
+
 ## A recording still being written
 
 Both open a live file read-only and show what has arrived so far, so you can
