@@ -12,6 +12,7 @@ that.
 |---|---|
 | `read_h1_data.ipynb` | Opens a recording, prints what is in it, and plots it — a tracked spectrum as a spectrum, a drift scan as its band-power curve. The place to start. |
 | `solar_flux_scallop.ipynb` | A solar track end to end: continuum window, band mean, the tracking scallop fitted and removed, the antenna theorem, the atmosphere, and the comparison against the RSTN reference network. |
+| `solar_flux_rstn.ipynb` | The Sun at 1415 MHz over one UTC day: the RSTN network's one-second archive from NOAA beside our own solar tracks, raw or binned onto common UTC edges, with a test of whether the two move together. RSTN runs about a month behind, and the last cell says which of our days can be compared yet. Downloads are cached in `~/.cache/srt_rstn/`. |
 
 ## Running them
 
