@@ -172,6 +172,9 @@ _DEFAULT_CONFIG = {
     # contaminated one. Each tab and each scheduled observation carries its own
     # copy so one can be turned off without turning off the rest.
     "respect_local_horizon": True,
+    # Track the Sun whenever nothing else wants the telescope (issue #44).
+    # Off by default: it makes the host busy most of a summer day.
+    "sun_monitor": False,
     # Safety camera: a USB webcam watching the dish. One frame per request, on
     # demand - see /api/camera/snapshot.
     "camera_device": "/dev/video0",
@@ -2220,6 +2223,15 @@ def start_observation(obs: dict, duration_override: int = None) -> bool:
             return False
         if observation_starting:
             return False
+        # The Sun monitor takes the hardware only if nobody else has it. What
+        # follows preempts the scans and stops a receiver started by hand, which
+        # is right for a booking and wrong for the lowest claimant of all; its
+        # tick checked hardware_in_use(), but a start can land between the two.
+        if _is_sun_monitor(obs) and (
+                sun_scan_state["running"] or cal_day_state["running"]
+                or horizon_state["running"] or rf_state["running"]
+                or _proc_running(receiver_boot_process)):
+            return False
         observation_starting = True
         starting_observation_name = obs.get('name', '')
         starting_observation = dict(obs)
@@ -2887,6 +2899,204 @@ def retire_expired_entries(schedule: list, now: datetime) -> list:
     return retired
 
 
+# =============================================================================
+# Sun monitor (issue #44)
+# =============================================================================
+#
+# A standing order rather than bookings: whenever nothing else wants the
+# telescope and the Sun is clear of the measured horizon, track it. The result
+# is a daily 1415 MHz flux series to set beside RSTN, and every day of it checks
+# bandpass, gain, T_sys, beam and the antenna theorem against an outside
+# standard. A year of it is ~16 GB.
+#
+# It is the lowest claimant of all. It never runs into a booking - its window
+# ends before the next one starts - and anything started by hand stops it and
+# keeps it off for SUN_MONITOR_HOLDOFF_MINUTES, because an operator who has just
+# moved the dish or started a scan does not want it slewed back to the Sun five
+# seconds later. It is an ordinary tracked observation (`coord_system:
+# "object"`), so the files, the live plot and the reduction are those of any
+# solar track; only `obs_name` says where it came from.
+#
+# Limitation: the scheduler cannot see a move made from the controller's own web
+# page, so a goto there during a monitor run is followed by the mount while the
+# recording goes on calling itself the Sun.
+SUN_MONITOR_NAME = "Sun monitor"
+SUN_MONITOR_MIN_MINUTES = 15       # a shorter clear stretch is not worth the slew
+SUN_MONITOR_MAX_MINUTES = 12 * 60  # one run cannot outlast a summer day's clear sky
+SUN_MONITOR_GUARD_MINUTES = 2      # the slew comes out of the window, and a margin
+SUN_MONITOR_HOLDOFF_MINUTES = 30   # after anyone uses the telescope by hand
+SUN_MONITOR_RETRY_MINUTES = 10     # after a start that failed or died early
+SUN_MONITOR_COMMENT = ("Sun monitor (issue #44): tracked because nothing else "
+                       "wanted the telescope and the Sun was clear.")
+
+sun_monitor_lock = threading.Lock()
+sun_monitor_state = {"holdoff_until": None, "holdoff_reason": "", "waiting": ""}
+
+
+def _sun_clear_minutes(now: datetime, profile, max_minutes: int, min_alt: float) -> int:
+    """Whole minutes from `now` for which the Sun stays clear; 0 if it is not now.
+
+    The same test the booking trim applies (`horizon_visible_window`): the full
+    beam above the measured floor, since trees are a source, not a screen. With
+    no profile measured only `min_alt` applies - nothing is invented.
+    """
+    if not EPHEM_AVAILABLE:
+        return 0
+    import horizon_store
+    floors = bool(profile) and bool(horizon_store.profile_floors(profile))
+    margin = horizon_store.beam_margin_deg()
+    observer = _get_observer()
+    sun = ephem.Sun()
+    for m in range(int(max_minutes) + 1):
+        observer.date = _local_to_ephem_utc(now + timedelta(minutes=m))
+        sun.compute(observer)
+        alt, az = math.degrees(sun.alt), math.degrees(sun.az)
+        floor = float(min_alt)
+        if floors:
+            floor = max(floor, horizon_store.horizon_floor(profile, az) + margin)
+        if alt < floor:
+            return m
+    return int(max_minutes)
+
+
+def _next_booking_start(schedule, now: datetime) -> Optional[datetime]:
+    """The start of the next enabled booking after `now`, or None."""
+    best = None
+    for obs in schedule:
+        if not obs.get('enabled', True):
+            continue
+        if obs.get('horizon_blocked') and obs.get('respect_local_horizon', True):
+            continue                      # start_observation will skip it
+        start = _observation_start_datetime(obs)
+        if start is not None and start > now and (best is None or start < best):
+            best = start
+    return best
+
+
+def sun_monitor_plan(now: datetime, schedule, profile, min_alt: float):
+    """(minutes, reason): how long a monitor run starting now should last.
+
+    Zero minutes, with the reason, when it should not start. Pure apart from
+    the ephemeris, so the tests can hand it any sky and any schedule.
+    """
+    limit = SUN_MONITOR_MAX_MINUTES
+    booking = _next_booking_start(schedule, now)
+    if booking is not None:
+        limit = min(limit, int((booking - now).total_seconds() // 60)
+                    - SUN_MONITOR_GUARD_MINUTES)
+        if limit < SUN_MONITOR_MIN_MINUTES:
+            return 0, "the next booking starts at %s" % booking.strftime('%H:%M')
+    clear = _sun_clear_minutes(now, profile, limit + SUN_MONITOR_GUARD_MINUTES, min_alt)
+    if clear == 0:
+        return 0, "the Sun is behind the horizon"
+    minutes = min(limit, clear - SUN_MONITOR_GUARD_MINUTES)
+    if minutes < SUN_MONITOR_MIN_MINUTES:
+        return 0, "the Sun is clear for only %d min" % clear
+    return minutes, ""
+
+
+def sun_monitor_entry(now: datetime, minutes: int) -> dict:
+    """The observation a monitor run is: an ordinary solar track."""
+    return {
+        'name': SUN_MONITOR_NAME, 'comment': SUN_MONITOR_COMMENT,
+        'sun_monitor': True,
+        'coord_system': 'object', 'object_name': 'sun',
+        'coord1_deg': 0, 'coord1_min': 0, 'coord1_sec': 0.0,
+        'coord2_deg': 0, 'coord2_min': 0, 'coord2_sec': 0.0,
+        'start_date': now.strftime('%Y-%m-%d'), 'start_time': now.strftime('%H:%M'),
+        'duration_minutes': int(minutes),
+        # 3 s records: the scallop fit wants them, and the plots bin them down.
+        'integration_time_s': 3.0,
+        # Wait at the stow between runs rather than left following the Sun
+        # down into the trees. Not when it gives way to someone - see
+        # sun_monitor_yield.
+        'end_action': 'stow', 'sdr_type': 'b210', 'enabled': True,
+        'respect_local_horizon': True, 'home_first': False,
+    }
+
+
+def _is_sun_monitor(obs) -> bool:
+    return bool(obs) and bool(obs.get('sun_monitor'))
+
+
+def sun_monitor_hold(reason: str, minutes: float = SUN_MONITOR_HOLDOFF_MINUTES):
+    """Keep the monitor from starting for `minutes`."""
+    until = datetime.now() + timedelta(minutes=minutes)
+    with sun_monitor_lock:
+        held = sun_monitor_state["holdoff_until"]
+        if held is None or until > held:
+            sun_monitor_state["holdoff_until"] = until
+            sun_monitor_state["holdoff_reason"] = reason
+
+
+def sun_monitor_yield(reason: str) -> bool:
+    """Someone is using the telescope by hand: hold the monitor off, and stop it
+    if it is what holds the hardware. True if it was stopped.
+
+    Called at the top of every manual start path, before its own busy check,
+    so the monitor never refuses anything - it is the one claimant that always
+    gives way. Takes process_lock, so never call it while holding that.
+    """
+    sun_monitor_hold(reason)
+    with process_lock:
+        mine = (_is_sun_monitor(current_observation)
+                or (observation_starting and _is_sun_monitor(starting_observation)))
+        # Whoever it gives way to is about to command the mount; a stow on
+        # the way out would send it to the zenith first, for nothing.
+        if mine and _is_sun_monitor(current_observation):
+            current_observation['end_action'] = 'none'
+    if mine:
+        log.info("Sun monitor gives way: %s", reason)
+        stop_observation()
+    return mine
+
+
+def sun_monitor_status() -> dict:
+    cfg = load_config()
+    now = datetime.now()
+    with sun_monitor_lock:
+        held = sun_monitor_state["holdoff_until"]
+        reason = sun_monitor_state["holdoff_reason"]
+        waiting = sun_monitor_state["waiting"]
+    held = held if held is not None and held > now else None
+    return {
+        'enabled': bool(cfg.get('sun_monitor', False)),
+        'holdoff_until': held.isoformat(timespec='seconds') if held else None,
+        'holdoff_reason': reason if held else '',
+        'waiting': waiting,
+    }
+
+
+def _sun_monitor_tick(now: datetime, schedule):
+    """Start a monitor run if nothing else wants the telescope. Scheduler thread only."""
+    cfg = load_config()
+    if not cfg.get('sun_monitor', False):
+        return
+    with sun_monitor_lock:
+        held = sun_monitor_state["holdoff_until"]
+    if held is not None and now < held:
+        return
+    busy = hardware_in_use()
+    if busy:
+        return
+    import horizon_store
+    minutes, why = sun_monitor_plan(now, schedule, horizon_store.load_active(),
+                                    float(cfg.get('min_elevation', 10.0)))
+    with sun_monitor_lock:
+        changed = sun_monitor_state["waiting"] != why
+        sun_monitor_state["waiting"] = why
+    if minutes <= 0:
+        if changed:
+            log.info("Sun monitor waiting: %s", why)
+        return
+    log.info("Sun monitor: the telescope is idle and the Sun is clear - tracking it for %d min",
+             minutes)
+    if not start_observation(sun_monitor_entry(now, minutes)):
+        log.warning("Sun monitor: the start failed; retrying in %d min",
+                    SUN_MONITOR_RETRY_MINUTES)
+        sun_monitor_hold("a start failed", SUN_MONITOR_RETRY_MINUTES)
+
+
 def scheduler_thread():
     """Background thread that checks schedule and starts/stops observations."""
     global scheduler_running
@@ -2979,6 +3189,9 @@ def scheduler_thread():
                     # it, so counting is harmless there.
                     if dead_obs is not None:
                         _record_start_failure(dead_obs, "receiver exited early")
+                        if _is_sun_monitor(dead_obs):
+                            sun_monitor_hold("the receiver exited early",
+                                             SUN_MONITOR_RETRY_MINUTES)
                     stop_observation()
 
             # Find which observation should be active right now
@@ -3055,6 +3268,8 @@ def scheduler_thread():
                             log.info("Late start: %s (%dmin remaining)", due_obs.get('name'), due_remaining)
                         if not start_observation(due_obs, duration_override=due_remaining):
                             _record_start_failure(due_obs, "failed to start")
+            elif not is_running:
+                _sun_monitor_tick(now, schedule)
 
         except Exception as e:
             log.error("Scheduler error: %s", e, exc_info=True)
@@ -4262,6 +4477,7 @@ def api_rf_goto():
     profile may be stale, and the operator can see the trees.
     """
     import rf_calibration
+    sun_monitor_yield("the dish was moved from the RF tab")
     busy = hardware_in_use()
     if busy:
         return jsonify({"success": False, "error": "Cannot move the dish: %s" % busy}), 409
@@ -4375,6 +4591,7 @@ def api_rf_run():
     global rf_thread
     # One shared matrix rather than this endpoint's own list; see
     # hardware_in_use for the four holes that drift produced.
+    sun_monitor_yield("an RF calibration was started")
     busy = hardware_in_use()
     if busy:
         return jsonify({"success": False, "error": "Cannot start an RF calibration: %s" % busy}), 409
@@ -5570,6 +5787,7 @@ def api_simulator_schedule():
     entry['end_time'] = end_dt.strftime('%H:%M')
 
     if live:
+        sun_monitor_yield("the simulator started an observation")
         with process_lock:
             busy = (current_process is not None and current_process.poll() is None)
             running = dict(current_observation) if busy and current_observation else None
@@ -5647,6 +5865,7 @@ def get_status():
             'observation': starting_entry or {'name': starting_observation_name},
             'remaining_seconds': None,
             'background': None,
+            'sun_monitor': sun_monitor_status(),
         })
     # Also count calibration day as running
     if not running and current_observation and current_observation.get('coord_system') == 'calibration':
@@ -5665,6 +5884,7 @@ def get_status():
         # observation, so the flag would otherwise call the telescope idle
         # while it drives the mount for two hours.
         'background': None if running else _background_activity(),
+        'sun_monitor': sun_monitor_status(),
     })
 
 
@@ -5692,6 +5912,7 @@ def api_receiver_start():
     # calibration day starting at the same instant cannot slip between the
     # flag check and the spawn (S11). Popen returns at once, so the lock is
     # held only briefly.
+    sun_monitor_yield("the receiver was started by hand")
     with hardware_start_lock:
         if sun_scan_state["running"] or cal_day_state["running"]:
             return jsonify({
@@ -5751,6 +5972,7 @@ def api_start():
     and sent the operator to a log that had nothing in it.
     """
     obs = request.json
+    sun_monitor_yield("an observation was started by hand")
     with process_lock:
         busy = (current_process is not None and current_process.poll() is None)
         running = dict(current_observation) if busy and current_observation else None
@@ -5770,6 +5992,9 @@ def api_start():
 
 @app.route('/api/stop', methods=['POST'])
 def api_stop():
+    # Stopping by hand means stop: without the hold, a stopped monitor run
+    # would start again on the next tick.
+    sun_monitor_hold("an observation was stopped by hand")
     success = stop_observation()
     return jsonify({'success': success})
 
@@ -6106,6 +6331,7 @@ def api_sunscan_start():
 
     # The check-and-claim under the shared lock, so two simultaneous starts
     # cannot both pass it (S11). See hardware_in_use for the claimant matrix.
+    sun_monitor_yield("a Sun scan was started")
     with hardware_start_lock:
         busy = hardware_in_use()
         if busy:
@@ -6236,6 +6462,7 @@ def api_calday_start():
     # hardware_in_use for the four holes that drift produced. The whole
     # check-and-claim is under hardware_start_lock so two simultaneous starts
     # cannot both pass it (S11).
+    sun_monitor_yield("a calibration day was started")
     with hardware_start_lock:
         busy = hardware_in_use()
         if busy:
@@ -6571,6 +6798,7 @@ def api_horizon_start():
     global horizon_thread
     # One shared matrix rather than this endpoint's own list; see
     # hardware_in_use for the four holes that drift produced.
+    sun_monitor_yield("a horizon scan was started")
     busy = hardware_in_use()
     if busy:
         return jsonify({'success': False, 'error': 'Cannot start a horizon scan: %s' % busy}), 409

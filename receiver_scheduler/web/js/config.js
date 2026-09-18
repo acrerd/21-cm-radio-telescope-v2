@@ -126,6 +126,7 @@
                 document.getElementById('cfgDataFolder').value = cfg.data_output_folder || '';
                 document.getElementById('cfgLogLines').value = cfg.log_lines || 100;
                 document.getElementById('cfgSoundEnabled').value = cfg.sound_enabled !== false ? 'true' : 'false';
+                document.getElementById('cfgSunMonitor').value = cfg.sun_monitor ? 'true' : 'false';
                 soundEnabled = cfg.sound_enabled !== false;
             });
         }
@@ -150,6 +151,7 @@
                 data_output_folder: document.getElementById('cfgDataFolder').value,
                 log_lines: parseInt(document.getElementById('cfgLogLines').value) || 100,
                 sound_enabled: document.getElementById('cfgSoundEnabled').value === 'true',
+                sun_monitor: document.getElementById('cfgSunMonitor').value === 'true',
             };
             // The instrument: warn before a change goes through, because the
             // calibrations belong to the tuning and every recording after
