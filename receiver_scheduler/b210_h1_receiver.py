@@ -80,6 +80,21 @@ ANALOG_BW_FACTOR = float(os.environ.get('H1_ANALOG_BW_FACTOR',
 LO_OFFSET_HZ = float(os.environ.get('H1_LO_OFFSET', DEFAULT_LO_OFFSET_HZ))
 FFT_SIZE = int(os.environ.get('H1_FFT_SIZE', 4096))
 INTEGRATION_TIME = float(os.environ.get('H1_INTEGRATION_TIME', 3.0))
+# Which 10 MHz reference to run from. "auto" (the default) tries the external
+# input and keeps it only if the device reports a lock, falling back to the
+# internal TCXO and saying so. "external" insists and fails if it cannot lock;
+# "internal" never looks. UHD does NOT do any of this on its own: a B200-series
+# device defaults to `internal` and has no `auto` source, so before 2026-09-22
+# a reference could sit on REF IN with the radio running off its own TCXO and
+# nothing anywhere reporting it. The TCXO is good to about -2.4 ppm measured
+# (0.08 km/s), which is why this went unnoticed.
+CLOCK_SOURCE = (os.environ.get('H1_CLOCK_SOURCE') or 'auto').strip().lower()
+# How long to let the reference PLL settle before believing `ref_locked`.
+CLOCK_LOCK_TIMEOUT_S = float(os.environ.get('H1_CLOCK_LOCK_TIMEOUT', 2.0))
+# What the device actually ended up running from: (source, locked). Set by
+# create_sdr_source and written into every recording, because "which clock was
+# this taken on" is not recoverable from the data afterwards.
+CLOCK_STATE = (None, None)
 # Where to record. The scheduler always sets H1_OUTPUT_FILE, so this default
 # is for running the receiver by hand from a terminal - and it is resolved
 # against this file rather than the working directory. It used to be the bare
@@ -135,6 +150,65 @@ def create_demo_source(sample_rate):
     return source, throttle, sample_rate
 
 
+def select_clock_source(usrp, requested=None, mboard=0):
+    """Choose the 10 MHz reference and report what was actually achieved.
+
+    Returns `(source, locked)`, where `source` is what the device ended up
+    running from and `locked` is the `ref_locked` sensor if it could be read.
+
+    The whole point is that selecting `external` is NOT self-checking: with
+    nothing on REF IN the device runs on unlocked, so believing the request
+    would report a disciplined clock that is not. The lock is what is trusted,
+    never the request - the same rule the homing follows for its limit switch.
+    """
+    req = (requested if requested is not None else CLOCK_SOURCE) or 'auto'
+    req = req.strip().lower()
+    if req not in ('auto', 'internal', 'external'):
+        print("  Clock: unknown source %r, using auto" % req, flush=True)
+        req = 'auto'
+
+    def locked():
+        try:
+            return bool(usrp.get_mboard_sensor('ref_locked', mboard).to_bool())
+        except Exception:
+            return None            # not every device exposes it
+
+    if req == 'internal':
+        usrp.set_clock_source('internal', mboard)
+        print("  Clock: internal TCXO (H1_CLOCK_SOURCE=internal)", flush=True)
+        return 'internal', None
+
+    try:
+        usrp.set_clock_source('external', mboard)
+    except Exception as exc:
+        if req == 'external':
+            raise
+        print("  Clock: external reference not selectable (%s); internal TCXO" % exc,
+              flush=True)
+        return 'internal', None
+
+    # The reference PLL needs a moment; ask repeatedly rather than once.
+    deadline = time.time() + max(0.0, CLOCK_LOCK_TIMEOUT_S)
+    state = locked()
+    while state is not True and time.time() < deadline:
+        time.sleep(0.1)
+        state = locked()
+
+    if state is True:
+        print("  Clock: EXTERNAL 10 MHz reference, locked", flush=True)
+        return 'external', True
+    if req == 'external':
+        usrp.set_clock_source('internal', mboard)
+        raise RuntimeError(
+            "H1_CLOCK_SOURCE=external but the device never reported ref_locked "
+            "(sensor read %r after %.1f s) - check the 10 MHz into REF IN"
+            % (state, CLOCK_LOCK_TIMEOUT_S))
+    usrp.set_clock_source('internal', mboard)
+    print("  Clock: no external reference detected (ref_locked=%r); internal TCXO"
+          % (state,), flush=True)
+    return 'internal', state
+
+
 def create_sdr_source(sdr_type, sample_rate, center_freq, gain):
     """Create appropriate SDR source block."""
     throttle = None
@@ -153,6 +227,10 @@ def create_sdr_source(sdr_type, sample_rate, center_freq, gain):
                 channels=[0],
             ),
         )
+        # Before the rate and the tuning: changing the reference re-locks the
+        # synthesisers, so a frequency set against the old one would be redone.
+        global CLOCK_STATE
+        CLOCK_STATE = select_clock_source(source)
         source.set_samp_rate(sample_rate)
         source.set_bandwidth(sample_rate * ANALOG_BW_FACTOR, 0)
         source.set_center_freq(center_freq, 0)
@@ -890,6 +968,13 @@ def init_hdf5(filename, freq_axis_hz, fft_size, sdr_type, center_freq,
     hf.attrs['fft_size'] = fft_size
     hf.attrs['gain_db'] = gain
     hf.attrs['nominal_integration_time'] = INTEGRATION_TIME
+    # Which reference the sample clock ran from. Not recoverable from the data
+    # afterwards, and it decides whether a fitted velocity shift is the TCXO's
+    # -2.4 ppm or something real.
+    if CLOCK_STATE[0]:
+        hf.attrs['clock_source'] = CLOCK_STATE[0]
+        hf.attrs['clock_ref_locked'] = (-1 if CLOCK_STATE[1] is None
+                                        else int(bool(CLOCK_STATE[1])))
     # frequency_hz already holds true sky frequency, so nothing downstream has
     # to know the LO was offset. These say where the DC artefact went, which is
     # the one thing a spectrum cannot show for itself.
