@@ -82,7 +82,15 @@ H1_REST_FREQ_HZ = 1420.405752e6
 # reaches the feed is set by the TX gain and the pads, which the bench run
 # decides (#30). Nothing here radiates a level by itself.
 PILOT_DEFAULTS = {
-    "enabled": True,
+    # Off by default since 2026-09-22: on the sky the carrier's received
+    # level flips by up to 1.6% at every host stall (a TX underflow with an
+    # RX overflow) and stays there, and between stalls it drifts three times
+    # as far as the receiver does, so it cannot be applied; the bursts are
+    # not yet proven either. Enable it deliberately, on the Configuration
+    # tab, for a test - and note that the TX chain being on changes the
+    # receiver's sensitivity by 8.4%, so the gain in force belongs to one
+    # state or the other and must be re-fitted after a change.
+    "enabled": False,
     # How often a burst is sent. Expressed in TIME, because a record is not a
     # fixed length: "every 20th record" is a burst a minute at 3 s records and
     # one every twenty minutes at 60 s. A burst costs exactly one record

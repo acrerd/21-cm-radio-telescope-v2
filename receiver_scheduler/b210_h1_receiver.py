@@ -811,6 +811,7 @@ class _OverflowCounter:
 
     def __init__(self):
         self.count = 0
+        self.underflows = 0
         self._lock = threading.Lock()
         self._orig = {}
         self._thread = None
@@ -830,6 +831,18 @@ class _OverflowCounter:
             self._read_fd = None
 
     _MESSAGE = re.compile(rb"(\d+) overflows? occurred")
+    # The transmit side (the pilot's sink) prints a "U" per underflow, and
+    # its "In the last N ms, M underflows occurred" summary only minutes
+    # later at irregular intervals - the first run with the summary counted
+    # (2026-09-22) had twelve marks in the log and zeros in every record.
+    # So the marks are counted here, as they arrive: the carrier is silent
+    # for every underflow while the sky noise is not, and a record's carrier
+    # power reads low by the fraction of it the transmitter missed. A mark
+    # is a U not inside a word: the marks come in runs ("UUUU") and butt on
+    # to the next message ("Uusrp_sink"), so a U after another U or before a
+    # lower-case letter or an overflow's O counts, while the "UHD" and
+    # "USB" of the start-up banner do not.
+    _UMARK = re.compile(rb"(?<![A-NP-TV-Za-z])U(?![A-NP-TV-Z])")
 
     def _pump(self):
         carry = b""
@@ -850,16 +863,24 @@ class _OverflowCounter:
             # split across two reads is still seen whole.
             data = carry + chunk
             n = sum(int(m.group(1)) for m in self._MESSAGE.finditer(data))
+            u = len(self._UMARK.findall(chunk))
             cut = data.rfind(b"\n")
             carry = data[cut + 1:] if cut >= 0 else data[-64:]
-            if n:
+            if n or u:
                 with self._lock:
                     self.count += n
+                    self.underflows += u
 
     def take(self):
         """Overflows since the last call."""
         with self._lock:
             n, self.count = self.count, 0
+        return n
+
+    def take_underflows(self):
+        """Transmit underflows since the last call."""
+        with self._lock:
+            n, self.underflows = self.underflows, 0
         return n
 
     def stop(self):
@@ -903,7 +924,7 @@ def init_hdf5(filename, freq_axis_hz, fft_size, sdr_type, center_freq,
     {'freq_axis_hz': ..., 'channels': n}, adds the continuum product under
     `frequency_hz_wide` / `spectra_wide_*`, and `instrument` (the fixed
     instrument dict, tuning.fixed_instrument) is recorded whole. A file with
-    a wide product also carries `overflows`, one count per record.
+    a wide product also carries `overflows` and `underflows`, one count per record.
     """
     # The recordings folder may not exist yet - on a fresh checkout, or the
     # first time a hand-started receiver runs. Creating it here covers every
@@ -1013,6 +1034,7 @@ def init_hdf5(filename, freq_axis_hz, fft_size, sdr_type, center_freq,
         hf.create_dataset('bandpass_correction_wide', data=w_corr.astype('float32'))
         hf.create_dataset('bandpass_valid_wide', data=w_valid)
         hf.create_dataset('overflows', shape=(0,), maxshape=(None,), dtype='int32')
+        hf.create_dataset('underflows', shape=(0,), maxshape=(None,), dtype='int32')
 
     # The pilot (issue #30). Per record: whether it was a burst (1), a science
     # record that caught a burst's tail (2) or clean (0); the level and slope
@@ -1293,11 +1315,12 @@ def _bandpass_correction(freq_axis_hz, header=None, product='h1'):
 
 
 def append_spectrum(hf, avg_linear, timestamp, integration_time, fft_size,
-                    wide_linear=None, overflows=0, pilot=None):
+                    wide_linear=None, overflows=0, pilot=None, underflows=0):
     """Append one integrated spectrum, flushing so a reader sees it promptly.
 
     `wide_linear` is the continuum product's record for a file that has one;
-    `overflows` the UHD overflow count during this record.
+    `overflows` the UHD overflow count during this record, `underflows` the
+    pilot transmitter's.
 
     `timestamp` is passed as the *end* of the integration (time.time() when the
     record was taken). A record is the mean over its whole interval, so it
@@ -1369,6 +1392,9 @@ def append_spectrum(hf, avg_linear, timestamp, integration_time, fft_size,
     if 'overflows' in hf:
         hf['overflows'].resize((n + 1,))
         hf['overflows'][n] = int(overflows)
+    if 'underflows' in hf:
+        hf['underflows'].resize((n + 1,))
+        hf['underflows'][n] = int(underflows)
     if 'pilot_level' in hf:
         for dname, val in (('pilot_burst', p_burst), ('pilot_level', p_level),
                            ('pilot_slope', p_slope), ('pilot_snr', p_snr), ('pilot_ok', p_ok),
@@ -1737,7 +1763,8 @@ class HeadlessRecorder:
                     self.hf, np.asarray(h1, dtype=float)[self.h1_keep], now,
                     now - period_start, self.fft_size,
                     wide_linear=np.asarray(wide, dtype=float),
-                    overflows=self.overflows.take(), pilot=pil)
+                    overflows=self.overflows.take(), pilot=pil,
+                    underflows=self.overflows.take_underflows())
                 period_start = now
                 self._pilot_begin_record()
         finally:

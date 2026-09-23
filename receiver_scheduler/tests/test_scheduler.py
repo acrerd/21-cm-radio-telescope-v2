@@ -138,6 +138,64 @@ class TestControllerUrlResolution:
         assert result == {"alt": 12.5}
 
 
+class TestCalibrationDayStartFresh:
+    """`start_fresh` archives the scans and clears the controller's model
+    before the first raster - and only when asked."""
+
+    def _run(self, params):
+        original_scan_state = dict(sched.sun_scan_state)
+        original_cal_state = dict(sched.cal_day_state)
+        order = []
+
+        def fake_run_scan(_params):
+            order.append("scan")
+            sched.sun_scan_state.update(running=False, result={"fit": {"success": True}}, error=None)
+
+        def fake_save(_result):
+            sched.cal_day_cancel.set()
+
+        def fake_clear():
+            order.append("clear")
+
+        def fake_api(path, *a, **k):
+            order.append(path)
+            return {"ok": True}
+
+        try:
+            with patch('sun_scan.get_sun_altaz', return_value=(35.0, 150.0)), \
+                 patch('sun_scan.save_scan_to_pointing_data', side_effect=fake_save), \
+                 patch('sun_scan.clear_pointing_data', side_effect=fake_clear), \
+                 patch.object(sched, 'srt_api_call', side_effect=fake_api), \
+                 patch.object(sched, 'SRT_CONTROLLER_URL', 'http://controller.test'), \
+                 patch.object(sched, '_run_sun_scan', side_effect=fake_run_scan), \
+                 patch.object(sched.time, 'sleep'):
+                sched._run_calibration_day(dict({"sdr_type": "b210", "interval_minutes": 30}, **params))
+            return order, dict(sched.cal_day_state)
+        finally:
+            sched.sun_scan_state.clear()
+            sched.sun_scan_state.update(original_scan_state)
+            sched.cal_day_state.clear()
+            sched.cal_day_state.update(original_cal_state)
+            sched.cal_day_cancel.clear()
+
+    def test_start_fresh_clears_scans_and_controller_before_the_first_scan(self):
+        order, state = self._run({"start_fresh": True})
+        assert order[:2] == ["clear", "/pointing/clear"]
+        assert "scan" in order and order.index("scan") > 1
+        assert state["start_fresh"] == "scans archived and controller model cleared"
+
+    def test_without_the_flag_nothing_is_cleared(self):
+        order, state = self._run({})
+        assert "clear" not in order and "/pointing/clear" not in order
+        assert state["start_fresh"] is None
+
+    def test_the_flag_travels_from_form_and_schedule_entry(self):
+        assert sched._validate_sun_scan_params({"n": 5, "start_fresh": True},
+                                               include_interval=True)["start_fresh"] is True
+        assert sched._validate_sun_scan_params({"n": 5}, include_interval=True)["start_fresh"] is False
+        assert "start_fresh" not in sched._validate_sun_scan_params({"n": 5})
+
+
 class TestCalibrationDayRetry:
     def test_rejected_scan_is_rehomed_and_retried_before_counting_failure(self):
         original_scan_state = dict(sched.sun_scan_state)

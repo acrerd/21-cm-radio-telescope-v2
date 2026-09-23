@@ -330,7 +330,7 @@
             if (sys === 'calibration') {
                 const n = obs.cal_grid_n || 5;
                 const interval = obs.cal_interval_min || 30;
-                return `Cal: ${n}x${n} every ${interval}min`;
+                return `Cal: ${n}x${n} every ${interval}min` + (obs.cal_start_fresh ? ', fresh model' : '');
             }
             if (sys === 'drift' && obs.drift_frame === 'object') {
                 const name = obs.object_name || 'sun';
@@ -563,6 +563,7 @@
             document.getElementById('obsCalGridN').value = obs.cal_grid_n || 5;
             document.getElementById('obsCalSpacing').value = obs.cal_spacing_deg || 1.5;
             document.getElementById('obsCalInterval').value = obs.cal_interval_min || 30;
+            document.getElementById('obsCalStartFresh').checked = !!obs.cal_start_fresh;
             document.getElementById('obsHorizonAzStep').value = obs.horizon_az_step || 5;
             document.getElementById('obsHorizonAltStep').value = obs.horizon_alt_step || 5;
             document.getElementById('obsHorizonAzStart').value = obs.horizon_az_start ?? 5;
@@ -702,6 +703,7 @@
                 cal_grid_n: parseInt(document.getElementById('obsCalGridN').value) || 5,
                 cal_spacing_deg: parseFloat(document.getElementById('obsCalSpacing').value) || 1.5,
                 cal_interval_min: parseInt(document.getElementById('obsCalInterval').value) || 30,
+                cal_start_fresh: document.getElementById('obsCalStartFresh').checked,
                 horizon_az_step: parseFloat(document.getElementById('obsHorizonAzStep').value) || 5,
                 horizon_alt_step: parseFloat(document.getElementById('obsHorizonAltStep').value) || 5,
                 horizon_az_start: parseFloat(document.getElementById('obsHorizonAzStart').value) || 5,

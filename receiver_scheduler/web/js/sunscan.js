@@ -147,6 +147,7 @@
                 sdr_type: document.getElementById('ssSdrType').value,
                 beam_fwhm_deg: parseFloat(document.getElementById('ssBeamFwhm').value),
                 interval_minutes: parseInt(document.getElementById('cdInterval').value),
+                start_fresh: document.getElementById('cdStartFresh').checked,
             };
             fetch('/api/calday/start', {
                 method: 'POST',
@@ -286,7 +287,20 @@
 
         function fitModel() {
             document.getElementById('cdModel').innerHTML = '<span style="color:#888;">Fitting model...</span>';
-            fetch('/api/calday/fit', {method: 'POST'}).then(r => r.json()).then(m => {
+            // Hold the mount terms at an archived fit's values and solve for
+            // the beam skew alone - what a feed change calls for.
+            const body = {};
+            if (document.getElementById('cdHoldMount').checked) {
+                const from = document.getElementById('cdHoldFrom').value;
+                if (!from) {
+                    document.getElementById('cdModel').innerHTML = '<span style="color:#ff4757;">No archived fit to hold the mount terms from.</span>';
+                    return;
+                }
+                body.hold_terms = ['IA', 'AN', 'AE', 'AZSCALE'];
+                body.hold_from = from;
+            }
+            fetch('/api/calday/fit', {method: 'POST', headers: {'Content-Type': 'application/json'},
+                                      body: JSON.stringify(body)}).then(r => r.json()).then(m => {
                 if (m.success) {
                     renderPointingModel(m);
                     refreshPointingModels();  // the fit just archived a new one
@@ -337,6 +351,20 @@
             if (!el) return;
             fetch('/api/calday/models').then(r => r.json()).then(data => {
                 const models = data.models || [];
+                // The same list feeds the "hold the mount terms from" choice:
+                // newest first, the active one preselected if there is one.
+                const holdFrom = document.getElementById('cdHoldFrom');
+                if (holdFrom) {
+                    const keep = holdFrom.value;
+                    holdFrom.innerHTML = models.length
+                        ? models.map(m => '<option value="' + m.name + '">'
+                            + (m.fitted_utc ? m.fitted_utc.replace('T', ' ').replace('Z', ' UTC') : m.name)
+                            + ' (' + (m.n_scans || '?') + ' scans' + (m.active ? ', active' : '') + ')</option>').join('')
+                        : '<option value="">(no archived fits)</option>';
+                    const active = models.find(m => m.active);
+                    holdFrom.value = models.some(m => m.name === keep) ? keep
+                                   : (active ? active.name : (models[0] ? models[0].name : ''));
+                }
                 if (!models.length) {
                     el.innerHTML = '<span style="color:#888;">No archived fits.</span>';
                     return;

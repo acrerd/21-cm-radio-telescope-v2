@@ -1419,10 +1419,26 @@ def load_pointing_data() -> list:
 
 
 def clear_pointing_data():
-    """Clear all accumulated pointing data."""
+    """Clear all accumulated pointing data, keeping what was cleared.
+
+    A clear is how a new feed or a re-zeroed encoder starts a fresh model,
+    and the scans it discards are the only record of the *old* geometry -
+    the 39 old-feed scans of September 2026 are what a later comparison of
+    the two feeds needs. So they go to a dated file beside this one rather
+    than nowhere, the way the horizon archive keeps superseded scans.
+    """
+    scans = load_pointing_data()
+    if scans:
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        archive = os.path.join(_SCRIPT_DIR, "pointing_data_%s.json" % stamp)
+        with open(archive, "w") as f:
+            json.dump(scans, f, indent=2)
+        log.info("Pointing data cleared: %d scans archived to %s",
+                 len(scans), os.path.basename(archive))
+    else:
+        log.info("Pointing data cleared (nothing to archive)")
     with open(_POINTING_DATA_FILE, "w") as f:
         json.dump([], f)
-    log.info("Pointing data cleared")
 
 
 # The drive firmware counts position in encoder pulses at PULSES_PER_DEGREE = 2.
@@ -1472,7 +1488,8 @@ def _pointing_model_matrix(alt_deg: np.ndarray, az_deg: np.ndarray) -> np.ndarra
 def fit_pointing_model(data: list | None = None,
                        true_lat: float | None = None,
                        true_lon: float | None = None,
-                       obstruction_sectors: list | None = None) -> dict:
+                       obstruction_sectors: list | None = None,
+                       hold: dict | None = None) -> dict:
     """Fit the 4-parameter pointing/tilt model to accumulated sun scan data.
 
     Parameters
@@ -1480,6 +1497,17 @@ def fit_pointing_model(data: list | None = None,
     data      : list of scan entries (default: load from file)
     true_lat  : observer latitude for effective lat/lon calculation
     true_lon  : observer longitude for effective lat/lon calculation
+    hold      : {term: value} to hold fixed at the given values and leave out
+                of the solve - IE, IA, AN, AE, CA or AZSCALE. For a feed
+                change: the tilt (AN, AE) and the azimuth index (IA) are the
+                mount and have not moved, while a lateral feed displacement is
+                a fixed beam skew that is IE in elevation and CA in
+                cross-elevation, so those two are all a new feed needs
+                refitted. Holding the rest keeps a half-day's scans from
+                trading the skew against a tilt they cannot constrain, and
+                lets CA be fitted on an altitude range that would otherwise
+                be too narrow for it. Held terms report zero uncertainty and
+                are listed under ``held_terms``.
     obstruction_sectors : [az_min, az_max, min_sun_alt] sectors whose scans are
                 dropped as contaminated by the skyline (default: none). Like
                 true_lat/true_lon this is a property of the site that the
@@ -1680,6 +1708,48 @@ def fit_pointing_model(data: list | None = None,
     # Index by name: both terms are conditional, so positions are not fixed.
     extra_index = {name: 4 + i for i, (name, _) in enumerate(extra_terms)}
 
+    # Held terms: their columns stay in the matrix (a held CA or AZSCALE gets
+    # its column whatever the coverage), their contribution is taken out of the
+    # observations, and the solve runs over the free columns only.
+    hold = {str(k): float(v) for k, v in (hold or {}).items()}
+    column_of = {"IE": 0, "IA": 1, "AN": 2, "AE": 3}
+    # The altitude-coverage gate on CA exists because sec(alt) is degenerate
+    # with IA over a narrow range; with IA held that degeneracy is gone, and a
+    # feed's cross-elevation skew can be fitted from a few hours of scans.
+    if "IA" in hold and "CA" not in hold and "CA" not in extra_index:
+        ca_column = np.zeros(2 * n)
+        ca_column[n:] = 1.0 / np.cos(np.radians(alt_sun))
+        A = np.column_stack([A, ca_column])
+        extra_index["CA"] = A.shape[1] - 1
+        fit_ca = True
+    for name in hold:
+        if name in ("AZSCALE", "CA") and name not in extra_index:
+            column = np.zeros(2 * n)
+            column[n:] = (np.mod(az_sun, 360.0) if name == "AZSCALE"
+                          else 1.0 / np.cos(np.radians(alt_sun)))
+            A = np.column_stack([A, column])
+            extra_index[name] = A.shape[1] - 1
+            if name == "AZSCALE":
+                fit_azscale = True
+            else:
+                fit_ca = True
+        elif name not in column_of and name not in extra_index:
+            raise ValueError("cannot hold unknown pointing term %r" % name)
+    column_of.update(extra_index)
+    x_held = np.zeros(A.shape[1])
+    for name, value in hold.items():
+        x_held[column_of[name]] = value
+    free = [j for j in range(A.shape[1]) if j not in {column_of[k] for k in hold}]
+    if not free:
+        raise ValueError("every pointing term is held; nothing to fit")
+    b = b - A @ x_held
+    A_free = A[:, free]
+
+    def expand(x_free: np.ndarray) -> np.ndarray:
+        x_full = x_held.copy()
+        x_full[free] = x_free
+        return x_full
+
 
     def scan_uncertainty(entry: dict, key: str) -> float:
         """Per-scan sigma: the Gaussian centroid uncertainty, plus the encoder grid.
@@ -1733,17 +1803,17 @@ def fit_pointing_model(data: list | None = None,
     if not np.all(np.isfinite(uncertainties)):
         uncertainties = np.ones(2 * n)
     weights = 1.0 / uncertainties
-    A_weighted = A * weights[:, None]
+    A_weighted = A_free * weights[:, None]
     b_weighted = b * weights
 
     rank = int(np.linalg.matrix_rank(A_weighted))
     condition_number = float(np.linalg.cond(A_weighted))
-    if rank < A.shape[1] or not math.isfinite(condition_number) or condition_number > 1e4:
+    if rank < A_free.shape[1] or not math.isfinite(condition_number) or condition_number > 1e4:
         return {
             "success": False,
-            "error": ("Calibration geometry cannot constrain all four parameters "
+            "error": ("Calibration geometry cannot constrain all %d free parameters "
                       f"(rank={rank}, condition={condition_number:.1f}); "
-                      "collect scans over a wider part of the day"),
+                      "collect scans over a wider part of the day" % len(free)),
             "n_scans": n,
             "n_rejected": rejected,
             "n_obstructed": obstructed,
@@ -1798,7 +1868,7 @@ def fit_pointing_model(data: list | None = None,
     # Floored at the median stated centroid uncertainty for the same reason in
     # the other direction: a scan sitting inside its own error bar is not an
     # outlier however tight the others happen to be.
-    x = np.linalg.lstsq(A_weighted, b_weighted, rcond=None)[0]
+    x = expand(np.linalg.lstsq(A_weighted, b_weighted, rcond=None)[0])
     predicted = A @ x
     sigma_alt = max(robust_sigma(d_alt - predicted[:n]),
                     float(np.median(alt_centroid_unc)))
@@ -1808,7 +1878,7 @@ def fit_pointing_model(data: list | None = None,
     max_cut = int(math.floor(n * _OUTLIER_MAX_FRACTION))
     for _ in range(_OUTLIER_MAX_ITERATIONS):
         rows = np.concatenate([keep, keep])
-        x = np.linalg.lstsq(A_weighted[rows], b_weighted[rows], rcond=None)[0]
+        x = expand(np.linalg.lstsq(A_weighted[rows], b_weighted[rows], rcond=None)[0])
         predicted = A @ x
         res_alt = d_alt - predicted[:n]
         res_az = d_az - predicted[n:]
@@ -1855,16 +1925,23 @@ def fit_pointing_model(data: list | None = None,
     # Residuals, over the fitted scans
     rms_alt = float(np.sqrt(np.mean(res_alt[keep] ** 2)))
     rms_az = float(np.sqrt(np.mean(res_az[keep] ** 2)))
-    weighted_residual = ((b - predicted) / uncertainties)[kept_rows]
-    dof = max(2 * n_fit - A.shape[1], 1)
+    # `b` has the held terms' contribution removed and `predicted` includes
+    # them, so the residual is against the full model: original observation
+    # minus everything, held or fitted.
+    weighted_residual = ((b + A @ x_held - predicted) / uncertainties)[kept_rows]
+    dof = max(2 * n_fit - len(free), 1)
     reduced_chi_squared = float(np.sum(weighted_residual ** 2) / dof)
     # Floor the chi-squared scale at 1: mount-quantisation error is partly
     # systematic, so mutually consistent scans give chi2_red << 1, and
     # scaling by it would shrink the parameter errors below the deliberate
     # per-scan quantisation floor — overstating the tilt significance that
     # gates weak calibrations.
-    covariance = (np.linalg.pinv(A_weighted.T @ A_weighted) *
-                  max(reduced_chi_squared, 1.0))
+    covariance_free = (np.linalg.pinv(A_weighted.T @ A_weighted) *
+                       max(reduced_chi_squared, 1.0))
+    # Full-size covariance with zero rows and columns for the held terms, so
+    # every consumer below indexes it by the term's column as before.
+    covariance = np.zeros((A.shape[1], A.shape[1]))
+    covariance[np.ix_(free, free)] = covariance_free
     parameter_errors = np.sqrt(np.maximum(np.diag(covariance), 0.0))
 
     # How well the model locates the beam, which is the only uncertainty an
@@ -1895,18 +1972,28 @@ def fit_pointing_model(data: list | None = None,
 
     pointing_sigma_alt, pointing_sigma_xel = pointing_sigma()
 
-    def significance(value: float, error: float) -> float:
-        """How many sigma a fitted parameter is from zero."""
+    def significance(value: float, error: float, held: bool = False):
+        """How many sigma a fitted parameter is from zero; None for a held one.
+
+        A held term has no uncertainty of its own, and "infinitely
+        significant" is both wrong and unserialisable - `Infinity` is not
+        JSON, and the page's fetch of a model carrying it failed silently, with
+        no Apply button (2026-09-23).
+        """
+        if held:
+            return None
         if not math.isfinite(error) or error <= 0.0:
-            return float("inf") if value else 0.0
+            return None if value else 0.0
         return abs(value) / error
 
     significances = {
-        "alt_offset": significance(alt_offset, parameter_errors[0]),
-        "az_offset": significance(az_offset, parameter_errors[1]),
-        "tilt_north": significance(tilt_north, parameter_errors[2]),
-        "tilt_east": significance(tilt_east, parameter_errors[3]),
+        "alt_offset": significance(alt_offset, parameter_errors[0], "IE" in hold),
+        "az_offset": significance(az_offset, parameter_errors[1], "IA" in hold),
+        "tilt_north": significance(tilt_north, parameter_errors[2], "AN" in hold),
+        "tilt_east": significance(tilt_east, parameter_errors[3], "AE" in hold),
     }
+    fitted_tilts = [v for k, v in significances.items()
+                    if k in ("tilt_north", "tilt_east") and v is not None]
 
     model = {
         "alt_offset_deg": alt_offset,
@@ -1933,9 +2020,11 @@ def fit_pointing_model(data: list | None = None,
         # errors below are diagnostics; this is the number to show an operator.
         "pointing_sigma_alt_deg": pointing_sigma_alt,
         "pointing_sigma_xel_deg": pointing_sigma_xel,
-        "parameter_significance": {k: float(v) for k, v in significances.items()},
-        "min_tilt_significance": float(min(significances["tilt_north"],
-                                           significances["tilt_east"])),
+        "parameter_significance": {k: (None if v is None else float(v))
+                                   for k, v in significances.items()},
+        # None when both tilts are held: their significance belongs to the
+        # fit they came from, and the apply gate treats a held tilt as settled.
+        "min_tilt_significance": (float(min(fitted_tilts)) if fitted_tilts else None),
         "alt_coverage_deg": alt_coverage,
         "az_scale": (
             {
@@ -1943,7 +2032,7 @@ def fit_pointing_model(data: list | None = None,
                 "sigma": float(parameter_errors[extra_index["AZSCALE"]]),
                 "significance": significance(
                     float(x[extra_index["AZSCALE"]]),
-                    float(parameter_errors[extra_index["AZSCALE"]])),
+                    float(parameter_errors[extra_index["AZSCALE"]]), "AZSCALE" in hold),
                 "deg_over_full_range": float(x[extra_index["AZSCALE"]]) * 355.0,
             } if fit_azscale else None
         ),
@@ -1953,7 +2042,7 @@ def fit_pointing_model(data: list | None = None,
                 "sigma": float(parameter_errors[extra_index["CA"]]),
                 "significance": significance(
                     float(x[extra_index["CA"]]),
-                    float(parameter_errors[extra_index["CA"]])),
+                    float(parameter_errors[extra_index["CA"]]), "CA" in hold),
             } if fit_ca else None
         ),
         # The fitted scans. The rejected ones are alongside rather than mixed in,
@@ -1974,8 +2063,17 @@ def fit_pointing_model(data: list | None = None,
         "scan_altitudes": alt_sun[keep].tolist(),
         "measured_alt_errors": d_alt[keep].tolist(),
         "measured_az_errors": d_az[keep].tolist(),
+        # Terms taken as given rather than fitted, with their values, and the
+        # ones this data actually determined.
+        "held_terms": dict(hold),
+        "free_terms": [name for name, j in sorted(column_of.items(), key=lambda kv: kv[1])
+                       if j in free],
         "success": True,
     }
+    if "CA" in hold and model["collimation"]:
+        model["collimation"]["held"] = True
+    if "AZSCALE" in hold and model["az_scale"]:
+        model["az_scale"]["held"] = True
 
     # The terms as the controller names them, under the names used by
     # PointingModel in pointing.h, so the wire format and the fit cannot drift
@@ -2153,6 +2251,12 @@ def list_pointing_models() -> list:
         })
     out.sort(key=lambda e: e.get("fitted_utc") or "", reverse=True)
     return out
+
+
+def load_archived_pointing_model(name: str) -> dict:
+    """An archived fit by name, without making it active."""
+    with open(_pointing_model_path(name)) as f:
+        return json.load(f)
 
 
 def restore_pointing_model(name: str) -> dict:

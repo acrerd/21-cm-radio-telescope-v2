@@ -2724,6 +2724,7 @@ def _start_calibration_observation(obs: dict, duration_override: int = None) -> 
         # demo Sun is drawn with: the measured beam, not a placeholder.
         "beam_fwhm_deg": beam_fwhm_deg(),
         "interval_minutes": obs.get("cal_interval_min", 30),
+        "start_fresh": obs.get("cal_start_fresh", False),
     }
     try:
         params = _validate_sun_scan_params(raw_params, include_interval=True)
@@ -3334,7 +3335,30 @@ def _validate_sun_scan_params(raw: dict, include_interval: bool = False) -> dict
     if include_interval:
         params["interval_minutes"] = number(
             "interval_minutes", 30, 5, 120, integer=True)
+        # Start a fresh model: archive the stored scans and erase the
+        # controller's model before the first raster (a new feed, a re-zeroed
+        # encoder). Done by the day itself so nobody has to be at the keyboard
+        # at nine to press Clear Data first.
+        params["start_fresh"] = bool(raw.get("start_fresh", False))
     return params
+
+
+def clear_pointing_everywhere():
+    """Archive the stored Sun scans, empty the store, and erase the model the
+    controller holds. Returns (controller_cleared, error).
+
+    The two halves belong together: scans cleared with the model left in the
+    controller, or the reverse, is a telescope whose record and behaviour
+    disagree. The scans are archived by `sun_scan.clear_pointing_data`, never
+    discarded - a superseded feed's geometry is worth keeping.
+    """
+    from sun_scan import clear_pointing_data
+    clear_pointing_data()
+    if not SRT_CONTROLLER_URL:
+        return None, None
+    result = srt_api_call("/pointing/clear")
+    ok = bool(result and result.get("ok"))
+    return ok, (None if ok else "the controller still holds its pointing model; response: %s" % (result,))
 
 def _sun_scan_progress(idx, total, info):
     """Progress callback for sun_scan — updates global state."""
@@ -3546,8 +3570,24 @@ def _run_calibration_day(params: dict):
                          scans_completed=0, consecutive_failures=0,
                          last_scan_error=None, error=None,
                          interval_minutes=interval, next_scan_time=None,
-                         horizon_clear_eta=None)
+                         horizon_clear_eta=None, start_fresh=None)
     cal_day_cancel.clear()
+
+    if params.get("start_fresh"):
+        # Before the first raster, never later: the day's scans then belong
+        # to the new geometry alone. A controller that will not give up its
+        # model is logged and not fatal - the scans record an absolute (T, D)
+        # datum, so the fit does not depend on what the controller pointed
+        # with, only the raster's centring does.
+        try:
+            cleared, err = clear_pointing_everywhere()
+        except Exception as exc:                          # noqa: BLE001
+            cleared, err = False, str(exc)
+        note = ("scans archived and controller model cleared" if cleared
+                else "scans archived; controller model NOT cleared (%s)" % err
+                if cleared is False else "scans archived (no controller configured)")
+        cal_day_state["start_fresh"] = note
+        (log.warning if cleared is False else log.info)("Calibration day starts fresh: %s", note)
 
     try:
         while not cal_day_cancel.is_set():
@@ -5115,8 +5155,9 @@ def instrument_for(obs: dict) -> dict:
         except (TypeError, ValueError):
             log.warning("Ignoring gain_db_override=%r on '%s': not a number",
                         override, obs.get('name', ''))
-    # The pilot (issue #30) is on for every observation unless the entry
-    # asks for it off - a drift scan whose author wants the band untouched.
+    # The pilot (issue #30) is off by default since 2026-09-22 (see
+    # pilot.PILOT_DEFAULTS); with it enabled on the Configuration tab it runs
+    # for every observation unless the entry asks for it off.
     if isinstance(obs, dict) and obs.get('pilot_off'):
         log.info("'%s' records with the pilot off by the entry's request", obs.get('name', ''))
         cfg = dict(cfg, receiver_pilot_enabled=False)
@@ -6539,28 +6580,19 @@ def api_calday_clear():
     if cal_day_state["running"] or sun_scan_state["running"]:
         return jsonify({'success': False,
                         'error': 'Stop calibration before clearing its data'}), 409
-    try:
-        from sun_scan import clear_pointing_data
-        clear_pointing_data()
-    except Exception as exc:
-        log.error("Could not clear calibration data: %s", exc, exc_info=True)
-        return jsonify({'success': False, 'error': str(exc)}), 500
-
     # Deleting the scan history here is not enough on its own: the controller
     # holds the fitted model in its own flash and would go on applying it. The
     # clear has to reach the telescope or the two halves disagree, which is the
-    # state this whole arrangement exists to prevent.
-    controller_cleared = None
-    if SRT_CONTROLLER_URL:
-        result = srt_api_call("/pointing/clear")
-        controller_cleared = bool(result and result.get("ok"))
-        if not controller_cleared:
-            return jsonify({
-                'success': False,
-                'error': ('Calibration data was cleared, but the controller still '
-                          f'holds its pointing model; response: {result}'),
-                'partial': True,
-            }), 502
+    # state this whole arrangement exists to prevent. Shared with a calibration
+    # day's `start_fresh`, which does the same thing before its first raster.
+    try:
+        controller_cleared, err = clear_pointing_everywhere()
+    except Exception as exc:
+        log.error("Could not clear calibration data: %s", exc, exc_info=True)
+        return jsonify({'success': False, 'error': str(exc)}), 500
+    if controller_cleared is False:
+        return jsonify({'success': False, 'partial': True,
+                        'error': 'Calibration data was cleared, but ' + err}), 502
 
     return jsonify({'success': True, 'controller_cleared': controller_cleared})
 
@@ -6574,6 +6606,31 @@ def api_calday_fit():
     if sun_scan_state["running"]:
         return jsonify({'success': False,
                         'error': 'Wait for the current scan to finish before fitting the model'}), 409
+    # Optionally hold terms at an archived model's values and fit the rest -
+    # a feed change moves the beam skew (IE, CA) and nothing about the mount
+    # (IA, AN, AE, AZSCALE), and a half-day of scans determines two terms far
+    # better than six. `hold_from` names the archived fit the held values come
+    # from; it is never made active by this.
+    body = request.get_json(silent=True) or {}
+    hold_terms = [str(t) for t in (body.get('hold_terms') or [])]
+    hold_from = body.get('hold_from')
+    hold = {}
+    if hold_terms:
+        if not hold_from:
+            return jsonify({'success': False,
+                            'error': 'hold_terms needs hold_from: the archived model to take them from'}), 400
+        try:
+            from sun_scan import load_archived_pointing_model
+            source = load_archived_pointing_model(str(hold_from))
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            return jsonify({'success': False,
+                            'error': 'archived model %r could not be read: %s' % (hold_from, exc)}), 400
+        terms = source.get('terms') or {}
+        missing = [t for t in hold_terms if t not in terms]
+        if missing:
+            return jsonify({'success': False,
+                            'error': 'model %s has no value for %s' % (hold_from, ', '.join(missing))}), 400
+        hold = {t: float(terms[t]) for t in hold_terms}
     try:
         from sun_scan import fit_pointing_model, save_pointing_model, generate_calibration_plot
         cfg = load_config()
@@ -6581,7 +6638,10 @@ def api_calday_fit():
             true_lat=cfg.get("observer_lat"),
             true_lon=cfg.get("observer_lon"),
             obstruction_sectors=sun_raster_obstruction_sectors(cfg),
+            hold=hold,
         )
+        if hold and model.get("success"):
+            model["held_from"] = str(hold_from)
         if model.get("success"):
             # Stamped at fit time, not at apply time, so the date the controller
             # reports is when the model was measured rather than when someone
@@ -6668,8 +6728,15 @@ def api_calday_apply():
                       'insufficient coverage; fit the model again before applying'),
         })
 
+    # A model whose tilt terms were held at an earlier fit's values carries no
+    # tilt significance of its own (None): the tilt was established by that
+    # fit, and this one measured the beam terms. The gate is for a fit that
+    # tried to measure the tilt and could not.
+    held = model.get("held_terms") or {}
+    tilt_held = "AN" in held and "AE" in held
     try:
-        significance = float(model["min_tilt_significance"])
+        significance = (None if tilt_held and model.get("min_tilt_significance") is None
+                        else float(model["min_tilt_significance"]))
         chi_squared = float(model["reduced_chi_squared"])
     except (KeyError, TypeError, ValueError):
         return jsonify({
@@ -6677,7 +6744,8 @@ def api_calday_apply():
             'error': ('Saved model predates the tilt significance and chi-squared '
                       'checks; fit the model again before applying'),
         })
-    if not math.isfinite(significance) or significance < CALDAY_MIN_TILT_SIGNIFICANCE:
+    if significance is not None and (
+            not math.isfinite(significance) or significance < CALDAY_MIN_TILT_SIGNIFICANCE):
         return jsonify({
             'success': False,
             'error': (f'Mount tilt is only measured to {significance:.1f} sigma; '

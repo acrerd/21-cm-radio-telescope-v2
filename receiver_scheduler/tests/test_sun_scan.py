@@ -628,6 +628,61 @@ def test_azimuth_scale_is_fitted_and_exported():
     assert model["terms"]["AE"] == pytest.approx(expected[3], abs=0.05)
 
 
+def test_held_terms_are_taken_as_given_and_the_rest_fitted():
+    """A feed change: hold IA, AN, AE at the old model's values, fit IE and CA.
+
+    The scans carry the old mount terms plus a new beam skew. With the mount
+    held, the fit must return the held values untouched (zero uncertainty),
+    recover the skew in IE and CA, and be able to fit CA on an altitude range
+    too narrow for the unconstrained fit to allow it.
+    """
+    azimuths = [120, 135, 150, 165, 180, 195, 210]
+    data, expected = _synthetic_pointing_data(azimuths)
+    skew_el, skew_ca = 0.27, -0.40
+    for entry in data:
+        entry["sun_alt_deg"] = 30.0 + 0.5 * azimuths.index(entry["sun_az_deg"])   # 30-33: narrow
+    # Recompute the mount part on the narrow altitudes, then add the skew.
+    alts = np.array([e["sun_alt_deg"] for e in data]); azs = np.array(azimuths, float)
+    errors = sun_scan._pointing_model_matrix(alts, azs) @ expected
+    n = len(data)
+    for i, entry in enumerate(data):
+        entry["alt_error_deg"] = errors[i] + sun_scan.refraction_deg(alts[i]) + skew_el
+        entry["az_error_deg"] = errors[n + i] + skew_ca / np.cos(np.radians(alts[i]))
+
+    # What the tab sends: the mount terms, azimuth scale included.
+    hold = {"IA": expected[1], "AN": expected[2], "AE": expected[3], "AZSCALE": 0.0}
+    model = sun_scan.fit_pointing_model(data, true_lat=55.9, true_lon=-4.3, hold=hold)
+
+    assert model["success"] is True
+    assert model["held_terms"] == hold
+    assert model["free_terms"] == ["IE", "CA"]
+    for name, value in hold.items():
+        assert model["terms"][name] == value
+    assert model["parameter_errors_deg"]["az_offset"] == 0.0
+    assert model["terms"]["IE"] == pytest.approx(expected[0] + skew_el, abs=0.01)
+    assert model["terms"]["CA"] == pytest.approx(skew_ca, abs=0.01)
+    assert model["collimation"].get("held") is not True
+    # Held terms have no significance of their own, and the model must stay
+    # strict JSON - `Infinity` broke the page's fetch of the saved model.
+    assert model["parameter_significance"]["tilt_north"] is None
+    assert model["min_tilt_significance"] is None
+    assert model["az_scale"]["held"] is True and model["az_scale"]["significance"] is None
+    import json as _json
+    _json.dumps(model, allow_nan=False)
+    # The same data without the hold cannot fit CA at all on this altitude range.
+    free = sun_scan.fit_pointing_model(data, true_lat=55.9, true_lon=-4.3)
+    assert "CA" not in free["terms"]
+
+
+def test_holding_an_unknown_term_is_refused():
+    data, _ = _synthetic_pointing_data([80, 105, 135, 165, 195, 225])
+    with pytest.raises(ValueError):
+        sun_scan.fit_pointing_model(data, hold={"NPAE": 0.1})
+    with pytest.raises(ValueError):
+        sun_scan.fit_pointing_model(data, hold={"IE": 0, "IA": 0, "AN": 0, "AE": 0,
+                                                "CA": 0, "AZSCALE": 0})
+
+
 def test_azimuth_scale_not_fitted_on_a_narrow_arc():
     """Over a short arc a scale error is indistinguishable from a constant offset.
 

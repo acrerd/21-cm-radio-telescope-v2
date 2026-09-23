@@ -166,11 +166,18 @@
                             <label>Scan Interval (minutes)</label>
                             <input autocomplete="off" type="number" id="cdInterval" min="5" max="120" value="30">
                         </div>
+                        <div class="form-group">
+                            <label title="Before the first raster, archive the stored Sun scans and erase the controller's model, so the day's fit comes from new scans only. For a new feed or a re-zeroed encoder."><input autocomplete="off" type="checkbox" id="cdStartFresh"> Start fresh (archive old scans, clear the controller's model first)</label>
+                        </div>
+                        <div class="form-group">
+                            <label title="A feed change moves only the beam skew: IE in elevation and CA in cross-elevation. The tilt (AN, AE), the azimuth index (IA) and the azimuth scale are the mount and are taken from the archived fit chosen here, so a short day's scans determine two terms instead of six."><input autocomplete="off" type="checkbox" id="cdHoldMount"> Fit beam terms only (IE, CA); hold the mount terms from</label>
+                            <select autocomplete="off" id="cdHoldFrom" style="margin-left:6px;"><option value="">(no archived fits)</option></select>
+                        </div>
                         <div style="margin-top:15px; display:flex; gap:10px; flex-wrap:wrap;">
                             <button title="Run Sun scans on the interval until sunset, keeping each successful fit for the pointing model." class="btn btn-success" id="cdStartBtn" onclick="startCalDay()">Start Calibration Day</button>
                             <button title="Stop the calibration day. Scans already fitted are kept." class="btn btn-danger" id="cdStopBtn" style="display:none" onclick="stopCalDay()">Stop</button>
                             <button title="Fit the pointing model to every Sun scan on file. Needs at least four scans over 30 degrees of azimuth." class="btn btn-primary" id="cdFitBtn" onclick="fitModel()">Fit Model</button>
-                            <button title="Discard every stored Sun scan. The pointing model in the controller is not touched." class="btn btn-secondary" onclick="clearCalData()">Clear Data</button>
+                            <button title="Start a fresh model: the stored Sun scans go to a dated archive file and the pointing model held in the controller is erased, so the telescope runs on refraction alone until a new fit is applied. Do this just before a scan day, not the night before." class="btn btn-secondary" onclick="clearCalData()">Clear Data</button>
                         </div>
                     </div>
                     <div style="flex:1; min-width:300px;">
@@ -788,7 +795,7 @@
                     <div class="form-group">
                         <label>Pilot</label>
                         <select autocomplete="off" id="cfgPilotEnabled">
-                            <option value="">default (on)</option>
+                            <option value="">default (off)</option>
                             <option value="true">on</option>
                             <option value="false">off</option>
                         </select>
@@ -1022,6 +1029,9 @@
                             <div class="form-group">
                                 <label>Scan Interval (minutes)</label>
                                 <input autocomplete="off" type="number" id="obsCalInterval" min="5" max="120" value="30">
+                            </div>
+                            <div class="form-group">
+                                <label title="Before the first raster, archive the stored Sun scans and erase the controller's model, so the day's fit comes from new scans only. For a new feed or a re-zeroed encoder."><input autocomplete="off" type="checkbox" id="obsCalStartFresh"> Start fresh (archive old scans, clear the controller's model first)</label>
                             </div>
                         </div>
                     </div>

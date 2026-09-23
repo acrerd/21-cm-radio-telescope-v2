@@ -667,6 +667,16 @@ segment number of a rolled file. Nothing may be created afterwards.
 
 ### Configuration tab
 
+**The pilot is off by default since 2026-09-22.** Tested on the sky that
+evening, the carrier's received level flips by up to 1.6 % at every host
+stall (a TX underflow with an RX overflow) and stays at the new level, and
+between stalls it drifts three times as far as the receiver does, so
+dividing by it makes a time series worse, not better. The bursts have not
+been proven either. Enabling it is a deliberate act on the Configuration
+tab, and it changes the receiver's sensitivity by 8.4 % (the TX chain being
+on, not the radiated carrier), so the gain in force belongs to one state and
+must be re-fitted after a change.
+
 The pilot's five knobs — `receiver_pilot_enabled`, `_burst_interval_s`,
 `_max_duty_cycle`, `_burst_amplitude`, `_tx_gain_db`, `_tone_amplitude`. The
 last two belong together: raising the transmit gain raises the carrier as well

@@ -21,13 +21,25 @@ import tuning
 h5py = pytest.importorskip("h5py")
 
 
+def _inst(cfg_over=None):
+    """The instrument with the pilot deliberately enabled: it is off by
+    default (2026-09-22), and what these tests exercise is the pilot."""
+    return tuning.fixed_instrument({"receiver_pilot_enabled": True, **(cfg_over or {})})
+
+
 def _plan(cfg_over=None):
-    inst = tuning.fixed_instrument(cfg_over or {})
+    inst = _inst(cfg_over)
     return inst, pilot.plan(inst["pilot"], inst["lo_hz"], inst["sample_rate_hz"], inst["wide_channels"])
 
 
 class TestPlan:
-    def test_defaults_are_a_full_band_comb_in_bursts_around_a_continuous_carrier(self):
+    def test_the_pilot_is_off_unless_asked_for(self):
+        inst = tuning.fixed_instrument({})
+        assert not inst["pilot"]["enabled"]
+        assert len(pilot.plan(inst["pilot"], inst["lo_hz"], inst["sample_rate_hz"],
+                              inst["wide_channels"])["bins"]) == 0
+
+    def test_enabled_it_is_a_full_band_comb_in_bursts_around_a_continuous_carrier(self):
         inst, p = _plan()
         cfg = inst["pilot"]
         assert cfg["enabled"] and cfg["burst_interval_s"] == 60.0
@@ -103,7 +115,7 @@ class TestPlan:
         asked for in seconds, and met as far as the duty cap allows - a burst
         costs one whole record whatever its length, so at long integrations
         the cap wins and the answer is to use shorter records."""
-        cfg = tuning.fixed_instrument()["pilot"]
+        cfg = _inst()["pilot"]
         assert pilot.burst_every(cfg, 3.0) == 20            # a minute, 5%
         assert pilot.burst_every(cfg, 0.5) == 120           # still a minute, 0.8%
         assert pilot.burst_every(cfg, 10.0) == 20           # the duty cap, 200 s
@@ -112,11 +124,11 @@ class TestPlan:
             assert 1.0 / pilot.burst_every(cfg, tau) <= cfg["max_duty_cycle"] + 1e-9
         # a larger duty buys cadence at long integrations, and an explicit
         # record count overrides the lot
-        loose = tuning.fixed_instrument({"receiver_pilot_max_duty_cycle": 0.2})["pilot"]
+        loose = _inst({"receiver_pilot_max_duty_cycle": 0.2})["pilot"]
         assert pilot.burst_every(loose, 60.0) == 5
-        forced = tuning.fixed_instrument({"receiver_pilot_burst_every_records": 7})["pilot"]
+        forced = _inst({"receiver_pilot_burst_every_records": 7})["pilot"]
         assert pilot.burst_every(forced, 3.0) == 7
-        assert pilot.burst_every(tuning.fixed_instrument(
+        assert pilot.burst_every(_inst(
             {"receiver_pilot_enabled": False})["pilot"], 3.0) == 0
 
     def test_the_reference_is_flat_across_the_band(self):
@@ -294,7 +306,7 @@ class TestEstimate:
         """At 0.1 s records a flat 0.3 s margin would switch the comb off
         before it was ever on, and the record would be dropped for a burst
         that never happened."""
-        cfg = tuning.fixed_instrument()["pilot"]
+        cfg = _inst()["pilot"]
         assert pilot.burst_off_margin_s(cfg, 3.0) == pytest.approx(cfg["burst_off_margin_s"])
         assert pilot.burst_off_margin_s(cfg, 0.1) == pytest.approx(0.025)
         for tau in (0.05, 0.1, 1.0, 3.0, 60.0):
@@ -352,7 +364,7 @@ def _file(path, monkeypatch, pilots, calibrated, fine_vec=None, pilot_over=None)
     else:
         monkeypatch.setattr(bandpass, "load_bandpass", lambda *a, **k: None)
         monkeypatch.setattr(rf_calibration, "load_calibration", lambda *a, **k: None)
-    inst = tuning.fixed_instrument(pilot_over or {})
+    inst = _inst(pilot_over or {})
     p = pilot.plan(inst["pilot"], inst["lo_hz"], inst["sample_rate_hz"], inst["wide_channels"])
     lo, hi = inst["h1_band_hz"]
     f_h1 = np.linspace(lo, hi, 300)
@@ -498,7 +510,7 @@ class TestDemoFlowgraph:
         if "--headless" not in sys.argv:
             sys.argv.append("--headless")
         import b210_h1_receiver as rx
-        inst = tuning.fixed_instrument({"receiver_pilot_demo_inject": True})
+        inst = _inst({"receiver_pilot_demo_inject": True})
         fg = rx.TwoProductFlowgraph("demo", inst, strict=False)
         assert fg.pilot is not None and fg.pilot_sink is None and fg.pilot_gate is not None
         fg.start()
@@ -691,6 +703,9 @@ class TestScheduler:
             yield s
 
     def test_the_entry_switch_turns_the_pilot_off_for_that_entry_only(self, sched):
+        sched.app.config["TESTING"] = True
+        r = sched.app.test_client().post("/api/config", json={"receiver_pilot_enabled": True})
+        assert r.status_code == 200, r.get_json()
         on = sched.instrument_for({"name": "x"})
         off = sched.instrument_for({"name": "y", "pilot_off": True})
         assert on["pilot"]["enabled"] and not off["pilot"]["enabled"]
@@ -699,6 +714,10 @@ class TestScheduler:
     def test_the_instrument_endpoint_and_the_config_keys_carry_the_pilot(self, sched):
         sched.app.config["TESTING"] = True
         client = sched.app.test_client()
+        d = client.get("/api/instrument").get_json()
+        assert not d["pilot"]["enabled"]
+        r = client.post("/api/config", json={"receiver_pilot_enabled": True})
+        assert r.status_code == 200, r.get_json()
         d = client.get("/api/instrument").get_json()
         assert d["pilot"]["enabled"] and "burst" in d["pilot_description"]
         r = client.post("/api/config", json={"receiver_pilot_burst_interval_s": 120})
