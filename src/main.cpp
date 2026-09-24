@@ -1951,9 +1951,22 @@ void updateAxisMotion(
                 analogWrite(pinPwm, pwm);
 
                 if (pwm >= PWM_STOP - 5) {  // Close enough to stopped
-                    // Now reverse direction and start driving
                     analogWrite(pinPwm, PWM_STOP);
 
+                    // The ramp is down but the axis may still be coasting, and
+                    // DIR still points the old way, so any coast pulse counts
+                    // correctly *now*. Flip DIR only once no pulse has arrived
+                    // for REVERSAL_SETTLE_MS - the wait the homing back-off
+                    // has had since 2026-09-14 and ordinary slews never did
+                    // (issue #47). Bounded by the stall timeout from the end
+                    // of the ramp in case a pulse never stops arriving.
+                    unsigned long sinceRamp = millis() - *stopStartTime;
+                    if (msSincePulse(*lastPulse) < REVERSAL_SETTLE_MS &&
+                        sinceRamp < (unsigned long)cfg.stopRampMs + (unsigned long)cfg.stallTimeoutMs) {
+                        break;  // still coasting: stay in MOTION_STOPPING
+                    }
+
+                    // Now reverse direction and start driving
                     // Recalculate direction (target may have changed again)
                     diff = target - *position;
                     remaining = abs(diff);

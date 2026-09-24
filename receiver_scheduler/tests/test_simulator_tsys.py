@@ -80,7 +80,11 @@ class TestTheWebBuild:
         with open(META) as fh:
             meta = json.load(fh)
         tsys = meta["defaults"]["tsys"]
-        assert 300.0 <= tsys <= 400.0, (
+        # 100-400 K: the old feed fitted 340-360, the new one (2026-09-22)
+        # 185-210. The lower bound guards against a fit sitting on
+        # rf_calibration's own floor; the upper against the 200 K default
+        # ever having been "measured".
+        assert 100.0 <= tsys <= 400.0, (
             "meta.json still ships %r - regenerate it" % tsys)
         assert tsys != 200.0
 

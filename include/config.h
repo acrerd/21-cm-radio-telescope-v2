@@ -85,6 +85,12 @@
 #define DEFAULT_CURRENT_LIMIT   5.0     // Stop motor if current exceeds this (Amps)
 #define DEFAULT_STALL_TIMEOUT   2000    // No pulses for this long = stalled (ms)
 #define HOMING_SETTLE_MS        400     // After the homing back-off: no pulse for this long = coast over
+// A slew that reverses an axis stops first (MOTION_STOPPING) and then flips
+// DIR. The ISR signs every pulse by that pin, so a pulse from the coast after
+// the ramp-down would be counted the wrong way once DIR has flipped. Wait for
+// the coast to end - no pulse for this long - before reversing, as the homing
+// back-off has since 2026-09-14 (issue #47: ordinary slews never had it).
+#define REVERSAL_SETTLE_MS      400
 // The homing re-approach drops to PWM_MIN_SPEED for its last pulses so the
 // mount meets the limit switch slowly. Hitting it at full speed left the rest
 // position scattered over most of a magnet pitch (the coast past a current

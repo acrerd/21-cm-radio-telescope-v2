@@ -131,19 +131,29 @@ def test_it_moves_the_anticentre_line_to_where_the_survey_puts_it():
     +3.75, which is 0.22 km/s from the survey - against 15 km/s before.
 
     Uses the simulator for the survey value rather than a stored number, so it
-    keeps testing the agreement rather than a memory of it.
+    keeps testing the agreement rather than a memory of it. The peak is
+    interpolated through its three channels: HI4PI's channels are 1.29 km/s
+    wide and the anticentre peak sits near a channel boundary, so a bare
+    argmax hops a whole channel on any change to the beam it is convolved
+    with (it did on 2026-09-24, from +3.97 to +5.25). The tolerance is one
+    survey channel, which is what "lands on the survey" can honestly mean.
     """
     import rf_calibration
 
     sim = rf_calibration.load_simulator()
     v, ta = sim.spectrum(184.0, 0.0)[:2]
-    survey_peak_km_s = float(v[int(np.nanargmax(ta))]) / 1000.0
+    v = np.asarray(v, float) / 1000.0
+    ta = np.asarray(ta, float)
+    i = int(np.nanargmax(ta))
+    y0, y1, y2 = ta[i - 1], ta[i], ta[i + 1]
+    channel_km_s = float(abs(v[i + 1] - v[i]))
+    survey_peak_km_s = float(v[i] + 0.5 * (y0 - y2) / (y0 - 2 * y1 + y2) * (v[i + 1] - v[i]))
     assert abs(survey_peak_km_s) < 10.0, "the anticentre should sit near v_LSR 0"
 
     dv, _, _ = op.lsr_offset_km_s(header(), WHEN)
     measured_topocentric = -11.17
     corrected = measured_topocentric - dv
-    assert abs(corrected - survey_peak_km_s) < 1.0, (
+    assert abs(corrected - survey_peak_km_s) < channel_km_s, (
         "corrected peak %+.2f against survey %+.2f" % (corrected, survey_peak_km_s))
     assert abs(measured_topocentric - survey_peak_km_s) > 10.0, (
         "the uncorrected axis should be far from the survey, or this test is "
