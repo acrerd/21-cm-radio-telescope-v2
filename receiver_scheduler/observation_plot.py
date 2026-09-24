@@ -520,8 +520,8 @@ def plot_observation(path, output_path, name="", mode="spectrum",
             subtitle += "\n" + line
         if cal_ok:
             subtitle += "\nmean %.1f SFU over the run" % float(np.nanmean(_values))
-            subtitle += (", corrected to above the atmosphere (zenith opacity %.3f nepers)"
-                         % rf_calibration.ZENITH_OPACITY_NEPERS if opacity
+            subtitle += (", corrected to above the atmosphere (zenith optical depth %.3f)"
+                         % rf_calibration.ZENITH_OPTICAL_DEPTH if opacity
                          else ", as measured (no ephemeris for the airmass)")
         if group > 1:
             subtitle += "; %d records per point" % group

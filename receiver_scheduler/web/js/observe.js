@@ -745,8 +745,8 @@
                 // was computed at belongs on screen beside the number.
                 if (d.opacity_applied) {
                     const last = d.points[d.points.length - 1];
-                    text += ' · above the atmosphere (zenith opacity '
-                          + d.zenith_opacity.toFixed(3) + ' Np';
+                    text += ' · above the atmosphere (zenith optical depth '
+                          + d.zenith_opacity.toFixed(3);
                     if (last && last.airmass) {
                         text += ', now airmass ' + last.airmass.toFixed(2)
                               + ' at alt ' + last.alt_deg.toFixed(1) + '\u00b0';

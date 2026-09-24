@@ -5046,7 +5046,7 @@ def api_observe_live():
                         records=len(records), binned=group,
                         warmup_dropped=dropped, warmup_s=LIVE_WARMUP_S,
                         opacity_applied=bool(sun_alt is not None and cal_ok),
-                        zenith_opacity=rf_calibration.ZENITH_OPACITY_NEPERS,
+                        zenith_opacity=rf_calibration.ZENITH_OPTICAL_DEPTH,
                         why='' if cal_ok else cal_why,
                         name=obs.get('name'),
                         finished=finished,

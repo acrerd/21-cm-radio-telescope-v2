@@ -142,7 +142,8 @@ VERY_HIGH_T_SYS_K = 300.0
 RECEIVER_T_RX_K = 59.0        # SAWbird+ H1 datasheet, typical
 AMBIENT_T_K = 290.0
 
-# Zenith opacity of the atmosphere at 1.4 GHz, in nepers. Almost all of it is
+# Zenith optical depth of the atmosphere at 1.4 GHz (dimensionless; the
+# absorption is exp(-tau x airmass)). Almost all of it is
 # molecular oxygen; water vapour contributes little this far from the 22 GHz
 # line, so it barely moves with humidity - which is what makes a single number
 # defensible here at all.
@@ -154,7 +155,7 @@ AMBIENT_T_K = 290.0
 # ground spillover, the beam starting to clip the treeline - so it is an upper
 # bound on the opacity rather than a measurement of it. Replace this with a
 # real tipping curve if the 2-3% ever matters.
-ZENITH_OPACITY_NEPERS = 0.010
+ZENITH_OPTICAL_DEPTH = 0.010
 
 
 def airmass(alt_deg):
@@ -171,7 +172,7 @@ def airmass(alt_deg):
                   + 0.50572 * (h + 6.07995) ** -1.6364)
 
 
-def atmospheric_transmission(alt_deg, tau=ZENITH_OPACITY_NEPERS):
+def atmospheric_transmission(alt_deg, tau=ZENITH_OPTICAL_DEPTH):
     """Fraction of a source's flux that survives the atmosphere at this elevation.
 
     Divide a measured flux by this to get the flux above the atmosphere, which
