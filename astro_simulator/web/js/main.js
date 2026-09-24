@@ -167,6 +167,8 @@ async function boot() {
       .then((d) => {
         const t = d && d.gain && d.gain.t_sys_k;
         if (Number.isFinite(t)) ui.setMeasuredTsys(t);
+        const fw = d && d.beam && d.beam.fwhm_deg;
+        if (Number.isFinite(fw)) ui.setMeasuredBeam(fw);
       })
       .catch(() => {});
 

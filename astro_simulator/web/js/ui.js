@@ -690,5 +690,18 @@ export function setupUI(cfg) {
     return true;
   }
 
-  return { message, point, applyParams, setMeasuredTsys };
+  // The beam in force, on the same terms as T_sys: the scheduler measures it
+  // from a Sun drift (beam_scan.py) and a feed change moves it, so the page
+  // asks rather than trusting meta.json's snapshot. The dataset floors it at
+  // sky.minFwhm (applyParams enforces that), and the operator's own value wins.
+  function setMeasuredBeam(fwhmDeg) {
+    if (!Number.isFinite(fwhmDeg) || fwhmDeg <= 0) return false;
+    const shown = boxes.fw.value.trim();
+    if (shown !== "" && shown !== sky.fwhm.toFixed(2)) return false;   // operator's
+    boxes.fw.value = `${Math.round(fwhmDeg * 100) / 100}`;
+    applyParams();
+    return true;
+  }
+
+  return { message, point, applyParams, setMeasuredTsys, setMeasuredBeam };
 }

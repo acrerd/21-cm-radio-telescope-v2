@@ -202,6 +202,22 @@
                         <div id="cdArchive" style="background:#0f0f23; border:1px solid #333; border-radius:8px; padding:15px;">
                             <span style="color:#888;">No archived fits.</span>
                         </div>
+                        <div class="section-title" style="margin-top:15px;">Beam</div>
+                        <div style="color:#888; font-size:12px; margin-bottom:8px;">
+                            The beam is measured, not assumed: a two-hour Sun drift, the main lobe integrated
+                            directly on both sides of the crossing. Its solid angle sets the collecting area and
+                            every flux; the simulators take their beam from it too. Adopted only when the scan
+                            reaches the baseline on both sides, the Sun crosses the centre, and the two sides agree.
+                        </div>
+                        <div id="beamCard" style="background:#0f0f23; border:1px solid #333; border-radius:8px; padding:15px; margin-bottom:10px;">
+                            <span style="color:#888;">No beam measured yet.</span>
+                        </div>
+                        <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:center; margin-bottom:10px;">
+                            <button title="Park ahead of the Sun and let it drift through the beam for two hours, then reduce the scan and adopt the beam if it passes. Needs the Sun clear of the horizon for the whole scan." class="btn btn-success" id="beamStartBtn" onclick="startBeamScan()">Start beam drift (2 h)</button>
+                            <input autocomplete="off" id="beamFile" placeholder="drift recording to re-analyse, e.g. 20260924_123922_drift.h5" style="flex:1; min-width:260px;">
+                            <button title="Reduce a Sun drift already on file and adopt it if it passes." class="btn btn-secondary" onclick="analyseBeamFile()">Analyse</button>
+                        </div>
+                        <div id="beamPlot" style="text-align:center;"></div>
                     </div>
                 </div>
             </div>

@@ -168,11 +168,50 @@ SITE_LON_DEG = -4.307865
 SITE_HEIGHT_M = 50.0
 
 
+# Where the scheduler keeps the measured beam (beam_scan.py: a Sun drift,
+# integrated directly), read by path for the same reason as the gain above.
+# The constants BEAM_FWHM_REF_DEG / the Gaussian 1.133 FWHM^2 are the fallback
+# for a checkout with no measurement behind it - and the measurement is what
+# every consumer gets when there is one, the way T_sys and gain already work.
+_BEAM_CALIBRATION = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "receiver_scheduler", "beam_calibration.json")
+
+
+def measured_beam():
+    """The beam in force: {'fwhm_deg', 'solid_angle_sq_deg', 'measured_utc',
+    'source_file'} from the last accepted beam scan, or None.
+
+    A feed change, a refocus or a bent strut changes the beam, and with it the
+    collecting area and every flux; a number in the code cannot follow that,
+    a file written by the measurement can. Refuses an implausible file (FWHM
+    outside 2-10 deg, solid angle outside 5-100 sq deg) rather than pass a
+    corrupt one downstream.
+    """
+    try:
+        with open(_BEAM_CALIBRATION) as fh:
+            doc = json.load(fh)
+        fwhm = float(doc["fwhm_deg"])
+        omega = float(doc["solid_angle_sq_deg"])
+    except (OSError, ValueError, TypeError, KeyError):
+        return None
+    if not (2.0 < fwhm < 10.0 and 5.0 < omega < 100.0):
+        return None
+    return {"fwhm_deg": fwhm, "solid_angle_sq_deg": omega,
+            "measured_utc": doc.get("measured_utc"), "source_file": doc.get("source_file")}
+
+
 def beam_fwhm_deg(dish_m=DISH_M):
-    """Beam FWHM in degrees at the HI line for a dish of ``dish_m`` diameter."""
+    """Beam FWHM in degrees at the HI line for a dish of ``dish_m`` diameter.
+
+    The measured beam's Gaussian equivalent when one is on file, else the
+    reference constant; scaled by diameter for a simulated other dish.
+    """
     if dish_m <= 0:
         raise ValueError("Dish diameter must be positive")
-    return BEAM_FWHM_REF_DEG * BEAM_FWHM_REF_DISH_M / dish_m
+    beam = measured_beam()
+    ref = beam["fwhm_deg"] if beam else BEAM_FWHM_REF_DEG
+    return ref * BEAM_FWHM_REF_DISH_M / dish_m
 
 
 # H I rest frequency and c, for turning the beam into a collecting area. Kept
@@ -191,6 +230,11 @@ def beam_solid_angle_sr(dish_m=DISH_M):
     *directly integrated* main lobe (23.7 sq deg, three Sun drifts, 2026-09-15),
     so this returns the measured solid angle, not a model of one.
     """
+    beam = measured_beam()
+    if beam:
+        # The integrated main lobe itself, not a Gaussian's, scaled as 1/D^2.
+        return (beam["solid_angle_sq_deg"] * math.radians(1.0) ** 2
+                * (BEAM_FWHM_REF_DISH_M / dish_m) ** 2)
     fwhm_rad = math.radians(beam_fwhm_deg(dish_m))
     return 1.133 * fwhm_rad ** 2
 

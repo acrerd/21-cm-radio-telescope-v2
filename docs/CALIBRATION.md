@@ -447,14 +447,32 @@ recorded file, step by step, and reproduces the plot.
 
 ### Kelvin to flux
 
-`A_e = λ²/Ω`, the antenna theorem, with the **measured** main-lobe solid angle
-— 23.7 square degrees, a Gaussian-equivalent 4.57°, integrated directly from
-three Sun drifts at 40, 30 and 20 dB on 2026-09-15. That gives 6.18 m² against
-a physical 7.07, and it is an **upper bound**: the sidelobes and the ~10%
-spillover lie outside the integrated lobe, so the true effective area is
-smaller by the main-beam efficiency. On this scale the Sun reads 79 SFU
-against the reference network's 75, Cas A 1.15 times its model and the Moon
-1.20 times a 225 K disc.
+`A_e = λ²/Ω`, the antenna theorem, with the **measured** main-lobe solid
+angle. Since 2026-09-24 the beam is a calibration product like the gain and
+the bandpass: `beam_scan.py` measures it from a **two-hour Sun drift** (the
+Sun Scan tab's *Start beam drift*, or a drift entry with `beam_scan: true`),
+integrating the main lobe directly on each side of the crossing —
+2π∫P(θ)θdθ out to the first null, baseline from beyond 6.5°, the two sides a
+check on each other — and writes `beam_calibration.json`, which
+`instrument.measured_beam()` serves to every consumer: fluxes, the
+simulators, the horizon margin, the raster's default width, the receiver's
+file attributes. A scan is adopted only if it reaches ≥6° of drift either
+side, the Sun passes within 0.6° of the beam centre and stands ≥3× the
+baseline, and the two sides agree within 12%. The FWHM kept beside the solid
+angle is its Gaussian equivalent, √(Ω/1.133), for the simulators' Gaussian
+convolution; a Gaussian *fitted* to the crossing is reported for comparison
+only, because on a flat-topped lobe it depends on the window.
+
+In force: 20.8 sq deg, FWHM-equivalent 4.29°, from the 09-24 drift on the new
+feed (provisional — adopted by force with one side's baseline 0.2° short of
+the rule, to be replaced by the two-hour scan). By this method the old feed's
+09-15 drift gives 21.6 sq deg, not the 23.7 recorded then, so the earlier
+number carried ~9% of method that cannot be reconstructed. `λ²/Ω_main` is an
+**upper bound** on the effective area — on the new feed it is the physical
+7.07 m² to within 1%, which says only that the main lobe holds most of the
+power; the sidelobes and spillover lie outside it, and the true effective
+area is smaller by the main-beam efficiency. The two-hour scan is where the
+first sidelobes start to be measured.
 
 Solar work is corrected to above the atmosphere with the same zenith opacity
 the drift fits use, and the professional measurement for the same day — the

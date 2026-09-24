@@ -39,9 +39,10 @@ from instrument import (  # noqa: E402  - the path has to be set up first
     SITE_LON_DEG,
     SITE_NAME,
     beam_fwhm_deg,
+    measured_beam,
 )
 
 __all__ = ["MAIN_BEAM_EFFICIENCY", "SITE_NAME", "SITE_LAT_DEG", "SITE_LON_DEG", "SITE_HEIGHT_M",
            "DISH_M", "BEAM_FWHM_REF_DEG", "beam_fwhm_deg",
-           "beam_solid_angle_sr", "effective_area_m2",
+           "beam_solid_angle_sr", "effective_area_m2", "measured_beam",
            "flux_to_antenna_temperature", "antenna_temperature_to_flux"]

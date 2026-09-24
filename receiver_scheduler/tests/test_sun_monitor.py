@@ -219,6 +219,7 @@ def test_the_monitor_never_preempts_a_scan_or_a_hand_started_receiver():
 # monitor run is exactly what would otherwise be refusing it.
 MANUAL_PATHS = {
     "Observe start":      ("/api/start", {"name": "x"}, "process"),
+    "beam scan":          ("/api/beam/start", {}, "process"),
     "simulator start":    ("/api/simulator/schedule",
                            {"l": 120, "b": 0, "mode": "hi"}, "process"),
     "receiver start":     ("/api/receiver/start", {}, "sun_scan_state"),

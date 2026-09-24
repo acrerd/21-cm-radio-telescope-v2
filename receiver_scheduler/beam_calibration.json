@@ -1,0 +1,44 @@
+{
+  "n_records": 352,
+  "span_before_deg": 6.345525559656327,
+  "span_after_deg": 8.329672096099314,
+  "closest_approach_deg": 0.20525788117615534,
+  "peak_over_baseline": 10.373394333606168,
+  "t_a_peak_k": 1770.1496538990807,
+  "sides": {
+    "before": {
+      "solid_angle_sq_deg": 19.868764541599333,
+      "null_deg": 4.841928114650649,
+      "sidelobe_peak_fraction": 0.0038165201728016344,
+      "sidelobe_measured": false,
+      "span_deg": 6.345525559656327
+    },
+    "after": {
+      "solid_angle_sq_deg": 21.811187584860253,
+      "null_deg": 5.23883784202615,
+      "sidelobe_peak_fraction": 0.004730433422488405,
+      "sidelobe_measured": false,
+      "span_deg": 8.329672096099314
+    }
+  },
+  "solid_angle_sq_deg": 20.83997606322979,
+  "solid_angle_sr": 0.006348219736797827,
+  "fwhm_deg": 4.288778854507225,
+  "side_disagreement": 0.09320658705976854,
+  "sidelobe_peak_fraction": 0.004730433422488405,
+  "sidelobe_measured": false,
+  "gaussian_fwhm_deg": 4.452906521293497,
+  "gaussian_centre_deg": 0.044397743364054665,
+  "ok": false,
+  "why": [
+    "too little baseline beyond 6.5 deg on both sides"
+  ],
+  "version": 1,
+  "source_file": "20260924_123922_drift.h5",
+  "measured_utc": "2026-09-24T12:08:49Z",
+  "gain_db": 20.0,
+  "t_sys_k": 188.84830733650165,
+  "created_utc": "2026-09-24T13:36:58Z",
+  "forced": true,
+  "note": "Adopted by force 2026-09-24: the main lobe is complete (nulls at 4.8/5.2 deg) but the before-side baseline reaches only 6.3 deg; provisional until the two-hour scan of 2026-09-25."
+}

@@ -1,0 +1,40 @@
+{
+  "n_records": 352,
+  "span_before_deg": 7.526335654222952,
+  "span_after_deg": 7.1171890158435565,
+  "closest_approach_deg": 0.03007223012507915,
+  "peak_over_baseline": 5.790758327783647,
+  "sides": {
+    "before": {
+      "solid_angle_sq_deg": 21.630044915684117,
+      "null_deg": 4.898114409601529,
+      "sidelobe_peak_fraction": 0.004318083139629367,
+      "sidelobe_measured": false,
+      "span_deg": 7.526335654222952
+    },
+    "after": {
+      "solid_angle_sq_deg": 21.606236335064057,
+      "null_deg": 5.23973494924143,
+      "sidelobe_peak_fraction": 0.004350179549966888,
+      "sidelobe_measured": false,
+      "span_deg": 7.1171890158435565
+    }
+  },
+  "solid_angle_sq_deg": 21.61814062537409,
+  "solid_angle_sr": 0.006585262217887677,
+  "fwhm_deg": 4.36811651152182,
+  "side_disagreement": 0.001101324162546816,
+  "sidelobe_peak_fraction": 0.004350179549966888,
+  "sidelobe_measured": false,
+  "gaussian_fwhm_deg": 4.551826620108649,
+  "gaussian_centre_deg": -0.030104073407157487,
+  "ok": true,
+  "why": [],
+  "version": 1,
+  "source_file": "20260915_142012_drift.h5",
+  "measured_utc": "2026-09-15T13:49:39Z",
+  "gain_db": 20.0,
+  "t_sys_k": null,
+  "created_utc": "2026-09-24T13:36:59Z",
+  "note": "old feed, for comparison; not adopted"
+}

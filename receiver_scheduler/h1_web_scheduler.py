@@ -2674,6 +2674,12 @@ def stop_observation() -> bool:
 
         log.info("Stopped: %s", name)
         _record_finished_observation(current_observation)
+        if current_observation and current_observation.get('beam_scan') \
+                and current_observation.get('output_file'):
+            # The drift scan that measures the beam reduces itself when it
+            # ends; the result is adopted only if it meets beam_scan's bar.
+            threading.Thread(target=_analyse_beam_scan,
+                             args=(current_observation['output_file'],), daemon=True).start()
         current_process = None
         current_observation = None
         current_receiver_log = None
@@ -4417,6 +4423,9 @@ def api_rf_status():
             "lo_mhz": template.get("config", {}).get("lo_hz", 0) / 1e6,
             "sample_rate_mhz": template.get("config", {}).get("sample_rate_hz", 0) / 1e6,
         },
+        # The beam in force, for the simulator's beam box (main.js) and anyone
+        # else who asks here for the calibration; None means the reference.
+        "beam": __import__("observatory").measured_beam(),
         "gain": None if not cal else {
             "created_utc": cal.get("created_utc"),
             "observed_utc": cal.get("observed_utc"),
@@ -6699,6 +6708,161 @@ def api_calday_models_restore():
     except json.JSONDecodeError:
         return jsonify({'success': False, 'error': 'Archived model is unreadable'}), 500
     return jsonify({'success': True, 'model': model})
+
+
+# =============================================================================
+# The beam, as a calibration product (beam_scan.py)
+# =============================================================================
+#
+# A two-hour Sun drift, reduced when it ends: the main lobe integrated
+# directly, on both sides, and adopted as the beam in force when it meets the
+# bar. Everything that needs the beam - fluxes, the simulators, the horizon
+# margin, the raster's default width - reads instrument.measured_beam(), so
+# a feed change is followed by one scan rather than by editing a constant.
+beam_state = {"running": False, "last": None, "error": None, "plot_stamp": None}
+BEAM_PLOT = "beam_scan.png"
+
+
+def _beam_summary(doc):
+    if not doc:
+        return None
+    return {k: v for k, v in doc.items() if k != "profile"}
+
+
+def _analyse_beam_scan(path, adopt=True):
+    """Reduce a Sun drift; adopt it as the beam if it passes. Thread target."""
+    import beam_scan
+    beam_state.update(running=True, error=None)
+    try:
+        result = beam_scan.analyse_drift(path)
+        try:
+            plot_path = os.path.join(get_config_value("data_output_folder"), BEAM_PLOT)
+            beam_scan.plot_beam(result, plot_path)
+            beam_state["plot_stamp"] = int(time.time())
+        except Exception as exc:                          # noqa: BLE001
+            log.warning("Beam scan plot failed: %s", exc)
+        summary = _beam_summary(result)
+        beam_state["last"] = summary
+        if result.get("ok"):
+            if adopt:
+                beam_scan.save_beam_calibration(result)
+                log.info("Beam measured from %s and adopted: main lobe %.1f sq deg, FWHM-equivalent "
+                         "%.2f deg, sides %.1f/%.1f, Sun %.1fx the baseline",
+                         os.path.basename(path), result["solid_angle_sq_deg"], result["fwhm_deg"],
+                         result["sides"]["before"]["solid_angle_sq_deg"],
+                         result["sides"]["after"]["solid_angle_sq_deg"], result["peak_over_baseline"])
+            else:
+                log.info("Beam scan %s analysed (not adopted): %.1f sq deg, %.2f deg",
+                         os.path.basename(path), result["solid_angle_sq_deg"], result["fwhm_deg"])
+        else:
+            log.warning("Beam scan %s NOT adopted: %s", os.path.basename(path), "; ".join(result.get("why", [])))
+        return result
+    except Exception as exc:                              # noqa: BLE001
+        log.error("Beam scan analysis failed for %s: %s", path, exc, exc_info=True)
+        beam_state["error"] = str(exc)
+        return None
+    finally:
+        beam_state["running"] = False
+
+
+def beam_scan_entry(now: datetime, minutes: int = None) -> dict:
+    """A Sun drift laid out for the beam: parked where the Sun will be at the
+    scan's mid-point, long enough to see both sidelobes and the baseline."""
+    import beam_scan
+    minutes = int(minutes or beam_scan.DRIFT_MINUTES)
+    crossing = now + timedelta(minutes=minutes / 2.0)
+    return {
+        'name': 'Beam: Sun drift', 'beam_scan': True,
+        'comment': 'Beam measurement (beam_scan.py): the main lobe integrated from the Sun crossing.',
+        'coord_system': 'drift', 'drift_frame': 'object', 'object_name': 'sun',
+        'coord1_deg': 0, 'coord1_min': 0, 'coord1_sec': 0.0,
+        'coord2_deg': 0, 'coord2_min': 0, 'coord2_sec': 0.0,
+        'drift_time': crossing.strftime('%H:%M'), 'drift_window_min': 30,
+        'start_date': now.strftime('%Y-%m-%d'), 'start_time': now.strftime('%H:%M'),
+        'duration_minutes': minutes, 'integration_time_s': beam_scan.DRIFT_INTEGRATION_S,
+        'end_action': 'stow', 'sdr_type': 'b210', 'enabled': True,
+        'respect_local_horizon': True, 'home_first': False,
+    }
+
+
+@app.route('/api/beam/status', methods=['GET'])
+def api_beam_status():
+    import beam_scan
+    import observatory
+    in_force = beam_scan.load_beam_calibration()
+    return jsonify({
+        'success': True,
+        'running': beam_state["running"],
+        'error': beam_state["error"],
+        'in_force': _beam_summary(in_force),
+        'last': beam_state["last"],
+        'archive': beam_scan.list_beam_calibrations(),
+        'plot_stamp': beam_state["plot_stamp"],
+        'reference_fwhm_deg': observatory.BEAM_FWHM_REF_DEG,
+        'effective_area_m2': observatory.effective_area_m2(),
+        'drift_minutes': beam_scan.DRIFT_MINUTES,
+    })
+
+
+@app.route('/api/beam/start', methods=['POST'])
+def api_beam_start():
+    """Start the beam's Sun drift now: two hours, reduced when it ends."""
+    body = request.get_json(silent=True) or {}
+    sun_monitor_yield("a beam scan was started")
+    with process_lock:
+        busy = (current_process is not None and current_process.poll() is None)
+        running = dict(current_observation) if busy and current_observation else None
+        starting = observation_starting
+    if busy or starting:
+        name = (running or {}).get('name') or starting_observation_name or 'an observation'
+        return jsonify({'success': False, 'error': "'%s' is already recording; stop it first" % name}), 409
+    held = hardware_in_use()
+    if held:
+        return jsonify({'success': False, 'error': 'Cannot start a beam scan: %s' % held}), 409
+    entry = beam_scan_entry(datetime.now(), body.get('minutes'))
+    apply_horizon_trim(entry)
+    if entry.get('horizon_blocked'):
+        return jsonify({'success': False, 'error': 'The Sun is behind the measured horizon: %s'
+                        % entry.get('horizon_note')}), 409
+    if entry.get('horizon_note'):
+        return jsonify({'success': False, 'error': 'The Sun does not stay clear of the horizon for the '
+                        'whole scan (%s); start earlier in the day' % entry['horizon_note']}), 409
+    log.info("Beam scan: starting a %d min Sun drift", entry['duration_minutes'])
+    ok = start_observation(entry)
+    return jsonify({'success': ok, 'entry': entry,
+                    'error': None if ok else 'Failed to start - see the Log tab'}), (200 if ok else 500)
+
+
+@app.route('/api/beam/analyse', methods=['POST'])
+def api_beam_analyse():
+    """Reduce a Sun drift recording on file; adopt it if it passes (or if forced)."""
+    import beam_scan
+    body = request.get_json(silent=True) or {}
+    name = os.path.basename(str(body.get('file') or ''))
+    if not name:
+        return jsonify({'success': False, 'error': 'no file given'}), 400
+    path = os.path.join(observations_folder(), name)
+    if not os.path.exists(path):
+        return jsonify({'success': False, 'error': 'no such recording: %s' % name}), 404
+    if beam_state["running"]:
+        return jsonify({'success': False, 'error': 'a beam analysis is already running'}), 409
+    result = _analyse_beam_scan(path, adopt=bool(body.get('adopt', True)))
+    if result is None:
+        return jsonify({'success': False, 'error': beam_state["error"]}), 500
+    if body.get('force') and not result.get('ok'):
+        beam_scan.save_beam_calibration(result)
+        log.warning("Beam scan %s adopted by force despite: %s", name, "; ".join(result.get("why", [])))
+    return jsonify({'success': True, 'result': _beam_summary(result),
+                    'in_force': _beam_summary(beam_scan.load_beam_calibration())})
+
+
+@app.route('/api/beam/plot', methods=['GET'])
+def api_beam_plot():
+    from flask import send_file
+    path = os.path.join(get_config_value("data_output_folder"), BEAM_PLOT)
+    if not os.path.exists(path):
+        return jsonify({'success': False, 'error': 'no beam plot yet'}), 404
+    return send_file(path, mimetype='image/png', max_age=0)
 
 
 @app.route('/api/calday/apply', methods=['POST'])

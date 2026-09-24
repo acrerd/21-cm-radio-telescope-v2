@@ -486,9 +486,14 @@
 
         function obvLiveSchedule(d) {
             if (obvLiveTimer) clearTimeout(obvLiveTimer);
-            // A finished run has nothing more to add, so stop asking.
-            if (d && d.finished) { obvLiveTimer = null; return; }
-            obvLiveTimer = setTimeout(obvLivePoll, obvLiveInterval(d));
+            // A finished run has nothing more to add, but the next run can
+            // start at any moment - a booking a minute after the last, or the
+            // Sun monitor - and only a tab switch restarts this loop. Stopping
+            // here is what hid the 2026-09-24 Sun drift from a tab that had
+            // watched the Sun monitor end a minute earlier. So drop to a
+            // walking pace instead of stopping.
+            const wait = (d && d.finished) ? 30000 : obvLiveInterval(d);
+            obvLiveTimer = setTimeout(obvLivePoll, wait);
         }
 
         // Whether the last poll saw a run in progress, so the moment it ends

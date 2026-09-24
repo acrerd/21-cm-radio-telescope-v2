@@ -11,10 +11,10 @@
     "bw_mhz": 2.0,
     "dish_m": 3.0,
     "eta": 1.0,
-    "tsys": 356.9,
+    "tsys": 188.8,
     "tint": 60.0,
     "npol": 1,
-    "fwhm": 4.57,
+    "fwhm": 4.289,
     "gain_sigma": 0.00023
   },
   "instrument": {

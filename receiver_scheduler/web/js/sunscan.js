@@ -419,6 +419,61 @@
             }).catch(e => alert('Restore request failed: ' + e));
         }
 
+        // --- the beam, as a calibration product (beam_scan.py) ---
+        function renderBeam(d) {
+            const card = document.getElementById('beamCard');
+            const fmt = (b, label) => {
+                if (!b) return '';
+                const sides = b.sides ? (b.sides.before.solid_angle_sq_deg.toFixed(1) + ' / ' + b.sides.after.solid_angle_sq_deg.toFixed(1)) : '';
+                return '<div style="margin-bottom:8px;"><span style="color:#00d4ff;">' + label + '</span> '
+                    + '<span style="color:#ccc;">main lobe <b>' + b.solid_angle_sq_deg.toFixed(1) + ' sq deg</b>'
+                    + ' (sides ' + sides + '), FWHM-equivalent <b>' + b.fwhm_deg.toFixed(2) + '&deg;</b>'
+                    + (b.gaussian_fwhm_deg ? ', Gaussian over the window ' + b.gaussian_fwhm_deg.toFixed(2) + '&deg;' : '')
+                    + '; Sun ' + (b.peak_over_baseline || 0).toFixed(1) + '&times; the baseline'
+                    + (b.sidelobe_peak_fraction != null ? '; first sidelobe ' + (100 * b.sidelobe_peak_fraction).toFixed(1) + '% of peak' + (b.sidelobe_measured ? '' : ' (scan too short to be sure)') : '')
+                    + '</span><br><span style="color:#888; font-size:12px;">from ' + (b.source_file || '?') + ', measured ' + (b.measured_utc || '?').replace('T', ' ').replace('Z', ' UTC')
+                    + (b.ok === false ? ' &mdash; <span style="color:#ff4757;">not adopted: ' + (b.why || []).join('; ') + '</span>' : '')
+                    + '</span></div>';
+            };
+            let html = '';
+            if (d.in_force) html += fmt(d.in_force, 'In force:');
+            else html += '<div style="color:#888;">No beam measured yet; the reference ' + (d.reference_fwhm_deg || 0).toFixed(2) + '&deg; is in use.</div>';
+            if (d.effective_area_m2) html += '<div style="color:#888; font-size:12px;">Collecting area from the antenna theorem: ' + d.effective_area_m2.toFixed(2) + ' m&sup2; of 7.07 physical.</div>';
+            if (d.last && (!d.in_force || d.last.source_file !== d.in_force.source_file)) html += fmt(d.last, 'Last analysis:');
+            if (d.running) html += '<div style="color:#ffaa00;">Analysing...</div>';
+            if (d.error) html += '<div style="color:#ff4757;">' + d.error + '</div>';
+            card.innerHTML = html;
+            if (d.plot_stamp) {
+                document.getElementById('beamPlot').innerHTML = '<img src="/api/beam/plot?t=' + d.plot_stamp + '" style="max-width:100%; border:1px solid #333; border-radius:8px;">';
+            }
+        }
+
+        function loadBeam() {
+            fetch('/api/beam/status').then(r => r.json()).then(renderBeam).catch(() => {});
+        }
+
+        function startBeamScan() {
+            if (!confirm('Start a two-hour Sun drift for the beam? The dish parks ahead of the Sun now and the scan reduces itself when it ends.')) return;
+            const btn = document.getElementById('beamStartBtn'); btn.disabled = true;
+            fetch('/api/beam/start', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: '{}'})
+                .then(r => r.json()).then(d => {
+                    btn.disabled = false;
+                    if (!d.success) { alert('Beam scan not started: ' + (d.error || 'unknown error')); return; }
+                    document.getElementById('beamCard').innerHTML = '<div style="color:#00ff88;">Beam drift running: ' + d.entry.duration_minutes + ' min, crossing at ' + d.entry.drift_time + ' local. The result appears here when it ends.</div>';
+                }).catch(e => { btn.disabled = false; alert('Beam scan request failed: ' + e); });
+        }
+
+        function analyseBeamFile() {
+            const file = document.getElementById('beamFile').value.trim();
+            if (!file) { alert('Give the recording to analyse.'); return; }
+            document.getElementById('beamCard').innerHTML = '<div style="color:#ffaa00;">Analysing ' + file + '...</div>';
+            fetch('/api/beam/analyse', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({file})})
+                .then(r => r.json()).then(d => {
+                    if (!d.success) { document.getElementById('beamCard').innerHTML = '<span style="color:#ff4757;">' + (d.error || 'analysis failed') + '</span>'; return; }
+                    loadBeam();
+                }).catch(e => { document.getElementById('beamCard').innerHTML = '<span style="color:#ff4757;">Request failed: ' + e + '</span>'; });
+        }
+
         function loadCalModel() {
             fetch('/api/calday/model').then(r => r.json()).then(m => {
                 if (m.success) {
