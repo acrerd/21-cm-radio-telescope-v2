@@ -65,6 +65,23 @@ def _keep_tests_out_of_the_last_observation_pointer(tmp_path_factory):
 
 
 @pytest.fixture(autouse=True, scope="session")
+def _keep_tests_out_of_the_scallop_reference(tmp_path_factory):
+    """Redirect the carried scallop parameters for the whole session.
+
+    scallop.correct() writes them whenever a fresh fit wins, and it is reached
+    from the solar plot path as well as from its own tests - so a test run
+    would otherwise replace the observatory's carried parameters with those of
+    a synthetic two-hour Sun.
+    """
+    import scallop
+
+    real = scallop.REFERENCE_FILE
+    scallop.REFERENCE_FILE = str(tmp_path_factory.mktemp("scallop") / "scallop_reference.json")
+    yield
+    scallop.REFERENCE_FILE = real
+
+
+@pytest.fixture(autouse=True, scope="session")
 def _keep_tests_out_of_the_horizon_partials(tmp_path_factory):
     """Redirect the horizon scan's partial saves for the whole session.
 

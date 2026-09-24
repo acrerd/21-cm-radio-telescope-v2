@@ -48,17 +48,42 @@ says so.
 """
 import json
 import math
+import os
 
 import numpy as np
 
+_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+
 # Only ever applied automatically to a tracked source small against the beam.
 COMPACT_OBJECTS = ("sun", "moon", "jupiter")
+
+# The last quiet fit, carried between runs the way the gain and T_sys are.
+# Twenty Sun tracks (2026-09-08..24) put the phases at alt +0.05 +-0.02 deg
+# and az -0.04 +-0.02 deg under one pointing model - the model's residual at
+# that part of the sky, stable to the fit's own grid step - and the amplitude
+# at 0.6-1.2x the beam's curvature. So a carried correction takes out the
+# scallop on a quiet day about as well as a fresh fit, and it is the only one
+# available on a day with a radio burst, when the fit is either refused or
+# wrecked (a x6 burst 3 min wide fitted 3.75x the beam at a phase of 0.2 deg).
+# `correct` solves both ways and keeps whichever leaves less modulation.
+REFERENCE_FILE = os.path.join(_SCRIPT_DIR, "scallop_reference.json")
+# The burst mask: a record this far above (or below) a running median of the
+# series is not the quiet Sun and does not judge the candidates. The window is
+# about twice the longest scallop period, so the median follows a burst's
+# envelope but not the scallop.
+QUIET_WINDOW_S = 1200.0
+ACTIVE_FRACTION = 0.05
+FOLD_BINS = 8
 
 # The fit has to see the scallop this strongly before anything is divided out.
 MIN_SIGMA = 4.0
 # ... and its amplitude has to be within this factor of what the measured beam
 # predicts, or something other than the scallop has been fitted.
-AMPLITUDE_RANGE = (0.25, 4.0)
+AMPLITUDE_RANGE = (0.4, 2.0)   # the archive spans 0.6-1.2; a 0.3 deg count error fitted 3.85x
+# Records further than this from the fit, in units of the run's own robust
+# scatter, are dropped and the fit repeated once: the stow at the end of a
+# run, a record with the beam off the source. See `fit`.
+OUTLIER_SIGMA = 5.0
 # Phase offsets searched, in degrees of drive position: a whole pulse, since
 # the phase is periodic in one.
 PHASE_STEPS = 21
@@ -203,6 +228,29 @@ def sky_offsets(d_alt, d_az, true_alt, phase_alt=0.0, phase_az=0.0):
     return e_alt, e_az
 
 
+def beam_fwhm(header=None, override=None):
+    """The beam the scallop is judged against: an explicit width, else the
+    beam **in force** (`instrument.measured_beam`, the calibration product),
+    else what the recording's header says, else the reference figure. The
+    measured beam outranks the header because the header holds what the
+    receiver was told at write time, and a reduction should improve with a
+    better beam - the recordings of 2026-09-24 before 13:36 UTC say 4.57 deg
+    for a feed measured that afternoon at 4.29."""
+    if override:
+        return float(override)
+    try:
+        import observatory  # noqa: F401  (puts astro_simulator on the path)
+        import instrument
+        measured = instrument.measured_beam()
+        if measured and measured.get("fwhm_deg"):
+            return float(measured["fwhm_deg"])
+    except Exception:                                     # noqa: BLE001
+        pass
+    if header and header.get("beam_fwhm_deg"):
+        return float(header["beam_fwhm_deg"])
+    return 4.57
+
+
 def _trend_basis(t, degree):
     """Legendre-ish polynomial columns for the slow trend, on a scaled axis so
     the normal equations stay conditioned over a five-hour run."""
@@ -235,20 +283,50 @@ def fit(values, stamps, header, terms, beam_fwhm_deg=None, trend_degree=None):
         # scallop's periods (10.7 min in altitude at the worst).
         trend_degree = int(np.clip(round(2 * span_h), 2, 10))
     T = _trend_basis(stamps, trend_degree)
-    fwhm = float(beam_fwhm_deg or header.get("beam_fwhm_deg") or 4.57)
+    fwhm = beam_fwhm(header, beam_fwhm_deg)
     k_beam = 4 * math.log(2) / fwhm ** 2               # loss per deg^2, the measured beam
 
     phases = np.linspace(-PULSE_DEG / 2, PULSE_DEG / 2, PHASE_STEPS, endpoint=False)
-    best = None
-    for p_alt in phases:
-        for p_az in phases:
-            e_alt, e_az = sky_offsets(d_alt, d_az, t_alt, p_alt, p_az)
-            A = np.column_stack([T, -T[:, 0] * e_alt ** 2, -T[:, 0] * e_az ** 2])
-            coef, *_ = np.linalg.lstsq(A[good], values[good], rcond=None)
-            resid = values[good] - A[good] @ coef
-            chi = float(resid @ resid)
-            if best is None or chi < best[0]:
-                best = (chi, p_alt, p_az, coef, A, resid.std())
+
+    def search(mask):
+        best = None
+        for p_alt in phases:
+            for p_az in phases:
+                e_alt, e_az = sky_offsets(d_alt, d_az, t_alt, p_alt, p_az)
+                A = np.column_stack([T, -T[:, 0] * e_alt ** 2, -T[:, 0] * e_az ** 2])
+                coef, *_ = np.linalg.lstsq(A[mask], values[mask], rcond=None)
+                resid = values[mask] - A[mask] @ coef
+                chi = float(resid @ resid)
+                if best is None or chi < best[0]:
+                    best = (chi, p_alt, p_az, coef, A, resid.std())
+        return best
+
+    best = search(good)
+    # One robust pass. A run's last records are often not the Sun at all -
+    # the stow slewing the beam off it before the receiver stopped - and on
+    # 2026-09-24 ten such records at -85% among 1200 pulled the whole fit to
+    # an azimuth amplitude 3.5x the beam's at a phase of 0.2 deg, reported as
+    # "scallop removed" over a plot that plainly still had it. Least squares
+    # has no defence against that; a residual cut against the run's own
+    # scatter does, at no cost to a clean run (nothing is beyond 5 sigma of
+    # a 0.5% scatter but a fault).
+    # Iterated, and always judged against the *original* set: the first fit
+    # bends its trend towards the outliers and takes their neighbours down
+    # with them, and those come back once the fit no longer has to reach.
+    base = good.copy()
+    rejected = 0
+    for _ in range(3):
+        chi, p_alt, p_az, coef, A, rms = best
+        resid = np.full(len(values), np.nan)
+        resid[base] = values[base] - A[base] @ coef
+        mad = np.nanmedian(np.abs(resid[base] - np.nanmedian(resid[base])))
+        sigma = 1.4826 * mad if mad > 0 else rms
+        keep = base & (np.abs(resid) <= OUTLIER_SIGMA * sigma)
+        if np.array_equal(keep, good) or keep.sum() < 50:
+            break
+        good = keep
+        rejected = int(base.sum() - good.sum())
+        best = search(good)
     chi, p_alt, p_az, coef, A, rms = best
     scale = coef[0] if abs(coef[0]) > 1e-12 else 1.0
     a_alt, a_az = coef[-2] / scale, coef[-1] / scale     # fractional loss per deg^2
@@ -261,7 +339,7 @@ def fit(values, stamps, header, terms, beam_fwhm_deg=None, trend_degree=None):
            "sigma_alt": float(a_alt / s_alt) if s_alt else 0.0,
            "sigma_az": float(a_az / s_az) if s_az else 0.0,
            "residual_rms": float(rms), "trend_degree": int(trend_degree),
-           "records": int(good.sum())}
+           "records": int(good.sum()), "records_rejected": rejected}
     # Per axis, because one can be measured well and the other not, and a
     # negative amplitude applied would *amplify* that axis's modulation
     # rather than remove it. An axis that fails is set to zero, not dropped.
@@ -282,6 +360,8 @@ def fit(values, stamps, header, terms, beam_fwhm_deg=None, trend_degree=None):
     if used:
         out["ok"] = True
         out["why"] = "fitted from %d records: %s" % (out["records"], "; ".join(used))
+        if rejected:
+            out["why"] += " (%d records off the source left out)" % rejected
         if refused:
             out["why"] += " (left in: %s)" % "; ".join(refused)
     else:
@@ -309,16 +389,118 @@ def gain(fit_result, stamps, header, terms):
     return np.clip(g, 0.9, 1.0)
 
 
-def correct(values, stamps, header, terms=None, fallback_terms=None, beam_fwhm_deg=None):
+def load_reference(path=None):
+    """The carried scallop parameters, or None. Amplitudes are stored relative
+    to the beam's curvature so a re-measured beam rescales them."""
+    path = path or REFERENCE_FILE
+    try:
+        with open(path) as fh:
+            ref = json.load(fh)
+        for key in ("phase_alt_deg", "phase_az_deg", "k_alt_over_beam", "k_az_over_beam"):
+            ref[key] = float(ref[key])
+        return ref
+    except (OSError, ValueError, TypeError, KeyError):
+        return None
+
+
+def save_reference(fit_result, source_file="", path=None):
+    """Keep a successful fit as the carried parameters for the next run."""
+    from datetime import datetime, timezone
+
+    k_beam = float(fit_result.get("k_beam") or 1.0)
+    ref = {"phase_alt_deg": float(fit_result["phase_alt_deg"]),
+           "phase_az_deg": float(fit_result["phase_az_deg"]),
+           "k_alt_over_beam": float(fit_result["k_alt"]) / k_beam,
+           "k_az_over_beam": float(fit_result["k_az"]) / k_beam,
+           "beam_fwhm_deg": float(fit_result.get("beam_fwhm_deg", 0.0)),
+           "records": int(fit_result.get("records", 0)),
+           "fitted_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+           "source_file": os.path.basename(str(source_file or ""))}
+    path = path or REFERENCE_FILE
+    with open(path + ".tmp", "w") as fh:
+        json.dump(ref, fh, indent=2)
+    os.replace(path + ".tmp", path)
+    return ref
+
+
+def reference_candidate(ref, fwhm):
+    """The carried parameters as a fit result at the beam in force. An axis the
+    stored fit had zeroed (refused) stays zero, as it was applied then."""
+    k_beam = 4 * math.log(2) / float(fwhm) ** 2
+    return {"ok": True, "phase_alt_deg": ref["phase_alt_deg"], "phase_az_deg": ref["phase_az_deg"],
+            "k_alt": ref["k_alt_over_beam"] * k_beam, "k_az": ref["k_az_over_beam"] * k_beam,
+            "k_beam": k_beam, "beam_fwhm_deg": float(fwhm),
+            "reference_utc": ref.get("fitted_utc", ""), "reference_file": ref.get("source_file", "")}
+
+
+def _running_median(values, stamps, window_s=QUIET_WINDOW_S):
+    from scipy.ndimage import median_filter
+
+    stamps = np.asarray(stamps, float)
+    step = float(np.median(np.diff(stamps))) if len(stamps) > 1 else 1.0
+    n = int(max(3, round(window_s / max(step, 1e-6))))
+    n = min(n | 1, len(values) | 1)
+    return median_filter(np.asarray(values, float), size=n, mode="nearest")
+
+
+def quiet_mask(values, stamps):
+    """Records that are the quiet source: within ACTIVE_FRACTION of the running
+    median. A burst, a stow, a record with the beam off the source all fail."""
+    values = np.asarray(values, float)
+    base = _running_median(values, stamps)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        dev = np.abs(values / base - 1.0)
+    return np.isfinite(dev) & (dev <= ACTIVE_FRACTION)
+
+
+def residual_modulation(values, stamps, header, terms, candidate=None, quiet=None):
+    """How much scallop is left, in percent, after dividing by a candidate's
+    gain (none for the uncorrected series): the series is detrended by its
+    running median and folded on each axis's pulse phase over the quiet
+    records, and the two folds' peak-to-peak spans are added in quadrature.
+    This is the yardstick the candidates are judged by - not chi-squared,
+    which the free fit always wins on its own residual, wrecked or not."""
+    values = np.asarray(values, float)
+    stamps = np.asarray(stamps, float)
+    if candidate is not None:
+        values = values / gain(candidate, stamps, header, terms)
+    if quiet is None:
+        quiet = quiet_mask(values, stamps)
+    base = _running_median(values, stamps)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        ratio = values / base
+    d_alt, d_az, t_alt = drive_demand(header, stamps, terms)
+    e_alt, e_az = sky_offsets(d_alt, d_az, t_alt)
+    total = 0.0
+    for e in (e_alt, e_az):
+        edges = np.linspace(-PULSE_DEG / 2, PULSE_DEG / 2, FOLD_BINS + 1)
+        idx = np.clip(np.digitize(e, edges) - 1, 0, FOLD_BINS - 1)
+        means = [np.nanmean(ratio[quiet & (idx == i)]) if np.any(quiet & (idx == i)) else np.nan
+                 for i in range(FOLD_BINS)]
+        means = np.asarray(means, float)
+        if np.isfinite(means).sum() >= 2:
+            total += float(np.nanmax(means) - np.nanmin(means)) ** 2
+    return 100.0 * math.sqrt(total)
+
+
+def correct(values, stamps, header, terms=None, fallback_terms=None, beam_fwhm_deg=None,
+            reference_path=None, source_file="", update_reference=True):
     """(corrected values, report). The whole thing, guarded.
 
-    Refuses on anything but a tracked compact source, and on a fit that did
-    not find the scallop; in both cases the values come back untouched and the
-    report says why.
+    Refuses on anything but a tracked compact source. Otherwise two solutions
+    are tried - a fit to this run, and the parameters carried from the last
+    quiet run - and the one that leaves less modulation at the pulse phase on
+    the run's quiet records is applied (`chosen`: "fitted", "carried" or
+    "none"). A fresh fit that wins replaces the carried parameters. The judge
+    is `residual_modulation`, not the fit's own chi-squared, so a fit bent by
+    a radio burst or a pointing error loses to the carried values rather than
+    being applied because it fitted the burst.
     """
+    values = np.asarray(values, float)
+    stamps = np.asarray(stamps, float)
     ok, why = applies_to(header)
     if not ok:
-        return np.asarray(values, float), {"ok": False, "why": why, "applies": False}
+        return values, {"ok": False, "why": why, "applies": False}
     if terms is None:
         terms, source = pointing_terms(header, fallback_terms)
     else:
@@ -326,16 +508,76 @@ def correct(values, stamps, header, terms=None, fallback_terms=None, beam_fwhm_d
     try:
         res = fit(values, stamps, header, terms, beam_fwhm_deg=beam_fwhm_deg)
     except Exception as exc:                              # noqa: BLE001
-        return np.asarray(values, float), {"ok": False, "applies": True,
-                                           "why": "scallop fit failed: %s" % exc}
+        return values, {"ok": False, "applies": True,
+                        "why": "scallop fit failed: %s" % exc}
     res["applies"] = True
     res["terms_source"] = source
-    if not res.get("ok"):
-        return np.asarray(values, float), res
+    fwhm = float(res.get("beam_fwhm_deg") or beam_fwhm(header, beam_fwhm_deg))
+
+    candidates = {}
+    if res.get("ok"):
+        candidates["fitted"] = res
+    ref = load_reference(reference_path)
+    if ref is not None:
+        candidates["carried"] = reference_candidate(ref, fwhm)
+
+    try:
+        quiet = quiet_mask(values, stamps)
+        modulation = {"none": residual_modulation(values, stamps, header, terms, None, quiet)}
+        for name, cand in candidates.items():
+            modulation[name] = residual_modulation(values, stamps, header, terms, cand, quiet)
+    except Exception as exc:                              # noqa: BLE001
+        res["ok"] = False
+        res["why"] = "scallop judgement failed: %s" % exc
+        return values, res
+    res["modulation_pct"] = modulation
+    res["quiet_records"] = int(quiet.sum())
+    fit_why = res.get("why", "")
+
+    best = min(candidates, key=lambda k: modulation[k]) if candidates else None
+    if best is None or modulation[best] >= modulation["none"]:
+        res["ok"] = False
+        res["chosen"] = "none"
+        parts = []
+        if "fitted" in candidates:
+            parts.append("this run's fit leaves %.2f%%" % modulation["fitted"])
+        else:
+            parts.append(fit_why)
+        if "carried" in candidates:
+            parts.append("the parameters carried from %s leave %.2f%%"
+                         % (ref.get("fitted_utc", "?"), modulation["carried"]))
+        else:
+            parts.append("no carried parameters")
+        res["why"] = "nothing applied (%.2f%% modulation uncorrected): %s" % (
+            modulation["none"], "; ".join(parts))
+        return values, res
+
+    chosen = candidates[best]
+    if best == "carried":
+        for key in ("phase_alt_deg", "phase_az_deg", "k_alt", "k_az", "k_beam", "beam_fwhm_deg"):
+            res[key] = chosen[key]
+        res["ok"] = True
+        res["reference_utc"] = chosen["reference_utc"]
+        res["reference_file"] = chosen["reference_file"]
+        res["why"] = ("carried parameters from %s applied (%.2f%% modulation left, against "
+                      "%.2f%% uncorrected%s): %s"
+                      % (chosen["reference_utc"], modulation["carried"], modulation["none"],
+                         ", %.2f%% from this run's fit" % modulation["fitted"] if "fitted" in candidates else "",
+                         fit_why if "fitted" not in candidates else "this run's fit was worse"))
+    else:
+        res["why"] = "%s (%.2f%% modulation left, against %.2f%% uncorrected%s)" % (
+            fit_why, modulation["fitted"], modulation["none"],
+            ", %.2f%% with the carried parameters" % modulation["carried"] if "carried" in candidates else "")
+        if update_reference:
+            try:
+                save_reference(res, source_file=source_file, path=reference_path)
+            except OSError:
+                pass
+    res["chosen"] = best
     g = gain(res, stamps, header, terms)
     res["mean_gain"] = float(np.mean(g))
     res["peak_to_peak_pct"] = float(100 * (g.max() - g.min()))
-    return np.asarray(values, float) / g, res
+    return values / g, res
 
 
 # Where the terms came from, in the few words a plot has room for. The full
@@ -363,7 +605,15 @@ def plot_caption(report):
     axes = "; ".join("%s %s" % (ax, "%.2fx" % (report["k_" + ax] / k_beam)
                                 if report.get("k_" + ax) else "left in")
                      for ax in ("alt", "az"))
-    return ("tracking scallop removed: %.2f%% p-p, %s the %.2f deg beam, "
-            "phase %+.3f/%+.3f deg [terms %s]"
-            % (report.get("peak_to_peak_pct", 0.0), axes, fwhm,
-               report.get("phase_alt_deg", 0.0), report.get("phase_az_deg", 0.0), terms))
+    if report.get("chosen") == "carried":
+        origin = "carried %s" % (report.get("reference_utc", "?") or "?")[:10]
+    else:
+        origin = "fitted"
+    mod = report.get("modulation_pct") or {}
+    left = ""
+    if "none" in mod and report.get("chosen") in mod:
+        # the modulation folded at the pulse phase, before -> after
+        left = ", %.2f->%.2f%%" % (mod["none"], mod[report["chosen"]])
+    return ("scallop removed (%s): %s the %.2f deg beam, phase %+.3f/%+.3f%s [%s]"
+            % (origin, axes, fwhm,
+               report.get("phase_alt_deg", 0.0), report.get("phase_az_deg", 0.0), left, terms))

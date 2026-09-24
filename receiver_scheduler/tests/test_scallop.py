@@ -22,6 +22,12 @@ TERMS = {"IE": -1.456, "IA": 0.599, "AN": -0.458, "AE": -0.883,
 SITE = {"site_lat_deg": 55.902426, "site_lon_deg": -4.307865, "site_height_m": 50.0}
 
 
+@pytest.fixture(autouse=True)
+def _fresh_reference(tmp_path, monkeypatch):
+    """Every test starts with no carried parameters, in its own file."""
+    monkeypatch.setattr(scallop, "REFERENCE_FILE", str(tmp_path / "scallop_reference.json"))
+
+
 def _header(**over):
     h = dict(SITE, observation_mode="track", coord_system="object",
              object_name="sun", beam_fwhm_deg=4.57)
@@ -101,6 +107,23 @@ class TestFitAndCorrect:
         naive = dict(rep, phase_alt_deg=0.0, phase_az_deg=0.0)
         worse = values / scallop.gain(naive, stamps, header, TERMS)
         assert _fold(worse, stamps, header, TERMS, "alt", phase=0.12) > 0.8 * before
+
+    def test_the_stow_at_the_end_of_a_run_cannot_wreck_the_fit(self):
+        """2026-09-24: ten records at -85% (the stow slewing the beam off the
+        Sun before the receiver stopped) among 1200 pulled the fit to an
+        azimuth amplitude 3.5x the beam's at a phase of 0.2 deg, and the plot
+        said 'scallop removed' over a scallop. Those records are off the
+        source, not part of it, and a fit that lets them vote is wrong."""
+        header, stamps = _header(), _run()
+        k = 4 * math.log(2) / 4.57 ** 2
+        values, g = _inject(header, stamps, TERMS, k, k, 0.0, 0.0, noise=0.002)
+        values[-10:] *= 0.15
+        out, rep = scallop.correct(values, stamps, header, terms=TERMS)
+        assert rep["ok"], rep["why"]
+        assert rep["records_rejected"] == 10 and "left out" in rep["why"]
+        assert rep["k_alt"] == pytest.approx(k, rel=0.2)
+        assert rep["k_az"] == pytest.approx(k, rel=0.25)
+        assert abs(rep["phase_alt_deg"]) < 0.05 and abs(rep["phase_az_deg"]) < 0.05
 
     def test_nothing_is_applied_to_a_series_with_no_scallop(self):
         header, stamps = _header(), _run()
@@ -221,7 +244,8 @@ class TestThePlotCaption:
         _, rep = scallop.correct(values, stamps, header)
         line = scallop.plot_caption(rep)
         assert len(line) < 130, line
-        assert "p-p" in line and "terms" in line
+        # before -> after at the pulse phase, and which model rebuilt the demand
+        assert "->" in line and "[last fitted model]" in line and "(fitted)" in line
 
     def test_it_is_empty_where_the_scallop_does_not_arise(self):
         assert scallop.plot_caption({}) == ""
@@ -248,3 +272,74 @@ class TestEachAxisIsJudgedOnItsOwn:
         # and the altitude scallop really did come out
         assert (_fold(out, stamps, header, TERMS, "alt")
                 < 0.3 * _fold(values, stamps, header, TERMS, "alt"))
+
+
+class TestCarriedParameters:
+    """Two solutions - this run's fit and the parameters carried from the last
+    quiet run - judged by the modulation left at the pulse phase on the quiet
+    records, never by the fit's own chi-squared."""
+
+    def _quiet(self, noise=0.002):
+        header, stamps = _header(), _run()
+        k = 4 * math.log(2) / 4.57 ** 2
+        values, g = _inject(header, stamps, TERMS, k, k, 0.0, 0.0, noise=noise)
+        return header, stamps, k, values, g
+
+    def test_a_quiet_run_is_fitted_and_becomes_the_carried_parameters(self):
+        header, stamps, k, values, g = self._quiet()
+        assert scallop.load_reference() is None
+        out, rep = scallop.correct(values, stamps, header, terms=TERMS)
+        assert rep["ok"] and rep["chosen"] == "fitted"
+        ref = scallop.load_reference()
+        assert ref["k_alt_over_beam"] == pytest.approx(1.0, rel=0.2)
+        assert abs(ref["phase_alt_deg"]) < 0.05
+        assert "(fitted)" in scallop.plot_caption(rep)
+
+    def test_a_radio_burst_falls_back_to_the_carried_parameters(self):
+        """A x6 burst 3 min wide fitted 3.75x the beam at a phase of 0.2 deg on
+        2026-09-24's harness; applied, that would have put a scallop *in*."""
+        header, stamps, k, values, g = self._quiet()
+        scallop.correct(values, stamps, header, terms=TERMS)          # carried from a quiet run
+        x = (stamps - stamps[0]) / 60.0
+        burst = 1 + 5.0 * np.exp(-0.5 * ((x - x[-1] * 0.4) / 3.0) ** 2)
+        out, rep = scallop.correct(values * burst, stamps, header, terms=TERMS)
+        assert rep["ok"] and rep["chosen"] == "carried", rep["why"]
+        assert rep["modulation_pct"]["carried"] < rep["modulation_pct"]["none"]
+        # the correction applied is the true one, to the burst records too
+        quiet = np.abs(burst - 1) < 0.01
+        assert np.allclose(out[quiet] / (values * burst)[quiet], 1 / g[quiet], atol=0.003)
+        assert "(carried 20" in scallop.plot_caption(rep)
+        # and the carried parameters were not replaced by the wrecked fit
+        assert scallop.load_reference()["k_alt_over_beam"] == pytest.approx(1.0, rel=0.2)
+
+    def test_a_long_burst_is_corrected_from_the_carried_parameters(self):
+        header, stamps, k, values, g = self._quiet()
+        scallop.correct(values, stamps, header, terms=TERMS)
+        x = (stamps - stamps[0]) / 60.0
+        burst = 1 + 2.0 * np.exp(-0.5 * ((x - x[-1] * 0.4) / 15.0) ** 2)
+        out, rep = scallop.correct(values * burst, stamps, header, terms=TERMS)
+        assert rep["ok"] and rep["chosen"] == "carried", rep["why"]
+
+    def test_a_fresh_fit_beats_stale_carried_parameters(self):
+        header, stamps, k, values, g = self._quiet()
+        stale = {"phase_alt_deg": 0.2, "phase_az_deg": -0.2, "k_alt_over_beam": 1.0,
+                 "k_az_over_beam": 1.0, "fitted_utc": "2026-01-01T00:00:00Z"}
+        scallop.save_reference(scallop.reference_candidate(stale, 4.57))
+        out, rep = scallop.correct(values, stamps, header, terms=TERMS)
+        assert rep["chosen"] == "fitted"
+        assert rep["modulation_pct"]["fitted"] < rep["modulation_pct"]["carried"]
+        assert abs(scallop.load_reference()["phase_alt_deg"]) < 0.05
+
+    def test_a_pointing_error_is_refused_not_fitted(self):
+        """A 0.3 deg offset gives a ramp per pulse, which a parabola fits only
+        at an absurd amplitude - the 3.85x of 2026-09-24's count-error run.
+        The gate now refuses it, and nothing pretends it was a beam."""
+        header, stamps = _header(), _run()
+        k = 4 * math.log(2) / 4.57 ** 2
+        d_alt, d_az, t_alt = scallop.drive_demand(header, stamps, TERMS)
+        e_alt, e_az = scallop.sky_offsets(d_alt, d_az, t_alt)
+        rng = np.random.default_rng(3)
+        values = 1600.0 * np.exp(-k * ((e_alt + 0.3) ** 2 + e_az ** 2)) * (1 + 0.002 * rng.standard_normal(len(stamps)))
+        out, rep = scallop.correct(values, stamps, header, terms=TERMS)
+        assert rep["chosen"] != "fitted"
+        assert scallop.load_reference() is None
