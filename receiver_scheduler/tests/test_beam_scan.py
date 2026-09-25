@@ -92,6 +92,7 @@ def test_the_routes_report_and_refuse_sensibly(tmp_path, monkeypatch):
         # A beam scan entry is a Sun drift that reduces itself when it ends.
         e = sched.beam_scan_entry(__import__("datetime").datetime(2026, 9, 25, 12, 9))
         assert e["beam_scan"] and e["coord_system"] == "drift" and e["object_name"] == "sun"
+        assert e["home_first"] is True   # a parked scan keeps its count error for the whole run
         assert e["duration_minutes"] == beam_scan.DRIFT_MINUTES and e["drift_time"] == "13:09"
 
 
@@ -103,3 +104,37 @@ def test_no_file_or_a_bad_file_falls_back_to_the_reference(tmp_path, monkeypatch
     bad.write_text(json.dumps({"fwhm_deg": 0.5, "solid_angle_sq_deg": 0.3}))
     monkeypatch.setattr(instrument, "_BEAM_CALIBRATION", str(bad))
     assert instrument.measured_beam() is None
+
+
+def test_the_drift_angle_is_signed_by_time(monkeypatch):
+    """Negative before the crossing, positive after. The sign was inverted
+    until 2026-09-25 and every report had its sides swapped: the 09-24 scan,
+    with 34 min before the crossing and 26 after, reported the *before* span
+    as the shorter one. Pinned to a synthetic Sun drift through a park."""
+    import ephem
+    import observation_plot, drift_fit
+    # A park on the Sun's path (where it stood at 12:00 UTC on 2026-09-25):
+    # records from an hour before the crossing to an hour after, the crossing
+    # found from the ephemeris as the moment the Sun's azimuth passes the park's.
+    import datetime
+    header = {"drift_alt": 33.1, "drift_az": 177.3}
+    obs = ephem.Observer()
+    obs.lat, obs.lon, obs.elevation = beam_scan.SITE_LAT, beam_scan.SITE_LON, beam_scan.SITE_HEIGHT
+    sun = ephem.Sun()
+    day = datetime.datetime(2026, 9, 25, 6, 0, tzinfo=datetime.timezone.utc).timestamp()
+    grid = day + 60.0 * np.arange(0, 12 * 60)
+    az = []
+    for ts in grid:
+        obs.date = ephem.Date(datetime.datetime.utcfromtimestamp(ts)); sun.compute(obs); az.append(math.degrees(sun.az))
+    t0 = float(grid[int(np.argmin(np.abs(np.asarray(az) - header["drift_az"])))])
+    stamps = t0 + 20.0 * np.arange(-180, 181)
+    monkeypatch.setattr(observation_plot, "read_observation",
+                        lambda path, product=None, keep_pilot=False: (None, None, stamps, None, header))
+    monkeypatch.setattr(drift_fit, "band_power", lambda f, s, h: np.ones(len(stamps)))
+    theta, power, t, h = beam_scan.profile_from_file("whatever.h5")
+    assert theta[0] < 0 < theta[-1]
+    # Monotonic in time, bar the quarter-degree wobble where the sign flips
+    # at azimuth equality while the separation bottoms out a moment later.
+    assert np.all(np.diff(theta) > -0.3)
+    # and the magnitude is the Sun's real distance from the park: ~15 deg an hour
+    assert 10 < -theta[0] < 20 and 10 < theta[-1] < 20

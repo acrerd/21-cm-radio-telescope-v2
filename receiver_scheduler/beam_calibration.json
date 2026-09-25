@@ -1,44 +1,40 @@
 {
-  "n_records": 352,
-  "span_before_deg": 6.345525559656327,
-  "span_after_deg": 8.329672096099314,
-  "closest_approach_deg": 0.20525788117615534,
-  "peak_over_baseline": 10.373394333606168,
-  "t_a_peak_k": 1770.1496538990807,
+  "n_records": 711,
+  "span_before_deg": 15.549008121868479,
+  "span_after_deg": 14.119237610198448,
+  "closest_approach_deg": 0.09703385091483432,
+  "peak_over_baseline": 9.981135105712625,
+  "t_a_peak_k": 1696.072162674262,
   "sides": {
     "before": {
-      "solid_angle_sq_deg": 19.868764541599333,
-      "null_deg": 4.841928114650649,
-      "sidelobe_peak_fraction": 0.0038165201728016344,
-      "sidelobe_measured": false,
-      "span_deg": 6.345525559656327
+      "solid_angle_sq_deg": 22.05234335996594,
+      "null_deg": 5.2705030702173294,
+      "sidelobe_peak_fraction": 0.004384912987349567,
+      "sidelobe_measured": true,
+      "span_deg": 15.549008121868479
     },
     "after": {
-      "solid_angle_sq_deg": 21.811187584860253,
-      "null_deg": 5.23883784202615,
-      "sidelobe_peak_fraction": 0.004730433422488405,
-      "sidelobe_measured": false,
-      "span_deg": 8.329672096099314
+      "solid_angle_sq_deg": 19.873768383947734,
+      "null_deg": 4.885556675892953,
+      "sidelobe_peak_fraction": 0.008415205226221177,
+      "sidelobe_measured": true,
+      "span_deg": 14.119237610198448
     }
   },
-  "solid_angle_sq_deg": 20.83997606322979,
-  "solid_angle_sr": 0.006348219736797827,
-  "fwhm_deg": 4.288778854507225,
-  "side_disagreement": 0.09320658705976854,
-  "sidelobe_peak_fraction": 0.004730433422488405,
-  "sidelobe_measured": false,
-  "gaussian_fwhm_deg": 4.452906521293497,
-  "gaussian_centre_deg": 0.044397743364054665,
-  "ok": false,
-  "why": [
-    "too little baseline beyond 6.5 deg on both sides"
-  ],
+  "solid_angle_sq_deg": 20.963055871956836,
+  "solid_angle_sr": 0.0063857119905601015,
+  "fwhm_deg": 4.30142486213837,
+  "side_disagreement": 0.10392449408736137,
+  "sidelobe_peak_fraction": 0.008415205226221177,
+  "sidelobe_measured": true,
+  "gaussian_fwhm_deg": 4.403915529413287,
+  "gaussian_centre_deg": -0.053464994499291194,
+  "ok": true,
+  "why": [],
   "version": 1,
-  "source_file": "20260924_123922_drift.h5",
-  "measured_utc": "2026-09-24T12:08:49Z",
+  "source_file": "20260925_120824_drift.h5",
+  "measured_utc": "2026-09-25T12:07:53Z",
   "gain_db": 20.0,
   "t_sys_k": 188.84830733650165,
-  "created_utc": "2026-09-24T13:36:58Z",
-  "forced": true,
-  "note": "Adopted by force 2026-09-24: the main lobe is complete (nulls at 4.8/5.2 deg) but the before-side baseline reaches only 6.3 deg; provisional until the two-hour scan of 2026-09-25."
+  "created_utc": "2026-09-25T15:36:31Z"
 }

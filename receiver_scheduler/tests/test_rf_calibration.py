@@ -438,3 +438,26 @@ def test_the_edge_drop_is_what_does_it():
     f2, y2 = _spectrum_with(line_channels=40, seed=11)
     assert not R.flag_narrow_rfi(f2, y2)[0].any()
     assert R.flag_narrow_rfi(f2, y2, edge_drop=1.5)[0].any()
+
+
+
+def test_the_cached_simulator_follows_an_adopted_beam(tmp_path, monkeypatch):
+    """A DishSimulator fixes its beam when it is built and load_simulator caches
+    it, so adopting a new beam scan must produce a new simulator, not the old
+    one with the old beam - which is what every drift fit and gain fit after
+    an Analyse would otherwise have used until a restart."""
+    import json
+    import observatory  # noqa: F401
+    import instrument
+    beam = tmp_path / "beam.json"
+    monkeypatch.setattr(instrument, "_BEAM_CALIBRATION", str(beam))
+    beam.write_text(json.dumps({"fwhm_deg": 4.3, "solid_angle_sq_deg": 21.0}))
+    first = R.load_simulator()
+    assert first.fwhm == pytest.approx(4.3, abs=0.01)
+    beam.write_text(json.dumps({"fwhm_deg": 5.0, "solid_angle_sq_deg": 28.3}))
+    second = R.load_simulator()
+    assert second is not first
+    assert second.fwhm == pytest.approx(5.0, abs=0.01)
+    # and the first is still there for its own beam, not rebuilt
+    beam.write_text(json.dumps({"fwhm_deg": 4.3, "solid_angle_sq_deg": 21.0}))
+    assert R.load_simulator() is first

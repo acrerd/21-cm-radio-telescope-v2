@@ -419,7 +419,13 @@ def load_simulator(bandwidth_hz=2.0e6, dish_m=3.0, nchan=None, compact=None,
     for several hundred spectra, so paying the load once rather than per request
     is the difference between a usable page and one that appears to hang.
     """
-    key = (bandwidth_hz, dish_m, nchan, compact, eta)
+    # The beam in force is part of the key: a DishSimulator fixes its beam
+    # at construction (set_beam in __init__), so a cached one built before a
+    # beam scan was adopted would go on fitting drifts and gains through the
+    # old beam until the scheduler restarted (found 2026-09-25, the day the
+    # Sun Scan tab's Analyse button began adopting beams while running).
+    from observatory import beam_fwhm_deg
+    key = (bandwidth_hz, dish_m, nchan, compact, eta, round(float(beam_fwhm_deg(dish_m)), 4))
     if key in _SIM_CACHE:
         return _SIM_CACHE[key]
     import sys

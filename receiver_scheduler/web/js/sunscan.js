@@ -450,6 +450,38 @@
 
         function loadBeam() {
             fetch('/api/beam/status').then(r => r.json()).then(renderBeam).catch(() => {});
+            loadBeamFiles();
+        }
+
+        // The Sun drifts on disk, for re-analysis: every drift recording whose
+        // name mentions the Sun (the name only), newest first, from the same catalogue the
+        // Observe tab lists. The selection is kept across refreshes.
+        function loadBeamFiles() {
+            const sel = document.getElementById('beamFile');
+            if (!sel) return;
+            fetch('/api/observations').then(r => r.json()).then(d => {
+                const current = sel.value;
+                const rows = (d.observations || []).filter(r =>
+                    (r.mode === 'drift' || /_drift\.h5$/.test(r.filename || '')) &&
+                    /sun/i.test(r.name || '') && !r.locked);   // the name, not the comment: a Tau A drift's comment can mention the Sun
+                sel.innerHTML = '';
+                if (!rows.length) {
+                    const o = document.createElement('option');
+                    o.value = ''; o.textContent = 'no Sun drift recordings on disk';
+                    sel.appendChild(o);
+                    return;
+                }
+                rows.forEach(r => {
+                    const o = document.createElement('option');
+                    o.value = r.filename;
+                    const when = r.created ? r.created.slice(0, 16).replace('T', ' ') + ' UTC'
+                                           : (r.mtime || '').slice(0, 16).replace('T', ' ') + ' local';
+                    o.textContent = when + '  ' + r.filename + (r.name ? '  \u2014 ' + r.name : '')
+                                  + (r.recording ? '  (recording \u2014 live)' : '');
+                    sel.appendChild(o);
+                });
+                if (current && rows.some(r => r.filename === current)) sel.value = current;
+            }).catch(() => {});
         }
 
         function startBeamScan() {
@@ -464,8 +496,8 @@
         }
 
         function analyseBeamFile() {
-            const file = document.getElementById('beamFile').value.trim();
-            if (!file) { alert('Give the recording to analyse.'); return; }
+            const file = (document.getElementById('beamFile').value || '').trim();
+            if (!file) { alert('No Sun drift recording selected.'); return; }
             document.getElementById('beamCard').innerHTML = '<div style="color:#ffaa00;">Analysing ' + file + '...</div>';
             fetch('/api/beam/analyse', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({file})})
                 .then(r => r.json()).then(d => {

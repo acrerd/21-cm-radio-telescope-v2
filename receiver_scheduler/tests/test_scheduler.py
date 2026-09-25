@@ -3063,8 +3063,13 @@ class TestOneSitePosition:
         # scan draws the ideal radiometer floor, 13x quieter than the receiver.
         assert meta["defaults"]["gain_sigma"] == pytest.approx(
             instrument.GAIN_INSTABILITY)
+        # The beam is a measurement now (beam_scan.py), re-adopted after every
+        # passing Sun drift, and the page asks /api/rf/status for the live
+        # value; the bundle is the standalone fallback. So a range, like the
+        # T_sys check: a re-measured beam within a tenth of a degree is the
+        # workflow, a bundle a whole feed behind is the mistake.
         assert meta["defaults"]["fwhm"] == pytest.approx(
-            instrument.beam_fwhm_deg(instrument.DISH_M), abs=5e-4)
+            instrument.beam_fwhm_deg(instrument.DISH_M), abs=0.1)
         assert meta["defaults"]["dish_m"] == instrument.DISH_M
         assert meta["site"]["name"] == instrument.SITE_NAME
         # The fixed instrument (issue #27): the simulator draws the band a

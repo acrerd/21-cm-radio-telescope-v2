@@ -81,8 +81,13 @@ def profile_from_file(path):
         a, z = float(sun.alt), float(sun.az)
         cosd = math.sin(a) * math.sin(alt0) + math.cos(a) * math.cos(alt0) * math.cos(z - az0)
         theta[i] = math.degrees(math.acos(max(-1.0, min(1.0, cosd))))
+        # The Sun's azimuth increases through the day, so past the park
+        # (sin(z - az0) > 0) is *after* the crossing: positive. Until
+        # 2026-09-25 this was negated and every report had its sides swapped -
+        # caught when the dB plot of the first two-hour scan showed the
+        # stronger sidelobe on the trailing side and the report said "before".
         side[i] = 1.0 if math.sin(z - az0) >= 0 else -1.0
-    return -side * theta, power, t, header
+    return side * theta, power, t, header
 
 
 def analyse_profile(theta_signed, power, t_sys_k=None):
@@ -258,7 +263,13 @@ def list_beam_calibrations():
 
 
 def plot_beam(result, out_path):
-    """The profile, the baseline, the integration limits and the Gaussian."""
+    """The profile, the baseline, the integration limits and the Gaussians.
+
+    Upper panel: band power against the drift angle, with each side's null.
+    Lower panel: the excess over the baseline in dB relative to the peak,
+    with the Gaussian the FWHM-equivalent names (same solid angle as the
+    measured lobe - the beam every other piece of code uses) drawn solid,
+    and the whole-window Gaussian fit dotted for comparison only."""
     import plot_backend
     plot_backend.use_headless()
     import matplotlib.pyplot as plt
@@ -267,27 +278,55 @@ def plot_beam(result, out_path):
     p = np.asarray(prof.get("power", []), float)
     if not len(th):
         raise ValueError("no profile to plot")
+    far = np.abs(th) > BASELINE_BEYOND_DEG
+    base = np.polyval(np.polyfit(th[far], p[far], 1), th) if far.sum() > 5 else np.full_like(p, np.median(p))
+    ex = p - base
+    peak = ex[np.abs(th) < 0.6].max() if (np.abs(th) < 0.6).any() else ex.max()
+    frac = ex / peak
+    # The measured half-power full width, from the two crossings nearest the peak.
+    order = np.argsort(th)
+    xs, ys = th[order], np.convolve(frac[order], np.ones(5) / 5.0, mode="same")
+    i0 = int(np.argmax(ys))
+    def crossing(direction):
+        j = i0
+        while 0 < j < len(xs) - 1 and ys[j] > 0.5:
+            j += direction
+        a, b = (j - direction, j)
+        if ys[a] == ys[b]:
+            return xs[j]
+        return xs[a] + (0.5 - ys[a]) / (ys[b] - ys[a]) * (xs[b] - xs[a])
+    hpbw = abs(crossing(+1) - crossing(-1))
+
     fig, ax = plt.subplots(2, 1, figsize=(12, 8), sharex=True)
     ax[0].plot(th, p, ".", ms=3, label="band power")
     for name, sign in (("before", -1), ("after", 1)):
-        s = (result.get("sides") or {}).get(name)
-        if s and s.get("null_deg"):
-            ax[0].axvline(sign * s["null_deg"], color="orange", lw=0.8, ls="--")
+        s_ = (result.get("sides") or {}).get(name)
+        if s_ and s_.get("null_deg"):
+            ax[0].axvline(sign * s_["null_deg"], color="orange", lw=0.8, ls="--",
+                          label="first null: the main lobe is integrated to here" if name == "before" else None)
     ax[0].set_ylabel("counts")
-    ax[0].set_title("Sun drift %s: main lobe %.1f sq deg, FWHM-equivalent %.2f deg%s" % (
-        result.get("source_file", ""), result.get("solid_angle_sq_deg", float("nan")),
-        result.get("fwhm_deg", float("nan")), "" if result.get("ok") else "  [NOT ADOPTED: %s]" % "; ".join(result.get("why", []))))
+    fwhm_eq = result.get("fwhm_deg", float("nan"))
+    ax[0].set_title("Sun drift %s: main lobe %.1f sq deg%s\n"
+                    "FWHM-equivalent %.2f deg (the Gaussian with that solid angle, the beam in use); "
+                    "measured half-power width %.2f deg" % (
+                        result.get("source_file", ""), result.get("solid_angle_sq_deg", float("nan")),
+                        "" if result.get("ok") else "  [NOT ADOPTED: %s]" % "; ".join(result.get("why", [])),
+                        fwhm_eq, hpbw), fontsize=10)
     ax[0].legend(); ax[0].grid(alpha=0.3)
-    base = np.polyval(np.polyfit(th[np.abs(th) > BASELINE_BEYOND_DEG], p[np.abs(th) > BASELINE_BEYOND_DEG], 1), th) \
-        if (np.abs(th) > BASELINE_BEYOND_DEG).sum() > 5 else np.full_like(p, np.median(p))
-    ex = (p - base); ex /= ex[np.abs(th) < 0.6].max() if (np.abs(th) < 0.6).any() else ex.max()
-    ax[1].semilogy(th, np.clip(ex, 1e-4, None), ".", ms=3)
+
+    with np.errstate(divide="ignore", invalid="ignore"):
+        db = 10 * np.log10(np.clip(frac, 1e-4, None))
+    ax[1].plot(th, db, ".", ms=3, label="excess over the baseline")
+    if fwhm_eq and math.isfinite(fwhm_eq):
+        ax[1].plot(th, 10 * np.log10(np.clip(np.exp(-4 * np.log(2) * (th / fwhm_eq) ** 2), 1e-4, None)),
+                   "-", lw=1.0, color="C1", label="Gaussian, FWHM-equivalent %.2f deg (the beam in use)" % fwhm_eq)
     if result.get("gaussian_fwhm_deg"):
         w, x0 = result["gaussian_fwhm_deg"], result.get("gaussian_centre_deg", 0.0)
-        ax[1].semilogy(th, np.clip(np.exp(-4 * np.log(2) * ((th - x0) / w) ** 2), 1e-4, None), "-", lw=0.8,
-                       label="Gaussian %.2f deg (whole window)" % w)
-    ax[1].axhline(NULL_LEVEL, color="orange", lw=0.8, ls="--", label="null level")
-    ax[1].set_ylim(1e-4, 2); ax[1].set_ylabel("fraction of peak"); ax[1].set_xlabel("offset from beam centre (deg, along the drift)")
-    ax[1].legend(); ax[1].grid(alpha=0.3)
+        ax[1].plot(th, 10 * np.log10(np.clip(np.exp(-4 * np.log(2) * ((th - x0) / w) ** 2), 1e-4, None)),
+                   ":", lw=1.0, color="C2", label="Gaussian fit to the whole window, %.2f deg (comparison only)" % w)
+    ax[1].axhline(10 * np.log10(NULL_LEVEL), color="orange", lw=0.8, ls="--",
+                  label="null level (%.0f dB): the lobe ends here or at the first minimum" % (10 * np.log10(NULL_LEVEL)))
+    ax[1].set_ylim(-40, 3); ax[1].set_ylabel("dB relative to the peak"); ax[1].set_xlabel("offset from beam centre (deg, along the drift)")
+    ax[1].legend(fontsize=8); ax[1].grid(alpha=0.3)
     fig.tight_layout(); fig.savefig(out_path, dpi=90); plt.close(fig)
     return out_path
