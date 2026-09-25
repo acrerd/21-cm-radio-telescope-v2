@@ -54,6 +54,11 @@ TRACKING_COORD_SYSTEMS = frozenset({'radec', 'galactic', 'object', 'satellite'})
 # mode here would be inventing one.
 MANUAL_MODE = 'manual'
 
+# A pulsar run: the mount tracks, but the file holds a fast filterbank rather
+# than spectra (pulsar_fold.py), and both the filename and the attribute say
+# so, since nothing that reads spectra can read it.
+PULSAR_MODE = 'pulsar'
+
 
 def observations_folder(data_folder):
     """The recordings folder inside a configured data folder.
@@ -65,9 +70,12 @@ def observations_folder(data_folder):
 
 
 def observation_mode(obs):
-    """'track' or 'drift' for a schedule entry: does the mount follow the sky?"""
-    return ('track' if obs.get('coord_system', 'altaz') in TRACKING_COORD_SYSTEMS
-            else 'drift')
+    """'track' or 'drift' for a schedule entry: does the mount follow the sky?
+    'pulsar' for a pulsar entry, whose recording is not spectra at all."""
+    system = obs.get('coord_system', 'altaz')
+    if system == 'pulsar':
+        return PULSAR_MODE
+    return 'track' if system in TRACKING_COORD_SYSTEMS else 'drift'
 
 
 def observation_filename(folder, mode, when=None):

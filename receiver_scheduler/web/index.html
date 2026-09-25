@@ -656,6 +656,8 @@
                     <select autocomplete="off" id="obvFileSelect" onchange="onObserveFileChange()"
                             style="max-width:100%; min-width:320px;" title="which recording to plot or fit"></select>
                     <button title="Draw the selected recording: spectrum in kelvin on an LSR axis, or the drift trace." class="btn btn-secondary" onclick="showObservePlot()">Plot Result</button>
+                    <button class="btn btn-secondary" onclick="showPrestoFold()"
+                            title="Pulsar recordings only: export to a SIGPROC .fil and fold with PRESTO's prepfold at the topocentric period and DM 26.76, no search. An independent check on our own fold; takes a minute or two for a four-hour run.">PRESTO fold</button>
                     <button class="btn btn-secondary" id="obvLogBtn2" onclick="obvLiveToggleLog()"
                             title="Log y axis for the drift trace and the live view: a Sun drift's sidelobes are a percent of the peak. In dB relative to the peak, floored at -30 dB. Redraws the plot.">dB scale</button>
                     <button class="btn btn-secondary" id="obvLiveViewBtn" style="display:none;" onclick="viewLiveRecording()"
@@ -977,6 +979,7 @@
                                 <option value="famous">Famous targets</option>
                                 <option value="drift">Drift Scan (fixed pointing)</option>
                                 <option value="object">Solar System Object</option>
+                                <option value="pulsar">Pulsar B0329+54 (fold at the period)</option>
                                 <option value="satellite">Satellite (TLE)</option>
                                 <option value="calibration">Calibration Day (Sun Scan)</option>
                                 <option value="horizon">Horizon Scan</option>
@@ -990,6 +993,21 @@
                                 <option value="sun">Sun</option>
                                 <option value="moon">Moon</option>
                             </select>
+                        </div>
+                    </div>
+                    <!-- A pulsar entry: B0329+54, the one pulsar this dish can fold
+                         (203 mJy; the next brightest needs twenty times as long). The
+                         mount tracks its position and the receiver records a fast
+                         filterbank instead of spectra; the Observe tab folds it. -->
+                    <div class="form-grid" id="pulsarSelector" style="margin-top:15px; display:none">
+                        <div class="form-group">
+                            <label>Pulsar</label>
+                            <div id="pulsarNote" class="mono" style="color:#aaa; font-size:12px; margin-top:6px;">
+                                B0329+54 (J0332+5434): RA 03h33m Dec +54&deg;35', DM 26.8, P 0.7145 s, 203 mJy.
+                                Circumpolar. Folded at the period afterwards; about 1&frac34; h to 5&sigma; at the present T_sys (book 2&ndash;3 h),
+                                30 min at 100 K, and scintillation can halve or double either. The integration-time box
+                                does not apply: the receiver writes one row per millisecond.
+                            </div>
                         </div>
                     </div>
                     <!-- The simulator's target list, offered as a picker. The

@@ -106,6 +106,7 @@ TARGETS = [
     ("Smith Cloud", 39.0, -13.0, 2.0, "infalling, +100 km/s"),
     ("Lockman Hole", 150.0, 53.0, 2.0, "minimum H I, off-position"),
     ("Celestial pole", 122.9, 27.1, 2.0, "zero drift rate"),
+    ("PSR B0329+54", 144.995, -1.221, 2.0, "pulsar, 203 mJy: book as a pulsar entry"),
 ]
 
 

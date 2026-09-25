@@ -31,6 +31,7 @@
             ["Smith Cloud", 39.0, -13.0, "infalling, +100 km/s"],
             ["Lockman Hole", 150.0, 53.0, "minimum H I, off-position"],
             ["Celestial pole", 122.9, 27.1, "zero drift rate"],
+            ["PSR B0329+54", 144.995, -1.221, "pulsar, 203 mJy: book as a pulsar entry"],
             // The continuum sources from the simulator's menu. The fixed
             // three are their catalogue RA/Dec converted to galactic once
             // (they do not move); the guard test re-derives the conversion
@@ -176,7 +177,9 @@
             const isDrift = sys === 'drift';
             const isHorizon = sys === 'horizon';
             const isFamous = sys === 'famous';
+            const isPulsar = sys === 'pulsar';       // B0329+54, the only one (pulsar_fold.py)
             if (isFamous) { populateFamousTargets(); onFamousTargetChange(); }
+            document.getElementById('pulsarSelector').style.display = isPulsar ? '' : 'none';
             // A famous target in drift mode is an ordinary drift entry with
             // the boxes filled from the list: it needs the drift block (the
             // beam-crossing time T and window) and the same derived times.
@@ -195,7 +198,7 @@
             // A horizon scan has no target: it goes to every azimuth in turn.
             // A famous target's coordinates come from the list, not the boxes.
             document.getElementById('coordInputs').style.display =
-                (isObject || isSat || isCal || isHorizon || isFamous || driftObject) ? 'none' : '';
+                (isObject || isSat || isCal || isHorizon || isFamous || isPulsar || driftObject) ? 'none' : '';
             // Drift scans derive start time and duration from T and the window
             document.getElementById('obsStartTime').disabled = isDrift || isFamousDrift;
             document.getElementById('obsDuration').disabled = isDrift || isFamousDrift;
@@ -203,7 +206,7 @@
             // radec would silently misread l/b as hours and degrees.
             document.getElementById('obsDriftFrame').disabled = isFamousDrift;
             if (isFamousDrift) updateDriftDerived();
-            if (isObject || isSat || isCal || isHorizon || isFamous) return;
+            if (isObject || isSat || isCal || isHorizon || isFamous || isPulsar) return;
             if (isDrift) updateDriftDerived();
             if (driftObject) return;             // no coordinate labels to set
             const cfg = COORD_CONFIG[isDrift ? document.getElementById('obsDriftFrame').value : sys];
@@ -321,6 +324,9 @@
             if (sys === 'object') {
                 const name = obs.object_name || 'unknown';
                 return `Object: ${name.charAt(0).toUpperCase() + name.slice(1)}`;
+            }
+            if (sys === 'pulsar') {
+                return 'Pulsar B0329+54 (folded)';
             }
             if (sys === 'satellite') {
                 const tle = obs.tle_text || '';
@@ -673,6 +679,8 @@
                               : famous ? 'galactic'
                               : document.getElementById('obsCoordSystem').value,
                 object_name: famousObject ? famous[2]
+                             : document.getElementById('obsCoordSystem').value === 'pulsar'
+                               ? 'B0329+54'
                              : document.getElementById('obsObjectName').value,
                 tle_text: document.getElementById('obsTleText').value,
                 coord1_deg: famousObject ? 0 : famous ? famous[1]

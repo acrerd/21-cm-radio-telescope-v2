@@ -351,6 +351,27 @@
             }).catch(() => { t.innerHTML = ''; });
         }
 
+        // PRESTO's prepfold on a pulsar recording, as a second opinion on our
+        // fold. Its significance is a reduced chi-squared of the whole profile,
+        // much lower than our matched S/N for a narrow pulse: the note says so.
+        function showPrestoFold() {
+            const host = document.getElementById('obvPlot');
+            const file = obvSelectedFile();
+            host.innerHTML = '<span style="color:#888; font-size:12px;">Exporting and folding with PRESTO&hellip; (a minute or two for a long run)</span>';
+            fetch('/api/observe/presto', {method: 'POST', headers: {'Content-Type': 'application/json'},
+                                          body: JSON.stringify({file})})
+                .then(r => r.json()).then(d => {
+                    if (!d.success) throw new Error(d.error || 'PRESTO fold failed');
+                    const s = d.summary || {};
+                    host.innerHTML = '<div style="color:#aaa; font-size:12px; margin-bottom:6px;">prepfold -topo at P_topo '
+                        + (s.p_topo_s || 0).toFixed(9) + ' s, DM 26.76, no search. Reduced &chi;&sup2; '
+                        + (s.reduced_chi2 != null ? s.reduced_chi2.toFixed(3) : '?') + (s.prob_noise ? ', P(noise) &lt; ' + s.prob_noise : '')
+                        + ' &mdash; PRESTO\'s statistic, much lower than our matched S/N for a pulse one bin wide.</div>'
+                        + '<img src="/api/observe/presto/plot?name=' + encodeURIComponent(d.plot) + '&t=' + Date.now()
+                        + '" style="width:100%; height:auto; border-radius:8px; border:1px solid #333; background:#fff;">';
+                }).catch(e => { host.innerHTML = '<span style="color:#ffa502; font-size:12px;">' + e.message + '</span>'; });
+        }
+
         function showObservePlot() {
             const host = document.getElementById('obvPlot');
             host.innerHTML = '<span style="color:#888; font-size:12px;">Drawing&hellip;</span>';

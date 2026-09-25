@@ -1,0 +1,48 @@
+# PRESTO local patch: Acre Road SRT as SIGPROC telescope_id 82, observatory code AR.
+# Apply to https://github.com/scottransom/presto (built 2026-09-25 at 06083ad):
+#   git apply presto_acre_road.patch
+#   meson setup build-acre --prefix=... ; meson compile -C build-acre prepfold
+# then copy build-acre/src/prepfold and build-acre/src/libpresto.so into one folder
+# (/home/astro/opt/presto-acre/bin on the observatory host).
+diff --git a/src/misc_utils.c b/src/misc_utils.c
+index 77ad035..eb4d200 100644
+--- a/src/misc_utils.c
++++ b/src/misc_utils.c
+@@ -221,6 +221,9 @@ void telescope_to_tempocode(char *inname, char *outname, char *obscode)
+     if (strcmp(scope, "gbt") == 0) {
+         strcpy(obscode, "GB");
+         strcpy(outname, "GBT");
++    } else if (strcmp(scope, "acre road srt") == 0) {   // local patch
++        strcpy(obscode, "AR");
++        strcpy(outname, "Acre Road SRT");
+     } else if (strcmp(scope, "arecibo") == 0) {
+         strcpy(obscode, "AO");
+         strcpy(outname, "Arecibo");
+diff --git a/src/observatories.c b/src/observatories.c
+index 7bc588d..194311e 100644
+--- a/src/observatories.c
++++ b/src/observatories.c
+@@ -18,6 +18,8 @@ typedef struct observatory {
+ 
+ static observatory obss[] = {
+     {"GB", "GBT", 882589.289, -4924872.368, 3943729.418},
++    /* local patch: Acre Road 3 m SRT, surveyed 55.902426 -4.307865, 50 m */
++    {"AR", "Acre Road SRT", 3573746.94, -269204.73, 5258400.91},
+     {"AO", "Arecibo", 2390487.080, -5564731.357, 1994720.633},
+     {"VL", "VLA", -1601192.0, -5041981.4, 3554871.4},
+     {"PK", "Parkes", -4554231.5, 2816759.1, -3454036.3},
+diff --git a/src/sigproc_fb.c b/src/sigproc_fb.c
+index 7381408..b971a47 100644
+--- a/src/sigproc_fb.c
++++ b/src/sigproc_fb.c
+@@ -144,6 +144,10 @@ void get_telescope_name(int telescope_id, struct spectra_info *s)
+         strcpy(s->telescope, "KAT-7");
+         s->beam_FWHM = default_beam;
+         break;
++    case 82:  // local patch: University of Glasgow, Acre Road 3 m SRT
++        strcpy(s->telescope, "Acre Road SRT");
++        s->beam_FWHM = 4.30;
++        break;
+     default:
+         strcpy(s->telescope, "Unknown");
+         s->beam_FWHM = default_beam;

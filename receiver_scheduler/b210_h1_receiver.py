@@ -1776,6 +1776,288 @@ class HeadlessRecorder:
             print(f"Data written to: {self.output_file}", flush=True)
 
 
+# ---------------------------------------------------------------------------
+# Pulsar mode (H1_MODE=pulsar): a fast filterbank, not spectra
+#
+# A pulsar is only ever a *folded* detection on this dish (pulsar_fold.py):
+# the band power every millisecond for an hour, added up at the period
+# afterwards. So this mode records no spectra at all. The stream goes through
+# a short FFT - NCHAN channels across the whole 8 MHz - and the channel
+# powers are summed for DT_S and written as one row. Sixteen channels at a
+# millisecond is 230 MB an hour; raw voltages would be 115 GB and buy
+# nothing, since dispersion across our band is a tenth of a pulse width.
+#
+# Time comes from two places on purpose: the cadence from the B210's clock
+# (a row is exactly presum x NCHAN samples), the start from the host clock
+# at flowgraph start. A fold needs the first stable and the second to about
+# a millisecond; pulsar timing would need a PPS, and this is not that.
+# Overflows break the cadence - a dropped block shifts every later row - so
+# UHD's marks are recorded against the row they landed near, and the fold
+# reports them; at 8 Msps this graph is far lighter than the two-product one.
+
+
+class _RowSink(gr.sync_block):
+    """Collect rows of channel power, and the radio's own time marks.
+
+    gr-uhd tags the first sample of the stream and the first sample after
+    every overflow with `rx_time`, the device clock's reading for that
+    sample - the one fact that lets a fold re-align across a dropped block
+    instead of smearing over it. The tags propagate down the chain with
+    their offsets scaled by the decimation, so here they arrive as a row
+    index and a time; the recorder writes them as `time_marks`.
+    """
+
+    def __init__(self, vlen):
+        gr.sync_block.__init__(self, name="pulsar_row_sink",
+                               in_sig=[(np.float32, vlen)], out_sig=None)
+        self.vlen = vlen
+        self._rows = []
+        self._marks = []
+        self._lock = threading.Lock()
+
+    def work(self, input_items, output_items):
+        n = len(input_items[0])
+        block = np.array(input_items[0], dtype=np.float32, copy=True)
+        marks = []
+        try:
+            import pmt
+            for tag in self.get_tags_in_window(0, 0, n):
+                if pmt.symbol_to_string(tag.key) != "rx_time":
+                    continue
+                full = pmt.to_uint64(pmt.tuple_ref(tag.value, 0))
+                frac = pmt.to_double(pmt.tuple_ref(tag.value, 1))
+                marks.append((int(tag.offset), float(full) + frac))
+        except Exception:                                 # noqa: BLE001
+            pass
+        with self._lock:
+            self._rows.append(block)
+            self._marks.extend(marks)
+        return n
+
+    def take(self):
+        with self._lock:
+            rows, self._rows = self._rows, []
+        return np.concatenate(rows, axis=0) if rows else np.empty((0, self.vlen), dtype=np.float32)
+
+    def take_marks(self):
+        with self._lock:
+            marks, self._marks = self._marks, []
+        return marks
+
+
+class PulsarFlowgraph(gr.top_block):
+    """One stream, NCHAN channel powers every DT_S."""
+
+    def __init__(self, sdr_type, instrument, nchan, dt_s, strict=True):
+        gr.top_block.__init__(self, "pulsar filterbank", catch_exceptions=True)
+        self.instrument = dict(instrument)
+        self.sdr_type = sdr_type
+        self.strict = strict
+        self.sample_rate = float(instrument["sample_rate_hz"])
+        self.center_freq = float(instrument["lo_hz"])
+        self.gain = float(instrument["gain_db"])
+        self.nchan = int(nchan)
+        print(f"Initializing {self.sdr_type.upper()} (pulsar filterbank)...")
+        try:
+            self.sdr_source, self.throttle, actual_rate, actual_freq = \
+                create_sdr_source(self.sdr_type, self.sample_rate, self.center_freq, self.gain)
+            self.sample_rate = actual_rate
+            self.center_freq = actual_freq
+        except Exception as e:
+            print(f"  Failed to initialize {self.sdr_type.upper()}: {e}", flush=True)
+            if self.strict and self.sdr_type != 'demo':
+                raise RuntimeError("could not open the %s (%s); refusing to record synthetic "
+                                   "noise in its place" % (self.sdr_type.upper(), e))
+            self.sdr_type = 'demo'
+            self.sdr_source, self.throttle, actual_rate = create_demo_source(self.sample_rate)
+            self.sample_rate = actual_rate
+        # The device clock set to the host's now, so the rx_time tags read
+        # as unix time: with the external reference fitted the B210's clock
+        # *is* the reference, and every row's time follows from the last
+        # mark and the row count. (A PPS into the B210 and set_time_next_pps
+        # would make this absolute to a microsecond, for timing; not needed
+        # for a fold.)
+        if self.sdr_type == 'b210':
+            try:
+                from gnuradio import uhd
+                self.sdr_source.set_time_now(uhd.time_spec(time.time()))
+            except Exception as exc:                          # noqa: BLE001
+                print(f"  NOTE: could not set the device time: {exc}", flush=True)
+        n = self.nchan
+        # presum vectors per row: the row length is exact in samples, so the
+        # cadence is the radio's clock and dt_s is what it comes to.
+        self.presum = max(1, int(round(self.sample_rate / n * dt_s)))
+        self.dt_s = self.presum * n / self.sample_rate
+        self.s2v = blocks.stream_to_vector(gr.sizeof_gr_complex, n)
+        # Rectangular window: sixteen coarse channels want flat response
+        # across each, and leakage between them does not matter for a fold.
+        self.fftb = fft.fft_vcc(n, True, [1.0] * n, True, 1)
+        self.mag = blocks.complex_to_mag_squared(n)
+        self.norm = blocks.multiply_const_vff([1.0 / (n * self.presum)] * n)
+        self.summer = blocks.integrate_ff(self.presum, n)
+        self.sink = _RowSink(n)
+        chain = [self.sdr_source] + ([self.throttle] if self.throttle is not None else []) \
+                + [self.s2v, self.fftb, self.mag, self.norm, self.summer, self.sink]
+        for a, b in zip(chain[:-1], chain[1:]):
+            self.connect(a, b)
+        print("  %d channels of %.3f MHz, %d transforms per row, rows of %.4f ms"
+              % (n, self.sample_rate / n / 1e6, self.presum, 1e3 * self.dt_s), flush=True)
+
+    def freq_axis(self):
+        return self.center_freq + np.fft.fftshift(np.fft.fftfreq(self.nchan, 1.0 / self.sample_rate))
+
+
+def _embed_obs_metadata(hf):
+    """H1_OBS_METADATA (the scheduler's entry) as attributes, as init_hdf5 does."""
+    obs_meta = os.environ.get('H1_OBS_METADATA', '')
+    if not obs_meta:
+        return
+    try:
+        meta = json.loads(obs_meta)
+    except Exception:                                     # noqa: BLE001
+        return
+    for key, val in meta.items():
+        if isinstance(val, bool):
+            hf.attrs[key] = int(val)
+        elif val is not None and val != '':
+            hf.attrs[key] = val
+
+
+def init_pulsar_hdf5(filename, freq_axis_hz, dt_s, sdr_type, center_freq, sample_rate,
+                     gain, instrument, t0_unix):
+    """A pulsar-mode file: `power` rows (N x nchan, float32) at `dt_s` from
+    `t0_unix`, the channel axis, and `overflow_marks` (row index, count) for
+    every batch of UHD overflows. Everything is created before SWMR is
+    switched on, so the file can be read while it records."""
+    import observatory as _inst      # the site, from the layer everything may depend on
+    os.makedirs(os.path.dirname(os.path.abspath(filename)), exist_ok=True)
+    hf = h5py.File(filename, 'w', libver='latest')
+    n = len(freq_axis_hz)
+    hf.create_dataset('frequency_hz', data=np.asarray(freq_axis_hz, float))
+    hf.create_dataset('power', shape=(0, n), maxshape=(None, n), dtype='f4', chunks=(1024, n))
+    hf.create_dataset('overflow_marks', shape=(0, 2), maxshape=(None, 2), dtype='i8', chunks=(64, 2))
+    # (row index, device time in unix seconds) at the start and after every
+    # overflow, from gr-uhd's rx_time tags: the fold's time axis.
+    hf.create_dataset('time_marks', shape=(0, 2), maxshape=(None, 2), dtype='f8', chunks=(64, 2))
+    hf.attrs['mode'] = 'pulsar'
+    hf.attrs['observation_mode'] = observation_files.PULSAR_MODE
+    hf.attrs['dt_s'] = float(dt_s)
+    hf.attrs['nchan'] = int(n)
+    hf.attrs['t0_unix'] = float(t0_unix)
+    hf.attrs['created_utc'] = datetime.now(timezone.utc).isoformat()
+    hf.attrs['sdr_type'] = str(sdr_type)
+    hf.attrs['center_freq_hz'] = float(center_freq)
+    hf.attrs['sample_rate_hz'] = float(sample_rate)
+    hf.attrs['gain_db'] = float(gain)
+    hf.attrs['instrument'] = json.dumps(instrument)
+    hf.attrs['site_lat_deg'] = float(_inst.SITE_LAT_DEG)
+    hf.attrs['site_lon_deg'] = float(_inst.SITE_LON_DEG)
+    hf.attrs['site_height_m'] = float(_inst.SITE_HEIGHT_M)
+    _embed_obs_metadata(hf)
+    hf.flush()
+    hf.swmr_mode = True
+    return hf
+
+
+class PulsarRecorder:
+    """Record the fast filterbank until stopped. No spectra, no calibration:
+    the fold (pulsar_fold.py) works in fractional excess per channel."""
+
+    TICK_S = 0.5
+    FLUSH_S = 5.0
+
+    def __init__(self, sdr_type='b210', output_file=None, instrument=None, nchan=None, dt_s=None):
+        import pulsar_fold
+        if instrument is None:
+            try:
+                instrument = fixed_instrument(json.loads(os.environ.get('H1_INSTRUMENT') or '{}'))
+            except ValueError:
+                instrument = fixed_instrument()
+        self.instrument = instrument
+        self.output_file = output_file or OUTPUT_FILE
+        self.nchan = int(nchan or os.environ.get('H1_PULSAR_NCHAN') or pulsar_fold.NCHAN)
+        self.dt_s = float(dt_s or os.environ.get('H1_PULSAR_DT_S') or pulsar_fold.DT_S)
+        print("  " + describe_instrument(instrument))
+        self.flowgraph = PulsarFlowgraph(sdr_type, instrument, self.nchan, self.dt_s)
+        self.sdr_type = self.flowgraph.sdr_type
+        self.hf = None
+        self.rows = 0
+        self._stop = threading.Event()
+        self.overflows = _OverflowCounter()
+        self.overflow_total = 0
+        self.time_marks = 0
+
+    def request_stop(self, *_args):
+        self._stop.set()
+
+    def _append(self, rows):
+        if not len(rows):
+            return
+        ds = self.hf['power']
+        ds.resize(self.rows + len(rows), axis=0)
+        ds[self.rows:self.rows + len(rows), :] = rows
+        self.rows += len(rows)
+
+    def _mark_overflows(self, n):
+        if not n:
+            return
+        ds = self.hf['overflow_marks']
+        k = ds.shape[0]
+        ds.resize(k + 1, axis=0)
+        ds[k, :] = (self.rows, n)
+        self.overflow_total += n
+
+    def _write_time_marks(self, marks):
+        if not marks:
+            return
+        ds = self.hf['time_marks']
+        k = ds.shape[0]
+        ds.resize(k + len(marks), axis=0)
+        ds[k:k + len(marks), :] = np.asarray(marks, dtype='f8')
+        self.time_marks += len(marks)
+
+    def run(self):
+        print(f"Recording pulsar filterbank to {self.output_file}", flush=True)
+        self.overflows.start()
+        self.flowgraph.start()
+        t0 = time.time()
+        self.hf = init_pulsar_hdf5(self.output_file, self.flowgraph.freq_axis(), self.flowgraph.dt_s,
+                                   self.sdr_type, self.flowgraph.center_freq, self.flowgraph.sample_rate,
+                                   self.flowgraph.gain, self.instrument, t0)
+        print(f"  {self.sdr_type}, {self.flowgraph.sample_rate/1e6:.3f} Msps, LO "
+              f"{self.flowgraph.center_freq/1e6:.6f} MHz, gain {self.flowgraph.gain}, "
+              f"{self.nchan} channels every {1e3*self.flowgraph.dt_s:.3f} ms", flush=True)
+        last_flush = last_report = t0
+        try:
+            while not self._stop.is_set():
+                self._stop.wait(self.TICK_S)
+                self._append(self.flowgraph.sink.take())
+                self._write_time_marks(self.flowgraph.sink.take_marks())
+                self._mark_overflows(self.overflows.take())
+                now = time.time()
+                if now - last_flush >= self.FLUSH_S:
+                    self.hf.flush()
+                    last_flush = now
+                if now - last_report >= 60.0:
+                    expected = (now - t0) / self.flowgraph.dt_s
+                    print("  %d rows in %.0f s (%.2f%% of the clock's count), %d overflows, %d time marks"
+                          % (self.rows, now - t0, 100.0 * self.rows / max(expected, 1.0),
+                             self.overflow_total, self.time_marks), flush=True)
+                    last_report = now
+        finally:
+            self.flowgraph.stop()
+            self.flowgraph.wait()
+            self._append(self.flowgraph.sink.take())
+            self._write_time_marks(self.flowgraph.sink.take_marks())
+            self._mark_overflows(self.overflows.take())
+            self.hf.flush()
+            self.hf.close()
+            self.overflows.stop()
+            print(f"Total rows saved: {self.rows} ({self.rows * self.flowgraph.dt_s:.0f} s), "
+                  f"{self.overflow_total} overflows", flush=True)
+            print(f"Data written to: {self.output_file}", flush=True)
+
+
 class VelocityAxisItem(pg.AxisItem):
     """Secondary x-axis showing topocentric radio velocity in km/s,
     v = c (f0 - f) / f0, relative to the H I rest frequency.
@@ -2894,9 +3176,13 @@ Examples:
     if args.headless:
         # No QApplication, no widgets, no event loop. Ends on SIGTERM, which
         # is what stop_observation sends, or on Ctrl-C.
-        recorder = HeadlessRecorder(sdr_type=args.sdr,
-                                    sample_rate=args.sample_rate,
-                                    gain=args.gain)
+        # H1_MODE=pulsar: the fast filterbank instead of spectra (pulsar_fold.py).
+        if os.environ.get('H1_MODE', '').strip().lower() == 'pulsar':
+            recorder = PulsarRecorder(sdr_type=args.sdr)
+        else:
+            recorder = HeadlessRecorder(sdr_type=args.sdr,
+                                        sample_rate=args.sample_rate,
+                                        gain=args.gain)
         signal.signal(signal.SIGTERM, recorder.request_stop)
         signal.signal(signal.SIGINT, recorder.request_stop)
         recorder.run()

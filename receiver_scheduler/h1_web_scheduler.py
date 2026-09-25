@@ -582,6 +582,20 @@ def srt_point_telescope(obs: dict) -> bool:
         params = {"ra": coord1, "dec": coord2}
         log.info("SRT commanding telescope to track RA=%.3fh Dec=%.2f°", coord1, coord2)
 
+    elif coord_system == 'pulsar':
+        # A pulsar entry is B0329+54 (pulsar_fold.B0329, the one pulsar this
+        # dish can fold); the mount tracks its J2000 position like any RA/Dec
+        # target.
+        import pulsar_fold
+        psr = pulsar_fold.lookup(obs.get('object_name') or pulsar_fold.PULSAR_NAME)
+        if psr is None:
+            log.error("Pulsar mode folds B0329+54 only, not '%s'", obs.get('object_name', ''))
+            return False
+        endpoint = "/track/radec"
+        params = {"ra": psr['ra_deg'] / 15.0, "dec": psr['dec_deg']}
+        log.info("SRT commanding telescope to track %s (RA=%.3fh Dec=%.2f°)",
+                 psr['name'], psr['ra_deg'] / 15.0, psr['dec_deg'])
+
     elif coord_system == 'galactic':
         # Galactic: use tracking mode
         endpoint = "/track/galactic"
@@ -1403,6 +1417,12 @@ def observation_altaz_at(obs: dict, when_local: datetime) -> Optional[tuple]:
     elif system in ('radec', 'galactic'):
         body = _drift_body('galactic' if system == 'galactic' else 'radec',
                            coord1, coord2)
+    elif system == 'pulsar':
+        import pulsar_fold
+        psr = pulsar_fold.lookup(obs.get('object_name') or pulsar_fold.PULSAR_NAME)
+        if psr is None:
+            return None
+        body = _drift_body('radec', psr['ra_deg'] / 15.0, psr['dec_deg'])
     else:
         return None
     body.compute(observer)
@@ -2338,6 +2358,22 @@ def start_observation(obs: dict, duration_override: int = None) -> bool:
         # is good for. Logged as a warning so it cannot pass for a normal run.
         env['H1_INSTRUMENT'] = json.dumps(instrument_for(obs))
         env['H1_INTEGRATION_TIME'] = str(obs.get('integration_time_s', 3.0))
+        # A pulsar entry records the fast filterbank (b210_h1_receiver
+        # PulsarRecorder) rather than spectra; the fold needs the catalogue
+        # numbers, which travel in the file so it never depends on the
+        # catalogue of the day it is reduced.
+        pulsar_meta = {}
+        if obs.get('coord_system') == 'pulsar':
+            import pulsar_fold
+            psr = pulsar_fold.lookup(obs.get('object_name') or pulsar_fold.PULSAR_NAME)
+            if psr is None:
+                log.error("Pulsar mode folds B0329+54 only, not '%s'", obs.get('object_name', ''))
+                return False
+            env['H1_MODE'] = 'pulsar'
+            pulsar_meta = {'pulsar_name': psr['name'], 'pulsar_period_s': psr['period_s'],
+                           'pulsar_pdot': psr['pdot'], 'pulsar_pepoch_mjd': psr['pepoch_mjd'],
+                           'pulsar_dm': psr['dm'], 'pulsar_ra_deg': psr['ra_deg'],
+                           'pulsar_dec_deg': psr['dec_deg'], 'pulsar_s1400_mjy': psr['s1400_mjy']}
         env['H1_OBS_METADATA'] = json.dumps({
             'obs_name': obs.get('name', ''),
             # Free text from the schedule form. Lands as the `comment`
@@ -2389,6 +2425,7 @@ def start_observation(obs: dict, duration_override: int = None) -> bool:
                 (obs.get('homing_counters') or {}).get('first', {}).get('alt', ''),
             'homing_count_error_az_deg':
                 (obs.get('homing_counters') or {}).get('first', {}).get('az', ''),
+            **pulsar_meta,
         })
 
         python_exe = receiver_python_path()
@@ -4894,6 +4931,8 @@ def plot_mode_for(obs, observation_mode) -> str:
     picture from the file. `observation_mode` is the file's own word for what
     the mount did ('track'/'drift'), which decides drift against spectrum.
     """
+    if str(observation_mode) == observation_files.PULSAR_MODE:
+        return 'pulsar'
     if live_plot_kind(obs) == 'solar':
         return 'solar'
     return 'drift' if str(observation_mode) == 'drift' else 'spectrum'
@@ -5346,6 +5385,17 @@ def _recording_details(path):
     from observation_plot import open_readonly
     with open_readonly(path) as hf:
         a = dict(hf.attrs)
+        if 'power' in hf and 'spectra_kelvin' not in hf and 'spectra_linear' not in hf:
+            # A pulsar-mode filterbank: rows of channel power, no spectra.
+            return {'mode': 'pulsar', 'pulsar_name': str(a.get('pulsar_name', '')),
+                    'rows': int(hf['power'].shape[0]), 'channels': int(hf['power'].shape[1]),
+                    'dt_ms': 1e3 * float(a.get('dt_s', 0.0)),
+                    'duration_s': float(a.get('dt_s', 0.0)) * int(hf['power'].shape[0]),
+                    'overflows_total': int(np.asarray(hf['overflow_marks'][:])[:, 1].sum())
+                                       if 'overflow_marks' in hf and hf['overflow_marks'].shape[0] else 0,
+                    'gain_db': float(a['gain_db']) if a.get('gain_db') is not None else None,
+                    'sdr_type': str(a.get('sdr_type', '')), 'units': 'counts',
+                    'pulsar_period_s': a.get('pulsar_period_s'), 'pulsar_dm': a.get('pulsar_dm')}
         name = 'spectra_kelvin' if 'spectra_kelvin' in hf else 'spectra_linear'
         n_rec, n_ch = hf[name].shape
         freq = hf['frequency_hz'][:]
@@ -5539,6 +5589,46 @@ def api_observe_plot():
         return jsonify({'success': False, 'error': str(exc)}), 500
     from flask import send_file
     return send_file(out, mimetype='image/png')
+
+
+@app.route('/api/observe/presto', methods=['POST'])
+def api_observe_presto():
+    """Fold a pulsar recording with PRESTO's prepfold, as an independent check
+    on our own fold (pulsar_fold.presto_fold). Exported to .fil and folded
+    in data/presto/, at the lowest CPU priority; the .fil is kept and reused
+    until the recording changes. prepfold's significance is a reduced chi^2
+    of the whole profile, far lower than our matched S/N for a pulse one bin
+    wide - quote each tool's number as its own."""
+    import pulsar_fold
+    chosen = (request.get_json(silent=True) or {}).get('file')
+    try:
+        info = _observation_info(chosen)
+    except ValueError as exc:
+        return jsonify({'success': False, 'error': str(exc)}), 404
+    if info.get('mode') != 'pulsar':
+        return jsonify({'success': False, 'error': 'PRESTO folds pulsar recordings only'}), 400
+    if not os.path.exists(os.path.join(pulsar_fold.PRESTO_BIN, 'prepfold')):
+        return jsonify({'success': False, 'error': 'PRESTO is not installed (%s)' % pulsar_fold.PRESTO_BIN}), 500
+    out_dir = os.path.join(_SCRIPT_DIR, 'data', 'presto')
+    try:
+        png, summary = pulsar_fold.presto_fold(info['output_file'], out_dir)
+    except Exception as exc:                              # noqa: BLE001
+        log.error("PRESTO fold of %s failed: %s", chosen, exc)
+        return jsonify({'success': False, 'error': str(exc)}), 500
+    log.info("PRESTO fold of %s: P_topo %.9f s, reduced chi2 %s", chosen, summary['p_topo_s'],
+             summary.get('reduced_chi2'))
+    return jsonify({'success': True, 'summary': {k: v for k, v in summary.items() if k != 'png'},
+                    'plot': os.path.basename(png)})
+
+
+@app.route('/api/observe/presto/plot', methods=['GET'])
+def api_observe_presto_plot():
+    from flask import send_file
+    name = os.path.basename(request.args.get('name', ''))
+    path = os.path.join(_SCRIPT_DIR, 'data', 'presto', name)
+    if not name.endswith('.png') or not os.path.isfile(path):
+        return jsonify({'success': False, 'error': 'no such plot'}), 404
+    return send_file(path, mimetype='image/png', max_age=0)
 
 
 @app.route('/api/simulator/realise', methods=['POST'])

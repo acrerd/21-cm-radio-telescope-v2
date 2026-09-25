@@ -375,6 +375,12 @@ def plot_observation(path, output_path, name="", mode="spectrum",
     """Render a finished observation to a PNG. Returns the output path."""
     if not MATPLOTLIB_AVAILABLE:
         raise RuntimeError("matplotlib is not installed, so no plot can be drawn")
+    if mode == "pulsar":
+        # A pulsar-mode recording holds a filterbank, not spectra: the plot is
+        # the fold (pulsar_fold.py), drawn from the catalogue numbers in the file.
+        import pulsar_fold
+        pulsar_fold.plot_recording(path, output_path)
+        return output_path
     # A drift scan or a solar track is a continuum measurement: the wide
     # product where the file has one, its single product otherwise, and the
     # H I band cut out either way (issue #27). A spectrum is the H I product.
