@@ -357,7 +357,8 @@
             // Fetched rather than dropped straight into an img src: a refusal
             // comes back as JSON with a reason - still recording, no spectra -
             // and a broken image icon would throw that away.
-            fetch('/api/observe/plot?file=' + encodeURIComponent(obvSelectedFile()) + '&' + Date.now()).then(r => {
+            fetch('/api/observe/plot?file=' + encodeURIComponent(obvSelectedFile())
+                  + (obvLiveLog ? '&log=1' : '') + '&' + Date.now()).then(r => {
                 if (!r.ok) return r.json().then(d => { throw new Error(d.error || ('HTTP ' + r.status)); });
                 return r.blob();
             }).then(b => {
@@ -553,7 +554,29 @@
             }).catch(() => { obvLiveSchedule(null); });
         }
 
+        // Log y axis, for the live trace and the recording plot alike: a Sun
+        // drift's sidelobes are a percent of the peak, invisible on a linear
+        // axis that has to hold the peak. A toggle rather than a default,
+        // because a flux monitor's percent-level structure is what a linear
+        // axis shows best. Flipped by the button beside the canvas.
+        let obvLiveLog = false;
+        let obvLiveLast = null;
+
+        function obvLiveToggleLog() {
+            obvLiveLog = !obvLiveLog;
+            for (const id of ['obvLogBtn', 'obvLogBtn2']) {
+                const btn = document.getElementById(id);
+                if (btn) btn.textContent = obvLiveLog ? 'Linear scale' : 'dB scale';
+            }
+            if (obvLiveLast) obvLiveDraw(obvLiveLast);
+            // The recording plot is a PNG the server draws; redraw it too if
+            // one is on show.
+            const host = document.getElementById('obvPlot');
+            if (host && host.querySelector('img')) showObservePlot();
+        }
+
         function obvLiveDraw(d) {
+            obvLiveLast = d;
             const c = document.getElementById('obvLiveCanvas');
             const ctx = c.getContext('2d');
             // Drawn in the canvas's own pixel space (1920 x 520) and scaled
@@ -583,8 +606,20 @@
             // to a flare time, to the published index, or to another
             // instrument's record.
             const xs = pts.map(p => p.t);
-            let ymin = ys.length ? Math.min.apply(null, ys) : 0;
-            let ymax = ys.length ? Math.max.apply(null, ys) : 1;
+            // On a log axis the values are plotted as log10, floored at 0.1%
+            // of the peak: a drift scan's antenna temperature goes through
+            // zero and a log axis cannot, so anything at or below the floor
+            // sits on it. The tick labels are the real values.
+            // In dB relative to the peak, floored at -30 dB.
+            const useLog = obvLiveLog && ys.some(v => v > 0);
+            const FLOOR_DB = -30;
+            const peak = useLog ? Math.max.apply(null, ys.filter(v => v > 0)) : 0;
+            const floor = useLog ? peak * Math.pow(10, FLOOR_DB / 10) : 0;
+            const lv = v => useLog ? 10 * Math.log10(Math.max(v, floor) / peak) : v;
+            const yv = ys.map(lv);
+            let ymin = yv.length ? Math.min.apply(null, yv) : 0;
+            let ymax = yv.length ? Math.max.apply(null, yv) : 1;
+            if (useLog) { ymin = FLOOR_DB; ymax = 0; }
             if (!(ymax > ymin)) { ymax = ymin + 1; }
             const pad = 0.08 * (ymax - ymin);
             ymin -= pad; ymax += pad;
@@ -612,12 +647,24 @@
 
             ctx.strokeStyle = '#333355'; ctx.fillStyle = '#c8c8d8';
             ctx.font = '20px sans-serif'; ctx.lineWidth = 1;
-            for (let i = 0; i <= 4; i++) {
-                const v = ymin + (ymax - ymin) * i / 4;
-                const y = Y(v);
-                ctx.beginPath(); ctx.moveTo(L, y); ctx.lineTo(W - R, y); ctx.stroke();
-                ctx.textAlign = 'right'; ctx.textBaseline = 'middle';
-                ctx.fillText(v.toFixed(cal ? (drift ? 2 : 1) : 5), L - 8, y);
+            if (useLog) {
+                // Gridlines every 5 dB, labelled in dB below the peak.
+                for (let v = FLOOR_DB; v <= 0; v += 5) {
+                    const y = Y(v);
+                    ctx.strokeStyle = (v % 10 === 0) ? '#444466' : '#2a2a44';
+                    ctx.beginPath(); ctx.moveTo(L, y); ctx.lineTo(W - R, y); ctx.stroke();
+                    ctx.textAlign = 'right'; ctx.textBaseline = 'middle';
+                    ctx.fillText((v === 0 ? '0' : v.toString()) + ' dB', L - 8, y);
+                }
+                ctx.strokeStyle = '#333355';
+            } else {
+                for (let i = 0; i <= 4; i++) {
+                    const v = ymin + (ymax - ymin) * i / 4;
+                    const y = Y(v);
+                    ctx.beginPath(); ctx.moveTo(L, y); ctx.lineTo(W - R, y); ctx.stroke();
+                    ctx.textAlign = 'right'; ctx.textBaseline = 'middle';
+                    ctx.fillText(v.toFixed(cal ? (drift ? 2 : 1) : 5), L - 8, y);
+                }
             }
             ctx.textAlign = 'center'; ctx.textBaseline = 'top';
             // Ticks on round clock times - whole minutes, five minutes, the
@@ -646,6 +693,12 @@
                          : (d.opacity_applied
                             ? 'solar flux (SFU, above the atmosphere)'
                             : 'solar flux (SFU, T_sys subtracted)'), 0, 0);
+            if (useLog) {
+                ctx.restore(); ctx.save();
+                ctx.font = '16px sans-serif'; ctx.fillStyle = '#888';
+                ctx.textAlign = 'right'; ctx.textBaseline = 'bottom';
+                ctx.fillText('dB relative to the peak (' + Number(peak.toPrecision(4)) + '); floor at -30 dB', W - R - 6, H - B - 4);
+            }
             ctx.restore();
 
             // The crossing time the pointing was laid out for. Drawn before the
@@ -686,7 +739,7 @@
                 const half = i ? (xs[i] - xs[i - 1]) / 2
                                : (xs.length > 1 ? (xs[1] - xs[0]) / 2 : 0.5);
                 const halfR = (i < xs.length - 1) ? (xs[i + 1] - xs[i]) / 2 : half;
-                const x0 = X(xs[i] - half), x1 = X(xs[i] + halfR), y = Y(ys[i]);
+                const x0 = X(xs[i] - half), x1 = X(xs[i] + halfR), y = Y(yv[i]);
                 if (i === 0) ctx.moveTo(x0, y); else ctx.lineTo(x0, y);
                 ctx.lineTo(x1, y);
             }

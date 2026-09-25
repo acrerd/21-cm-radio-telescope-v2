@@ -78,6 +78,7 @@
         }
 
         function rfRefresh() {
+            rfLoadBandpassFiles();
             rfRefreshPilot();
             fetch('/api/rf/status').then(r => r.json()).then(d => {
                 if (!d.success) return;
@@ -315,6 +316,60 @@
                         box.innerHTML = txt;
                     }).catch(() => {});
             }
+        }
+
+        // The tracked spectra on disk, for a template fitted after the fact: a
+        // template wants a long run on an empty field with the TX off, which
+        // is a thing you choose looking back at the catalogue, not something
+        // a two-minute live job on whatever sky is up can give you. Sun and
+        // Moon runs are left out; drifts are not spectra.
+        function rfLoadBandpassFiles() {
+            const sel = document.getElementById('rfBandpassFile');
+            if (!sel) return;
+            fetch('/api/observations').then(r => r.json()).then(d => {
+                const current = sel.value;
+                const rows = (d.observations || []).filter(r =>
+                    r.mode === 'track' && !r.recording && !/sun|moon/i.test(r.name || ''));
+                sel.innerHTML = '';
+                if (!rows.length) {
+                    const o = document.createElement('option');
+                    o.value = ''; o.textContent = 'no tracked spectra on disk';
+                    sel.appendChild(o);
+                    return;
+                }
+                rows.forEach(r => {
+                    const o = document.createElement('option');
+                    o.value = r.filename;
+                    const when = r.created ? r.created.slice(0, 16).replace('T', ' ') + ' UTC'
+                                           : (r.mtime || '').slice(0, 16).replace('T', ' ') + ' local';
+                    o.textContent = when + '  ' + r.filename + (r.name ? '  \u2014 ' + r.name : '')
+                                  + '  (' + Math.round((r.size_bytes || 0) / 1e6) + ' MB)';
+                    sel.appendChild(o);
+                });
+                if (current && rows.some(r => r.filename === current)) sel.value = current;
+            }).catch(() => {});
+        }
+
+        function rfBandpassFromRecording() {
+            const file = (document.getElementById('rfBandpassFile').value || '').trim();
+            if (!file) { alert('No recording selected.'); return; }
+            if (!confirm('Fit both bandpass templates from ' + file + ' and make them the templates in force?\n\n'
+                         + 'The gain in force was fitted against the old template and must be refitted afterwards '
+                         + '(Observe tab: Fit model on a plane field, then Apply).')) return;
+            const note = document.getElementById('rfGotoNote');
+            note.style.color = '#888'; note.textContent = 'Fitting the templates from ' + file + '\u2026';
+            fetch('/api/rf/bandpass/from-recording', {
+                method: 'POST', headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({file})
+            }).then(r => r.json()).then(d => {
+                if (!d.success) { note.style.color = '#ff4757'; note.textContent = d.error || 'fit failed'; return; }
+                const r = d.result;
+                note.style.color = '#ffaa00';
+                note.textContent = 'Templates replaced from ' + r.file + ' (' + r.records + ' records): H I residual '
+                    + r.residual_pct.toFixed(3) + '%' + (r.wide ? ', continuum ' + r.wide.residual_pct.toFixed(3) + '%' : '')
+                    + '. ' + (d.note || '');
+                rfRefresh(); rfLoadBandpassPlot();
+            }).catch(e => { note.style.color = '#ff4757'; note.textContent = 'request failed: ' + e; });
         }
 
         function rfRun(job) {

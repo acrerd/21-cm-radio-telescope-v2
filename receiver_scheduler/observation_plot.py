@@ -370,7 +370,8 @@ def patch_dc_artefact(freq_hz, spectra, header, half_window=48):
 
 
 def plot_observation(path, output_path, name="", mode="spectrum",
-                     transit_minutes=None, figsize=(16.0, 9.0), dpi=120):
+                     transit_minutes=None, figsize=(16.0, 9.0), dpi=120,
+                     log_y=False):
     """Render a finished observation to a PNG. Returns the output path."""
     if not MATPLOTLIB_AVAILABLE:
         raise RuntimeError("matplotlib is not installed, so no plot can be drawn")
@@ -511,6 +512,8 @@ def plot_observation(path, output_path, name="", mode="spectrum",
         _values, opacity, group = _plot_solar(ax, spectra, stamps, cal_ok,
                                               header=header,
                                               scallop_report=scallop_report)
+        if log_y:
+            _log_y(ax)
         # The caption names the pointing model too: a recording made before the
         # terms were embedded is reduced against the model this installation
         # last fitted, which is an assumption and has to show on the plot.
@@ -546,6 +549,8 @@ def plot_observation(path, output_path, name="", mode="spectrum",
                             else "Band power (counts, uncalibrated)"),
                     transit_label=("beam crossing (recorded)" if recorded is not None
                                    else "expected transit"))
+        if log_y:
+            _log_y(ax)
     else:
         secax = _plot_spectrum(ax, freq_hz, spectra, lsr=lsr,
                                clock_shift=clock_shift)
@@ -574,6 +579,32 @@ def plot_observation(path, output_path, name="", mode="spectrum",
     log.info("Observation plot written to %s (%s, %d spectra)",
              output_path, mode, n)
     return output_path
+
+
+def _log_y(ax):
+    """Put a total-power panel in dB relative to its peak, to show sidelobes
+    and the baseline at once. Every data line is rescaled to
+    10 log10(y / peak) and floored at -30 dB: a drift scan's antenna
+    temperature can go through zero and a log cannot, so anything at or
+    below the floor sits on it, and the note says so. Lines drawn in axes
+    coordinates (the crossing marker) are left alone."""
+    lines = [line for line in ax.get_lines() if line.get_transform() == ax.transData]
+    ys = [np.asarray(line.get_ydata(), float) for line in lines]
+    ys = np.concatenate([y[np.isfinite(y)] for y in ys]) if ys else np.array([])
+    if ys.size < 8 or not (ys > 0).any():
+        return
+    peak = float(np.nanmax(ys))
+    floor_db = -30.0
+    floor = peak * 10 ** (floor_db / 10)
+    for line in lines:
+        y = np.asarray(line.get_ydata(), float)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            line.set_ydata(10 * np.log10(np.maximum(y, floor) / peak))
+    ax.set_ylim(floor_db - 1.5, 1.5)
+    ax.set_yticks(np.arange(floor_db, 0.1, 5))
+    ax.set_ylabel("dB relative to the peak  [%s]" % ax.get_ylabel())
+    ax.text(0.01, 0.02, "peak = 0 dB (%.4g); floor at %.0f dB" % (peak, floor_db),
+            transform=ax.transAxes, ha="left", va="bottom", fontsize=8, color="#888888")
 
 
 def _robust_ylim(ax, y):

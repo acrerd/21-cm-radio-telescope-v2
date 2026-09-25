@@ -598,3 +598,30 @@ def test_the_selected_recording_can_be_downloaded(client):
     assert "attachment" in r.headers.get("Content-Disposition", "")
     assert r.data[:8] == b"\x89HDF\r\n\x1a\n", "an HDF5 file, byte for byte"
     assert client.get("/api/observe/download?file=../h1_schedule.json").status_code == 404
+
+
+def test_a_gain_override_makes_the_live_view_uncalibrated(client, tmp_path):
+    """A linearity drift at 10 dB (issue #35) records in counts, because the
+    receiver knows the gain calibration is for 20 dB. The live view has to
+    reach the same verdict from the entry, or it converts with a gain ten
+    times too large - the 2026-09-25 10 dB drift drew its baseline on the
+    -30 dB floor and its Sun at 15 K."""
+    started = datetime.now()
+    obs = {"name": "Sun drift 10 dB", "coord_system": "drift", "object_name": "sun",
+           "output_file": str(tmp_path / "nothing_yet.h5"), "gain_db_override": 10,
+           "started_at": started.isoformat(),
+           "ends_at": (started + timedelta(minutes=30)).isoformat()}
+    assert sched.obs_header(obs)["gain_db"] == 10.0
+    assert sched.obs_header({"name": "plain"})["gain_db"] == sched.instrument_in_force()["gain_db"]
+    saved = sched.current_observation
+    sched.current_observation = obs
+    try:
+        import rf_calibration
+        cal = rf_calibration.load_calibration()
+        if not cal or abs(float((cal.get("config") or {}).get("gain_db", 10)) - 10.0) < 0.01:
+            pytest.skip("no gain calibration at a gain other than 10 dB to disagree with")
+        d = client.get("/api/observe/live").get_json()
+        assert d["success"] is True and d["calibrated"] is False
+        assert "receiver gain" in d["why"]
+    finally:
+        sched.current_observation = saved

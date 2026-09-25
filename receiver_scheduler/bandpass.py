@@ -374,7 +374,7 @@ def apply_bandpass(freq_hz, spectra, header, template=None, path=None, product="
 
 
 def fit_from_observation(path, name="", degree=DEFAULT_DEGREE, out=None,
-                         product="h1"):
+                         product="h1", save=True):
     """Fit and store a template from a recorded observation of empty sky."""
     from observation_plot import read_observation
 
@@ -405,6 +405,12 @@ def fit_from_observation(path, name="", degree=DEFAULT_DEGREE, out=None,
                             source_file=path, product=product,
                             normalise_band_hz=normalise,
                             normalise_level=normalise_level)
+    # save=False for a fit that is only being looked at. The default writes
+    # the template in force (out=None), which is what the RF job wants and
+    # what an experiment on 2026-09-25 did not: comparing candidate templates
+    # replaced the H I template in force with the last candidate fitted.
+    if not save:
+        return template, None
     out = save_bandpass(template, out, product=product)
     return template, out
 

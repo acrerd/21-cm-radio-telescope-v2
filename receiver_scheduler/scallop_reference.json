@@ -1,10 +1,10 @@
 {
-  "phase_alt_deg": 0.0357142857142857,
-  "phase_az_deg": -0.035714285714285726,
-  "k_alt_over_beam": 0.829977343292119,
-  "k_az_over_beam": 0.9225375365779832,
-  "beam_fwhm_deg": 4.288778854507225,
-  "records": 1200,
-  "fitted_utc": "2026-09-24T20:47:36Z",
-  "source_file": "20260924_165222_track.h5"
+  "phase_alt_deg": 0.011904761904761862,
+  "phase_az_deg": -0.059523809523809534,
+  "k_alt_over_beam": 1.0197293893368378,
+  "k_az_over_beam": 0.9863454878755039,
+  "beam_fwhm_deg": 4.30142486213837,
+  "records": 148,
+  "fitted_utc": "2026-09-25T16:05:07Z",
+  "source_file": ""
 }

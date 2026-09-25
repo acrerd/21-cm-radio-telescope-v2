@@ -119,6 +119,13 @@ def test_the_entry_is_an_ordinary_solar_track():
     assert sched.live_plot_kind(entry) == "solar"
 
 
+def test_a_run_homes_the_mount_first():
+    """Issue #47: the count gained a pulse across a stow on three days running,
+    and the monitor stows after every run. A sawtooth on the whole run is
+    worse than three minutes of homing at its start."""
+    assert sched.sun_monitor_entry(NOON, 100)["home_first"] is True
+
+
 def test_a_run_ends_at_the_stow():
     """The dish waits at the stow between runs, not following the Sun into the trees."""
     assert sched.sun_monitor_entry(NOON, 100)["end_action"] == "stow"

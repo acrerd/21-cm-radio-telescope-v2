@@ -3018,7 +3018,11 @@ def sun_monitor_entry(now: datetime, minutes: int) -> dict:
         # down into the trees. Not when it gives way to someone - see
         # sun_monitor_yield.
         'end_action': 'stow', 'sdr_type': 'b210', 'enabled': True,
-        'respect_local_horizon': True, 'home_first': False,
+        # Homed first (issue #47): the count gained a pulse in altitude on
+        # 09-23 and twice on 09-24, and in both axes on 09-25, each time
+        # across a stow, and the monitor stows after every run. Three
+        # minutes a run against a sawtooth over the whole of it.
+        'respect_local_horizon': True, 'home_first': True,
     }
 
 
@@ -4634,6 +4638,78 @@ def api_rf_gain_plot():
     return send_file(out, mimetype='image/png', max_age=0)
 
 
+@app.route('/api/rf/bandpass/from-recording', methods=['POST'])
+def api_rf_bandpass_from_recording():
+    """Fit both bandpass templates from a recording already on disk and make
+    them the templates in force - the same fit the live job makes, fed from
+    a file chosen afterwards.
+
+    Added 2026-09-25, when the template in force turned out to be the "S"
+    residual stamped on every spectrum since 09-22: a 37-record live job with
+    the TX on. A long, high-latitude, TX-off recording (l=71.7 b=+44, 601
+    records) fitted to 0.10% and the page had no way to use it. The recording
+    has to carry the instrument in force - a template belongs to a tuning and
+    a receiver gain - and the gain must be refitted afterwards, since the two
+    are a pair; the response says so.
+    """
+    import bandpass
+    import rf_calibration
+    from observation_plot import open_readonly
+    chosen = (request.get_json(silent=True) or {}).get('file')
+    if not chosen:
+        return jsonify({'success': False, 'error': 'no recording named'}), 400
+    try:
+        info = _observation_info(chosen)
+    except ValueError as exc:
+        return jsonify({'success': False, 'error': str(exc)}), 404
+    if info.get('mode') != 'spectrum' and info.get('mode') != 'track':
+        return jsonify({'success': False, 'error': 'a bandpass template wants a tracked spectrum, '
+                        'not a %s recording' % info.get('mode')}), 400
+    if 'sun' in str(info.get('name', '')).lower():
+        return jsonify({'success': False, 'error': 'not from a Sun recording: the Sun is a source, '
+                        'not a flat sky'}), 400
+    path = os.path.join(observations_folder(), os.path.basename(chosen))
+    with open_readonly(path) as hf:
+        a = dict(hf.attrs)
+        header = {'center_freq_hz': a.get('center_freq_hz'), 'sample_rate_hz': a.get('sample_rate_hz'),
+                  'gain_db': a.get('gain_db')}
+        n_records = int(hf['timestamps'].shape[0]) if 'timestamps' in hf else 0
+    inst = instrument_in_force()
+    for key, want, have, tol in (('lo_hz', inst['lo_hz'], header['center_freq_hz'], 1e3),
+                                 ('sample_rate_hz', inst['sample_rate_hz'], header['sample_rate_hz'], 1.0),
+                                 ('gain_db', inst['gain_db'], header['gain_db'], 0.01)):
+        if have is None or abs(float(want) - float(have)) > tol:
+            return jsonify({'success': False, 'error': 'the recording was made at %s %s, the instrument '
+                            'in force is %s: a template belongs to its tuning and gain' % (key, have, want)}), 400
+    if rf_state['running']:
+        return jsonify({'success': False, 'error': 'an RF calibration job is running'}), 409
+    try:
+        fitted = bandpass.fit_both_from_observation(path, str(info.get('name', '')))
+    except Exception as exc:                              # noqa: BLE001
+        return jsonify({'success': False, 'error': 'fit failed: %s' % exc}), 400
+    template, out = fitted['h1']
+    result = {'kind': 'bandpass', 'degree': template['degree'],
+              'band_mhz': 2 * template['u_scale_hz'] / 1e6,
+              'residual_pct': 100 * template['fit_residual_rms'],
+              'channels': template['n_channels_fitted'], 'file': os.path.basename(path),
+              'stored': os.path.basename(out), 'records': n_records, 'from_recording': True}
+    if 'wide' in fitted:
+        wide_t, wide_out = fitted['wide']
+        result['wide'] = {'residual_pct': 100 * wide_t['fit_residual_rms'],
+                          'channels': wide_t['n_channels_fitted'],
+                          'band_mhz': 2 * wide_t['u_scale_hz'] / 1e6, 'stored': os.path.basename(wide_out)}
+    rf_state['result'] = result
+    log.warning("RF calibration: bandpass templates refitted from %s (%s, %d records), residual %.3f%%%s "
+                "- the gain in force belongs to the old template and must be refitted",
+                os.path.basename(path), info.get('name', ''), n_records, result['residual_pct'],
+                ('; continuum product %.3f%%' % result['wide']['residual_pct']) if 'wide' in result else '')
+    cal = rf_calibration.load_calibration()
+    return jsonify({'success': True, 'result': result,
+                    'note': 'Templates replaced. The gain in force (%s) was fitted against the old '
+                            'template: refit it - Observe tab, Fit model on a plane field, Apply - before '
+                            'trusting kelvin.' % (os.path.basename(str((cal or {}).get('source_file', '?'))))})
+
+
 @app.route('/api/rf/run', methods=['POST'])
 def api_rf_run():
     """Start a calibration. Refuses if anything else owns the SDR."""
@@ -5183,13 +5259,15 @@ def tuning_instrument_keys():
 def obs_header(obs=None):
     """The tuning fields calibration_applies_to needs, for any observation.
 
-    Every scheduled observation records with the fixed instrument, so the
-    header is the same for all of them; the entry is accepted for the callers
-    that still pass one. The observation's own header is inside the HDF5,
-    which can be busy while it records, so the values come from the
-    instrument in force - they are what the receiver was told to use.
+    The observation's own header is inside the HDF5, which can be busy while
+    it records, so the values come from the instrument the receiver was told
+    to use: the one in force, unless the entry overrides the receiver gain
+    (`gain_db_override`, issue #35). Until 2026-09-25 this always took the
+    instrument in force, so a 10 dB linearity drift was converted on the live
+    plot with the 20 dB gain: the baseline came out negative and the Sun 100x
+    too small, while the receiver itself had rightly written counts.
     """
-    inst = instrument_in_force()
+    inst = instrument_for(obs) if isinstance(obs, dict) else instrument_in_force()
     return {'center_freq_hz': inst['lo_hz'],
             'sample_rate_hz': inst['sample_rate_hz'],
             'gain_db': inst['gain_db'],
@@ -5447,7 +5525,9 @@ def api_observe_plot():
         observation_plot.plot_observation(
             info['output_file'], out, name=info.get('name', ''),
             mode=info.get('mode', 'spectrum'),
-            transit_minutes=info.get('transit_minutes'))
+            transit_minutes=info.get('transit_minutes'),
+            # ?log=1: a total-power panel on a log axis, for sidelobes.
+            log_y=request.args.get('log') in ('1', 'true', 'yes'))
     except FileNotFoundError as exc:
         return jsonify({'success': False, 'error': str(exc)}), 404
     except (RuntimeError, ValueError) as exc:
@@ -6781,7 +6861,9 @@ def beam_scan_entry(now: datetime, minutes: int = None) -> dict:
         'start_date': now.strftime('%Y-%m-%d'), 'start_time': now.strftime('%H:%M'),
         'duration_minutes': minutes, 'integration_time_s': beam_scan.DRIFT_INTEGRATION_S,
         'end_action': 'stow', 'sdr_type': 'b210', 'enabled': True,
-        'respect_local_horizon': True, 'home_first': False,
+        # A parked scan carries whatever count error it starts with for the
+        # whole run, and the beam's centre is judged from the crossing.
+        'respect_local_horizon': True, 'home_first': True,
     }
 
 

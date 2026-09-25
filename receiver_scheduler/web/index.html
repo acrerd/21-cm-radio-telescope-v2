@@ -214,7 +214,8 @@
                         </div>
                         <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:center; margin-bottom:10px;">
                             <button title="Park ahead of the Sun and let it drift through the beam for two hours, then reduce the scan and adopt the beam if it passes. Needs the Sun clear of the horizon for the whole scan." class="btn btn-success" id="beamStartBtn" onclick="startBeamScan()">Start beam drift (2 h)</button>
-                            <input autocomplete="off" id="beamFile" placeholder="drift recording to re-analyse, e.g. 20260924_123922_drift.h5" style="flex:1; min-width:260px;">
+                            <select autocomplete="off" id="beamFile" style="flex:1; min-width:260px;"
+                                    title="Sun drift recordings on disk, newest first; pick one and Analyse to reduce it (and adopt it if it passes)"></select>
                             <button title="Reduce a Sun drift already on file and adopt it if it passes." class="btn btn-secondary" onclick="analyseBeamFile()">Analyse</button>
                         </div>
                         <div id="beamPlot" style="text-align:center;"></div>
@@ -253,6 +254,11 @@
                         ~2 min, where the dish is pointing now
                     </span>
                     <div id="rfGotoNote" class="mono" style="color:#888; font-size:12px; margin-top:8px;"></div>
+                    <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:center; margin-top:12px;">
+                        <select autocomplete="off" id="rfBandpassFile" style="flex:1; min-width:320px;"
+                                title="Tracked spectra on disk at the instrument in force, newest first. A template wants a long run on an empty field, TX off; the Sun is excluded."></select>
+                        <button title="Fit both bandpass templates from the chosen recording and make them the templates in force. The gain must be refitted afterwards: the two are a pair." class="btn" onclick="rfBandpassFromRecording()">Fit from recording</button>
+                    </div>
                 </div>
                 <div id="rfBandpassPlot" class="rf-wide" style="margin-top:14px; text-align:center; color:#666; font-size:12px;">
                     Loading the before-and-after&hellip;
@@ -635,6 +641,10 @@
                         measured, and the full spectra reduce properly
                         afterwards.
                     </div>
+                    <div style="text-align:right; margin-bottom:4px;">
+                        <button class="btn btn-secondary" id="obvLogBtn" onclick="obvLiveToggleLog()" style="font-size:12px; padding:4px 10px;"
+                                title="Log y axis on the live trace and the recording plot: a Sun drift's sidelobes are a percent of the peak. In dB relative to the peak, floored at -30 dB.">dB scale</button>
+                    </div>
                     <canvas id="obvLiveCanvas" width="1920" height="520"
                             style="background:#16162e; border-radius:8px;"></canvas>
                     <div id="obvLiveInfo" class="mono" style="color:#888; font-size:12px; margin-top:8px;"></div>
@@ -646,6 +656,8 @@
                     <select autocomplete="off" id="obvFileSelect" onchange="onObserveFileChange()"
                             style="max-width:100%; min-width:320px;" title="which recording to plot or fit"></select>
                     <button title="Draw the selected recording: spectrum in kelvin on an LSR axis, or the drift trace." class="btn btn-secondary" onclick="showObservePlot()">Plot Result</button>
+                    <button class="btn btn-secondary" id="obvLogBtn2" onclick="obvLiveToggleLog()"
+                            title="Log y axis for the drift trace and the live view: a Sun drift's sidelobes are a percent of the peak. In dB relative to the peak, floored at -30 dB. Redraws the plot.">dB scale</button>
                     <button class="btn btn-secondary" id="obvLiveViewBtn" style="display:none;" onclick="viewLiveRecording()"
                             title="plot the recording in progress, as it stands; refreshes while it records">View live recording</button>
                     <button class="btn btn-secondary" onclick="fitObserveModel()"
