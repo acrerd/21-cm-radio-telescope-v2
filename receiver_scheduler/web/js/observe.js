@@ -290,6 +290,27 @@
                 const rows = [];
                 const row = (k, v) => rows.push('<tr><td style="color:#778; padding:2px 8px 2px 0; white-space:nowrap; vertical-align:top;">'
                                               + k + '</td><td style="padding:2px 0;">' + v + '</td></tr>');
+                if (x.mode === 'pulsar') {
+                    // A pulsar filterbank has no spectra: its own short table.
+                    row('file', escapeHtml(x.filename));
+                    if (x.name) row('name', escapeHtml(x.name));
+                    row('mode', 'pulsar \u00b7 ' + escapeHtml(x.pulsar_name || 'B0329+54')
+                        + (x.pulsar_period_s ? ' \u00b7 P ' + f(x.pulsar_period_s, 6) + ' s' : '')
+                        + (x.pulsar_dm ? ' \u00b7 DM ' + f(x.pulsar_dm, 2) : ''));
+                    if (x.created) row('started', escapeHtml(x.created.slice(0, 19).replace('T', ' ')) + ' UTC');
+                    row('rows', x.rows.toLocaleString() + ' \u00d7 ' + f(x.dt_ms, 3) + ' ms = '
+                        + f(x.duration_s / 60, 1) + ' min, ' + x.channels + ' ch of ' + f(x.channel_mhz, 3) + ' MHz');
+                    if (x.band_mhz) row('band', f(x.band_mhz[0], 2) + ' \u2013 ' + f(x.band_mhz[1], 2) + ' MHz');
+                    row('LO / rate', f(x.lo_mhz, 3) + ' MHz \u00b7 ' + f(x.sample_rate_mhz, 2) + ' Msps');
+                    row('samples lost', x.overflows_total
+                        ? '<span style="color:#ff4757;">' + x.overflows_total + ' overflows (re-timed from ' + x.time_marks + ' radio time marks)</span>'
+                        : '<span style="color:#2ed573;">none (no overflows)</span>');
+                    row('homed first', x.homed_first ? 'yes' : 'no');
+                    row('gain', f(x.gain_db, 0) + ' dB' + (x.sdr_type ? ' \u00b7 ' + escapeHtml(x.sdr_type) : ''));
+                    row('units', 'counts (a fold needs no calibration)');
+                    t.innerHTML = rows.join('');
+                    return;
+                }
                 row('file', escapeHtml(x.filename));
                 if (x.name) row('target', escapeHtml(x.name));
                 row('mode', escapeHtml(x.mode) + (x.coord_system ? ' \u00b7 ' + escapeHtml(x.coord_system) : ''));

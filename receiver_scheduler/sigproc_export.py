@@ -148,7 +148,8 @@ def export(path, out_path=None, chunk_rows=CHUNK_ROWS):
         ra = psr["ra_deg"] if psr else float(a.get("pulsar_ra_deg", 0.0))
         dec = psr["dec_deg"] if psr else float(a.get("pulsar_dec_deg", 0.0))
         order = np.argsort(freq)[::-1]                     # highest first
-        chan_w = float(np.median(np.diff(np.sort(freq)))) / 1e6
+        chan_w = (float(np.median(np.diff(np.sort(freq)))) if len(freq) > 1
+                  else float(a.get('channel_width_hz') or a.get('sample_rate_hz'))) / 1e6
         # the fill level: each channel's median over a sample of the run
         sample = power[:: max(1, n_rows // 20000)]
         fill_row = np.median(sample, axis=0)[order].astype(np.float32)

@@ -1888,22 +1888,36 @@ class PulsarFlowgraph(gr.top_block):
         # cadence is the radio's clock and dt_s is what it comes to.
         self.presum = max(1, int(round(self.sample_rate / n * dt_s)))
         self.dt_s = self.presum * n / self.sample_rate
-        self.s2v = blocks.stream_to_vector(gr.sizeof_gr_complex, n)
-        # Rectangular window: sixteen coarse channels want flat response
-        # across each, and leakage between them does not matter for a fold.
-        self.fftb = fft.fft_vcc(n, True, [1.0] * n, True, 1)
-        self.mag = blocks.complex_to_mag_squared(n)
-        self.norm = blocks.multiply_const_vff([1.0 / (n * self.presum)] * n)
-        self.summer = blocks.integrate_ff(self.presum, n)
-        self.sink = _RowSink(n)
-        chain = [self.sdr_source] + ([self.throttle] if self.throttle is not None else []) \
-                + [self.s2v, self.fftb, self.mag, self.norm, self.summer, self.sink]
+        head = [self.sdr_source] + ([self.throttle] if self.throttle is not None else [])
+        if n == 1:
+            # The whole band as one channel (the default since 2026-09-26):
+            # |x|^2 summed over presum samples - no transform needed. The one
+            # sky run with 16 channels gave the same fold to within the noise
+            # (2.3 against 2.0 sigma; 5.7 against 5.6 simulated), at a
+            # sixteenth of the storage.
+            self.mag = blocks.complex_to_mag_squared(1)
+            self.norm = blocks.multiply_const_ff(1.0 / self.presum)
+            self.summer = blocks.integrate_ff(self.presum, 1)
+            self.sink = _RowSink(1)
+            chain = head + [self.mag, self.norm, self.summer, self.sink]
+        else:
+            self.s2v = blocks.stream_to_vector(gr.sizeof_gr_complex, n)
+            # Rectangular window: coarse channels want flat response across
+            # each, and leakage between them does not matter for a fold.
+            self.fftb = fft.fft_vcc(n, True, [1.0] * n, True, 1)
+            self.mag = blocks.complex_to_mag_squared(n)
+            self.norm = blocks.multiply_const_vff([1.0 / (n * self.presum)] * n)
+            self.summer = blocks.integrate_ff(self.presum, n)
+            self.sink = _RowSink(n)
+            chain = head + [self.s2v, self.fftb, self.mag, self.norm, self.summer, self.sink]
         for a, b in zip(chain[:-1], chain[1:]):
             self.connect(a, b)
         print("  %d channels of %.3f MHz, %d transforms per row, rows of %.4f ms"
               % (n, self.sample_rate / n / 1e6, self.presum, 1e3 * self.dt_s), flush=True)
 
     def freq_axis(self):
+        if self.nchan == 1:
+            return np.array([self.center_freq])
         return self.center_freq + np.fft.fftshift(np.fft.fftfreq(self.nchan, 1.0 / self.sample_rate))
 
 
@@ -1943,6 +1957,7 @@ def init_pulsar_hdf5(filename, freq_axis_hz, dt_s, sdr_type, center_freq, sample
     hf.attrs['observation_mode'] = observation_files.PULSAR_MODE
     hf.attrs['dt_s'] = float(dt_s)
     hf.attrs['nchan'] = int(n)
+    hf.attrs['channel_width_hz'] = float(sample_rate) / int(n)
     hf.attrs['t0_unix'] = float(t0_unix)
     hf.attrs['created_utc'] = datetime.now(timezone.utc).isoformat()
     hf.attrs['sdr_type'] = str(sdr_type)

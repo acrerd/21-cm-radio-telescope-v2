@@ -149,3 +149,40 @@ def test_the_filterbank_export_for_presto(tmp_path):
     fill = data[1500:1550, 0]
     assert data[1499, 0] == 16 and np.all(fill == fill[0]) and 16 < fill[0] < 116   # the channel's median, flat
     assert data[1550, 0] == 116                                 # the real rows resume 50 later
+
+
+def test_the_streaming_fold_agrees_and_reads_in_blocks(tmp_path):
+    """analyse_file never holds the recording in memory (a 4 h run in float64
+    needed 5.3 GB and the kernel killed the scheduler on 2026-09-26); read in
+    small blocks here, it must find the same pulse at the same phase."""
+    t, freq, power, p, pmean = _synthetic(minutes=15.0, peak_k=0.2)
+    path = str(tmp_path / "s_pulsar.h5")
+    with h5py.File(path, "w") as hf:
+        hf.create_dataset("frequency_hz", data=freq)
+        hf.create_dataset("power", data=power, chunks=(1024, 16))
+        hf.create_dataset("time_marks", data=np.array([[0, t[0]]]))
+        hf.attrs["dt_s"] = 1e-3; hf.attrs["t0_unix"] = float(t[0]); hf.attrs["pulsar_name"] = "B0329+54"
+    r, attrs = PF.analyse_file(path, block_rows=100_000, search_ppm=20.0)
+    assert r["snr_matched"] > 5.0 and abs(r["peak_bin_predicted"] - 12) <= 1
+    assert r["nchan"] == 16 and len(r["subints"]) >= 7
+
+
+def test_a_one_channel_recording_folds_and_exports(tmp_path):
+    """The default since 2026-09-26: the whole band as one channel. The fold,
+    the plot and the PRESTO export must all take a single-column file."""
+    import sigproc_export as SE
+    t, freq, power, p, pmean = _synthetic(minutes=15.0, peak_k=0.2)
+    one = power.sum(axis=1, keepdims=True)
+    path = str(tmp_path / "one_pulsar.h5")
+    with h5py.File(path, "w") as hf:
+        hf.create_dataset("frequency_hz", data=np.array([1418.9e6]))
+        hf.create_dataset("power", data=one, chunks=(1024, 1))
+        hf.create_dataset("time_marks", data=np.array([[0, t[0]]]))
+        hf.attrs["dt_s"] = 1e-3; hf.attrs["t0_unix"] = float(t[0]); hf.attrs["pulsar_name"] = "B0329+54"
+        hf.attrs["channel_width_hz"] = 8e6; hf.attrs["sample_rate_hz"] = 8e6
+    r, _ = PF.analyse_file(path, block_rows=100_000, search_ppm=20.0)
+    assert r["nchan"] == 1 and r["snr_matched"] > 5.0
+    out, s = SE.export(path)
+    h, hlen = SE.read_header(out)
+    assert h["nchans"] == 1 and h["foff"] == pytest.approx(-8.0) and h["fch1"] == pytest.approx(1418.9)
+    assert PF.plot_recording(path, str(tmp_path / "one.png"))["nchan"] == 1

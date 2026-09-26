@@ -47,7 +47,7 @@ import numpy as np
 
 C_M_S = 299792458.0
 
-NCHAN = 16              # filterbank channels across the sampled band
+NCHAN = 1               # the whole band summed (2026-09-26; 16 bought nothing on the sky, at 16x the storage)
 DT_S = 1.0e-3           # one row per millisecond
 NBINS = 64              # phase bins in the folded profile
 SEARCH_PPM = 150.0      # +-fractional period searched around the prediction, ppm
@@ -334,6 +334,140 @@ def analyse(t, freq_hz, power, pulsar, nbins=NBINS, search_ppm=SEARCH_PPM):
     }
 
 
+BLOCK_ROWS = 600_000     # 10 minutes of rows per read: 38 MB of float32
+
+
+def analyse_file(path, pulsar=None, nbins=NBINS, search_ppm=SEARCH_PPM, block_rows=BLOCK_ROWS):
+    """`analyse` for a recording on disk, without ever holding it in memory.
+
+    A four-hour run is 14 million rows by 16 channels, 900 MB as float32;
+    `analyse` works on the whole array in float64 and needed 5.3 GB for it,
+    which on this 7.7 GB host had the kernel kill the scheduler on
+    2026-09-26 (the Observe tab plots a recording as soon as it is chosen).
+    Here the rows are read ten minutes at a time. Each channel is divided by
+    its own median over 10 s blocks (the gain-drift baseline, piecewise
+    rather than running - the drift is far slower than 10 s), clipped at 6
+    robust sigma within the block, folded into the per-channel profiles and
+    summed into one float32 series; only that series, the row times and the
+    phase are kept whole. The period search then works on 60 s sub-profiles
+    of the fine (256-bin) fold, shifted per trial period, as prepfold does,
+    instead of refolding 14 million samples per trial.
+    """
+    import observation_plot
+    with observation_plot.open_readonly(path) as hf:
+        attrs = {k: (v.item() if hasattr(v, "item") else v) for k, v in hf.attrs.items()}
+        ds = hf["power"]
+        n, nchan = ds.shape
+        freq = np.asarray(hf["frequency_hz"][:], float)
+        marks = np.asarray(hf["time_marks"][:], float) if "time_marks" in hf else np.empty((0, 2))
+        if "overflow_marks" in hf and hf["overflow_marks"].shape[0]:
+            attrs["overflows_total"] = int(np.asarray(hf["overflow_marks"][:])[:, 1].sum())
+        attrs["n_time_marks"] = int(len(marks))
+        if pulsar is None:
+            pulsar = lookup(attrs.get("pulsar_name") or attrs.get("object_name") or PULSAR_NAME)
+        if pulsar is None:
+            raise ValueError("this mode folds B0329+54 only; the recording names %r"
+                             % (attrs.get("pulsar_name") or attrs.get("object_name")))
+        if n < 1000:
+            raise ValueError("too few samples to fold (%d rows)" % n)
+        dt = float(attrs.get("dt_s", DT_S))
+        t0 = float(marks[0, 1] - dt * marks[0, 0]) if len(marks) else float(attrs.get("t0_unix", 0.0))
+        t = row_times(n, dt, t0, marks if len(marks) else None)
+        p_bary = period_at(t[0]) if pulsar.get("pdot") is not None else pulsar["period_s"]
+        phase0, p_mean = phase_track(t, p_bary, pulsar["ra_deg"], pulsar["dec_deg"])
+        bins0 = np.clip(np.floor((phase0 % 1.0) * nbins).astype(np.int32), 0, nbins - 1)
+        total = np.empty(n, dtype=np.float32)
+        chan_sum = np.zeros((nchan, nbins))
+        chan_cnt = np.zeros((nchan, nbins))
+        per = max(1, int(round(DETREND_S / dt)))
+        for i in range(0, n, block_rows):
+            x = np.asarray(ds[i:min(n, i + block_rows)], dtype=np.float64)
+            m = len(x)
+            k = np.arange(m) // per
+            frac = np.empty_like(x)
+            for j in np.unique(k):
+                sl = k == j
+                base = np.median(x[sl], axis=0)
+                base[base <= 0] = np.nan
+                frac[sl] = x[sl] / base - 1.0
+            frac[~np.isfinite(frac)] = 0.0
+            b = bins0[i:i + m]
+            for c in range(nchan):
+                col = frac[:, c]
+                mad = 1.4826 * np.median(np.abs(col - np.median(col)))
+                good = np.abs(col) <= 6.0 * mad if mad > 0 else np.ones(m, bool)
+                chan_sum[c] += np.bincount(b[good], weights=col[good], minlength=nbins)
+                chan_cnt[c] += np.bincount(b[good], minlength=nbins)
+            total[i:i + m] = frac.mean(axis=1)
+    total, n_clipped = clip_rfi(total.astype(np.float64))
+    prof0, _ = fold(total, phase0, nbins)
+    snr0 = profile_snr(prof0)
+    width_s = float(pulsar.get("w50_ms", 6.6)) * 1e-3
+    m_snr, m_phase, _ = matched_snr(total, phase0, width_s, p_mean)
+    # 60 s sub-profiles of the fine fold, for the period search and the panel
+    fb = FINE_BINS
+    sub = np.floor((t - t[0]) / 60.0).astype(np.int64)
+    nsub = int(sub.max()) + 1
+    fbin = np.clip(np.floor((phase0 % 1.0) * fb).astype(np.int64), 0, fb - 1)
+    S = np.bincount(sub * fb + fbin, weights=total, minlength=nsub * fb).reshape(nsub, fb)
+    C = np.bincount(sub * fb + fbin, minlength=nsub * fb).reshape(nsub, fb).astype(float)
+    phi_mid = np.bincount(sub, weights=phase0, minlength=nsub) / np.maximum(np.bincount(sub, minlength=nsub), 1)
+    n_periods = float(phase0[-1] - phase0[0])
+    step_ppm = max(0.25, 1e6 / (nbins * max(n_periods, 1.0)))
+    trials = np.arange(-search_ppm, search_ppm + step_ppm, step_ppm)
+    group = fb // nbins
+
+    def shifted(d_ppm):
+        # a period longer by d has phase phase0/(1+d): each sub-profile moves
+        # back by phi_mid * d (cycles), applied as a whole number of fine bins
+        shifts = np.round(-phi_mid * d_ppm * 1e-6 * fb).astype(int) % fb
+        ss = np.zeros(fb); cc = np.zeros(fb)
+        rows_s = np.empty_like(S); rows_c = np.empty_like(C)
+        for kk in range(nsub):
+            rows_s[kk] = np.roll(S[kk], shifts[kk]); rows_c[kk] = np.roll(C[kk], shifts[kk])
+        return rows_s, rows_c
+
+    snrs = np.empty(len(trials))
+    for ii, d in enumerate(trials):
+        rs, rc = shifted(d)
+        s64 = rs.sum(axis=0).reshape(nbins, group).sum(axis=1)
+        c64 = rc.sum(axis=0).reshape(nbins, group).sum(axis=1)
+        snrs[ii] = profile_snr(np.where(c64 > 0, s64 / np.maximum(c64, 1), 0.0))[0]
+    kbest = int(np.argmax(snrs)); best_ppm = float(trials[kbest])
+    rs, rc = shifted(best_ppm)
+    s64 = rs.sum(axis=0).reshape(nbins, group).sum(axis=1)
+    c64 = rc.sum(axis=0).reshape(nbins, group).sum(axis=1)
+    prof_best = np.where(c64 > 0, s64 / np.maximum(c64, 1), 0.0)
+    snr_best = profile_snr(prof_best)
+    per_sub = max(1, int(round(SUBINT_S / 60.0)))
+    ns2 = nsub // per_sub
+    if ns2:
+        s2 = rs[:ns2 * per_sub].reshape(ns2, per_sub, nbins, group).sum(axis=(1, 3))
+        c2 = rc[:ns2 * per_sub].reshape(ns2, per_sub, nbins, group).sum(axis=(1, 3))
+        subints = np.where(c2 > 0, s2 / np.maximum(c2, 1), 0.0)
+    else:
+        subints = prof_best[None, :]
+    chan_prof = np.where(chan_cnt > 0, chan_sum / np.maximum(chan_cnt, 1), 0.0)
+    f_ghz = freq / 1e9
+    delay_s = 4.148808e-3 * pulsar["dm"] * (1.0 / f_ghz ** 2 - 1.0 / f_ghz.max() ** 2)
+    v = observer_velocity_toward(pulsar["ra_deg"], pulsar["dec_deg"], np.array([t[0], t[-1]]))
+    r = {
+        "pulsar": pulsar["name"], "period_bary_s": p_bary, "period_topo_mean_s": p_mean,
+        "observer_velocity_m_s": [float(v[0]), float(v[-1])],
+        "duration_s": float(t[-1] - t[0] + dt), "dt_s": dt, "n_periods": n_periods,
+        "nbins": nbins, "n_clipped": n_clipped, "nchan": int(nchan),
+        "profile_predicted": prof0.tolist(), "snr_predicted": snr0[0], "peak_bin_predicted": snr0[1],
+        "snr_matched": m_snr, "matched_phase": m_phase, "matched_width_s": width_s,
+        "profile_best": prof_best.tolist(), "snr_best": snr_best[0], "peak_bin_best": snr_best[1],
+        "best_ppm": best_ppm, "search_ppm": [float(trials.min()), float(trials.max())],
+        "search_snr": snrs.tolist(), "search_trial_ppm": trials.tolist(),
+        "channel_profiles": chan_prof.tolist(), "channel_freq_hz": freq.tolist(),
+        "dm_delay_s": delay_s.tolist(), "subints": subints.tolist(), "subint_s": per_sub * 60.0,
+        "duty_expected": None,
+    }
+    return r, attrs
+
+
 PRESTO_BIN = "/home/astro/radioconda/envs/presto/bin"   # conda-forge presto-pulsar, own env
 # prepfold rebuilt from source with tools/presto_acre_road.patch, so a .fil with
 # telescope_id 82 is named "Acre Road SRT" and PRESTO knows the site's ITRF
@@ -374,6 +508,12 @@ def run_topocentric_period(path):
     return p_topo, t0, n * dt, (float(f), float(fd), float(fdd))
 
 
+def _nchan(path):
+    import observation_plot
+    with observation_plot.open_readonly(path) as hf:
+        return int(hf["power"].shape[1])
+
+
 def presto_fold(path, out_dir, timeout_s=1800):
     """Export `path` to a .fil and fold it with PRESTO's prepfold at the
     topocentric period and the catalogue DM, no search (DM is not constrained
@@ -393,7 +533,7 @@ def presto_fold(path, out_dir, timeout_s=1800):
     # -f/-fd/-fdd at the first sample, not a single period: see run_topocentric_period.
     cmd = ["nice", "-n", "19", prepfold_path(), "-topo",
            "-f", "%.15f" % f, "-fd", "%.6e" % fd, "-fdd", "%.6e" % fdd,
-           "-dm", "%.4f" % B0329["dm"], "-n", "64", "-nsub", "16",
+           "-dm", "%.4f" % B0329["dm"], "-n", "64", "-nsub", str(min(16, _nchan(path))),
            "-nosearch", "-scaleparts", "-noxwin", "-o", stem + "_prepfold", os.path.basename(fil)]
     env = dict(os.environ, PATH=PRESTO_BIN + os.pathsep + os.environ.get("PATH", ""))  # ghostscript for the .png
     res = subprocess.run(cmd, cwd=out_dir, capture_output=True, text=True, timeout=timeout_s, env=env)
@@ -423,15 +563,9 @@ def plot_recording(path, out_path, pulsar=None):
     import plot_backend
     plot_backend.use_headless()
     import matplotlib.pyplot as plt
-    t, freq, power, attrs = read_recording(path)
-    if pulsar is None:
-        pulsar = lookup(attrs.get("pulsar_name") or attrs.get("object_name") or PULSAR_NAME)
-    if pulsar is None:
-        raise ValueError("this mode folds B0329+54 only; the recording names %r"
-                         % (attrs.get("pulsar_name") or attrs.get("object_name")))
-    if power.shape[0] < 1000:
-        raise ValueError("too few samples to fold (%d rows)" % power.shape[0])
-    r = analyse(t, freq, power, pulsar)
+    # Streamed, never the whole file in memory: see analyse_file.
+    r, attrs = analyse_file(path, pulsar)
+    pulsar = lookup(r["pulsar"])
     nb = r["nbins"]
     ph = (np.arange(2 * nb) + 0.5) / nb
     prof = np.array(r["profile_best"]); prof2 = np.concatenate([prof, prof])
@@ -441,8 +575,8 @@ def plot_recording(path, out_path, pulsar=None):
     p0 = np.array(r["profile_predicted"]); a.step(ph, 100 * np.concatenate([p0, p0]), where="mid",
                                                   color="C1", lw=0.8, alpha=0.7, label="at the predicted period")
     a.set_xlabel("pulse phase (two periods)"); a.set_ylabel("excess over the running median (%)")
-    a.set_title("%s: matched S/N %.1f at the predicted period (peak bin %.1f; best searched %.1f), %.0f min, %d periods" % (
-        r["pulsar"], r["snr_matched"], r["snr_predicted"], r["snr_best"], r["duration_s"] / 60, r["n_periods"]), fontsize=10)
+    a.set_title("%s: matched S/N %.1f at the predicted period (peak bin %.1f; best searched %.1f), %.0f min, %d periods, %d channels" % (
+        r["pulsar"], r["snr_matched"], r["snr_predicted"], r["snr_best"], r["duration_s"] / 60, r["n_periods"], r["nchan"]), fontsize=10)
     a.legend(fontsize=8); a.grid(alpha=0.3)
     a = ax[0][1]
     a.plot(r["search_trial_ppm"], r["search_snr"], "-", lw=1)
@@ -461,7 +595,11 @@ def plot_recording(path, out_path, pulsar=None):
     a.set_xlabel("pulse phase"); a.set_ylabel("time (min)"); a.set_title("sub-integrations of %.0f s" % r["subint_s"])
     a = ax[1][1]
     cp = np.array(r["channel_profiles"]); f = np.array(r["channel_freq_hz"]) / 1e6
-    if cp.size:
+    if cp.size and cp.shape[0] == 1:
+        a.step(np.arange(nb) / nb, 100 * cp[0], where="post")
+        a.set_xlabel("pulse phase"); a.set_ylabel("excess (%)")
+        a.set_title("single band-summed channel", fontsize=9)
+    elif cp.size:
         a.imshow(100 * cp, aspect="auto", origin="lower", extent=[0, 1, f.min(), f.max()],
                  cmap="viridis", interpolation="nearest")
         # where the DM says each channel's peak should sit, relative to the summed peak
@@ -469,7 +607,7 @@ def plot_recording(path, out_path, pulsar=None):
         d = np.array(r["dm_delay_s"]) / r["period_topo_mean_s"]
         a.plot((pk + d - np.mean(d)) % 1.0, f, "w--", lw=0.8, label="DM %.1f delay" % pulsar["dm"])
         a.legend(fontsize=8, loc="upper right")
-    a.set_xlabel("pulse phase"); a.set_ylabel("frequency (MHz)"); a.set_title("per-channel profiles (interference view; the 0.6 ms DM sweep is below one sample)", fontsize=9)
+        a.set_xlabel("pulse phase"); a.set_ylabel("frequency (MHz)"); a.set_title("per-channel profiles (interference view; the 0.6 ms DM sweep is below one sample)", fontsize=9)
     fig.suptitle("%s  %s  %s  %d overflows, %d time marks%s" % (
         os.path.basename(path), attrs.get("obs_name", ""),
         "%d samples clipped;" % r["n_clipped"] if r["n_clipped"] else "",

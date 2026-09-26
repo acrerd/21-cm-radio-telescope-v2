@@ -5387,15 +5387,30 @@ def _recording_details(path):
         a = dict(hf.attrs)
         if 'power' in hf and 'spectra_kelvin' not in hf and 'spectra_linear' not in hf:
             # A pulsar-mode filterbank: rows of channel power, no spectra.
-            return {'mode': 'pulsar', 'pulsar_name': str(a.get('pulsar_name', '')),
-                    'rows': int(hf['power'].shape[0]), 'channels': int(hf['power'].shape[1]),
-                    'dt_ms': 1e3 * float(a.get('dt_s', 0.0)),
-                    'duration_s': float(a.get('dt_s', 0.0)) * int(hf['power'].shape[0]),
-                    'overflows_total': int(np.asarray(hf['overflow_marks'][:])[:, 1].sum())
-                                       if 'overflow_marks' in hf and hf['overflow_marks'].shape[0] else 0,
-                    'gain_db': float(a['gain_db']) if a.get('gain_db') is not None else None,
-                    'sdr_type': str(a.get('sdr_type', '')), 'units': 'counts',
-                    'pulsar_period_s': a.get('pulsar_period_s'), 'pulsar_dm': a.get('pulsar_dm')}
+            freq = np.asarray(hf['frequency_hz'][:], float)
+            marks = np.asarray(hf['time_marks'][:]) if 'time_marks' in hf else np.empty((0, 2))
+            om = np.asarray(hf['overflow_marks'][:]) if 'overflow_marks' in hf else np.empty((0, 2))
+            n_rows, n_ch = hf['power'].shape
+            dt = float(a.get('dt_s', 0.0))
+            fnum = lambda k: float(a[k]) if a.get(k) is not None else None
+            chan_w = (float(np.median(np.diff(np.sort(freq)))) if len(freq) > 1
+                      else (float(a.get('channel_width_hz') or a.get('sample_rate_hz') or 0) or None))
+            return {'mode': 'pulsar', 'filename': os.path.basename(path),
+                    'name': str(a.get('obs_name', '')), 'coord_system': str(a.get('coord_system', '')),
+                    'created': str(a.get('created_utc', '')),
+                    'pulsar_name': str(a.get('pulsar_name', '')),
+                    'pulsar_period_s': fnum('pulsar_period_s'), 'pulsar_dm': fnum('pulsar_dm'),
+                    'rows': int(n_rows), 'channels': int(n_ch), 'dt_ms': 1e3 * dt,
+                    'duration_s': dt * int(n_rows),
+                    'band_mhz': ([float((freq.min() - chan_w / 2) / 1e6), float((freq.max() + chan_w / 2) / 1e6)]
+                                 if chan_w else None),
+                    'channel_mhz': chan_w / 1e6 if chan_w else None,
+                    'lo_mhz': (fnum('center_freq_hz') or 0) / 1e6 or None,
+                    'sample_rate_mhz': (fnum('sample_rate_hz') or 0) / 1e6 or None,
+                    'overflows_total': int(om[:, 1].sum()) if len(om) else 0,
+                    'time_marks': int(len(marks)),
+                    'homed_first': bool(a.get('homed_first', 0)),
+                    'gain_db': fnum('gain_db'), 'sdr_type': str(a.get('sdr_type', '')), 'units': 'counts'}
         name = 'spectra_kelvin' if 'spectra_kelvin' in hf else 'spectra_linear'
         n_rec, n_ch = hf[name].shape
         freq = hf['frequency_hz'][:]
