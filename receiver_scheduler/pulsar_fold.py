@@ -72,7 +72,7 @@ B0329 = {
     "name": PULSAR_NAME, "psrj": "J0332+5434",
     "ra_deg": 15.0 * (3 + 32 / 60.0 + 59.4096 / 3600.0),
     "dec_deg": 54 + 34 / 60.0 + 43.329 / 3600.0,
-    "period_s": 0.714519699726, "pdot": 2.0496e-15, "pepoch_mjd": 46473.0,
+    "period_s": 0.714519699726, "pdot": 2.04826e-15, "pepoch_mjd": 46473.0,   # ATNF F0/F1 (hlk+04), checked 2026-09-26
     "dm": 26.7641, "s1400_mjy": 203.0, "w50_ms": 6.6,
     "note": "circumpolar from Glasgow; scintillates by factors of two or three over an hour",
 }
@@ -363,6 +363,13 @@ def analyse_file(path, pulsar=None, nbins=NBINS, search_ppm=SEARCH_PPM, block_ro
         if "overflow_marks" in hf and hf["overflow_marks"].shape[0]:
             attrs["overflows_total"] = int(np.asarray(hf["overflow_marks"][:])[:, 1].sum())
         attrs["n_time_marks"] = int(len(marks))
+        injected = attrs.get("inject_period_s") is not None
+        if pulsar is None and injected:
+            # An artificial pulsar from our own transmitter: folded at its
+            # period in the receiver's own time - no Doppler, no ephemeris.
+            pulsar = dict(B0329, name="artificial pulsar", period_s=float(attrs["inject_period_s"]),
+                          pdot=None, dm=0.0, w50_ms=1e3 * float(attrs["inject_period_s"]) * float(attrs.get("inject_duty", 0.01)),
+                          fixed_period=True)
         if pulsar is None:
             pulsar = lookup(attrs.get("pulsar_name") or attrs.get("object_name") or PULSAR_NAME)
         if pulsar is None:
@@ -374,7 +381,10 @@ def analyse_file(path, pulsar=None, nbins=NBINS, search_ppm=SEARCH_PPM, block_ro
         t0 = float(marks[0, 1] - dt * marks[0, 0]) if len(marks) else float(attrs.get("t0_unix", 0.0))
         t = row_times(n, dt, t0, marks if len(marks) else None)
         p_bary = period_at(t[0]) if pulsar.get("pdot") is not None else pulsar["period_s"]
-        phase0, p_mean = phase_track(t, p_bary, pulsar["ra_deg"], pulsar["dec_deg"])
+        if pulsar.get("fixed_period"):
+            phase0, p_mean = (t - t[0]) / p_bary, p_bary
+        else:
+            phase0, p_mean = phase_track(t, p_bary, pulsar["ra_deg"], pulsar["dec_deg"])
         bins0 = np.clip(np.floor((phase0 % 1.0) * nbins).astype(np.int32), 0, nbins - 1)
         total = np.empty(n, dtype=np.float32)
         chan_sum = np.zeros((nchan, nbins))
@@ -450,7 +460,8 @@ def analyse_file(path, pulsar=None, nbins=NBINS, search_ppm=SEARCH_PPM, block_ro
     chan_prof = np.where(chan_cnt > 0, chan_sum / np.maximum(chan_cnt, 1), 0.0)
     f_ghz = freq / 1e9
     delay_s = 4.148808e-3 * pulsar["dm"] * (1.0 / f_ghz ** 2 - 1.0 / f_ghz.max() ** 2)
-    v = observer_velocity_toward(pulsar["ra_deg"], pulsar["dec_deg"], np.array([t[0], t[-1]]))
+    v = (np.zeros(2) if pulsar.get("fixed_period")
+         else observer_velocity_toward(pulsar["ra_deg"], pulsar["dec_deg"], np.array([t[0], t[-1]])))
     r = {
         "pulsar": pulsar["name"], "period_bary_s": p_bary, "period_topo_mean_s": p_mean,
         "observer_velocity_m_s": [float(v[0]), float(v[-1])],
@@ -565,7 +576,7 @@ def plot_recording(path, out_path, pulsar=None):
     import matplotlib.pyplot as plt
     # Streamed, never the whole file in memory: see analyse_file.
     r, attrs = analyse_file(path, pulsar)
-    pulsar = lookup(r["pulsar"])
+    pulsar = lookup(r["pulsar"]) or {"dm": 0.0}
     nb = r["nbins"]
     ph = (np.arange(2 * nb) + 0.5) / nb
     prof = np.array(r["profile_best"]); prof2 = np.concatenate([prof, prof])

@@ -1845,6 +1845,40 @@ class _RowSink(gr.sync_block):
         return marks
 
 
+class _ReplicaGate(gr.sync_block):
+    """The transmit envelope of a B0329+54 replica: sqrt of a Gaussian pulse
+    (so the gated noise's POWER is the Gaussian), placed by the pulsar's own
+    topocentric phase - `pulsar_fold.phase_track`, the function the fold
+    uses, so the replica carries the Earth's orbital and rotational Doppler
+    (f, fdot and the rest) exactly as the sky would. Sample n is taken to
+    leave at t_start + n / rate; the stream's true start differs by a
+    constant, which moves the phase and nothing else."""
+
+    def __init__(self, rate, t_start, duration_s, w50_s):
+        gr.sync_block.__init__(self, name="b0329_replica_gate", in_sig=None, out_sig=[np.complex64])
+        import pulsar_fold
+        p = pulsar_fold.B0329
+        self.rate = float(rate)
+        self.n = 0
+        self.t_start = float(t_start)
+        knots = self.t_start + np.arange(0.0, float(duration_s) + 600.0, 60.0)
+        phi, self.period_s = pulsar_fold.phase_track(knots, pulsar_fold.period_at(self.t_start),
+                                                     p["ra_deg"], p["dec_deg"])
+        self.knots_rel = knots - self.t_start
+        self.phi_knots = phi
+        self.sigma_phase = float(w50_s) / 2.3548 / self.period_s
+
+    def work(self, input_items, output_items):
+        out = output_items[0]
+        k = len(out)
+        t = (self.n + np.arange(k, dtype=np.float64)) / self.rate
+        phi = np.interp(t, self.knots_rel, self.phi_knots)
+        d = phi - np.floor(phi + 0.5)                      # nearest pulse, in periods
+        out[:] = np.exp(-0.25 * (d / self.sigma_phase) ** 2).astype(np.complex64)   # sqrt of the Gaussian
+        self.n += k
+        return k
+
+
 class PulsarFlowgraph(gr.top_block):
     """One stream, NCHAN channel powers every DT_S."""
 
@@ -1912,8 +1946,75 @@ class PulsarFlowgraph(gr.top_block):
             chain = head + [self.s2v, self.fftb, self.mag, self.norm, self.summer, self.sink]
         for a, b in zip(chain[:-1], chain[1:]):
             self.connect(a, b)
+        self.inject = None
+        self._build_injection()
         print("  %d channels of %.3f MHz, %d transforms per row, rows of %.4f ms"
               % (n, self.sample_rate / n / 1e6, self.presum, 1e3 * self.dt_s), flush=True)
+
+    def _build_injection(self):
+        """An artificial pulsar (H1_PULSAR_INJECT): broadband noise bursts
+        from the B210's own transmitter, through the pilot's pads and the
+        vertex dipole, at a period that is a whole number of samples.
+
+        It tests everything a sky run depends on except pointing and the
+        pulsar: the transmitter and receiver share one clock, so the pulse
+        train arrives at exactly `period_samples / sample_rate` in the
+        receiver's own time, and folding the recording at that period must
+        recover it - at the phase it was put in, with the S/N the radiometer
+        equation gives for the fraction injected. The pulse is gated noise,
+        not a tone, so it looks to the receiver like a pulsar does: a
+        broadband rise in power for `duty` of every period.
+
+        Configured by JSON: period_s, duty, amplitude (of the noise, before
+        the TX gain), tx_gain_db. Enabling the transmitter at all lowers the
+        receiver's sensitivity by 8.4% (pilot, 2026-09-22); irrelevant here.
+        """
+        raw = os.environ.get('H1_PULSAR_INJECT', '').strip()
+        if not raw or self.sdr_type != 'b210':
+            return
+        cfg = json.loads(raw)
+        rate = self.sample_rate
+        from gnuradio import uhd
+        amplitude = float(cfg.get('amplitude', 0.1))
+        tx_gain = float(cfg.get('tx_gain_db', 40.0))
+        self.inj_noise = analog.noise_source_c(analog.GR_GAUSSIAN, amplitude, 12345)
+        if cfg.get('replica'):
+            # B0329+54 itself: a Gaussian pulse of its W50 at its topocentric
+            # phase, so the fold sees what the sky would send
+            import pulsar_fold
+            w50 = float(cfg.get('w50_ms', pulsar_fold.B0329['w50_ms'])) / 1e3
+            self.inj_gate = _ReplicaGate(rate, time.time(), float(cfg.get('duration_s', 7200.0)), w50)
+            self.inject = {'replica': 'B0329+54', 'w50_ms': 1e3 * w50, 'amplitude': amplitude,
+                           'tx_gain_db': tx_gain}
+            desc = "B0329+54 replica, W50 %.2f ms at the topocentric phase" % (1e3 * w50)
+        else:
+            n_period = int(round(float(cfg.get('period_s', 0.6)) * rate))
+            n_on = max(1, int(round(float(cfg.get('duty', 0.01)) * n_period)))
+            gate = np.zeros(n_period, dtype=np.complex64)
+            gate[:n_on] = 1.0
+            self.inj_gate = blocks.vector_source_c(gate.tolist(), True)
+            self.inject = {'period_s': n_period / rate, 'period_samples': n_period, 'duty': n_on / n_period,
+                           'amplitude': amplitude, 'tx_gain_db': tx_gain}
+            desc = "noise bursts every %d samples (%.9f s), duty %.4f" % (n_period, n_period / rate, n_on / n_period)
+        self.inj_mult = blocks.multiply_cc()
+        self.inj_sink = uhd.usrp_sink(",".join(("type=b200", "")),
+                                      uhd.stream_args(cpu_format="fc32", args="", channels=[0]))
+        self.inj_sink.set_samp_rate(rate)
+        self.inj_sink.set_center_freq(self.center_freq, 0)
+        self.inj_sink.set_gain(tx_gain, 0)
+        self.inj_sink.set_antenna("TX/RX", 0)
+        # A TX underflow slips the whole train (by 29-61 ms each, measured
+        # 2026-09-26) and the Python replica gate can miss a deadline when
+        # the recorder holds the GIL, so give the chain about a second of
+        # samples in hand. The phase is set by the sample count, so the
+        # added latency moves nothing.
+        buf = int(min(1 << 22, rate))
+        for blk in (self.inj_noise, self.inj_gate, self.inj_mult):
+            blk.set_min_output_buffer(buf)
+        self.connect(self.inj_noise, (self.inj_mult, 0))
+        self.connect(self.inj_gate, (self.inj_mult, 1))
+        self.connect(self.inj_mult, self.inj_sink)
+        print("  ARTIFICIAL PULSAR: %s, amplitude %.4g, TX gain %.1f dB" % (desc, amplitude, tx_gain), flush=True)
 
     def freq_axis(self):
         if self.nchan == 1:
@@ -1938,7 +2039,7 @@ def _embed_obs_metadata(hf):
 
 
 def init_pulsar_hdf5(filename, freq_axis_hz, dt_s, sdr_type, center_freq, sample_rate,
-                     gain, instrument, t0_unix):
+                     gain, instrument, t0_unix, inject=None):
     """A pulsar-mode file: `power` rows (N x nchan, float32) at `dt_s` from
     `t0_unix`, the channel axis, and `overflow_marks` (row index, count) for
     every batch of UHD overflows. Everything is created before SWMR is
@@ -1953,6 +2054,7 @@ def init_pulsar_hdf5(filename, freq_axis_hz, dt_s, sdr_type, center_freq, sample
     # (row index, device time in unix seconds) at the start and after every
     # overflow, from gr-uhd's rx_time tags: the fold's time axis.
     hf.create_dataset('time_marks', shape=(0, 2), maxshape=(None, 2), dtype='f8', chunks=(64, 2))
+    hf.create_dataset('underflow_marks', shape=(0, 2), maxshape=(None, 2), dtype='i8', chunks=(64, 2))
     hf.attrs['mode'] = 'pulsar'
     hf.attrs['observation_mode'] = observation_files.PULSAR_MODE
     hf.attrs['dt_s'] = float(dt_s)
@@ -1969,6 +2071,12 @@ def init_pulsar_hdf5(filename, freq_axis_hz, dt_s, sdr_type, center_freq, sample
     hf.attrs['site_lon_deg'] = float(_inst.SITE_LON_DEG)
     hf.attrs['site_height_m'] = float(_inst.SITE_HEIGHT_M)
     _embed_obs_metadata(hf)
+    if inject:
+        # An artificial pulsar: the fold is at this period, in the receiver's
+        # own time, with no Doppler - transmitter and receiver share a clock.
+        for key, val in inject.items():
+            hf.attrs['inject_' + key] = val
+        hf.attrs['obs_name'] = str(hf.attrs.get('obs_name', '') or 'artificial pulsar')
     hf.flush()
     hf.swmr_mode = True
     return hf
@@ -1988,11 +2096,29 @@ class PulsarRecorder:
                 instrument = fixed_instrument(json.loads(os.environ.get('H1_INSTRUMENT') or '{}'))
             except ValueError:
                 instrument = fixed_instrument()
+        # H1_PULSAR_RATE: a lower sample rate for pulsar mode alone. The
+        # artificial pulsar runs the transmitter beside the receiver, doubling
+        # the USB traffic, and a TX underflow slips the injected train against
+        # the receiver's clock; at 4 Msps the pilot ran with zero underruns and
+        # zero overflows (2026-09-23). The pulsar's S/N scales as sqrt(rate).
+        rate = os.environ.get('H1_PULSAR_RATE')
+        if rate:
+            instrument = dict(instrument, sample_rate_hz=float(rate))
+        # H1_PULSAR_LO: pulsar mode does not need the H I line, so the band
+        # can sit on the flat middle of the SAWbird (centred 1408 MHz) and
+        # inside the 1400-1427 MHz allocation instead of on the filter's slope
+        lo = os.environ.get('H1_PULSAR_LO')
+        if lo:
+            instrument = dict(instrument, lo_hz=float(lo))
         self.instrument = instrument
         self.output_file = output_file or OUTPUT_FILE
         self.nchan = int(nchan or os.environ.get('H1_PULSAR_NCHAN') or pulsar_fold.NCHAN)
         self.dt_s = float(dt_s or os.environ.get('H1_PULSAR_DT_S') or pulsar_fold.DT_S)
-        print("  " + describe_instrument(instrument))
+        # not describe_instrument: that validates the H I sub-band plan, which
+        # pulsar mode does not use and a lowered rate cannot hold
+        print("  pulsar mode: LO %.6f MHz, %.3f Msps, gain %.1f dB"
+              % (float(instrument["lo_hz"]) / 1e6, float(instrument["sample_rate_hz"]) / 1e6,
+                 float(instrument["gain_db"])))
         self.flowgraph = PulsarFlowgraph(sdr_type, instrument, self.nchan, self.dt_s)
         self.sdr_type = self.flowgraph.sdr_type
         self.hf = None
@@ -2000,6 +2126,7 @@ class PulsarRecorder:
         self._stop = threading.Event()
         self.overflows = _OverflowCounter()
         self.overflow_total = 0
+        self.underflow_total = 0
         self.time_marks = 0
 
     def request_stop(self, *_args):
@@ -2022,6 +2149,18 @@ class PulsarRecorder:
         ds[k, :] = (self.rows, n)
         self.overflow_total += n
 
+    def _mark_underflows(self, n):
+        """Transmit underflows: for an artificial pulsar each one slips the
+        pulse train against the receiver's clock, so it is recorded where it
+        happened, like an overflow."""
+        if not n:
+            return
+        ds = self.hf['underflow_marks']
+        k = ds.shape[0]
+        ds.resize(k + 1, axis=0)
+        ds[k, :] = (self.rows, n)
+        self.underflow_total += n
+
     def _write_time_marks(self, marks):
         if not marks:
             return
@@ -2038,7 +2177,7 @@ class PulsarRecorder:
         t0 = time.time()
         self.hf = init_pulsar_hdf5(self.output_file, self.flowgraph.freq_axis(), self.flowgraph.dt_s,
                                    self.sdr_type, self.flowgraph.center_freq, self.flowgraph.sample_rate,
-                                   self.flowgraph.gain, self.instrument, t0)
+                                   self.flowgraph.gain, self.instrument, t0, inject=self.flowgraph.inject)
         print(f"  {self.sdr_type}, {self.flowgraph.sample_rate/1e6:.3f} Msps, LO "
               f"{self.flowgraph.center_freq/1e6:.6f} MHz, gain {self.flowgraph.gain}, "
               f"{self.nchan} channels every {1e3*self.flowgraph.dt_s:.3f} ms", flush=True)
@@ -2049,15 +2188,18 @@ class PulsarRecorder:
                 self._append(self.flowgraph.sink.take())
                 self._write_time_marks(self.flowgraph.sink.take_marks())
                 self._mark_overflows(self.overflows.take())
+                self._mark_underflows(self.overflows.take_underflows())
                 now = time.time()
                 if now - last_flush >= self.FLUSH_S:
                     self.hf.flush()
                     last_flush = now
                 if now - last_report >= 60.0:
                     expected = (now - t0) / self.flowgraph.dt_s
-                    print("  %d rows in %.0f s (%.2f%% of the clock's count), %d overflows, %d time marks"
+                    print("  %d rows in %.0f s (%.2f%% of the clock's count), %d overflows, %d time marks%s"
                           % (self.rows, now - t0, 100.0 * self.rows / max(expected, 1.0),
-                             self.overflow_total, self.time_marks), flush=True)
+                             self.overflow_total, self.time_marks,
+                             (", %d TX underflows" % self.underflow_total) if self.flowgraph.inject else ""),
+                          flush=True)
                     last_report = now
         finally:
             self.flowgraph.stop()

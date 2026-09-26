@@ -186,3 +186,25 @@ def test_a_one_channel_recording_folds_and_exports(tmp_path):
     h, hlen = SE.read_header(out)
     assert h["nchans"] == 1 and h["foff"] == pytest.approx(-8.0) and h["fch1"] == pytest.approx(1418.9)
     assert PF.plot_recording(path, str(tmp_path / "one.png"))["nchan"] == 1
+
+
+def test_an_artificial_pulsar_is_folded_at_its_own_period(tmp_path):
+    """A recording with inject_period_s is our transmitter's pulse train:
+    folded at that period in the receiver's own time, with no Doppler."""
+    dt, P, n = 1e-3, 0.6, 300_000
+    t0 = 1790400000.0
+    phase = np.arange(n) * dt / P
+    rng = np.random.default_rng(9)
+    pulse = np.where((phase % 1.0) < 0.01, 0.02, 0.0)            # 1% duty, 2% of T_sys
+    power = (1.0 + pulse + 0.011 * rng.standard_normal(n)).astype(np.float32)[:, None]
+    path = str(tmp_path / "inj_pulsar.h5")
+    with h5py.File(path, "w") as hf:
+        hf.create_dataset("frequency_hz", data=np.array([1418.9e6]))
+        hf.create_dataset("power", data=power, chunks=(1024, 1))
+        hf.create_dataset("time_marks", data=np.array([[0, t0]]))
+        hf.attrs["dt_s"] = dt; hf.attrs["t0_unix"] = t0
+        hf.attrs["inject_period_s"] = P; hf.attrs["inject_duty"] = 0.01
+    r, attrs = PF.analyse_file(path, block_rows=100_000, search_ppm=20.0)
+    assert r["pulsar"] == "artificial pulsar" and r["period_topo_mean_s"] == P
+    assert r["snr_matched"] > 20 and r["observer_velocity_m_s"] == [0.0, 0.0]
+    assert r["peak_bin_predicted"] == 0                          # the gate opens at phase 0

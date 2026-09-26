@@ -142,6 +142,15 @@ _DEFAULT_CONFIG = {
     # The pilot (issue #30): the B210's TX as the gain and passband
     # reference, part of the instrument. Unset means pilot.PILOT_DEFAULTS.
     "receiver_pilot_enabled": None,
+    # Pulsar mode's own band (b210_h1_receiver H1_PULSAR_RATE/H1_PULSAR_LO).
+    # It needs no H I line. Measured 2026-09-26 with 64 channels stowed: the
+    # chain is flat to 2 dB over 1397.5-1428 MHz and every 0.5 MHz channel is
+    # radiometric, so one summed channel at 32 Msps is 28 MHz effective -
+    # 1.9x the S/N of the fixed instrument's 8 MHz. It overflows about once
+    # in five minutes on an idle host (each re-timed from the radio's time
+    # marks); 16 Msps at 1410 MHz (14.7 MHz effective) ran clean.
+    "pulsar_sample_rate_hz": 32e6,
+    "pulsar_lo_hz": 1413e6,
     "receiver_pilot_burst_interval_s": None,
     "receiver_pilot_max_duty_cycle": None,
     "receiver_pilot_burst_amplitude": None,
@@ -2370,6 +2379,10 @@ def start_observation(obs: dict, duration_override: int = None) -> bool:
                 log.error("Pulsar mode folds B0329+54 only, not '%s'", obs.get('object_name', ''))
                 return False
             env['H1_MODE'] = 'pulsar'
+            for key, var in (('pulsar_sample_rate_hz', 'H1_PULSAR_RATE'), ('pulsar_lo_hz', 'H1_PULSAR_LO')):
+                val = get_config_value(key)
+                if val not in (None, ''):
+                    env[var] = str(float(val))
             pulsar_meta = {'pulsar_name': psr['name'], 'pulsar_period_s': psr['period_s'],
                            'pulsar_pdot': psr['pdot'], 'pulsar_pepoch_mjd': psr['pepoch_mjd'],
                            'pulsar_dm': psr['dm'], 'pulsar_ra_deg': psr['ra_deg'],
