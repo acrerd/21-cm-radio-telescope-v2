@@ -2389,6 +2389,9 @@ def start_observation(obs: dict, duration_override: int = None) -> bool:
                            'pulsar_dec_deg': psr['dec_deg'], 'pulsar_s1400_mjy': psr['s1400_mjy']}
         env['H1_OBS_METADATA'] = json.dumps({
             'obs_name': obs.get('name', ''),
+            # So the recordings list can file a Sun monitor run apart from a
+            # booked Sun observation without trusting the name.
+            'sun_monitor': bool(obs.get('sun_monitor')),
             # Free text from the schedule form. Lands as the `comment`
             # attribute - the receiver skips empty strings, so a recording
             # without one simply has no such attribute.
@@ -4933,6 +4936,26 @@ def api_sun_position():
                     "up": bool(alt > 0.0), "horizon_warning": warning})
 
 
+def recording_category(row, attrs) -> str:
+    """Which filter a recording is listed under on the Observe tab: 'pulsar',
+    'sun_monitor', 'solar' (a booked Sun track), 'drift', 'manual' or
+    'spectrum'. A Sun monitor run is told apart by its `sun_monitor`
+    attribute (written since 2026-09-27) or, before that, by the name the
+    scheduler always gives it - they are routine and outnumber everything."""
+    if row.get('plot') == 'pulsar':
+        return 'pulsar'
+    monitor = attrs.get('sun_monitor')
+    if (bool(monitor) if monitor is not None else str(attrs.get('obs_name', '')) == 'Sun monitor'):
+        return 'sun_monitor'
+    if row.get('plot') == 'solar':
+        return 'solar'
+    if row.get('plot') == 'drift':
+        return 'drift'
+    if row.get('mode') == 'manual':
+        return 'manual'
+    return 'spectrum'
+
+
 def plot_mode_for(obs, observation_mode) -> str:
     """Which plot a *recording* of this observation gets: 'solar', 'drift' or
     'spectrum'.
@@ -5559,6 +5582,12 @@ def api_observations():
             mode = a.get('observation_mode')
             row['mode'] = str(mode) if mode is not None else \
                 observation_files.observation_mode(row)
+            # How Plot Result will draw it - the same rule, so the page can
+            # offer only the buttons that apply (the dB scale is honoured by
+            # the solar and drift plots alone).
+            row['plot'] = plot_mode_for({'coord_system': row['coord_system'],
+                                         'object_name': str(a.get('object_name', ''))}, row['mode'])
+            row['category'] = recording_category(row, a)
         except (OSError, BlockingIOError, RuntimeError):
             # Being written by a receiver from before SWMR: not readable yet.
             row.update(name='', comment='', coord_system='', created='',
@@ -5572,6 +5601,14 @@ def api_observations():
         last = (os.path.basename(last_observation['output_file'])
                 if last_observation and last_observation.get('output_file') else None)
     return jsonify({'success': True, 'observations': rows, 'last': last})
+
+
+# One plot at a time. matplotlib's pyplot is not safe across request threads,
+# and two plots share last_observation.png - and, for a pulsar recording, the
+# .tim file and the profile cache. On 2026-09-27 two clicks of Plot Result ran
+# two 16 h pulsar plots at once, and a restart during them hung the old
+# process with its port closed. A second click now waits for the first.
+observe_plot_lock = threading.Lock()
 
 
 @app.route('/api/observe/plot', methods=['GET'])
@@ -5600,12 +5637,13 @@ def api_observe_plot():
     out = os.path.join(_SCRIPT_DIR, 'data', 'last_observation.png')
     os.makedirs(os.path.dirname(out), exist_ok=True)
     try:
-        observation_plot.plot_observation(
-            info['output_file'], out, name=info.get('name', ''),
-            mode=info.get('mode', 'spectrum'),
-            transit_minutes=info.get('transit_minutes'),
-            # ?log=1: a total-power panel on a log axis, for sidelobes.
-            log_y=request.args.get('log') in ('1', 'true', 'yes'))
+        with observe_plot_lock:
+            observation_plot.plot_observation(
+                info['output_file'], out, name=info.get('name', ''),
+                mode=info.get('mode', 'spectrum'),
+                transit_minutes=info.get('transit_minutes'),
+                # ?log=1: a total-power panel on a log axis, for sidelobes.
+                log_y=request.args.get('log') in ('1', 'true', 'yes'))
     except FileNotFoundError as exc:
         return jsonify({'success': False, 'error': str(exc)}), 404
     except (RuntimeError, ValueError) as exc:
@@ -5639,7 +5677,8 @@ def api_observe_presto():
         return jsonify({'success': False, 'error': 'PRESTO is not installed (%s)' % pulsar_fold.PRESTO_BIN}), 500
     out_dir = os.path.join(_SCRIPT_DIR, 'data', 'presto')
     try:
-        png, summary = pulsar_fold.presto_fold(info['output_file'], out_dir)
+        with observe_plot_lock:                           # PRESTO writes the same .fil a plot may be reading
+            png, summary = pulsar_fold.presto_fold(info['output_file'], out_dir)
     except Exception as exc:                              # noqa: BLE001
         log.error("PRESTO fold of %s failed: %s", chosen, exc)
         return jsonify({'success': False, 'error': str(exc)}), 500

@@ -51,7 +51,7 @@ NCHAN = 1               # the whole band summed (2026-09-26; 16 bought nothing o
 DT_S = 1.0e-3           # one row per millisecond
 NBINS = 64              # phase bins in the folded profile
 SEARCH_PPM = 150.0      # +-fractional period searched around the prediction, ppm
-SUBINT_S = 120.0        # sub-integration length for the time-phase panel
+SUBINT_S = 600.0        # sub-integration length for the time-phase panel (10 min, 2026-09-27)
 DETREND_S = 10.0        # running-median window for each channel's gain drift
 
 # The one pulsar this dish can fold in an evening, as a par block. Everything
@@ -206,13 +206,20 @@ def phase_track(t_unix, period_bary_s, ra_deg, dec_deg, knot_s=60.0):
 # the recording
 
 
+ROW_CENTRE = 0.5        # a row's time is its middle: mark + (i + 0.5) dt (2026-09-27, #48)
+
+
 def row_times(n_rows, dt_s, t0_unix, time_marks=None):
-    """The time of each row. With the radio's `time_marks` - (row, device
-    time) at the start and after every overflow - each stretch between marks
-    is timed from its own mark and the row count, so a dropped block moves
-    the rows after it by exactly what was dropped rather than not at all.
-    Without marks (a demo recording, an old file) the rows are t0 + i dt."""
-    i = np.arange(n_rows, dtype=float)
+    """The time of each row's MIDDLE. With the radio's `time_marks` - (row,
+    device time of that row's first sample) at the start and after every
+    overflow - each stretch between marks is timed from its own mark and the
+    row count, so a dropped block moves the rows after it by exactly what was
+    dropped rather than not at all. Without marks (a demo recording, an old
+    file) the rows start at t0 + i dt. Mid-row, not start: a row is the sum
+    of dt of samples, so its centroid is half a row after its first sample,
+    and a TOA stamped at the start would be 0.5 ms early (constant, but
+    wrong)."""
+    i = np.arange(n_rows, dtype=float) + ROW_CENTRE
     marks = np.asarray(time_marks, float).reshape(-1, 2) if time_marks is not None else np.empty((0, 2))
     marks = marks[np.argsort(marks[:, 0])] if len(marks) else marks
     if not len(marks):
@@ -410,10 +417,12 @@ SUB_S = 60.0            # sub-profile length the period search shifts
 
 def _block_times(lo, hi, dt, t0, marks):
     """row_times for rows lo..hi alone, so no whole-run array is built."""
-    i = np.arange(lo, hi, dtype=float)
+    j = np.arange(lo, hi, dtype=float)
+    i = j + ROW_CENTRE                                  # row middles, as row_times
     if not len(marks):
         return t0 + dt * i
-    k = np.clip(np.searchsorted(marks[:, 0], i, side="right") - 1, 0, len(marks) - 1)
+    # which mark: by the row's first sample, as row_times' ceil rule
+    k = np.clip(np.searchsorted(marks[:, 0], j + 1e-9, side="right") - 1, 0, len(marks) - 1)
     return marks[k, 1] + dt * (i - marks[k, 0])
 
 
@@ -431,7 +440,7 @@ def _matched_from_profile(prof, width_s, period_s):
     return float((sm[k] - base) / sig), (k + 0.5) / nb
 
 
-def analyse_file(path, pulsar=None, nbins=NBINS, search_ppm=SEARCH_PPM, block_rows=BLOCK_ROWS):
+def analyse_file(path, pulsar=None, nbins=NBINS, search_ppm=SEARCH_PPM, block_rows=BLOCK_ROWS, toa_bins=None):
     """`analyse` for a recording on disk, in one pass and bounded memory.
 
     Nothing the length of the run is kept. The first version held the row
@@ -498,6 +507,9 @@ def analyse_file(path, pulsar=None, nbins=NBINS, search_ppm=SEARCH_PPM, block_ro
         per = max(1, int(round(STREAM_DETREND_S / dt)))
         wper = max(1, int(round(WEIGHT_S / dt)))
         n_clipped = 0
+        if toa_bins:
+            # a finer fold for timing (pulsar_toa), in the same 60 s pieces
+            S1 = np.zeros((nsub, int(toa_bins))); C1 = np.zeros((nsub, int(toa_bins)))
         for i in range(0, n, block_rows):
             x = np.asarray(ds[i:min(n, i + block_rows)], dtype=np.float64)
             m = len(x)
@@ -538,6 +550,11 @@ def analyse_file(path, pulsar=None, nbins=NBINS, search_ppm=SEARCH_PPM, block_ro
             C += np.bincount(sub * fb + fbin, weights=w, minlength=nsub * fb).reshape(nsub, fb)
             phi_sum += np.bincount(sub, weights=phase, minlength=nsub)
             phi_n += np.bincount(sub, minlength=nsub)
+            if toa_bins:
+                tb = int(toa_bins)
+                tbin = np.clip(np.floor((phase % 1.0) * tb).astype(np.int64), 0, tb - 1)
+                S1 += np.bincount(sub * tb + tbin, weights=w * y, minlength=nsub * tb).reshape(nsub, tb)
+                C1 += np.bincount(sub * tb + tbin, weights=w, minlength=nsub * tb).reshape(nsub, tb)
     group = fb // nbins
     s_all = S.sum(axis=0); c_all = C.sum(axis=0)
     fine = np.where(c_all > 0, s_all / np.maximum(c_all, 1e-300), 0.0)
@@ -573,12 +590,17 @@ def analyse_file(path, pulsar=None, nbins=NBINS, search_ppm=SEARCH_PPM, block_ro
     snr_best = profile_snr(prof_best)
     per_sub = max(1, int(round(SUBINT_S / SUB_S)))
     ns2 = nsub // per_sub
-    if ns2:
-        s2 = rs[:ns2 * per_sub].reshape(ns2, per_sub, nbins, group).sum(axis=(1, 3))
-        c2 = rc[:ns2 * per_sub].reshape(ns2, per_sub, nbins, group).sum(axis=(1, 3))
-        subints = np.where(c2 > 0, s2 / np.maximum(c2, 1e-300), 0.0)
-    else:
-        subints = prof_best[None, :]
+
+    def _subints(SS, CC, fallback):
+        if not ns2:
+            return fallback[None, :]
+        s2 = SS[:ns2 * per_sub].reshape(ns2, per_sub, nbins, group).sum(axis=(1, 3))
+        c2 = CC[:ns2 * per_sub].reshape(ns2, per_sub, nbins, group).sum(axis=(1, 3))
+        return np.where(c2 > 0, s2 / np.maximum(c2, 1e-300), 0.0)
+
+    subints = _subints(rs, rc, prof_best)
+    # at the predicted period and the absolute phase - what the plot draws
+    subints_predicted = _subints(S, C, prof0)
     chan_prof = np.where(chan_cnt > 0, chan_sum / np.maximum(chan_cnt, 1), 0.0)
     f_ghz = freq / 1e9
     delay_s = 4.148808e-3 * pulsar["dm"] * (1.0 / f_ghz ** 2 - 1.0 / f_ghz.max() ** 2)
@@ -596,8 +618,15 @@ def analyse_file(path, pulsar=None, nbins=NBINS, search_ppm=SEARCH_PPM, block_ro
         "search_snr": snrs.tolist(), "search_trial_ppm": trials.tolist(),
         "channel_profiles": chan_prof.tolist(), "channel_freq_hz": freq.tolist(),
         "dm_delay_s": delay_s.tolist(), "subints": subints.tolist(), "subint_s": per_sub * SUB_S,
+        "subints_predicted": subints_predicted.tolist(),
         "duty_expected": None,
     }
+    if toa_bins:
+        # numpy, not lists: for pulsar_toa only, never serialised to the page
+        r["toa"] = {"S": S1, "C": C1, "sub_t0": t_first + SUB_S * np.arange(nsub), "sub_s": SUB_S,
+                    "knots": knots, "phi_k": phi_k, "p_mean": p_mean, "freq_hz": float(np.mean(freq)),
+                    "bw_hz": float(attrs.get("sample_rate_hz") or attrs.get("channel_width_hz", 0.0) * nchan),
+                    "dt_s": dt, "t_first": t_first, "t_last": t_last}
     return r, attrs
 
 
@@ -635,10 +664,25 @@ def run_topocentric_period(path):
     dt = float(a.get("dt_s", DT_S))
     t0 = float(marks[0, 1] - dt * marks[0, 0]) if len(marks) else float(a.get("t0_unix", 0.0))
     t = np.linspace(t0, t0 + n * dt, 400)
-    phase, p_topo = phase_track(t, period_at(t0), B0329["ra_deg"], B0329["dec_deg"])
-    c = np.polyfit(t - t0, phase, 3)            # phase = c0 x^3 + c1 x^2 + c2 x + c3
+    # the same phase model as our own fold (absolute_phase, at the recording's
+    # frequency), so the two folds cannot disagree about the pulsar
+    phase, p_topo = absolute_phase(t, B0329, float(a.get("center_freq_hz") or 1413e6))
+    c = np.polyfit(t - t0, phase - phase[0], 3)  # phase = c0 x^3 + c1 x^2 + c2 x + c3
     f, fd, fdd = c[2], 2 * c[1], 6 * c[0]
     return p_topo, t0, n * dt, (float(f), float(fd), float(fdd))
+
+
+def presto_phase_offset(path):
+    """The absolute phase at the .fil's first sample: prepfold counts phase
+    from there, so -phs with this puts its pulse where ours is, at 0.5."""
+    import observation_plot
+    with observation_plot.open_readonly(path) as hf:
+        a = dict(hf.attrs)
+        marks = np.asarray(hf["time_marks"][:], float) if "time_marks" in hf else np.empty((0, 2))
+    dt = float(a.get("dt_s", DT_S))
+    t0 = float(marks[0, 1] - dt * marks[0, 0]) if len(marks) else float(a.get("t0_unix", 0.0))
+    ph, _ = absolute_phase(np.array([t0, t0 + 60.0]), B0329, float(a.get("center_freq_hz") or 1413e6))
+    return float(ph[0] % 1.0)
 
 
 def _nchan(path):
@@ -664,8 +708,9 @@ def presto_fold(path, out_dir, timeout_s=1800):
     for old in glob.glob(os.path.join(out_dir, stem + "_prepfold*")):
         os.remove(old)
     # -f/-fd/-fdd at the first sample, not a single period: see run_topocentric_period.
+    phs = presto_phase_offset(path)
     cmd = ["nice", "-n", "19", prepfold_path(), "-topo",
-           "-f", "%.15f" % f, "-fd", "%.6e" % fd, "-fdd", "%.6e" % fdd,
+           "-f", "%.15f" % f, "-fd", "%.6e" % fd, "-fdd", "%.6e" % fdd, "-phs", "%.6f" % phs,
            "-dm", "%.4f" % B0329["dm"], "-n", "64", "-nsub", str(min(16, _nchan(path))),
            "-nosearch", "-scaleparts", "-noxwin", "-o", stem + "_prepfold", os.path.basename(fil)]
     env = dict(os.environ, PATH=PRESTO_BIN + os.pathsep + os.environ.get("PATH", ""))  # ghostscript for the .png
@@ -690,64 +735,169 @@ def presto_fold(path, out_dir, timeout_s=1800):
 
 
 def plot_recording(path, out_path, pulsar=None):
-    """Reduce a pulsar-mode recording and draw it: the folded profile, the
-    period search, the sub-integrations and the per-channel profiles with the
-    dispersion delay the DM predicts. Returns the analysis dict."""
+    """Reduce a pulsar-mode recording and draw it.
+
+    Left, this run: its profile at the predicted period and the absolute
+    phase (two periods, the pulse at 0.5), and below it the sub-integrations
+    on exactly the same phase axis, bin for bin, so a drifting or jumping
+    pulse shows as a slanted or broken line under the profile. Right, every
+    run so far: the profile of all pulsar recordings added at the absolute
+    phase with the EPN template fitted over it, and the timing residuals of
+    the whole-run TOAs with the fitted (or held) P and Pdot.
+
+    One fold serves all of it (analyse_file with the 1024-bin timing fold);
+    for a recording in the observations folder it also writes this run's
+    TOAs to the .tim file and caches its profile for the stack. A file
+    anywhere else - a test's - gets the left panels only.
+    """
     import plot_backend
     plot_backend.use_headless()
     import matplotlib.pyplot as plt
-    # Streamed, never the whole file in memory: see analyse_file.
-    r, attrs = analyse_file(path, pulsar)
-    pulsar = lookup(r["pulsar"]) or {"dm": 0.0}
+    import pulsar_toa as T
+    r, attrs = analyse_file(path, pulsar, toa_bins=T.TOA_BINS)
+    timing = T.in_observations(path)
+    acc = fitres = None
+    if timing:
+        try:
+            toas = [t for t in T.toas_for_recording(path, segments=4, analysis=(r, attrs))
+                    if t["snr"] >= T.MIN_TOA_SNR]
+            if toas:
+                T.write_tim(toas)
+            T.cache_profile(path, r["toa"])
+            acc = T.accumulated_profile(fold_missing=True)
+            fitres = T.timing_fit()
+        except Exception as exc:                          # noqa: BLE001 - the plot still draws
+            fitres = {"error": str(exc)}
+    toa = r.pop("toa")
     nb = r["nbins"]
-    ph = (np.arange(2 * nb) + 0.5) / nb
-    prof = np.array(r["profile_best"]); prof2 = np.concatenate([prof, prof])
-    fig, ax = plt.subplots(2, 2, figsize=(16, 9))
-    a = ax[0][0]
-    a.step(ph, 100 * prof2, where="mid", color="C0", label="folded at the best period")
-    p0 = np.array(r["profile_predicted"]); a.step(ph, 100 * np.concatenate([p0, p0]), where="mid",
-                                                  color="C1", lw=0.8, alpha=0.7, label="at the predicted period")
-    a.set_xlabel("pulse phase (two periods)"); a.set_ylabel("excess over the running median (%)")
-    a.set_title("%s: matched S/N %.1f at the predicted period (peak bin %.1f; best searched %.1f), %.0f min, %d periods, %d channels" % (
-        r["pulsar"], r["snr_matched"], r["snr_predicted"], r["snr_best"], r["duration_s"] / 60, r["n_periods"], r["nchan"]), fontsize=10)
-    a.legend(fontsize=8); a.grid(alpha=0.3)
-    a = ax[0][1]
-    a.plot(r["search_trial_ppm"], r["search_snr"], "-", lw=1)
-    a.axvline(r["best_ppm"], color="C3", lw=0.8, ls="--", label="best %+.1f ppm" % r["best_ppm"])
-    a.axvline(0, color="k", lw=0.5)
-    a.set_xlabel("fractional period offset from the topocentric prediction (ppm)"); a.set_ylabel("S/N")
-    a.set_title("period search: barycentric %.9f s, topocentric mean %.9f s (v toward %.2f..%.2f km/s)" % (
-        r["period_bary_s"], r["period_topo_mean_s"], r["observer_velocity_m_s"][0] / 1e3, r["observer_velocity_m_s"][1] / 1e3),
-        fontsize=9)
-    a.legend(fontsize=8); a.grid(alpha=0.3)
-    a = ax[1][0]
-    sub = np.array(r["subints"])
+    edges = np.linspace(0.0, 2.0, 2 * nb + 1)
+
+    fig = plt.figure(figsize=(16, 10))
+    gs = fig.add_gridspec(2, 2, height_ratios=[1, 1.15], hspace=0.28, wspace=0.18)
+    a0 = fig.add_subplot(gs[0, 0])
+    a1 = fig.add_subplot(gs[1, 0], sharex=a0)
+
+    # this run's profile: predicted (the number that counts) in blue
+    # Baseline at zero - the off-pulse median, |phase - 0.5| > 0.1 - so the
+    # axis is the pulse's own excess; baseline=None below so matplotlib does
+    # not pin the axis at zero and cut off the noise that dips below it.
+    ph64 = (np.arange(nb) + 0.5) / nb
+    off64 = np.abs(ph64 - 0.5) > 0.1
+    p0 = 100 * np.array(r["profile_predicted"]); pb = 100 * np.array(r["profile_best"])
+    p0 = p0 - np.median(p0[off64]); pb = pb - np.median(pb[off64])
+    # One SNR, the matched one at the predicted period (in the title): the
+    # peak-bin figure differs by the bin's share of the pulse and only confused.
+    a0.stairs(np.concatenate([pb, pb]), edges, color="C1", lw=0.8, alpha=0.8, baseline=None,
+              label="best searched period (%+.1f ppm)" % r["best_ppm"])
+    a0.stairs(np.concatenate([p0, p0]), edges, color="C0", lw=1.6, baseline=None, label="predicted period")
+    a0.axhline(0, color="k", lw=0.5)
+    a0.set_ylabel("excess over the off-pulse level (%)")
+    a0.set_title("this run: matched SNR %.1f at the predicted period, %.0f min, %d periods"
+                 % (r["snr_matched"], r["duration_s"] / 60, r["n_periods"]), fontsize=10)
+    a0.legend(fontsize=8, loc="upper center"); a0.grid(alpha=0.3)
+    plt.setp(a0.get_xticklabels(), visible=False)
+
+    # the sub-integrations on the same axis, two periods, pixel edges on the bin edges
+    sub = 100 * np.array(r["subints_predicted"])
     if sub.size:
-        a.imshow(100 * sub, aspect="auto", origin="lower", extent=[0, 1, 0, sub.shape[0] * r["subint_s"] / 60],
-                 cmap="viridis", interpolation="nearest")
-    a.set_xlabel("pulse phase"); a.set_ylabel("time (min)"); a.set_title("sub-integrations of %.0f s" % r["subint_s"])
-    a = ax[1][1]
-    cp = np.array(r["channel_profiles"]); f = np.array(r["channel_freq_hz"]) / 1e6
-    if cp.size and cp.shape[0] == 1:
-        a.step(np.arange(nb) / nb, 100 * cp[0], where="post")
-        a.set_xlabel("pulse phase"); a.set_ylabel("excess (%)")
-        a.set_title("single band-summed channel", fontsize=9)
-    elif cp.size:
-        a.imshow(100 * cp, aspect="auto", origin="lower", extent=[0, 1, f.min(), f.max()],
-                 cmap="viridis", interpolation="nearest")
-        # where the DM says each channel's peak should sit, relative to the summed peak
-        pk = (r["peak_bin_best"] + 0.5) / nb
-        d = np.array(r["dm_delay_s"]) / r["period_topo_mean_s"]
-        a.plot((pk + d - np.mean(d)) % 1.0, f, "w--", lw=0.8, label="DM %.1f delay" % pulsar["dm"])
-        a.legend(fontsize=8, loc="upper right")
-        a.set_xlabel("pulse phase"); a.set_ylabel("frequency (MHz)"); a.set_title("per-channel profiles (interference view; the 0.6 ms DM sweep is below one sample)", fontsize=9)
-    fig.suptitle("%s  %s  %s  %d overflows, %d time marks%s" % (
+        img = np.concatenate([sub, sub], axis=1)
+        lo, hi = np.percentile(img, [2, 98])
+        a1.imshow(img, aspect="auto", origin="lower", interpolation="nearest", cmap="viridis",
+                  extent=[0.0, 2.0, 0.0, sub.shape[0] * r["subint_s"] / 60.0], vmin=lo, vmax=hi)
+    for a in (a0, a1):
+        for x in (0.5, 1.5):
+            a.axvline(x, color="w" if a is a1 else "0.5", lw=0.6, ls=":")
+        a.set_xlim(0.0, 2.0)
+    a1.set_xticks(np.arange(0.0, 2.01, 0.25))
+    a1.set_xlabel("pulse phase (absolute; two periods, the pulse at 0.5 and 1.5)")
+    a1.set_ylabel("time from start (min)")
+    a1.set_title("sub-integrations of %.0f s at the predicted period" % r["subint_s"], fontsize=10)
+
+    # every run so far, added at the absolute phase
+    a2 = fig.add_subplot(gs[0, 1])
+    if acc is not None and acc[2]:
+        prof, hours, used = acc
+        tm = T.template(T.TOA_BINS, toa["dt_s"], toa["bw_hz"] or 8e6, toa["freq_hz"])
+        f = T.fit_shift(prof, tm)
+        ph = (np.arange(T.TOA_BINS) + 0.5) / T.TOA_BINS
+        off = np.abs(ph - 0.5) > 0.1
+        prof = prof - np.median(prof[off])
+        k = np.arange(1, T.TOA_BINS // 2 + 1)
+        Tk = np.fft.rfft(tm)
+        ts = np.fft.irfft(np.concatenate([[Tk[0]], Tk[1:] * np.exp(-2j * np.pi * k * f["tau"])]), n=T.TOA_BINS)
+        g = 4                                             # shown at 256 bins, fitted at 1024
+        # in units of the fitted template's peak: the template reads 1 there
+        model = f["b"] * (ts - np.median(ts[off]))
+        unit = float(np.max(model)) if np.max(model) > 0 else 1.0
+        shown = prof.reshape(-1, g).mean(axis=1) / unit
+        a2.stairs(shown, np.linspace(0, 1, T.TOA_BINS // g + 1),
+                  color="C0", lw=1.2, baseline=None, label="all runs (%d, %.1f h)" % (len(used), hours))
+        a2.axhline(0, color="k", lw=0.5)
+        a2.plot(ph, model / unit, color="C3", lw=1.0, alpha=0.4, label="EPN 1410 MHz")
+        a2.axvline(0.5, color="0.5", lw=0.6, ls=":")
+        a2.set_xlim(0.25, 0.75)                          # the pulse and its outriders, stretched
+        a2.set_title("accumulated profile: template SNR %.1f" % f["snr"], fontsize=10)
+        # unity near the top, the noise below zero in view, room for the legend
+        mid = (np.arange(len(shown)) + 0.5) / len(shown)
+        vis = shown[(mid > 0.25) & (mid < 0.75)]             # the limits from what is on screen
+        a2.set_ylim(min(float(np.min(vis)) * 1.15, -0.1), max(1.2, float(np.max(vis)) * 1.08))
+        a2.legend(fontsize=8, loc="upper left")
+    else:
+        a2.text(0.5, 0.5, "the accumulated profile covers the observatory's own\nrecordings only",
+                ha="center", va="center", transform=a2.transAxes, color="0.4")
+    a2.set_xlabel("pulse phase (absolute)"); a2.set_ylabel("relative to the template peak"); a2.grid(alpha=0.3)
+
+    # timing residuals and the fitted period
+    a3 = fig.add_subplot(gs[1, 1])
+    if fitres and not fitres.get("error"):
+        mjd = np.array(fitres["mjd"]); res = np.array(fitres["resid_us"]) / 1e3
+        err = np.array(fitres["err_us"]) / 1e3; whole = np.array(fitres["whole"], bool)
+        pps = np.array([p == "1" for p in fitres["pps"]])
+        m0 = np.floor(mjd.min()) if len(mjd) else 0.0
+        raw = np.array(fitres.get("err_raw_us", fitres["err_us"])) / 1e3
+        # Statistical errors throughout. The fit itself still weights a
+        # host-clock TOA with its clock term (EQUAD); drawn, that bar hid the
+        # measurement, and a run's segments share one clock offset anyway.
+        # One TOA per night (red, fitted) - over weeks these show the pulsar and
+        # the model, timing noise included - and that night's 4 h segments
+        # (grey), a check on how its arrival times behave within the night.
+        if (~whole).any():
+            a3.errorbar(mjd[~whole] - m0, res[~whole], raw[~whole], fmt=".", color="0.6", ms=5, lw=0.8,
+                        label="4 h segments (a check, not fitted)")
+        for sel, mk, lab in ((whole & pps, "o", "night TOA (fitted), PPS time"),
+                             (whole & ~pps, "s", "night TOA (fitted), host clock")):
+            if sel.any():
+                a3.errorbar(mjd[sel] - m0, res[sel], raw[sel], fmt=mk, color="C3", mfc="C3" if mk == "o" else "none",
+                            ms=7, lw=1.4, capsize=3, label=lab)
+        a3.legend(fontsize=8, loc="lower left")
+        a3.axhline(0, color="k", lw=0.5)
+        lo_y = float(np.min(res - raw)); hi_y = float(np.max(res + raw))
+        span_y = max(hi_y - lo_y, 1.0)
+        a3.set_ylim(lo_y - 0.12 * span_y, hi_y + 0.75 * span_y)      # headroom for the numbers
+        a3.set_xlabel("MJD - %d" % m0); a3.set_ylabel("residual (ms)")
+        free = fitres["free"]
+        pl = ("P    = %.12f s" % fitres["P"]) + (" +- %.2e (fitted)" % fitres["P_err"] if "F0" in free else "  (catalogue, held)")
+        pdl = ("Pdot = %.4e" % fitres["Pdot"]) + (" +- %.1e (fitted)" % fitres["Pdot_err"] if "F1" in free else "  (catalogue, held)")
+        need = ("" if "F1" in free else
+                "\nP fitted once 3 runs span a day; Pdot once 4 span 3 weeks" if not free else
+                "\nPdot fitted once 4 runs span 3 weeks")
+        chi = ("chi2 %.1f / %d dof" % (fitres["chi2"], fitres["dof"])) if fitres.get("chi2") is not None else ""
+        a3.text(0.99, 0.98, "%s\n%s\nat MJD %.3f (barycentric)\n%d night TOAs over %.1f d  %s%s"
+                % (pl, pdl, fitres["pepoch"], fitres["n_whole"], fitres["span_days"], chi, need),
+                transform=a3.transAxes, ha="right", va="top", fontsize=8, family="monospace",
+                bbox=dict(boxstyle="round", fc="white", ec="0.7", alpha=0.9))
+        a3.set_title("timing residuals (PINT): one TOA per night's run, fitted", fontsize=10)
+    else:
+        a3.text(0.5, 0.5, (fitres or {}).get("error") or "timing covers the observatory's own recordings only",
+                ha="center", va="center", transform=a3.transAxes, color="0.4")
+    a3.grid(alpha=0.3)
+
+    fig.suptitle("%s  %s   %d overflows, %d time marks%s%s" % (
         os.path.basename(path), attrs.get("obs_name", ""),
-        "%d samples clipped;" % r["n_clipped"] if r["n_clipped"] else "",
         int(attrs.get("overflows_total", 0)), int(attrs.get("n_time_marks", 0)),
-        "" if attrs.get("n_time_marks", 0) else " (no radio time marks: rows timed by count alone)"), fontsize=10)
-    fig.tight_layout()
-    fig.savefig(out_path, dpi=90); plt.close(fig)
+        "  (exact)" if int(attrs.get("time_marks_exact", 0)) else "",
+        ";  clock: %s" % attrs.get("time_source", "host")), fontsize=10)
+    fig.savefig(out_path, dpi=90, bbox_inches="tight"); plt.close(fig)
     return r
 
 

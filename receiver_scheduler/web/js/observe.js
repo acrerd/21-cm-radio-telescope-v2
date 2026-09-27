@@ -172,43 +172,109 @@
         // last-finished run is selected by default, which is what "last
         // observation" used to mean, but any recording can be chosen.
         let obvObservations = [];
+        // The list is filtered by kind - the server's `category`, from the
+        // file's own attributes - and shows the newest OBV_RECENT of that kind
+        // until "show all" is chosen. Sun monitor runs are listed apart: they
+        // are routine, one or more every clear day, and outnumber the rest.
+        const OBV_RECENT = 25;
+        let obvShowAll = false;
+        let obvCurrentFile = '';
+        let obvLastSeen;                        // the server's `last` at the previous listing
+        let obvFilterRestored = false;
+
+        function obvFilter() {
+            return document.getElementById('obvFileFilter').value || 'default';
+        }
+
+        function obvInFilter(r, f) {
+            if (r.recording) return true;       // a run in progress is always listed
+            if (f === 'all') return true;
+            if (f === 'default') return r.category !== 'sun_monitor';
+            return r.category === f;
+        }
+
+        // Local date and time, as the schedule is written: "27 Sep 20:10".
+        function obvWhen(r) {
+            const d = new Date(r.created || r.mtime);
+            if (isNaN(d)) return (r.created || r.mtime || '').slice(0, 16).replace('T', ' ');
+            return d.toLocaleString('en-GB', {day: '2-digit', month: 'short', hour: '2-digit',
+                                             minute: '2-digit', hour12: false});
+        }
+
+        function obvRenderFileList(want) {
+            const sel = document.getElementById('obvFileSelect');
+            sel.innerHTML = '';
+            const rows = obvObservations.filter(r => obvInFilter(r, obvFilter()));
+            const shown = obvShowAll ? rows.slice() : rows.slice(0, OBV_RECENT);
+            // a chosen file older than the recent slice stays listed
+            if (want && !shown.some(r => r.filename === want)) {
+                const w = rows.find(r => r.filename === want);
+                if (w) shown.push(w);
+            }
+            if (!shown.length) {
+                const o = document.createElement('option');
+                o.value = ''; o.textContent = obvObservations.length ? 'nothing of this kind' : 'no recordings yet';
+                sel.appendChild(o);
+            }
+            shown.forEach(r => {
+                const o = document.createElement('option');
+                o.value = r.filename;
+                let text = obvWhen(r) + '   ' + (r.name || r.filename);
+                if (r.recording) text += r.locked ? '  (recording, not readable yet)' : '  (recording \u2014 live)';
+                if (r.comment) text += '  \u2014 ' + (r.comment.length > 70 ? r.comment.slice(0, 69) + '\u2026' : r.comment);
+                o.textContent = text;
+                o.title = r.filename + (r.comment ? '\n' + r.comment : '');
+                // Readable while recording (SWMR) unless written by a
+                // receiver from before that was possible.
+                o.disabled = !!r.locked;
+                sel.appendChild(o);
+            });
+            if (!obvShowAll && rows.length > shown.length) {
+                const o = document.createElement('option');
+                o.value = '__more__';
+                o.textContent = '\u2026 show all ' + rows.length;
+                sel.appendChild(o);
+            }
+            const pick = shown.some(r => r.filename === want) ? want
+                       : (shown.find(r => !r.locked) || {}).filename || '';
+            sel.value = pick;
+            obvCurrentFile = pick;
+        }
+
+        function onObserveFilterChange() {
+            try { localStorage.setItem('obvFileFilter', obvFilter()); } catch (e) {}
+            obvShowAll = false;
+            obvRenderFileList(obvCurrentFile);
+            onObserveFileChange();
+        }
 
         function loadObserveLast() {
+            if (!obvFilterRestored) {
+                obvFilterRestored = true;
+                try {
+                    const v = localStorage.getItem('obvFileFilter');
+                    const el = document.getElementById('obvFileFilter');
+                    if (v && [...el.options].some(o => o.value === v)) el.value = v;
+                } catch (e) {}
+            }
             fetch('/api/observations').then(r => r.json()).then(d => {
-                const sel = document.getElementById('obvFileSelect');
-                const current = sel.value;
                 obvObservations = d.observations || [];
-                sel.innerHTML = '';
-                if (!obvObservations.length) {
-                    const o = document.createElement('option');
-                    o.value = ''; o.textContent = 'no recordings yet';
-                    sel.appendChild(o);
-                    onObserveFileChange();
-                    return;
+                const has = f => !!f && obvObservations.some(r => r.filename === f);
+                // A run that finished since the last listing is selected; else
+                // the operator's choice is kept; on first view, the last run.
+                const finished = obvLastSeen !== undefined && d.last && d.last !== obvLastSeen;
+                const first = obvLastSeen === undefined;
+                obvLastSeen = d.last || null;
+                let want = obvCurrentFile;
+                if (finished || (first && !has(want))) want = has(d.last) ? d.last : '';
+                if (!has(want)) want = (obvObservations.find(r => !r.locked) || {}).filename || '';
+                // follow the chosen run into its own list if the filter hides it
+                const row = obvObservations.find(r => r.filename === want);
+                if (row && !obvInFilter(row, obvFilter()) && row.category) {
+                    document.getElementById('obvFileFilter').value = row.category;
+                    obvShowAll = false;
                 }
-                obvObservations.forEach(r => {
-                    const o = document.createElement('option');
-                    o.value = r.filename;
-                    // Date from the file's own creation stamp (UTC) where it has
-                    // one, else the file's modification time (local, and says so).
-                    const when = r.created ? r.created.slice(0, 16).replace('T', ' ') + ' UTC'
-                                           : r.mtime.slice(0, 16).replace('T', ' ') + ' local';
-                    let text = when + '  ' + r.filename;
-                    if (r.name) text += '  \u2014 ' + r.name;
-                    if (r.recording) text += r.locked ? '  (recording, not readable yet)' : '  (recording \u2014 live)';
-                    if (r.comment) text += '  \u2014 ' + r.comment;
-                    o.textContent = text;
-                    // Readable while recording (SWMR) unless written by a
-                    // receiver from before that was possible.
-                    o.disabled = !!r.locked;
-                    sel.appendChild(o);
-                });
-                // Keep the operator's choice across refreshes; otherwise the
-                // run that most recently finished, else the newest file.
-                const want = obvObservations.some(r => r.filename === current) ? current
-                           : (d.last && obvObservations.some(r => r.filename === d.last)) ? d.last
-                           : obvObservations.find(r => !r.locked)?.filename || '';
-                sel.value = want;
+                obvRenderFileList(want);
                 const liveRow = obvObservations.find(r => r.recording && !r.locked);
                 document.getElementById('obvLiveViewBtn').style.display = liveRow ? '' : 'none';
                 onObserveFileChange();
@@ -216,7 +282,7 @@
                 // selected recording if nothing is drawn yet and it is readable.
                 // A guard on the existing <img> keeps the operator's own plot
                 // across tab switches and never re-draws over it.
-                const chosen = obvObservations.find(x => x.filename === want);
+                const chosen = obvObservations.find(x => x.filename === obvSelectedFile());
                 const host = document.getElementById('obvPlot');
                 if (chosen && !chosen.locked && host && !host.querySelector('img')) {
                     showObservePlot();
@@ -263,10 +329,18 @@
         }
 
         function onObserveFileChange() {
+            const sel = document.getElementById('obvFileSelect');
+            if (sel.value === '__more__') {            // "... show all N"
+                obvShowAll = true;
+                obvRenderFileList(obvCurrentFile);
+            }
+            obvCurrentFile = sel.value;
             const el = document.getElementById('obvLastInfo');
             const r = obvObservations.find(x => x.filename === obvSelectedFile());
+            obvUpdateFileButtons(r);
             if (!r) { el.textContent = 'Nothing recorded yet.'; return; }
-            const kind = r.mode === 'drift' ? 'Drift scan' : r.mode === 'manual' ? 'Console recording' : 'Spectrum';
+            const kind = r.mode === 'drift' ? 'Drift scan' : r.mode === 'manual' ? 'Console recording'
+                       : r.mode === 'pulsar' ? 'Pulsar recording' : 'Spectrum';
             const size = r.size_bytes ? (r.size_bytes / 1e6).toFixed(1) + ' MB' : '';
             const units = r.units === 'K' ? 'calibrated (kelvin)' : r.units === 'counts' ? 'uncalibrated (counts)' : '';
             el.textContent = [kind + (r.coord_system ? ' \u00b7 ' + r.coord_system : ''),
@@ -276,6 +350,29 @@
             document.getElementById('obvFitApplyBtn').style.display = 'none';
             document.getElementById('obvFitInfo').textContent = '';
             loadObserveDetails();
+        }
+
+        // Grey out what does not apply to the selected recording: a pulsar file
+        // is folded, so it has no model fit and no dB-scaled trace, and PRESTO
+        // folds pulsar files only. A disabled button's tooltip says why.
+        function obvUpdateFileButtons(r) {
+            const pulsar = !!r && r.mode === 'pulsar';
+            const set = (id, on, why) => {
+                const b = document.getElementById(id);
+                if (!b) return;
+                if (b.dataset.title === undefined) b.dataset.title = b.title || '';
+                b.disabled = !on;
+                b.style.opacity = on ? '' : '0.4';
+                b.style.cursor = on ? '' : 'not-allowed';
+                b.title = on ? b.dataset.title : why;
+            };
+            set('obvPrestoBtn', pulsar, r ? 'PRESTO folds pulsar recordings only' : 'no recording selected');
+            set('obvFitBtn', !!r && !pulsar, r ? 'a pulsar recording is folded, not fitted to the sky model' : 'no recording selected');
+            // dB is honoured by the solar and drift plots only (a tracked
+            // spectrum or a fold has no total-power trace to scale); `plot` is
+            // the server's own plot_mode_for, so this cannot disagree with it.
+            const db = !!r && (r.plot === 'solar' || r.plot === 'drift');
+            set('obvLogBtn2', db, r ? 'dB scale applies to drift scans and solar tracks only' : 'no recording selected');
         }
 
         // The recording's facts, beside the plot.
@@ -567,6 +664,7 @@
                                 // Select first: loadObserveLast keeps whatever
                                 // is selected across its relist.
                                 sel.value = o.last;
+                                obvCurrentFile = o.last;    // wanted even if the filter hides it: the list follows
                                 loadObserveLast();
                                 showObservePlot();
                             }

@@ -112,11 +112,11 @@ def test_rows_are_timed_from_the_radio_marks_across_a_gap():
     rows after the gap are timed from the mark, not from the count."""
     dt = 1e-3
     marks = [(0, 1000.0), (5000, 1000.0 + 5000 * dt + 0.25)]   # a quarter-second gap at row 5000
-    t = PF.row_times(10000, dt, 999.0, marks)
-    assert t[0] == 1000.0 and t[4999] == pytest.approx(1004.999)
+    t = PF.row_times(10000, dt, 999.0, marks) - 0.5 * dt      # row middles; test the starts
+    assert t[0] == pytest.approx(1000.0) and t[4999] == pytest.approx(1004.999)
     assert t[5000] == pytest.approx(1005.25) and t[9999] == pytest.approx(1010.249)
-    assert PF.row_times(3, dt, 5.0, None).tolist() == pytest.approx([5.0, 5.001, 5.002])
-    assert PF.row_times(3, dt, 5.0, np.empty((0, 2))).tolist() == pytest.approx([5.0, 5.001, 5.002])
+    assert PF.row_times(3, dt, 5.0, None).tolist() == pytest.approx([5.0005, 5.0015, 5.0025])
+    assert PF.row_times(3, dt, 5.0, np.empty((0, 2))).tolist() == pytest.approx([5.0005, 5.0015, 5.0025])
 
 
 def test_the_filterbank_export_for_presto(tmp_path):
@@ -164,7 +164,7 @@ def test_the_streaming_fold_agrees_and_reads_in_blocks(tmp_path):
         hf.attrs["dt_s"] = 1e-3; hf.attrs["t0_unix"] = float(t[0]); hf.attrs["pulsar_name"] = "B0329+54"
     r, attrs = PF.analyse_file(path, block_rows=100_000, search_ppm=20.0)
     assert r["snr_matched"] > 5.0 and abs(r["peak_bin_predicted"] - 12) <= 1
-    assert r["nchan"] == 16 and len(r["subints"]) >= 7
+    assert r["nchan"] == 16 and len(r["subints"]) == int(15 * 60 // PF.SUBINT_S)
 
 
 def test_a_one_channel_recording_folds_and_exports(tmp_path):
@@ -237,8 +237,10 @@ def test_marks_after_an_overflow_are_exact_to_the_sample():
     t = PF.row_times(10, 1e-3, t_start, marks)
     # row 5 starts at received sample 5000, which the device clock puts at
     # t_start + (5000 + gap) / rate - exactly, not to the nearest row
-    assert t[5] == pytest.approx(t_start + (5 * spr + gap_samples) / rate, abs=1e-9)
-    assert t[2] == pytest.approx(t_start + 2e-3, abs=1e-9)   # before the gap: the first mark
+    # row times are row MIDDLES: row 5's first sample, plus half a row
+    assert t[5] == pytest.approx(t_start + (5 * spr + gap_samples) / rate + 0.5e-3, abs=1e-9)
+    assert t[2] == pytest.approx(t_start + 2.5e-3, abs=1e-9)   # before the gap: the first mark
+    assert t[3] == pytest.approx(t_start + 3.5e-3, abs=1e-9)   # the row the gap falls in: the first mark
 
 
 def test_absolute_phase_runs_at_the_topocentric_frequency():
