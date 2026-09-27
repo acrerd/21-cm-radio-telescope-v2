@@ -89,6 +89,63 @@ INTEGRATION_TIME = float(os.environ.get('H1_INTEGRATION_TIME', 3.0))
 # nothing anywhere reporting it. The TCXO is good to about -2.4 ppm measured
 # (0.08 km/s), which is why this went unnoticed.
 CLOCK_SOURCE = (os.environ.get('H1_CLOCK_SOURCE') or 'auto').strip().lower()
+# Where the radio's absolute time comes from (pulsar mode). "auto" uses a PPS
+# on the B200's PPS input if one is seen and otherwise the host's clock, as
+# before; "external" refuses to record without a PPS; "internal" never looks.
+TIME_SOURCE = (os.environ.get('H1_TIME_SOURCE') or 'auto').strip().lower()
+
+
+def set_device_time(usrp, requested=None):
+    """Set the radio's clock and say how (attributes for the file).
+
+    With a PPS: the time source goes external, we wait for an edge (up to
+    2.5 s), and just after it set the whole second the NEXT edge will be,
+    floor(host) + 1 - the host's NTP clock supplies the second, the PPS the
+    sub-second, so the host need only be right to well under half a second.
+    Then check: the last PPS reads a whole second, and the radio agrees with
+    the host to within NTP's error. Without one: the host's time, copied
+    once, good to the NTP error (a few ms), as before (issue #48).
+    """
+    from gnuradio import uhd
+    req = (requested or TIME_SOURCE)
+    info = {'time_source': 'host', 'time_pps_verified': 0}
+    if req != 'internal':
+        try:
+            usrp.set_time_source('external', 0)
+            last = usrp.get_time_last_pps(0).get_real_secs()
+            deadline = time.time() + 2.5
+            edge = False
+            while time.time() < deadline:
+                time.sleep(0.005)
+                if usrp.get_time_last_pps(0).get_real_secs() != last:
+                    edge = True
+                    break
+            if not edge:
+                raise RuntimeError("no PPS edge in 2.5 s")
+            usrp.set_time_next_pps(uhd.time_spec(float(math.floor(time.time()) + 1)))
+            time.sleep(1.2)
+            lp = usrp.get_time_last_pps(0).get_real_secs()
+            dev = usrp.get_time_now(0).get_real_secs()
+            host = time.time()
+            whole = abs(lp - round(lp)) < 1e-6
+            info = {'time_source': 'pps', 'time_pps_verified': int(whole and abs(dev - host) < 0.5),
+                    'time_device_minus_host_s': float(dev - host), 'time_last_pps': float(lp)}
+            print("  Time: PPS, radio - host %+.4f s%s" % (dev - host, "" if info['time_pps_verified']
+                                                            else "  (CHECK FAILED)"), flush=True)
+            if req == 'external' and not info['time_pps_verified']:
+                raise RuntimeError("PPS time check failed (radio - host %+.3f s, last PPS %.6f)" % (dev - host, lp))
+            return info
+        except Exception as exc:                          # noqa: BLE001
+            if req == 'external':
+                raise RuntimeError("H1_TIME_SOURCE=external but %s" % exc)
+            print("  Time: no PPS (%s); the host's clock" % exc, flush=True)
+            try:
+                usrp.set_time_source('internal', 0)
+            except Exception:                             # noqa: BLE001
+                pass
+    usrp.set_time_now(uhd.time_spec(time.time()))
+    info['time_source'] = 'host'
+    return info
 # The B210's device address, used by every source and sink that opens it (they
 # must match, or UHD may try to open the radio a second time). num_recv_frames:
 # UHD's default of 16 USB receive frames holds a millisecond or two of samples
@@ -1958,10 +2015,12 @@ class PulsarFlowgraph(gr.top_block):
         # mark and the row count. (A PPS into the B210 and set_time_next_pps
         # would make this absolute to a microsecond, for timing; not needed
         # for a fold.)
+        self.time_info = {'time_source': 'none'}
         if self.sdr_type == 'b210':
             try:
-                from gnuradio import uhd
-                self.sdr_source.set_time_now(uhd.time_spec(time.time()))
+                self.time_info = set_device_time(self.sdr_source)
+            except RuntimeError:
+                raise
             except Exception as exc:                          # noqa: BLE001
                 print(f"  NOTE: could not set the device time: {exc}", flush=True)
         n = self.nchan
@@ -2103,7 +2162,7 @@ def _embed_obs_metadata(hf):
 
 
 def init_pulsar_hdf5(filename, freq_axis_hz, dt_s, sdr_type, center_freq, sample_rate,
-                     gain, instrument, t0_unix, inject=None):
+                     gain, instrument, t0_unix, inject=None, time_info=None):
     """A pulsar-mode file: `power` rows (N x nchan, float32) at `dt_s` from
     `t0_unix`, the channel axis, and `overflow_marks` (row index, count) for
     every batch of UHD overflows. Everything is created before SWMR is
@@ -2138,6 +2197,8 @@ def init_pulsar_hdf5(filename, freq_axis_hz, dt_s, sdr_type, center_freq, sample
     hf.attrs['site_lon_deg'] = float(_inst.SITE_LON_DEG)
     hf.attrs['site_height_m'] = float(_inst.SITE_HEIGHT_M)
     _embed_obs_metadata(hf)
+    for key, val in (time_info or {}).items():
+        hf.attrs[key] = val
     if inject:
         # An artificial pulsar: the fold is at this period, in the receiver's
         # own time, with no Doppler - transmitter and receiver share a clock.
@@ -2244,7 +2305,8 @@ class PulsarRecorder:
         t0 = time.time()
         self.hf = init_pulsar_hdf5(self.output_file, self.flowgraph.freq_axis(), self.flowgraph.dt_s,
                                    self.sdr_type, self.flowgraph.center_freq, self.flowgraph.sample_rate,
-                                   self.flowgraph.gain, self.instrument, t0, inject=self.flowgraph.inject)
+                                   self.flowgraph.gain, self.instrument, t0, inject=self.flowgraph.inject,
+                                   time_info=self.flowgraph.time_info)
         print(f"  {self.sdr_type}, {self.flowgraph.sample_rate/1e6:.3f} Msps, LO "
               f"{self.flowgraph.center_freq/1e6:.6f} MHz, gain {self.flowgraph.gain}, "
               f"{self.nchan} channels every {1e3*self.flowgraph.dt_s:.3f} ms", flush=True)

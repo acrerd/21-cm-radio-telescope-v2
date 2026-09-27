@@ -74,6 +74,18 @@ B0329 = {
     "dec_deg": 54 + 34 / 60.0 + 43.329 / 3600.0,
     "period_s": 0.714519699726, "pdot": 2.04826e-15, "pepoch_mjd": 46473.0,   # ATNF F0/F1 (hlk+04), checked 2026-09-26
     "dm": 26.7641, "s1400_mjy": 203.0, "w50_ms": 6.6,
+    # The spin ephemeris as ATNF gives it (PEPOCH in TDB), for absolute phase,
+    # and the position's epoch and proper motion (0.3 arcsec since POSEPOCH is
+    # 0.7 ms of annual Roemer error - small, but free to remove).
+    "f0": 1.399541538720, "f1": -4.011970e-15, "f2": 5.3e-28,
+    "posepoch_mjd": 56000.0, "pmra_mas_yr": 16.97, "pmdec_mas_yr": -10.37,
+    # Phase zero, chosen once (2026-09-27) so the pulse of the first
+    # detection, 20260926_203116_pulsar.h5, folds to 0.5: with no offset its
+    # matched peak fell at 0.1895. Every other run lands at 0.5 by
+    # prediction, so where one actually lands is a check on the ephemeris,
+    # the barycentring and the clock together. Change it only with a reason
+    # that applies to every run, never to centre one night.
+    "phase_offset": 0.3105,
     "note": "circumpolar from Glasgow; scintillates by factors of two or three over an hour",
 }
 
@@ -125,6 +137,52 @@ def topocentric_period(period_bary_s, ra_deg, dec_deg, t_unix):
     at v sees the pulses arrive faster, P_topo = P_bary (1 - v/c)."""
     v = observer_velocity_toward(ra_deg, dec_deg, t_unix)
     return period_bary_s * (1.0 - v / C_M_S)
+
+
+K_DM_S = 4.148808e3      # dispersion constant, s MHz^2 pc^-1 cm^3
+
+
+def absolute_phase(t_unix, pulsar=None, freq_hz=None, knot_s=60.0):
+    """Pulse phase from the pulsar's own ephemeris, the same zero every night.
+
+    Each time goes to the solar-system barycentre - TDB, plus astropy's
+    light-travel time from the site (the Roemer delay, up to 500 s over the
+    year) toward the pulsar's position at that date (proper motion applied)
+    - less the dispersion delay at `freq_hz`, and the phase is the ATNF spin
+    ephemeris there: F0 dt + F1 dt^2/2 + F2 dt^3/6 from PEPOCH, plus the
+    fixed `phase_offset` that puts the pulse at 0.5. `phase_track` counted
+    from each file's first sample, so each run had its own zero; this is
+    TEMPO's TZR idea. Evaluated on `knot_s` knots and interpolated (the
+    curvature between knots is 1e-7 of a period). Returns (phase, mean
+    topocentric period) like `phase_track`. Precision: dt is 1.3e9 s, so
+    float64 phase is good to ~3e-7 of a period.
+    """
+    from astropy import units as u
+    from astropy.coordinates import SkyCoord
+    from astropy.time import Time
+    p = pulsar or B0329
+    t = np.asarray(t_unix, float)
+    lo, hi = float(np.min(t)), float(np.max(t))
+    knots = np.arange(lo, hi + knot_s, knot_s) if hi > lo else np.array([lo, lo + 1.0])
+    tk = Time(knots, format="unix", scale="utc", location=_site_location())
+    yrs = (tk.mjd - p.get("posepoch_mjd", tk.mjd[0])) / 365.25
+    dec = p["dec_deg"] + p.get("pmdec_mas_yr", 0.0) * yrs / 3.6e6
+    ra = p["ra_deg"] + p.get("pmra_mas_yr", 0.0) * yrs / 3.6e6 / np.cos(np.radians(p["dec_deg"]))
+    coord = SkyCoord(ra=ra * u.deg, dec=dec * u.deg, frame="icrs")
+    tb = tk.tdb + tk.light_travel_time(coord, "barycentric")
+    dt = (tb - Time(p["pepoch_mjd"], format="mjd", scale="tdb")).to_value(u.s)
+    if freq_hz:
+        dt = dt - K_DM_S * p.get("dm", 0.0) / (float(freq_hz) / 1e6) ** 2
+    f0, f1, f2 = p["f0"], p.get("f1", 0.0), p.get("f2", 0.0)
+    whole = np.floor(f0 * dt)                     # keep the numbers small before adding the offset
+    phk = (f0 * dt - whole) + 0.5 * f1 * dt ** 2 + f2 * dt ** 3 / 6.0 + p.get("phase_offset", 0.0)
+    phk = phk + (whole - whole[0])                # continuous across the run
+    # Whole periods only, so the fraction - the phase that matters - is kept:
+    # counted from the run's first period, as the period search's phase/(1+d)
+    # scaling and n_periods assume (the F1 term alone is -3300 periods by now).
+    phk = phk - np.floor(phk[0])
+    freq_topo = np.gradient(phk, knots) if len(knots) > 2 else np.array([f0, f0])
+    return np.interp(t, knots, phk), float(1.0 / np.mean(freq_topo))
 
 
 def phase_track(t_unix, period_bary_s, ra_deg, dec_deg, knot_s=60.0):
@@ -302,7 +360,10 @@ def analyse(t, freq_hz, power, pulsar, nbins=NBINS, search_ppm=SEARCH_PPM):
     total = per_chan.sum(axis=1) / per_chan.shape[1]
     total, n_clipped = clip_rfi(total)
     p_bary = period_at(t[0]) if pulsar.get("pdot") is not None else pulsar["period_s"]
-    phase0, p_mean = phase_track(t, p_bary, pulsar["ra_deg"], pulsar["dec_deg"])
+    if pulsar.get("f0"):
+        phase0, p_mean = absolute_phase(t, pulsar, float(np.mean(freq_hz)))
+    else:
+        phase0, p_mean = phase_track(t, p_bary, pulsar["ra_deg"], pulsar["dec_deg"])
     prof0, counts0 = fold(total, phase0, nbins)
     snr0 = profile_snr(prof0)
     width_s = float(pulsar.get("w50_ms", 6.6)) * 1e-3
@@ -326,7 +387,7 @@ def analyse(t, freq_hz, power, pulsar, nbins=NBINS, search_ppm=SEARCH_PPM):
     return {
         "pulsar": pulsar["name"], "period_bary_s": p_bary, "period_topo_mean_s": p_mean,
         "observer_velocity_m_s": [float(v[0]), float(v[-1])],
-        "duration_s": float(t[-1] - t[0] + dt), "dt_s": dt, "n_periods": float(phase0[-1]),
+        "duration_s": float(t[-1] - t[0] + dt), "dt_s": dt, "n_periods": float(phase0[-1] - phase0[0]),
         "nbins": nbins, "n_clipped": n_clipped,
         "profile_predicted": prof0.tolist(), "snr_predicted": snr0[0], "peak_bin_predicted": snr0[1],
         "snr_matched": m_snr, "matched_phase": m_phase, "matched_width_s": width_s,
@@ -424,7 +485,11 @@ def analyse_file(path, pulsar=None, nbins=NBINS, search_ppm=SEARCH_PPM, block_ro
             phi_k, p_mean = (knots - t_first) / p_bary, p_bary
         else:
             knots = np.arange(t_first, t_last + 120.0, 60.0)
-            phi_k, p_mean = phase_track(knots, p_bary, pulsar["ra_deg"], pulsar["dec_deg"])
+            if pulsar.get("f0"):
+                # the same phase zero every night (absolute_phase)
+                phi_k, p_mean = absolute_phase(knots, pulsar, float(np.mean(freq)))
+            else:
+                phi_k, p_mean = phase_track(knots, p_bary, pulsar["ra_deg"], pulsar["dec_deg"])
         fb = FINE_BINS
         nsub = int((t_last - t_first) // SUB_S) + 1
         S = np.zeros((nsub, fb)); C = np.zeros((nsub, fb))

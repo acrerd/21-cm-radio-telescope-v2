@@ -44,7 +44,7 @@ def _synthetic(minutes=15.0, tsys=100.0, peak_k=0.05, seed=1, phase_at=12.5 / 64
     dt = 1e-3
     n = int(minutes * 60 / dt)
     t = 1790000000.0 + dt * np.arange(n)
-    phase, pmean = PF.phase_track(t, p["period_s"], p["ra_deg"], p["dec_deg"])
+    phase, pmean = PF.absolute_phase(t, p, 1418.9e6)
     width_s = 6.6e-3
     pulse = peak_k * np.exp(-0.5 * ((((phase - phase_at + 0.5) % 1.0) - 0.5) * pmean / (width_s / 2.355)) ** 2)
     sig = tsys / math.sqrt(0.5e6 * dt)
@@ -239,3 +239,44 @@ def test_marks_after_an_overflow_are_exact_to_the_sample():
     # t_start + (5000 + gap) / rate - exactly, not to the nearest row
     assert t[5] == pytest.approx(t_start + (5 * spr + gap_samples) / rate, abs=1e-9)
     assert t[2] == pytest.approx(t_start + 2e-3, abs=1e-9)   # before the gap: the first mark
+
+
+def test_absolute_phase_runs_at_the_topocentric_frequency():
+    """The barycentric phase's rate (via astropy's light-travel time) must be
+    the topocentric frequency from the independent radial-velocity route."""
+    p = PF.lookup("B0329+54")
+    t = 1790000000.0 + np.arange(0, 3601, 60.0)
+    ph, _ = PF.absolute_phase(t, p, 1418.9e6)
+    f_meas = (ph[-1] - ph[0]) / (t[-1] - t[0])
+    f_topo = np.mean(1.0 / PF.topocentric_period(1.0 / p["f0"] - 0.0, p["ra_deg"], p["dec_deg"], t))
+    # catalogue F0 at PEPOCH plus F1 over 40 years: compare against the spun-down barycentric frequency
+    dt = (t[0] / 86400.0 + 40587.0 - p["pepoch_mjd"]) * 86400.0
+    f_bary_now = p["f0"] + p["f1"] * dt
+    f_topo_now = f_topo * f_bary_now / p["f0"]
+    # 5e-8, not tighter: the barycentric route carries TDB's rate against UTC
+    # (L_B ~1.6e-8), which the radial-velocity route does not treat the same
+    # way - 0.002 of a period over 16 h. A wrong Roemer sign would be 1e-4.
+    assert f_meas == pytest.approx(f_topo_now, rel=5e-8)
+
+
+def test_two_nights_fold_to_the_same_phase(tmp_path):
+    """Runs a day apart, each folded from its own file, both put the pulse
+    where the ephemeris says - the point of an absolute phase zero."""
+    p = dict(PF.lookup("B0329+54"), phase_offset=0.0)
+    got = []
+    for day, t0 in enumerate((1790000000.0, 1790086400.0 + 1234.5)):
+        dt, n = 1e-3, 600_000
+        t = t0 + dt * np.arange(n)
+        ph, pm = PF.absolute_phase(t, p, 1413e6)
+        rng = np.random.default_rng(day)
+        pulse = 0.02 * np.exp(-0.5 * ((((ph - 0.5 + 0.5) % 1.0) - 0.5) * pm / (6.6e-3 / 2.355)) ** 2)
+        power = (1.0 + pulse + 0.011 * rng.standard_normal(n)).astype(np.float32)[:, None]
+        path = str(tmp_path / ("night%d_pulsar.h5" % day))
+        with h5py.File(path, "w") as hf:
+            hf.create_dataset("frequency_hz", data=np.array([1413e6]))
+            hf.create_dataset("power", data=power, chunks=(1024, 1))
+            hf.create_dataset("time_marks", data=np.array([[0, t0]]))
+            hf.attrs["dt_s"] = dt; hf.attrs["t0_unix"] = t0
+        r, _ = PF.analyse_file(path, pulsar=p, block_rows=100_000, search_ppm=5.0)
+        got.append(r["matched_phase"])
+    assert got[0] == pytest.approx(0.5, abs=2.0 / 256) and got[1] == pytest.approx(0.5, abs=2.0 / 256)
