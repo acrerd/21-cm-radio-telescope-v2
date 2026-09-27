@@ -31,7 +31,7 @@ peak signal-to-noise fell, in parts per million: near zero says the
 conversion is right, and a sign error would show as twice the velocity term.
 
 Absolute time is not needed for any of this. The fold wants the sample
-cadence stable (the B210's clock, on the external reference) and the start
+cadence stable (the B200's clock, on the external reference) and the start
 time to a millisecond (the host clock); pulsar *timing* would want a PPS, and
 this is not that.
 

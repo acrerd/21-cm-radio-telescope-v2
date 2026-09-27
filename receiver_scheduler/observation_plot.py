@@ -490,7 +490,7 @@ def plot_observation(path, output_path, name="", mode="spectrum",
     lsr = lsr_offset_km_s(header, mid)
 
     # The receiver's own clock offset, on top of the frame. An error in the
-    # B210's TCXO scales the whole frequency axis, which across 2 MHz is a pure
+    # B200's TCXO scales the whole frequency axis, which across 2 MHz is a pure
     # velocity shift - measured at -2.36 +- 0.27 ppm, or -0.71 +- 0.08 km/s,
     # which is 7 channels at 0.49 kHz.
     #

@@ -9,7 +9,7 @@ This receiver is designed for radio astronomy observations of neutral hydrogen (
 - Real-time spectrum display with integrated averaging
 - Waterfall/spectrogram visualization
 - Continuous data recording to HDF5 format
-- Support for multiple SDR platforms (Ettus B210, RTL-SDR)
+- Support for multiple SDR platforms (Ettus B200/B210, RTL-SDR)
 - Demo mode for testing without hardware
 - Web-based scheduler for automated observations
 
@@ -31,8 +31,8 @@ This receiver is designed for radio astronomy observations of neutral hydrogen (
 | `observation_plot.py` | Reads a recording (live or finished, either product, always as counts) and renders it, in kelvin and on an LSR velocity axis |
 | `observatory.py` | Where the telescope is and how big its beam is — plumbing only; the numbers live in `astro_simulator/instrument.py` |
 | `solar_reference.py` | The professional solar flux quoted beside ours: reads NOAA SWPC's hourly RSTN local-noon file, keeps a dated history in `data/`, never waits on the network |
-| `pilot.py` | The **pilot** (issue #30): the B210's own TX as the gain and passband reference — a full-band comb burst every N-th record plus a continuous carrier for the fast wobble; the frames, the flat rectangular reference, the per-burst response, the power level and tilt, the delay-filtered passband correction and its reversal. GNU-Radio-free so the scheduler can reduce with it. See `docs/CALIBRATION.md` |
-| `ad9361_filters.py` | **Not imported at runtime.** A standalone account of the B210's decimation-filter chain and the passband shape it implies, run by hand; `bandpass.py`'s docstring cites its result (about 4% of the measured response). Kept as the reasoning behind measuring the bandpass rather than modelling it |
+| `pilot.py` | The **pilot** (issue #30): the B200's own TX as the gain and passband reference — a full-band comb burst every N-th record plus a continuous carrier for the fast wobble; the frames, the flat rectangular reference, the per-burst response, the power level and tilt, the delay-filtered passband correction and its reversal. GNU-Radio-free so the scheduler can reduce with it. See `docs/CALIBRATION.md` |
+| `ad9361_filters.py` | **Not imported at runtime.** A standalone account of the B200's decimation-filter chain and the passband shape it implies, run by hand; `bandpass.py`'s docstring cites its result (about 4% of the measured response). Kept as the reasoning behind measuring the bandpass rather than modelling it |
 | `investigations/lo_shape_*.py`, `investigations/freq_switch_demo.py` | One-off investigations from the LO-placement work, not imported by anything, kept for their reasoning |
 | `tests/page_sources.py`, `tests/conftest.py` | Test plumbing: collects the operator page and every script it loads; keeps the suite out of the observatory's records |
 | `../tools/` | Hardware-side scripts, none of them part of the observing path: `due_emulator.py` (bench emulator of the Due's serial protocol for ESP32 work), `az_switch_probe_capture.py` (drives the Due's `PROBE` command and records the azimuth limit switch's reed/current trace, issue #32), `homing_scan_experiment.py` (home from the Sun's position then Sun scan, repeated, for homing-repeatability tests) |
@@ -59,7 +59,7 @@ This receiver is designed for radio astronomy observations of neutral hydrogen (
 
 ### Tests
 
-`cd receiver_scheduler && python -m pytest` — about 540 tests (2026-09-14). `conftest.py` keeps the suite out of the observatory's records: it detaches the loggers from `scheduler.log` and redirects the last-observation pointer, because several tests run the real `stop_observation`. No test may open the B210; stub `sun_scan._B210PowerMeter` if you need the non-demo path. One test, `TestFlaskAPI::test_post_config`, reaches the live controller and fails on the observatory host for that reason alone.
+`cd receiver_scheduler && python -m pytest` — about 540 tests (2026-09-14). `conftest.py` keeps the suite out of the observatory's records: it detaches the loggers from `scheduler.log` and redirects the last-observation pointer, because several tests run the real `stop_observation`. No test may open the B200; stub `sun_scan._B210PowerMeter` if you need the non-demo path. One test, `TestFlaskAPI::test_post_config`, reaches the live controller and fails on the observatory host for that reason alone.
 
 | File | Covers |
 |------|--------|
@@ -89,7 +89,7 @@ This receiver is designed for radio astronomy observations of neutral hydrogen (
 
 | SDR | Frequency Range | Sample Rate | Notes |
 |-----|-----------------|-------------|-------|
-| Ettus B210 | 70 MHz - 6 GHz | Up to 56 MHz | Recommended for best performance |
+| Ettus B200/B210 | 70 MHz - 6 GHz | Up to 56 MHz | Recommended for best performance |
 | RTL-SDR (R820T/R820T2) | 24 - 1766 MHz | Up to 2.4 MHz | Budget option, adequate for H1 |
 
 **Note:** RTL-SDR dongles with the older E4000 tuner cannot reach 1420 MHz. Ensure you have an R820T or R820T2 tuner.
@@ -146,7 +146,7 @@ These cannot be pip-installed and must come from Radioconda.
 
 ### SDR Drivers
 
-#### Ettus B210
+#### Ettus B200/B210
 - Install UHD drivers from [Ettus Research](https://files.ettus.com/binaries/uhd/latest_release/)
 - Download FPGA images:
   ```bash
@@ -165,7 +165,7 @@ These cannot be pip-installed and must come from Radioconda.
 # Activate Radioconda environment
 conda activate radioconda
 
-# Run with Ettus B210 (default)
+# Run with Ettus B200 (default)
 python b210_h1_receiver.py
 
 # Run with RTL-SDR
@@ -189,13 +189,13 @@ optional arguments:
                         SDR type (default: b210)
   --gain, -g GAIN       RF gain in dB (default: 40)
   --sample-rate, -r SAMPLE_RATE
-                        Sample rate in Hz (default: 2.4e6 for B210, 2.048e6 for RTL-SDR)
+                        Sample rate in Hz (default: 2.4e6 for B200, 2.048e6 for RTL-SDR)
 ```
 
 ### Examples
 
 ```bash
-# B210 with higher sample rate for wider bandwidth
+# B200 with higher sample rate for wider bandwidth
 python b210_h1_receiver.py --sdr b210 --sample-rate 5e6
 
 # RTL-SDR with adjusted gain
@@ -260,7 +260,7 @@ correct rather than broken.
 | **Log** | The operational record |
 
 Only one of the Sun scan, calibration day, horizon scan, RF calibration, a
-scheduled observation, or a hand-started receiver may hold the B210 and the
+scheduled observation, or a hand-started receiver may hold the B200 and the
 mount at once; whichever is asked for second is refused with the reason.
 
 #### Observe Tab
@@ -310,7 +310,7 @@ The main view for managing observations.
 - **Local and UTC time display** - schedule in local time, see both clocks
 - **Auto-save** - changes are saved automatically
 - **Manual start** - click play button to start any observation immediately
-- **Receiver start/status** - manually start the B210 receiver for warm-up/testing and see whether the active receiver process is manual or observation-owned
+- **Receiver start/status** - manually start the B200 receiver for warm-up/testing and see whether the active receiver process is manual or observation-owned
 - **Clone** - duplicate an observation's settings into a new item
 - **Clear Past** - remove observations whose end time has passed
 - **Import/Export** - save and load schedules as JSON
@@ -353,13 +353,13 @@ Displays the last N lines of `scheduler.log` with auto-refresh (5 second interva
 | Comment | Free text, stored as the recording's `comment` attribute |
 | Instrument | **Shown, not set** — the fixed instrument (see below) |
 | Integration Time | Seconds per record |
-| SDR Type | B210, RTL-SDR, or Demo |
+| SDR Type | B200, RTL-SDR, or Demo |
 | Respect local horizon | Advisory check against the measured horizon; trims a scheduled entry |
 | Home the mount first | Run the physical homing before pointing, recording the count error |
 | When Done | Action after observation ends: Stay, Go Home (Alt 0°, Az 0°), or Stow (Alt 90°, Az 180°) |
 | Filename | Output file (auto-generated if empty) |
 
-**The tuning is not an observation parameter.** Since issue #27 the B210 records
+**The tuning is not an observation parameter.** Since issue #27 the B200 records
 with a **fixed instrument** — LO 1418.905752 MHz, 8 Msps, gain 30 dB — set once
 in `tuning.py`, overridable only on the Configuration tab (with a warning). The
 centre-frequency, bandwidth, gain and channels boxes are gone from the form.
@@ -438,7 +438,7 @@ The Sun Scan tab runs `sun_scan.py` as a scheduler-owned pointing calibration wo
 - Each measurement recomputes the Sun position immediately before slewing. Hardware scans recheck it after each slew and refine the command when motion took long enough for the Sun to move.
 - Before a hardware scan, the scheduler resolves the live controller using the configured primary and fallback URLs. Every slew must be accepted and finish within the configured position tolerance; a controller error, telescope fault, stationary mount, wrong final position, or timeout stops immediately and is shown on the website with current and target coordinates.
 - Calibration Day runs the Due's physical `HOME` sequence before every hardware raster, rather than trusting an ordinary commanded `Alt=0, Az=0` position. This re-establishes the mount reference at its physical limits. A rejected raster is re-homed and retried once before it counts as a failed scan.
-- A B210 raster holds one SDR session for all points, explicitly selects `RX2`, and discards a short receiver warm-up capture. Starting the standalone receiver is blocked while Sun Scan or Calibration Day owns the B210.
+- A B200 raster holds one SDR session for all points, explicitly selects `RX2`, and discards a short receiver warm-up capture. Starting the standalone receiver is blocked while Sun Scan or Calibration Day owns the B200.
 - The website point counter advances only after the telescope has reached the requested grid point and a power measurement has completed; failed movement is never counted as scan data.
 - Azimuth grid offsets are cross-elevation sky offsets; mount azimuth commands are expanded by `cos(altitude)`. A grid point outside the safe mount range stops the scan with a website error instead of recording a clipped, inaccurate point.
 - Results include both `az_error_deg` (mount azimuth correction) and `az_error_sky_deg` (fitted sky/cross-elevation correction), plus mid-scan Sun position and scan start/end timestamps.
@@ -636,13 +636,13 @@ See `../notebooks/read_h1_data.ipynb` for a more complete example with metadata 
 
 ### SDR Not Found
 
-**B210:**
+**B200/B210:**
 ```bash
 # Check if device is detected
 uhd_find_devices
 ```
 If not found:
-- Ensure USB 3.0 connection (B210 requires USB 3.0)
+- Ensure USB 3.0 connection (B200 and B210 require USB 3.0)
 - Install/reinstall UHD drivers
 - On Windows, check Device Manager for driver issues
 

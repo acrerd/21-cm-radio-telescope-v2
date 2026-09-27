@@ -133,7 +133,7 @@ template, the pointing model or the measured beam does.
 
 ## 3. What is injected, and when
 
-The pilot is the receiver's own reference: the B210's transmitter, through
+The pilot is the receiver's own reference: the B200's transmitter, through
 fixed pads and the old SRT calibration dipole at the dish's vertex, radiating
 into the feed so that **everything downstream of the feed is inside the
 measurement** — the probe, the horn, the SAWbird, the cable down the mount,
@@ -335,7 +335,7 @@ trend in it without checking the intercept itself.
 
 **Anchored on the H I line.** The line is the only part of the sky whose
 brightness is known independently, from HI4PI through the measured beam. The
-velocity shift of the B210's clock is fitted alongside, and **carried between
+velocity shift of the B200's clock is fitted alongside, and **carried between
 observations only from a fit whose correlation says a line held it** (≥0.99):
 a shift with no line to hold it slides onto whatever is nearby and reports a
 confident number. Constrained fits give −2.4 to −3.0 ppm over three weeks,

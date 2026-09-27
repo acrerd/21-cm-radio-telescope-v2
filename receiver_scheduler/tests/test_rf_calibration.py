@@ -264,7 +264,7 @@ def _shifted(v_kms, peak_k=100.0, n=400):
 
 
 def test_a_frequency_scale_error_is_recovered():
-    """The B210's crystal scales the axis; over 2 MHz that is a pure shift."""
+    """The B200's crystal scales the axis; over 2 MHz that is a pure shift."""
     f, model, data_k = _shifted(2.0)
     counts = 3.0e-5 * (120.0 + data_k)
     out, _ = R.fit_gain_with_shift(f, counts, f, model)

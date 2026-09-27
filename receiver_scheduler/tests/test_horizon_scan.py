@@ -235,7 +235,7 @@ def test_the_mount_is_homed_between_strips():
     """Bounds any lost counts to a couple of strips instead of a whole sweep.
 
     Runs the non-demo path, because demo mode deliberately skips homing - but
-    with the B210 session stubbed as well as the measurement. Without that stub
+    with the B200 session stubbed as well as the measurement. Without that stub
     this opened the real device: it passed whenever the SDR happened to be
     free, and on 2026-08-25 it failed in the middle of an observation because
     the receiver had it. Failing was the good outcome. A unit test that can

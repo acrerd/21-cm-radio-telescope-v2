@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Can the B210 and its USB link carry the pilot? Full-duplex throughput test (issue #30).
+"""Can the B200 and its USB link carry the pilot? Full-duplex throughput test (issue #30).
 
 Runs the fixed instrument's real flowgraph (TwoProductFlowgraph: wide and H I
 products at the observatory's rate) with the pilot exactly as a scheduled

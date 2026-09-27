@@ -118,7 +118,7 @@
                     <div class="form-group">
                         <label>SDR Type</label>
                         <select autocomplete="off" id="ssSdrType">
-                            <option value="b210">Ettus B210</option>
+                            <option value="b210">Ettus B200</option>
                             <option value="rtlsdr">RTL-SDR</option>
                             <option value="demo">Demo (Simulated)</option>
                         </select>
@@ -335,7 +335,7 @@
                 <div class="section-title">Pilot</div>
                 <div style="color:#888; font-size:12px; margin-bottom:10px; max-width:70ch;">
                     The receiver's own reference: one record in every N is a burst of a full-band
-                    comb from the B210's transmitter, through the vertex dipole and the whole receive
+                    comb from the B200's transmitter, through the vertex dipole and the whole receive
                     chain, recovered by correlation. Burst records are dropped from the science; the
                     records between are divided by the latest burst's level and tilt and by the
                     running passband shape, reversibly. Not detected means the transmitter is not
@@ -394,7 +394,7 @@
                     <div class="form-group">
                         <label>SDR</label>
                         <select autocomplete="off" id="hzSdrType">
-                            <option value="b210">B210</option>
+                            <option value="b210">B200</option>
                             <option value="rtlsdr">RTL-SDR</option>
                             <option value="demo">Demo (no hardware)</option>
                         </select>
@@ -554,7 +554,7 @@
                     <div class="form-group">
                         <label>SDR</label>
                         <select autocomplete="off" id="obvSdr">
-                            <option value="b210">B210</option>
+                            <option value="b210">B200</option>
                             <option value="rtlsdr">RTL-SDR</option>
                         </select>
                     </div>
@@ -714,7 +714,7 @@
                 </div>
                 <div class="form-group">
                     <label>Banner Subtitle</label>
-                    <input autocomplete="off" type="text" id="cfgBannerSubtitle" placeholder="Hydrogen Line (21cm) Observation Manager">
+                    <input autocomplete="off" type="text" id="cfgBannerSubtitle" placeholder="blank: show the telescope's figures (beam, T_sys)">
                 </div>
                 </div>
                 <div class="config-section">
@@ -859,7 +859,7 @@
                     </div>
                 </div>
                 <div style="color:#888; font-size:12px; margin-bottom:10px; max-width:70ch;">
-                    The pilot is the B210's own transmitter sending a full-band comb through the
+                    The pilot is the B200's own transmitter sending a full-band comb through the
                     vertex dipole into the feed for one record in every N (a burst), recovered by
                     correlation on the receive side. Burst records are flagged and dropped from the
                     science; the records between are divided by the latest burst's gain and tilt and
@@ -1206,7 +1206,7 @@
                     <div class="form-group">
                         <label>SDR Type</label>
                         <select autocomplete="off" id="obsSdrType">
-                            <option value="b210">Ettus B210</option>
+                            <option value="b210">Ettus B200</option>
                             <option value="rtlsdr">RTL-SDR</option>
                             <option value="demo">Demo (Simulated)</option>
                         </select>
@@ -1277,6 +1277,7 @@
                     <button class="guide-nav-item" data-guide="spectrum" onclick="showGuide('spectrum')">Reading a spectrum</button>
                     <button class="guide-nav-item" data-guide="datafile" onclick="showGuide('datafile')">The data file (HDF5)</button>
                     <button class="guide-nav-item" data-guide="suncal" onclick="showGuide('suncal')">Sun scan &amp; calibration</button>
+                    <button class="guide-nav-item" data-guide="pulsar" onclick="showGuide('pulsar')">Pulsars (B0329+54)</button>
                     <button class="guide-nav-item" data-guide="simhorizon" onclick="showGuide('simhorizon')">Simulator &amp; horizon</button>
                     <div class="guide-nav-group">Theory</div>
                     <button class="guide-nav-item" data-guide="line" onclick="showGuide('line')">The 21&nbsp;cm line</button>
@@ -1404,6 +1405,34 @@ with h5py.File('data/observations/20260828_060018_drift.h5', 'r') as f:
                         <h3>Temperature scale</h3>
                         <p>The same measurement gives the <strong>gain</strong> (counts per kelvin) and the <strong>system temperature</strong> <span class="var">T</span><sub>sys</sub>, which together put spectra on a kelvin scale. Because the receiver cools through the evening the gain drifts a little, so calibrate close in time to the observation that needs absolute temperatures.</p>
                         <div class="callout note"><span class="tag">Why the Sun, and not hydrogen</span>Calibrating a hydrogen measurement against a hydrogen model would be circular. The Sun is an independent, broadband source, so it is an honest ruler for both pointing and temperature.</div>
+                    </div>
+
+                    <div class="guide-section" id="guide-pulsar">
+                        <h2>Pulsars (B0329+54)</h2>
+                        <p class="lead">A pulsar is a spinning neutron star that sweeps a beam of radio emission past the Earth once a turn. This telescope can detect one: <strong>B0329+54</strong>, which pulses every 0.7145&nbsp;s. Each pulse is far too faint to see, so thousands are added together at exactly the right period &mdash; <em>folding</em> &mdash; until the pulse stands out of the noise. First detected here on 27&nbsp;September 2026.</p>
+                        <h3>Why only this one</h3>
+                        <p>At 1.4&nbsp;GHz B0329+54 averages about 200&nbsp;mJy, bright for a pulsar. Even so its pulse adds only about 0.5&nbsp;mK to a system temperature near 190&nbsp;K. The next candidate, B0950+08, would need of order twenty times the observing time, so the pulsar mode is built for B0329+54 alone. It is circumpolar from Glasgow and can be observed at any hour.</p>
+                        <h3>Booking a run</h3>
+                        <ul>
+                            <li>In <span class="guide-jump" onclick="guideGoto('scheduler')">Schedule</span>, choose <strong>Observation &rarr; Pulsar B0329+54 (folded)</strong>. Plan on <strong>6&nbsp;hours or more</strong>; tick <strong>home first</strong>.</li>
+                            <li>The integration-time box does not apply: the receiver records the whole 1397&ndash;1429&nbsp;MHz band as a single channel, one sample every millisecond (about 14&nbsp;MB an hour).</li>
+                            <li>Expect roughly 8&sigma; in 6&nbsp;h and 13&sigma; in 16&nbsp;h. A night can be half or double that: the pulsar's brightness varies by factors of two over hours (interstellar scintillation), and our single feed sees only part of its partly polarised signal.</li>
+                        </ul>
+                        <h3>Reading the plot</h3>
+                        <p>Open the recording in <span class="guide-jump" onclick="guideGoto('observe')">Observe</span> (the <em>Pulsar</em> filter lists them) and press <strong>Plot Result</strong>. It takes about half a minute for a long run.</p>
+                        <ul>
+                            <li><strong>Top left &mdash; this run's pulse.</strong> The data folded at the period predicted from the pulsar's catalogue values and the Earth's motion, shown twice. The pulse sits at phase <strong>0.5</strong> (and 1.5) by design: every run shares one phase zero, so a pulse elsewhere means something is wrong. The title gives the matched <strong>SNR</strong>; 5 or more is a detection.</li>
+                            <li><strong>Bottom left &mdash; how it built up.</strong> 10-minute slices on the same phase axis. The pulse appears as a vertical line where it is bright enough; a horizontal band lighting every phase is interference, not the pulsar.</li>
+                            <li><strong>Top right &mdash; every run added together,</strong> with the published profile from Effelsberg (red) for comparison. With enough nights the shoulder and the trailing component become visible.</li>
+                            <li><strong>Bottom right &mdash; timing.</strong> Each red point is one night's time of arrival compared with the prediction; grey points are that night's 4-hour pieces, a consistency check. The box gives the period and its rate of change, fitted once there are enough nights (a period from three nights spanning a day, the slow-down from four spanning three weeks).</li>
+                        </ul>
+                        <p><strong>PRESTO fold</strong> refolds the same recording with PRESTO, the standard professional package, as an independent check. Its significance is a different statistic from ours; quote each tool's number as its own.</p>
+                        <h3>Times of arrival and the timing record</h3>
+                        <p>Plotting a run measures its <strong>time of arrival (TOA)</strong>: the moment the pulse reached the telescope, found by fitting the Effelsberg profile to our fold. Runs below SNR&nbsp;6 give no TOA (a weak fit would lock onto noise). TOAs go into a standard <code>.tim</code> file, which the timing program PINT fits for the pulsar's period and spin-down. Over months that shows the pulsar slowing down and, eventually, its irregularities.</p>
+                        <div class="callout note"><span class="tag">Clock</span>Until the Thunderbolt's pulse-per-second is wired into the radio, times come from the computer's network clock, good to a few milliseconds; such TOAs are flagged <code>-pps 0</code> and weighted accordingly. With the PPS the radio's clock is set to GPS time and the flag becomes <code>-pps 1</code>. Nothing needs switching: the receiver uses the PPS automatically when it sees one.</div>
+                        <h3>Where the results are kept</h3>
+                        <p>The raw recording stays in <code>data/observations/</code> like any other. The results that took a night of telescope time &mdash; the TOAs (<code>b0329.tim</code>), the ephemeris (<code>B0329+54.par</code>) and each run's folded profile &mdash; are written to <code>receiver_scheduler/pulsar_timing/</code>, which is kept in git. The added-up profile is built from those stored profiles, so a night still counts after its recording has been deleted. Plotting writes them; committing them is done by hand.</p>
+                        <div class="callout note"><span class="tag">Full details</span>How the recording, folding, phase model, TOAs and PINT fit work is written up in <code>docs/PULSAR_PROCESSING.tex</code>.</div>
                     </div>
 
                     <div class="guide-section" id="guide-simhorizon">
@@ -1621,7 +1650,7 @@ with h5py.File('data/observations/20260828_060018_drift.h5', 'r') as f:
                         <h3>Velocity frames</h3>
                         <p>The recorded axis is <strong>topocentric</strong> &mdash; sky frequency exactly as observed, so a file re-reduces correctly whatever is later learned about the direction. The plots draw an <strong>LSR</strong> axis:</p>
                         <div class="eqn"><span class="var">v</span><sub>LSR</sub> = <span class="var">v</span><sub>topo</sub> + <span class="var">v</span><sub>bary</sub> + <strong>U</strong>&middot;<strong>n&#770;</strong></div>
-                        <span class="eqn-where"><span class="var">v</span><sub>bary</sub> is the observer's barycentric velocity toward the source; <strong>U</strong> is the solar motion (20.0&nbsp;km/s toward the LSR apex). The terms are: Earth rotation 0.46, Earth orbit 29.8, solar motion 20.0 &mdash; combined ~50&nbsp;km/s (&equiv;237&nbsp;kHz), so uncorrected spectra of the same source in different seasons do not superpose. Evaluated at the observation's own mid-time; the B210 clock adds a further &minus;2.36&nbsp;ppm (&plusmn;0.08&nbsp;km/s).</span>
+                        <span class="eqn-where"><span class="var">v</span><sub>bary</sub> is the observer's barycentric velocity toward the source; <strong>U</strong> is the solar motion (20.0&nbsp;km/s toward the LSR apex). The terms are: Earth rotation 0.46, Earth orbit 29.8, solar motion 20.0 &mdash; combined ~50&nbsp;km/s (&equiv;237&nbsp;kHz), so uncorrected spectra of the same source in different seasons do not superpose. Evaluated at the observation's own mid-time; the B200 clock adds a further &minus;2.36&nbsp;ppm (&plusmn;0.08&nbsp;km/s).</span>
                     </div>
 
                     <div class="guide-section" id="guide-adv-article">

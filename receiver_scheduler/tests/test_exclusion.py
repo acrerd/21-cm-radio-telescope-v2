@@ -16,7 +16,7 @@ The gaps found on 2026-08-25, all of them one-directional:
 The reverse was refused in every case, which is why none of this had shown up:
 starting them in the habitual order works. The horizon scan drives the mount
 for two hours, so a Sun scan begun alongside it would raster wherever the
-horizon scan had just moved to, and both would claim the B210. The Sun scan
+horizon scan had just moved to, and both would claim the B200. The Sun scan
 would fail on the device, the horizon scan would record whatever the mount
 happened to be pointing at, and the profile would be quietly wrong.
 
@@ -124,7 +124,7 @@ def test_one_subsystem_at_a_time(client, busy, asking, quiet_hardware):
     resp = client.post(path, json=payload)
     assert _refused(resp), (
         "%s was allowed to start while a %s was running; both would own the "
-        "B210 and the mount" % (asking, busy))
+        "B200 and the mount" % (asking, busy))
 
 
 @pytest.mark.parametrize("asking", sorted(SUBSYSTEMS))
@@ -132,7 +132,7 @@ def test_nothing_starts_while_the_receiver_was_booted_by_hand(client, asking,
                                                               quiet_hardware):
     """The claimant that was missed when this matrix was first written.
 
-    The manual receiver (/api/receiver/start) holds the B210 as firmly as any
+    The manual receiver (/api/receiver/start) holds the B200 as firmly as any
     scan does, but it is not one of the four subsystem state dicts, so
     enumerating those left it out. The Sun scan and calibration day happened to
     check it separately and were fine; the horizon scan and RF calibration did

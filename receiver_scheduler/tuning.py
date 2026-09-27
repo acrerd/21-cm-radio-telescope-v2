@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Where to put the local oscillator, and how wide to sample.
 
-The B210 is a direct-conversion receiver, so the tuned frequency lands on the
+The B200 is a direct-conversion receiver, so the tuned frequency lands on the
 FFT's DC bin, where LO leakage and ADC offset live. UHD corrects for that
 automatically, and the correction subtracts whatever is there - including
 signal. Tuned to the H I rest frequency, as every observation was until
@@ -17,7 +17,7 @@ DC artefact was.
 
 The offset cannot be arbitrary. It has to be large enough to put the artefact
 clear of the line, and small enough that the line stays in the flat part of the
-band - the B210's decimation filter rolls off hard near the edges. Measured
+band - the B200's decimation filter rolls off hard near the edges. Measured
 from a 2 MHz Lockman Hole spectrum on 2026-08-24: response is above 90% of peak
 within +-0.46 MHz of centre, which is +-23% of the sample rate, and has fallen
 to 29% at the band edge. That measurement is what USABLE_HALF_WIDTH below
@@ -33,7 +33,7 @@ H1_REST_FREQ_HZ = 1420.405752e6
 # ---------------------------------------------------------------------------
 # The fixed instrument (issue #27, decided 2026-08-26)
 #
-# Scheduled observations no longer choose a tuning. The B210 is always at the
+# Scheduled observations no longer choose a tuning. The B200 is always at the
 # same LO, sample rate and gain, and every recording carries two products
 # from the one stream: a coarse spectrum across the whole band (continuum,
 # RFI, the calibration comb of #26) and a fine H I sub-band. What kind of
@@ -138,7 +138,7 @@ def fixed_instrument(overrides: dict | None = None) -> dict:
     inst["continuum_band_hz"] = [float(inst["continuum_band_hz"][0]),
                                  float(inst["continuum_band_hz"][1])]
     # The pilot (issue #30) travels with the instrument: it is part of what
-    # the receiver does with the B210, and a file has to know what was sent
+    # the receiver does with the B200, and a file has to know what was sent
     # to recover it. `overrides` may carry receiver_pilot_* config keys or a
     # nested `pilot` dict (an entry's `pilot_off` becomes enabled=False in
     # the scheduler's instrument_for).
@@ -213,7 +213,7 @@ USABLE_HALF_WIDTH = 0.27
 # 2x: 23% -> 91%, 18% -> 92%, 15% -> 94%. It improves slowly, because the
 # decimation filter starts drooping well before the 90% contour, so chasing the
 # last few percent costs bandwidth for very little. 18% is the knee of that
-# curve: most of the available gain, at a sample rate the B210 and the disk do
+# curve: most of the available gain, at a sample rate the B200 and the disk do
 # not notice.
 LINE_PLACEMENT = 0.18
 

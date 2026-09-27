@@ -1,4 +1,4 @@
-"""The pilot (issue #30): the B210's TX as the receiver's gain and passband reference, in bursts.
+"""The pilot (issue #30): the B200's TX as the receiver's gain and passband reference, in bursts.
 
 What these guard: the burst frame and its reference agree with what the
 receive FFT does; a burst that is there is found and one that is not (the
@@ -667,7 +667,7 @@ class TestCarrier:
         assert tr.tone_level({"detected": True, "power": 50.0}) == (1.0, 0)  # absurd, refused
 
     def test_it_is_recorded_but_not_applied_until_the_bench_test_says_so(self, tmp_path, monkeypatch):
-        """Applying it corrects a wobble in the SAWbird or the B210, does
+        """Applying it corrects a wobble in the SAWbird or the B200, does
         nothing for an atmospheric one, and substitutes the transmit chain's
         own. So the series is recorded always and applied only on request."""
         from observation_plot import read_observation

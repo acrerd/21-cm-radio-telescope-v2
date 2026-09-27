@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Hydrogen Line (21cm) Receiver for SDR
-Supports Ettus B210 and RTL-SDR
+Supports Ettus B200/B210 and RTL-SDR
 Uses GNU Radio for signal processing, PyQtGraph for display
 
 Measures spectrum around 1420.405752 MHz, displays real-time integrated spectrum
@@ -146,7 +146,7 @@ def set_device_time(usrp, requested=None):
     usrp.set_time_now(uhd.time_spec(time.time()))
     info['time_source'] = 'host'
     return info
-# The B210's device address, used by every source and sink that opens it (they
+# The B200's device address, used by every source and sink that opens it (they
 # must match, or UHD may try to open the radio a second time). num_recv_frames:
 # UHD's default of 16 USB receive frames holds a millisecond or two of samples
 # at 32 Msps, so any host stall longer than that was an overflow. Measured
@@ -336,7 +336,7 @@ def create_sdr_source(sdr_type, sample_rate, center_freq, gain):
         # 10 kHz is a velocity scale wrong by 2 km/s. The sample rate has always
         # been taken from the hardware rather than the request; the frequency
         # had not been, which was a latent error waiting for a device that could
-        # not hit what it was asked for. This B210 tunes exactly - measured
+        # not hit what it was asked for. This B200 tunes exactly - measured
         # 0.000 kHz across the band used here - so nothing was ever wrong,
         # which is precisely why it would have stayed invisible.
         print(f"  NOTE: requested {center_freq / 1e6:.6f} MHz, hardware tuned "
@@ -622,7 +622,7 @@ class TwoProductFlowgraph(gr.top_block):
         self.instrument = dict(instrument)
         self.sdr_type = sdr_type
         # No falling back to demo mode in a recording. On 2026-08-26 a gain
-        # calibration could not open the B210 - an orphaned receiver still
+        # calibration could not open the B200 - an orphaned receiver still
         # held it - and recorded three minutes of synthetic noise instead,
         # which the fit then took for the sky: T_sys on its floor, a negative
         # correlation, and a bad calibration stored. A receiver that cannot
@@ -698,7 +698,7 @@ class TwoProductFlowgraph(gr.top_block):
     def _build_pilot(self):
         """The pilot (issue #30): a transmit branch and a gated cross-spectrum branch.
 
-        Transmit: a repeating wide-FFT frame into TX/RX of the same B210 at
+        Transmit: a repeating wide-FFT frame into TX/RX of the same B200 at
         the same rate and LO as the receive side - zeros between bursts, the
         full-band comb during one. Recovery: the wide FFT's frames, gated per
         frame on the pilot's presence, multiplied by the conjugate of the
@@ -1854,7 +1854,7 @@ class HeadlessRecorder:
 # millisecond is 230 MB an hour; raw voltages would be 115 GB and buy
 # nothing, since dispersion across our band is a tenth of a pulse width.
 #
-# Time comes from two places on purpose: the cadence from the B210's clock
+# Time comes from two places on purpose: the cadence from the B200's clock
 # (a row is exactly presum x NCHAN samples), the start from the host clock
 # at flowgraph start. A fold needs the first stable and the second to about
 # a millisecond; pulsar timing would need a PPS, and this is not that.
@@ -2010,9 +2010,9 @@ class PulsarFlowgraph(gr.top_block):
             self.sdr_source, self.throttle, actual_rate = create_demo_source(self.sample_rate)
             self.sample_rate = actual_rate
         # The device clock set to the host's now, so the rx_time tags read
-        # as unix time: with the external reference fitted the B210's clock
+        # as unix time: with the external reference fitted the B200's clock
         # *is* the reference, and every row's time follows from the last
-        # mark and the row count. (A PPS into the B210 and set_time_next_pps
+        # mark and the row count. (A PPS into the B200 and set_time_next_pps
         # would make this absolute to a microsecond, for timing; not needed
         # for a fold.)
         self.time_info = {'time_source': 'none'}
@@ -2076,7 +2076,7 @@ class PulsarFlowgraph(gr.top_block):
 
     def _build_injection(self):
         """An artificial pulsar (H1_PULSAR_INJECT): broadband noise bursts
-        from the B210's own transmitter, through the pilot's pads and the
+        from the B200's own transmitter, through the pilot's pads and the
         vertex dipole, at a period that is a whole number of samples.
 
         It tests everything a sky run depends on except pointing and the
@@ -3448,7 +3448,7 @@ Examples:
         '--sample-rate', '-r',
         type=float,
         default=None,
-        help='Sample rate in Hz (default: 2.4e6 for B210, 2.048e6 for RTL-SDR)'
+        help='Sample rate in Hz (default: 2.4e6 for B200, 2.048e6 for RTL-SDR)'
     )
     parser.add_argument(
         '--headless',

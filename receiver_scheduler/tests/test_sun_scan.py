@@ -252,7 +252,7 @@ def test_hardware_scan_stops_on_first_failed_slew():
     assert slew.call_count == 1
     measure.assert_not_called()
     assert progress == []
-    # The B210 session must be released even when the scan aborts early,
+    # The B200 session must be released even when the scan aborts early,
     # otherwise the claimed USRP blocks every subsequent scan/observation.
     meter.close.assert_called_once()
 

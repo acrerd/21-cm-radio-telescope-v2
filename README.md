@@ -30,7 +30,7 @@ The system consists of four integrated components:
 |   WT32-ETH01      |      |   H1 Receiver      |
 |    Controller     |      |   (GNU Radio)      |
 |                   |      |                    |
-|  - Ethernet/WiFi  |      |  - Ettus B210 SDR  |
+|  - Ethernet/WiFi  |      |  - Ettus B200 SDR  |
 |  - Web UI (:80)   |      |  - FFT processing  |
 |  - Coord convert  |      |  - HDF5 output     |
 |  - NTP time sync  |      |  - Live display    |
@@ -383,7 +383,7 @@ This installs Flask (web scheduler), ephem (satellite tracking), and pytest (tes
 
 GNU Radio-based spectrum analyzer for 21 cm observations:
 
-- **SDR Support:** Ettus B210, RTL-SDR, or demo mode (simulated data)
+- **SDR Support:** Ettus B200/B210, RTL-SDR, or demo mode (simulated data)
 - **Processing:** Real-time FFT with configurable integration time
 - **Display:** Live spectrum plot and waterfall display (PyQtGraph)
 - **Output:** HDF5 files with integrated spectra, timestamps, and metadata
@@ -405,7 +405,7 @@ Tabbed web interface that coordinates telescope pointing and data recording:
 - **Sun Scan Tab:** Pointing calibration via raster scan of the sun (see below)
 - **Configuration Tab:** Persistent settings (controller URL, observer location, data folder, receiver Python path, sound)
 - **Log Tab:** Live view of rotating scheduler log
-- **Start Receiver:** Starts the B210 receiver manually for warm-up/testing and reports whether the receiver is idle, manually started, or owned by a scheduled observation
+- **Start Receiver:** Starts the B200 receiver manually for warm-up/testing and reports whether the receiver is idle, manually started, or owned by a scheduled observation
 - **Coordinate Systems:** Alt/Az, RA/Dec (J2000), Galactic, Drift Scan (fixed pointing computed from a source and beam-crossing time), Solar System objects (Sun/Moon), and Satellite (TLE)
 - **Satellite Tracking:** Fetch TLEs from CelesTrak, compute next pass, track via 1 Hz position updates
 - **End Actions:** Stay, Go Home, or Stow telescope after observation
@@ -477,10 +477,10 @@ Determines telescope pointing errors by performing an n×n raster scan centred o
 - **Moving Sun:** Sun position is recomputed before each measurement slew, checked again after hardware motion, and refined when necessary; the saved comparison point is the mid-scan ephemeris
 - **Verified movement:** before scanning, the scheduler resolves the reachable controller from the primary/fallback URLs. Each command must reach its requested position within tolerance; rejected commands, telescope faults, a stationary mount, wrong final coordinates, and timeouts stop immediately with a detailed website error. The point counter advances only after a completed measurement.
 - **Physical reference and retry:** Calibration Day runs the Due `HOME` sequence before each hardware raster so displayed coordinates are re-established at the physical limits. It automatically re-homes and retries one rejected raster before counting a scan failure. A continuing mismatch between displayed and physical position is a motor, encoder/coupling, or power problem and must not be treated as valid calibration data.
-- **Stable B210 acquisition:** one B210 session is held across the complete raster, explicitly on `RX2`, with a short discarded warm-up capture. The standalone receiver cannot start while calibration owns the SDR.
+- **Stable B200 acquisition:** one B200 session is held across the complete raster, explicitly on `RX2`, with a short discarded warm-up capture. The standalone receiver cannot start while calibration owns the SDR.
 - **Fit quality:** Gaussian peaks outside the measured raster, implausible beam widths, non-finite uncertainty, and poor fits are rejected and displayed as website errors rather than entering the day model
 - **Output:** pointing error (ΔAlt, mount ΔAz, sky ΔAz), fitted beam FWHM, scan start/end timestamps, and a two-panel image (measured data + Gaussian fit)
-- **SDR backends:** B210, RTL-SDR, or demo mode (simulated Gaussian beam)
+- **SDR backends:** B200/B210, RTL-SDR, or demo mode (simulated Gaussian beam)
 - **Standalone usage:**
 
   ```bash
@@ -516,7 +516,7 @@ Every recording goes in `receiver_scheduler/data/observations/`, named for when 
 
 `track` and `drift` describe the mount rather than the box the entry was typed into: an alt/az observation is a **drift** scan, because the scheduler parks the dish and leaves tracking off.
 
-Since issue #27 the B210 records with a **fixed instrument** (LO 1418.905752 MHz,
+Since issue #27 the B200 records with a **fixed instrument** (LO 1418.905752 MHz,
 8 Msps, gain 30 dB, set in `tuning.py`) and every file carries **two products** —
 an H I sub-band and a whole-band continuum product — readable while it is still
 being written (HDF5 SWMR):
@@ -604,7 +604,7 @@ See `notebooks/read_h1_data.ipynb` for a complete analysis example, and
 │   ├── h1_web_scheduler.py # Flask scheduler: routes, schedule, observing state
 │   ├── web/                # The operator page as static files (index.html,
 │   │                       #   app.css, js/ - one script per tab)
-│   ├── b210_h1_receiver.py # GNU Radio 21cm receiver (B210/RTL-SDR)
+│   ├── b210_h1_receiver.py # GNU Radio 21cm receiver (B200/RTL-SDR)
 │   ├── sun_scan.py         # Sun raster, pointing model, calibration day
 │   ├── horizon_scan.py     # Radiometric horizon measurement
 │   ├── rf_calibration.py   # Counts to kelvin: gain, T_sys, clock offset

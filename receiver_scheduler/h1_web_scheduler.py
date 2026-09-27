@@ -101,7 +101,11 @@ SIMULATOR_DIR = os.path.join(os.path.dirname(_SCRIPT_DIR), "astro_simulator", "w
 # Default configuration - overridden by scheduler_config.json if present
 _DEFAULT_CONFIG = {
     "banner_name": "H1 Receiver Scheduler",
-    "banner_subtitle": "Hydrogen Line (21cm) Observation Manager",
+    # Blank: the banner shows the telescope's own figures instead (beam and
+    # T_sys from the calibrations in force; shared.js loadBanner). The old
+    # default, "Hydrogen Line (21cm) Observation Manager", undersold a
+    # telescope that also folds pulsars, maps the horizon and monitors the Sun.
+    "banner_subtitle": "",
     # The controller sits on a private link owned by this host (issue #10), so
     # this address is ours permanently rather than the observatory LAN's to
     # renumber. The fallbacks are mDNS over the same link and the controller's
@@ -128,7 +132,7 @@ _DEFAULT_CONFIG = {
     "observer_lon": SITE_LON_DEG,
     "observer_elevation": 50,
     "min_elevation": 10.0,
-    # The fixed instrument (issue #27): the B210's tuning is not a
+    # The fixed instrument (issue #27): the B200's tuning is not a
     # per-observation choice. These are the numbers every scheduled
     # observation records with, and they are normally never touched; the
     # defaults and the reasoning are in tuning.py. Unset (None) means the
@@ -139,7 +143,7 @@ _DEFAULT_CONFIG = {
     "receiver_wide_channels": None,
     "receiver_h1_band_hz": None,
     "receiver_h1_channels": None,
-    # The pilot (issue #30): the B210's TX as the gain and passband
+    # The pilot (issue #30): the B200's TX as the gain and passband
     # reference, part of the instrument. Unset means pilot.PILOT_DEFAULTS.
     "receiver_pilot_enabled": None,
     # Pulsar mode's own band (b210_h1_receiver H1_PULSAR_RATE/H1_PULSAR_LO).
@@ -2180,7 +2184,7 @@ def hardware_in_use():
 
     The consequence is not a tidy error. The horizon scan drives the mount for
     two hours; a Sun scan begun alongside it rasters wherever the horizon scan
-    has just moved to, both claim the B210, and the profile records whatever
+    has just moved to, both claim the B200, and the profile records whatever
     the mount happened to be pointing at.
 
     Deliberately does not cover a *scheduled* observation, which preempts the
@@ -2201,7 +2205,7 @@ def hardware_in_use():
         return "a horizon scan is running"
     if rf_state["running"]:
         return "an RF calibration is running"
-    # The manual receiver holds the B210 just as firmly as anything else, and
+    # The manual receiver holds the B200 just as firmly as anything else, and
     # was missed when this matrix was first written on 2026-08-25 - the Sun
     # scan and calibration day happened to check it separately, so a horizon
     # scan or an RF calibration would start straight on top of it and both
@@ -2209,7 +2213,7 @@ def hardware_in_use():
     # *claimants* is what let it through.
     with receiver_boot_lock:
         if _proc_running(receiver_boot_process):
-            return "the receiver was started by hand and holds the B210"
+            return "the receiver was started by hand and holds the B200"
     return None
 
 
@@ -4268,7 +4272,7 @@ def _rf_observe(name, glon, glat, duration_s, sdr_type="b210",
         stdout=receiver_log, stderr=subprocess.STDOUT)
     receiver_log.close()
     # Registered so a scheduler shutdown can take it down with it: the one
-    # orphaned by a restart on 2026-08-26 kept the B210 for an hour and
+    # orphaned by a restart on 2026-08-26 kept the B200 for an hour and
     # every later run silently got demo noise.
     rf_receiver_process = proc
     try:
@@ -6183,7 +6187,7 @@ def api_receiver_status():
 
 @app.route('/api/receiver/start', methods=['POST'])
 def api_receiver_start():
-    """Start the B210 receiver using radioconda so the scheduler can launch it."""
+    """Start the B200 receiver using radioconda so the scheduler can launch it."""
     global receiver_boot_process
     python_path = receiver_python_path()
     repo_root = os.path.abspath(os.path.join(_SCRIPT_DIR, ".."))
@@ -6205,7 +6209,7 @@ def api_receiver_start():
             return jsonify({
                 'success': False,
                 'running': False,
-                'error': 'The B210 is reserved by Sun Scan calibration',
+                'error': 'The B200 is reserved by Sun Scan calibration',
                 'python': python_path,
             }), 409
 
@@ -8042,7 +8046,7 @@ def _handle_sigterm(signum, frame):
     """Turn SIGTERM into SystemExit so main()'s cleanup runs.
 
     Without this, `systemctl stop` (or any kill) orphans the receiver
-    subprocess, which keeps the B210 claimed and blocks every observation
+    subprocess, which keeps the B200 claimed and blocks every observation
     after a scheduler restart until the orphan is killed by hand.
     """
     raise SystemExit(0)
@@ -8109,7 +8113,7 @@ def main():
         with _camera_lock:
             _stop_camera_stream("shutdown")
         # An RF calibration in progress: cancel it and take its receiver
-        # down too. Left alone it outlives the scheduler holding the B210,
+        # down too. Left alone it outlives the scheduler holding the B200,
         # and every run after the restart quietly fails to open the radio.
         rf_cancel.set()
         proc = rf_receiver_process

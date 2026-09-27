@@ -232,7 +232,7 @@
                 text.textContent = `Receiver: ${label}${obs}${data.pid ? ' #' + data.pid : ''}`;
                 btn.disabled = true;
                 btn.title = data.source === 'observation'
-                    ? 'A scheduled observation is using the B210.'
+                    ? 'A scheduled observation is using the B200.'
                     : 'The receiver GUI is already running on the console.';
             } else {
                 dot.classList.remove('running');
@@ -346,8 +346,37 @@
                     document.title = cfg.banner_name;
                     document.getElementById('bannerName').textContent = cfg.banner_name;
                 }
-                document.getElementById('bannerSubtitle').textContent =
-                    cfg.banner_subtitle || '';
+                // A subtitle typed on the Configuration tab wins; blank (or the
+                // retired "Hydrogen Line" default) shows the telescope itself,
+                // from the calibrations in force, so it follows a re-measurement.
+                const custom = (cfg.banner_subtitle || '').trim();
+                if (custom && custom !== 'Hydrogen Line (21cm) Observation Manager') {
+                    document.getElementById('bannerSubtitle').textContent = custom;
+                } else {
+                    loadBannerDetails();
+                }
+            }).catch(() => {});
+        }
+
+        function loadBannerDetails() {
+            fetch('/api/rf/status').then(r => r.json()).then(d => {
+                const el = document.getElementById('bannerSubtitle');
+                const beam = d.beam || {}, gain = d.gain || {};
+                const parts = ['3 m dish', '1.4 GHz'];
+                const tips = [];
+                if (beam.fwhm_deg) {
+                    parts.push('beam ' + Number(beam.fwhm_deg).toFixed(2) + '\u00b0 FWHM' +
+                               (beam.solid_angle_sq_deg ? ' (' + Number(beam.solid_angle_sq_deg).toFixed(1) + ' deg\u00b2)' : ''));
+                    tips.push('beam: main-lobe solid angle from the Sun drift of ' + (beam.measured_utc || '').slice(0, 10));
+                }
+                if (gain.t_sys_k) {
+                    parts.push('T_sys ' + Math.round(gain.t_sys_k) + ' K');
+                    tips.push('T_sys: from the gain fit of ' + (gain.created_utc || '').slice(0, 10) +
+                              ' (drifts a few K an hour)');
+                }
+                parts.push('55.90\u00b0 N, 4.31\u00b0 W');
+                el.textContent = parts.join('  \u00b7  ');
+                el.title = tips.join('\n') || '';
             }).catch(() => {});
         }
         loadBanner();

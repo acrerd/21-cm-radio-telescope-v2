@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""The pilot: the B210's own transmitter as the receiver's gain and passband reference (issue #30).
+"""The pilot: the B200's own transmitter as the receiver's gain and passband reference (issue #30).
 
 The front end drifts by percent over tens of minutes, and it drifts with a
 *tilt* across the band - the SAW filter's skirt sliding under us with its
@@ -136,7 +136,7 @@ PILOT_DEFAULTS = {
     # Whether the carrier's level is *applied* on the fly. Off until the bench
     # correlation test (issue #30, runs 1-5) says the wobble is downstream of
     # the vertex dipole: a carrier corrects a wobble in the SAWbird or the
-    # B210, does nothing for an atmospheric one, and would substitute the
+    # B200, does nothing for an atmospheric one, and would substitute the
     # transmit chain's own wobble for the receive chain's. The series is
     # recorded either way, so the decision can be made on real data and
     # applied at reduction.

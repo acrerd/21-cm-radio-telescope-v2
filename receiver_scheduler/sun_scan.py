@@ -524,7 +524,7 @@ def refraction_deg(true_alt_deg: float) -> float:
 
 def _measure_power_uhd(center_freq: float, sample_rate: float,
                        gain: float, integration_time: float) -> float:
-    """Measure total broadband power using UHD (Ettus B210)."""
+    """Measure total broadband power using UHD (Ettus B200)."""
     import uhd
     num_samps = int(sample_rate * integration_time)
     # recv_num_samps is a convenience method on MultiUSRP
@@ -539,7 +539,7 @@ def _measure_power_uhd(center_freq: float, sample_rate: float,
 
 
 class _B210PowerMeter:
-    """Keep one explicitly configured B210 session for a complete raster."""
+    """Keep one explicitly configured B200 session for a complete raster."""
 
     def __init__(self, center_freq: float, sample_rate: float, gain: float):
         import uhd
@@ -559,7 +559,7 @@ class _B210PowerMeter:
         self.usrp.recv_num_samps(
             warmup_samples, center_freq, sample_rate, [0], gain,
             streamer=self.streamer)
-        log.info("B210 ready on RX2: %.6f MHz, %.3f Msps, %.1f dB",
+        log.info("B200 ready on RX2: %.6f MHz, %.3f Msps, %.1f dB",
                  center_freq / 1e6, sample_rate / 1e6, gain)
 
     def measure(self, integration_time: float) -> float:
@@ -647,7 +647,7 @@ def measure_power(sdr_type: str = "b210",
             # there was - so report the real UHD failure instead of discarding
             # it behind a generic error.
             raise RuntimeError(
-                f"B210 power measurement failed: {exc}") from exc
+                f"B200 power measurement failed: {exc}") from exc
 
     if sdr_type == "rtlsdr":
         return _measure_power_rtlsdr(center_freq, sample_rate, gain, integration_time)
@@ -1133,7 +1133,7 @@ def sun_scan(
             "Sun target kept moving beyond the refinement tolerance after 3 slews")
 
     # --- Scan loop ---
-    # The finally guarantees the B210 session is released on every exit
+    # The finally guarantees the B200 session is released on every exit
     # path (slew fault, Sun set, clamp error, SDR error, cancellation) —
     # a claimed USRP would otherwise block all later scans and observations.
     try:

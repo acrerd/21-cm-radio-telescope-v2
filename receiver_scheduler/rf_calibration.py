@@ -123,7 +123,7 @@ VERY_HIGH_T_SYS_K = 300.0
 # genuinely lossy front end makes the system temperature track the air
 # temperature, at nearly a kelvin per kelvin here. Neither spillover nor
 # receiver noise does that.
-# One polarisation - the B210 is opened with channels=[0] - and no factor of a
+# One polarisation - the B200 is opened with channels=[0] - and no factor of a
 # half belongs anywhere in the temperature scale because of it. For a
 # single-polarisation antenna looking at unpolarised sky the antenna temperature
 # *is* the beam-weighted brightness temperature: the half-power split is already
@@ -752,7 +752,7 @@ def fit_gain_with_shift(freq_hz, counts, model_freq_hz, model_k,
                         min_t_sys_k=MIN_T_SYS_K, max_shift_km_s=MAX_SHIFT_KM_S):
     """Fit gain, system temperature and a frequency-scale error together.
 
-    The B210 runs from its own TCXO, and an error in it scales the whole
+    The B200 runs from its own TCXO, and an error in it scales the whole
     frequency axis. Across the 2 MHz that matters here that scaling is a pure
     shift - the differential from one end of the band to the other is 13 Hz -
     so it appears as a constant velocity offset, which is exactly what was

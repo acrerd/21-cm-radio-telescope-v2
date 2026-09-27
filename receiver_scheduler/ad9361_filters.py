@@ -8,14 +8,14 @@ modelled: the hardware can be asked what it is set to, and the response computed
 exactly from the coefficients in use.
 
 What UHD does *not* expose is the FPGA's own digital down-converter, which takes
-the AD9361's output rate down to the requested sample rate. On this B210 at
+the AD9361's output rate down to the requested sample rate. On this B200 at
 7 Msps the AD9361 runs at a 56 MHz master clock, so the FPGA decimates by a
 further 8, and that stage's anti-alias filter is the one whose corner sits at the
 output Nyquist frequency. Anything this module cannot account for belongs to
 that stage or to the analogue front end, which is the point of computing it: the
 residual is what step two has to measure.
 
-Run directly to capture the chain from the attached B210 into a JSON file.
+Run directly to capture the chain from the attached B200 into a JSON file.
 """
 
 import json
@@ -29,7 +29,7 @@ CHAIN_FILE = os.path.join(HERE, "ad9361_chain.json")
 
 def capture(sample_rate, bandwidth, center_freq=1421.205752e6, gain=30.0,
             path=CHAIN_FILE):
-    """Ask the attached B210 for its filter chain and store it."""
+    """Ask the attached B200 for its filter chain and store it."""
     import uhd
 
     u = uhd.usrp.MultiUSRP("type=b200")

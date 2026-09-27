@@ -16,7 +16,7 @@ import os
 # Omega = 1.133 FWHM^2, kept because the simulators convolve with a Gaussian.
 #
 # Measured 2026-09-15 (issue #35) from three hour-long drift scans of the Sun
-# at B210 gains of 40, 30 and 20 dB, 352 x 10 s each, +-7.4 deg of drift so
+# at B200 gains of 40, 30 and 20 dB, 352 x 10 s each, +-7.4 deg of drift so
 # the baseline is seen on both sides. Integrating the crossing directly,
 # 2 pi int P(theta) theta dtheta on each side, gives 23.7 sq deg at 30 dB and
 # 23.8 at 20 dB - identical, so the receiver is linear there and that is the

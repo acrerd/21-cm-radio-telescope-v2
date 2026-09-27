@@ -163,7 +163,7 @@ def test_it_moves_the_anticentre_line_to_where_the_survey_puts_it():
 def test_the_clock_term_is_only_carried_from_a_constrained_fit():
     """The correction that inverted a documented conclusion.
 
-    The B210's TCXO scales the frequency axis, which over 2 MHz is a pure
+    The B200's TCXO scales the frequency axis, which over 2 MHz is a pure
     velocity shift. It was recorded as unusable - "the clock really moved by
     3.7 ppm in an hour and a half" - and that reading was wrong. Re-fitting the
     eight archived calibrations against a settled bandpass showed the scatter

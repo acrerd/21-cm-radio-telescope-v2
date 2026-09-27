@@ -79,7 +79,7 @@
         let hzPollTimer = null;
 
         // ---- what the receiver will actually be tuned to ----
-        // The B210 is a direct-conversion receiver, so the tuned frequency
+        // The B200 is a direct-conversion receiver, so the tuned frequency
         // lands on the FFT's DC bin and UHD's automatic offset correction
         // subtracts whatever is there - including the line. The LO is
         // therefore offset, and the sample rate raised if it must be to keep

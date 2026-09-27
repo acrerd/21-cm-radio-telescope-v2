@@ -233,7 +233,7 @@ Figure~\ref{fig:architecture} shows the components and the paths between them.
 \node[box, right=1.4cm of due] (receiver) {GNU Radio\\H1 receiver};
 
 % SDR
-\node[hwbox, below=1.4cm of receiver] (sdr) {Ettus B210 /\\RTL-SDR};
+\node[hwbox, below=1.4cm of receiver] (sdr) {Ettus B200 /\\RTL-SDR};
 
 % Antenna
 \node[hwbox, below=1.6cm of motors] (antenna) {3\,m dish,\\1420\,MHz feed};
@@ -1683,9 +1683,9 @@ where $\mathbf{U}$ is the kinematic solar motion, which defines LSRK as 20.0\,km
 The conversion is evaluated at the observation's own mid-time and epoch, never ``now'': the barycentric term moves by 1.95\,km\,s$^{-1}$ in a week. It was validated at the galactic anticentre, where rotation contributes nothing along the line of sight: the $l=184$, $b=0$ observation of 25 August 2026 peaked at $-11.17$\,km\,s$^{-1}$ topocentric and lands at $+3.75$\,km\,s$^{-1}$ corrected, against HI4PI's $+3.97$ --- agreement to 0.22\,km\,s$^{-1}$, from 15\,km\,s$^{-1}$ before.
 
 \subsubsection{The receiver clock}
-\index{clock offset}\index{B210!clock}
+\index{clock offset}\index{B200!clock}
 
-A third term is the B210's own reference oscillator. Its error scales the whole frequency axis, which across a few MHz is a pure velocity shift; the constrained gain fits (those whose H\,\textsc{i} line was strong enough to hold the shift, correlation $\ge 0.99$) give $-2.36 \pm 0.27$\,ppm over 18 hours --- $\pm 0.08$\,km\,s$^{-1}$, well inside the $\pm 2$\,ppm the part is specified at --- and that stored value is applied to the plotted axis as well. The scatter of the unconstrained fits, $-6.6$ to $+18.4$\,ppm, tracks line strength and not time: a shift with no line to hold it slides onto whatever is nearby and reports a confident number. Hence \texttt{trustworthy\_velocity\_shift}: the clock is stable, and only a fit that could measure it is believed.
+A third term is the B200's own reference oscillator. Its error scales the whole frequency axis, which across a few MHz is a pure velocity shift; the constrained gain fits (those whose H\,\textsc{i} line was strong enough to hold the shift, correlation $\ge 0.99$) give $-2.36 \pm 0.27$\,ppm over 18 hours --- $\pm 0.08$\,km\,s$^{-1}$, well inside the $\pm 2$\,ppm the part is specified at --- and that stored value is applied to the plotted axis as well. The scatter of the unconstrained fits, $-6.6$ to $+18.4$\,ppm, tracks line strength and not time: a shift with no line to hold it slides onto whatever is nearby and reports a confident number. Hence \texttt{trustworthy\_velocity\_shift}: the clock is stable, and only a fit that could measure it is believed.
 
 %==============================================================================
 \section{H1 receiver and observation scheduler}
@@ -1694,7 +1694,7 @@ A third term is the B210's own reference oscillator. Its error scales the whole 
 %==============================================================================
 
 \subsection{Receiver overview}
-\index{GNU Radio}\index{SDR}\index{Ettus B210}\index{RTL-SDR}
+\index{GNU Radio}\index{SDR}\index{Ettus B200}\index{RTL-SDR}
 
 \texttt{b210\_h1\_receiver.py} is a GNU~Radio spectrum analyser for 21\,cm observations, offering real-time FFT with configurable integration, a live spectrum and waterfall display (PyQtGraph), and continuous logging to HDF5. It has two front ends on one flowgraph: the console window, for warm-up and bench work, and a \emph{headless} recorder\index{receiver!headless} (\texttt{-{}-headless}) that imports no Qt at all and is the only path a scheduled observation uses --- the observatory is worked over \texttt{ssh}, and an observation must not depend on a display.
 
@@ -1711,7 +1711,7 @@ Since 26 August 2026 the receiver's tuning is \textbf{not a per-observation choi
 
 The LO sits on the positive-velocity edge of the sub-band, where there is no emission beyond $+300$\,km\,s$^{-1}$, so its DC artefact can never touch a line and is outside the H\,\textsc{i} product altogether; it falls inside the continuum product and is masked there. The 8\,Msps came from a sample-rate ladder run on the observatory host that day: 4.5, 8 and 10\,Msps ran with no UHD overflows, 12\,Msps overflowed steadily and 16 and 20 lost most of the stream --- the host's FFT thread, not USB, being the limit (a single thread of the i7-4790 does 60\,Msps of 2048-point FFTs; the old flowgraph spent most of it elsewhere). M31, whose approaching half reaches $-600$\,km\,s$^{-1}$, lies past the 8\,Msps edge and remains a console-window case with free tuning.
 
-Two consequences for anyone reading counts. The per-bin power is normalised by the transform length, so the counts scale --- and the gain in counts per kelvin --- does not depend on how many channels the band is cut into (the first two-product flowgraph dropped that normalisation and halving the channel count silently halved every count). And a headless receiver that cannot open the radio it was asked for \textbf{fails}, rather than falling back to the demo noise source as the window does: on 26 August a gain calibration recorded three minutes of Gaussian noise behind an orphaned receiver that still held the B210, and the fit took it for the sky.
+Two consequences for anyone reading counts. The per-bin power is normalised by the transform length, so the counts scale --- and the gain in counts per kelvin --- does not depend on how many channels the band is cut into (the first two-product flowgraph dropped that normalisation and halving the channel count silently halved every count). And a headless receiver that cannot open the radio it was asked for \textbf{fails}, rather than falling back to the demo noise source as the window does: on 26 August a gain calibration recorded three minutes of Gaussian noise behind an orphaned receiver that still held the B200, and the fit took it for the sky.
 
 \subsubsection{Overflows}
 \index{overflow}
@@ -1725,7 +1725,7 @@ UHD reports a dropped block of samples by printing a bare \texttt{O}; nothing re
 \toprule
 \textbf{SDR} & \textbf{Frequency range} & \textbf{Sample rate} & \textbf{Notes} \\
 \midrule
-Ettus B210 & 70\,MHz -- 6\,GHz & up to 56\,MHz & Recommended \\
+Ettus B200/B210 & 70\,MHz -- 6\,GHz & up to 56\,MHz & Recommended \\
 RTL-SDR (R820T) & 24 -- 1766\,MHz & up to 2.4\,MHz & Budget option \\
 Demo & --- & --- & Simulated data, no hardware \\
 \bottomrule
@@ -1738,7 +1738,7 @@ python b210_h1_receiver.py --sdr b210 --gain 40 --sample-rate 2.4e6   # console 
 python b210_h1_receiver.py --sdr demo
 \end{lstlisting}
 
-In headless mode \texttt{-{}-sample-rate} and \texttt{-{}-gain} are noted and ignored: the fixed instrument decides, so a stale launcher cannot retune a scheduled observation. Two receiver instances contend for the one B210, which is the usual cause of a receiver that exits immediately --- and, since the fixed instrument, of one that refuses to start rather than silently recording demo noise.
+In headless mode \texttt{-{}-sample-rate} and \texttt{-{}-gain} are noted and ignored: the fixed instrument decides, so a stale launcher cannot retune a scheduled observation. Two receiver instances contend for the one B200, which is the usual cause of a receiver that exits immediately --- and, since the fixed instrument, of one that refuses to start rather than silently recording demo noise.
 
 \subsection{Recordings: where they go and what they are called}
 \index{recordings!naming}\index{observations folder}
@@ -1919,7 +1919,7 @@ Duration & Minutes \\
 Coordinates & Target position in one of the systems above \\
 Instrument & Shown, not set: the fixed instrument of Section~\ref{sec:instrument} \\
 Integration time & Seconds per record \\
-SDR type & B210, RTL-SDR or demo \\
+SDR type & B200, RTL-SDR or demo \\
 Calibrator & Noise source on/off \\
 Respect local horizon & Advisory check against the measured horizon; trims a scheduled entry \\
 Home the mount first & Run the physical homing before pointing, and record the count error (Section~\ref{sec:homefirst}) \\
@@ -1956,7 +1956,7 @@ cd receiver_scheduler && python -m pytest      # ~490 tests, ~15 s, radioconda's
 
 One known false failure: \texttt{TestFlaskAPI::test\_post\_config} fails on the observatory host because it makes a real HTTP call, reaches the live controller, and the controller then syncs the observer location back over the value the test just set. It is a test-isolation problem, unrelated to whatever is being changed; check it against a clean tree before chasing it.
 
-Three rules the suite enforces on itself, each learned the hard way. \textbf{No test may open the radio}: one that stubbed the measurement but not the B210 session took the SDR from a running observation. \textbf{No test writes into the operational log or the last-observation pointer}: \texttt{conftest.py} detaches the file handlers and redirects the pointer for the session, after tests' demo azimuths were once read as measurements. And \textbf{no test leaks files into the data folders}: horizon partials and recordings go to temporary directories.
+Three rules the suite enforces on itself, each learned the hard way. \textbf{No test may open the radio}: one that stubbed the measurement but not the B200 session took the SDR from a running observation. \textbf{No test writes into the operational log or the last-observation pointer}: \texttt{conftest.py} detaches the file handlers and redirects the pointer for the session, after tests' demo azimuths were once read as measurements. And \textbf{no test leaks files into the data folders}: horizon partials and recordings go to temporary directories.
 
 %==============================================================================
 \section{Sky simulator}
