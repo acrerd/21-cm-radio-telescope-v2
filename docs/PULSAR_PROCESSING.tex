@@ -1,0 +1,386 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[margin=25mm]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage{array}
+\usepackage[hidelinks]{hyperref}
+\usepackage{xcolor}
+
+\newcommand{\code}[1]{\texttt{#1}}
+\newcommand{\psr}{B0329+54}
+\setlength{\parskip}{0.5ex}
+
+\title{Pulsar observing with the Acre Road SRT:\\
+recording, folding, times of arrival and the data kept}
+\author{Acre Road Observatory}
+\date{27 September 2026}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+The Acre Road 3\,m telescope detects the pulsar \psr{} at 1.4\,GHz. It first did so on the night of 26--27 September 2026, at a matched signal-to-noise ratio (SNR) of 9.4 in 16\,h. PRESTO confirmed the detection independently at $9.9\sigma$.
+
+This document describes the pulsar mode end to end:
+\begin{itemize}
+\item how the radio records a total-power series at 1\,ms;
+\item how every sample is timed;
+\item the barycentric phase model used to fold it;
+\item how the fold is made and judged;
+\item how a time of arrival (TOA) is measured and written for the timing program PINT;
+\item which files hold what, and which of them are kept in git.
+\end{itemize}
+It closes with the checks that established each step and the questions still open. File and function names refer to \code{receiver\_scheduler/} in the repository.
+\end{abstract}
+
+\tableofcontents
+\newpage
+
+%-----------------------------------------------------------------------------
+\section{Scope and the target}
+
+The mode is built for \psr{} (J0332+5434) and nothing else. At 1.4\,GHz it is the only pulsar within reach of a 3\,m dish at the present system temperature: its mean flux density is $203\pm57$\,mJy, and the next candidate, B0950+08, would need of order twenty times the integration. Its parameters are therefore hard-wired in \code{pulsar\_fold.B0329}; there is no catalogue lookup and no pulsar picker.
+
+\begin{table}[h]
+\centering
+\begin{tabular}{@{}ll@{}}
+\toprule
+Position (J2000, epoch MJD 56000) & 03:32:59.4096, +54:34:43.329 \\
+Proper motion & $\mu_\alpha^* = 16.97$, $\mu_\delta = -10.37$ mas\,yr$^{-1}$ \\
+$F_0$ at PEPOCH MJD 46473 (TDB) & 1.399541538720\,Hz ($P_0 = 0.714519699726$\,s) \\
+$F_1$, $F_2$ & $-4.01197\times10^{-15}$\,s$^{-2}$, $5.3\times10^{-28}$\,s$^{-3}$ \\
+DM & 26.7641\,pc\,cm$^{-3}$ \\
+$S_{1400}$, $W_{50}$, $W_{10}$ & 203\,mJy, 6.6\,ms, 31--47\,ms \\
+\bottomrule
+\end{tabular}
+\caption{The ephemeris used, from the ATNF catalogue (Hobbs et al.\ 2004).}
+\end{table}
+
+The pulse is not a single Gaussian. In the EPN profile at 1410\,MHz (von Hoensbroech \& Xilouris 1997) only 49\% of the pulse energy lies within $\pm5$\,ms of the main peak. A leading shoulder and two outriders, at about $-24$ and $+18$\,ms, carry the rest. The main peak is strongly circularly polarised, with $V/I = -0.34$. Both facts enter the expected sensitivity (\S\ref{sec:expect}).
+
+%-----------------------------------------------------------------------------
+\section{The instrument in pulsar mode}
+
+\subsection{Radio and band}
+The receiver is an Ettus USRP \textbf{B200}: one receive channel, AD9364 transceiver. It sits behind the feed, the SAWbird+ H1 front end (LNA and SAW filter) and the cable. Pulsar mode is not tied to the fixed H\,\textsc{i} instrument used for spectra, because it needs no spectral line. Its band is set by two configuration keys, which the scheduler passes to the receiver as environment variables:
+\begin{itemize}
+\item \code{pulsar\_sample\_rate\_hz}, as \code{H1\_PULSAR\_RATE}: default 32\,Msps;
+\item \code{pulsar\_lo\_hz}, as \code{H1\_PULSAR\_LO}: default 1413\,MHz.
+\end{itemize}
+The band is therefore 1397--1429\,MHz.
+
+A 64-channel test with the dish stowed found the whole receive chain flat to within 2\,dB over 1397.5--1428\,MHz, with every 0.5\,MHz channel at the radiometer noise level (1.00--1.04 times). Summing into a single channel then loses almost nothing:
+\begin{itemize}
+\item the effective bandwidth of the summed channel is 27.8\,MHz, against 28.2\,MHz for per-channel normalisation;
+\item that compares with 7.4\,MHz effective for the fixed instrument's 8\,Msps;
+\item SNR scales as $\sqrt{B}$, so the gain is a factor of 1.9.
+\end{itemize}
+The receiver therefore records the whole band as \textbf{one channel}. No passband correction is needed.
+
+Two facts about the band edges:
+\begin{itemize}
+\item 1397--1400 and 1427--1429\,MHz lie outside the 1400--1427\,MHz radio-astronomy allocation. A single channel cannot drop them if interference appears there.
+\item The AD9364's analogue filter is requested at twice the sample rate, capped at the chip's 56\,MHz. It only protects the ADC; anti-aliasing is done by the chip's digital decimation filters.
+\end{itemize}
+
+\subsection{Why one channel and no dedispersion}
+The dispersion sweep across the band is
+\begin{equation}
+\Delta t = K\,\mathrm{DM}\,\left(f_\mathrm{lo}^{-2} - f_\mathrm{hi}^{-2}\right) \approx 2.5\,\mathrm{ms},
+\qquad K = 4.148808\times10^{3}\ \mathrm{s\,MHz^2\,pc^{-1}\,cm^{3}}.
+\end{equation}
+Against the 7\,ms main peak ($\sigma \approx 3.0$\,ms) this smear costs about 1.5\% of the SNR. Coherent dedispersion, as was essential in the 408\,MHz system, would need an 80\,000-sample filter at 32\,Msps for that 1.5\%. Four channels would reduce the smear to 0.63\,ms and the loss to 0.1\%; this is noted for later, but not done.
+
+\subsection{Signal path in the receiver}
+\code{PulsarFlowgraph} in \code{b210\_h1\_receiver.py} is a GNU Radio flowgraph:
+\[
+\text{usrp\_source} \rightarrow |x|^2 \rightarrow \times\tfrac{1}{N} \rightarrow \text{sum of } N \rightarrow \text{row sink},
+\qquad N = f_s\,\Delta t = 32\,000,
+\]
+giving rows of $\Delta t = 1$\,ms. Each row is the mean power of 32\,000 complex samples. With 16 channels (\code{H1\_PULSAR\_NCHAN}), a 16-point FFT filterbank replaces $|x|^2$. That option exists but is not the default: at 32\,Msps a 64-channel FFT overflowed the host.
+
+\subsection{Clock, time and buffering}
+\begin{description}
+\item[Frequency.] The B200 runs from the Thunderbolt GPS receiver's 10\,MHz reference (\code{select\_clock\_source}). Lock is checked through the \code{ref\_locked} sensor rather than assumed. Within a run, sample timing is as good as the Thunderbolt.
+\item[Absolute time.] \code{set\_device\_time} with \code{H1\_TIME\_SOURCE} = \code{auto} (the default):
+  \begin{enumerate}
+  \item switch the radio's time source to external and wait up to 2.5\,s for a PPS edge;
+  \item just after an edge, set the next edge to be second $\lfloor t_\mathrm{host}\rfloor+1$;
+  \item after 1.2\,s, check that the last PPS reads a whole second and that the radio agrees with the host to within the NTP error.
+  \end{enumerate}
+  With no PPS seen, the host's NTP clock is copied into the radio once (good to about 1--4\,ms), and the file says so. \code{external} refuses to record without a PPS; \code{internal} never looks for one. The whole second always comes from the host and only the sub-second from the PPS, so whether the Thunderbolt aligns its PPS to UTC or GPS seconds makes no difference: the two differ by a whole number of seconds. The B200's PPS input accepts 1.8--5\,V.
+\item[USB buffering.] The radio is opened with \code{num\_recv\_frames=512} (\code{UHD\_DEVICE\_ARGS}). UHD's default of 16 frames holds only 1--2\,ms of samples at 32\,Msps, so any host stall longer than that dropped samples. Under the same 5-minute synthetic load, 16 frames gave 324 overflows and 512 frames gave none.
+\end{description}
+
+\subsection{Timing every row}
+When the radio drops samples (an overflow), UHD tags the first sample after the gap with \code{rx\_time}, the device clock's reading for that sample. The stream's first sample is tagged the same way. These marks are what keep the time axis exact across gaps.
+
+Downstream of the summing block, GNU Radio rounds a tag's offset to the nearest row: an offset of 499 samples lands in row 0 and 500 in row 1. The position of the gap within its row would be lost, and every row after it stamped up to $\pm0.5$\,ms wrong. The receiver therefore reads the tags \emph{before} the sum. \code{\_TagTap} uses GNU Radio's C++ \code{tag\_debug} block (silent, keeping every tag) on the radio's own output. A Python block doing the same work overflowed the radio every 9\,s at 32\,Msps. Each mark is stored as a fractional row, (sample index)/(samples per row), together with the device time.
+
+The time of row $i$ is its \emph{middle}:
+\begin{equation}
+t_i = t_k + \Delta t\,\bigl(i + \tfrac12 - r_k\bigr),
+\end{equation}
+where $(r_k, t_k)$ is the latest mark whose row starts at or before row $i$. A stretch begins at the first row lying wholly after its mark; the row the gap falls in began on the previous mark. This is \code{pulsar\_fold.row\_times}, and \code{\_block\_times} applies the same rule block by block. Stamping rows at their start would make every TOA 0.5\,ms early.
+
+%-----------------------------------------------------------------------------
+\section{The recording}
+\label{sec:file}
+
+Each run writes one HDF5 file, \code{data/observations/YYYYMMDD\_HHMMSS\_pulsar.h5}. It is readable while being written (SWMR). Four hours at one channel are 58\,MB; sixteen hours are 230\,MB.
+
+\begin{longtable}{@{}p{0.27\linewidth}p{0.68\linewidth}@{}}
+\toprule
+Dataset & Contents \\
+\midrule
+\code{power} & $N_\mathrm{rows}\times n_\mathrm{chan}$, float32: mean power per row in counts. \\
+\code{frequency\_hz} & the channel centre(s). \\
+\code{time\_marks} & $(r, t)$ pairs: fractional row and device time (Unix seconds) at the start and after every overflow. \\
+\code{overflow\_marks} & (row, count) for each batch of UHD overflows. \\
+\code{underflow\_marks} & (row, count) of transmit underflows, when the test transmitter is used. \\
+\bottomrule
+\end{longtable}
+
+\begin{longtable}{@{}p{0.30\linewidth}p{0.65\linewidth}@{}}
+\toprule
+Attribute & Meaning \\
+\midrule
+\code{mode}, \code{observation\_mode} & \code{pulsar} \\
+\code{dt\_s}, \code{nchan}, \code{channel\_width\_hz} & row length, channels, channel width \\
+\code{sample\_rate\_hz}, \code{center\_freq\_hz}, \code{gain\_db}, \code{instrument} & the band as recorded \\
+\code{t0\_unix}, \code{created\_utc} & host clock at start \\
+\code{time\_marks\_exact} & 1 when the marks carry their exact fraction of a row (from 27 Sep 2026) \\
+\code{time\_source}, \code{time\_pps\_verified}, \code{time\_device\_minus\_host\_s}, \code{time\_last\_pps} & how the absolute time was set \\
+\code{site\_lat\_deg}, \code{site\_lon\_deg}, \code{site\_height\_m} & 55.902426, $-4.307865$, 50\,m \\
+\code{obs\_name}, \code{comment}, \code{object\_name}, \code{coord\_system}, \code{sun\_monitor}, \ldots & the schedule entry \\
+\code{pulsar\_*} & the catalogue values used when the run was booked \\
+\code{inject\_*} & present only for test-transmitter runs (\S\ref{sec:checks}) \\
+\bottomrule
+\end{longtable}
+
+%-----------------------------------------------------------------------------
+\section{The phase model}
+\label{sec:phase}
+
+Every fold uses an \textbf{absolute} phase (\code{pulsar\_fold.absolute\_phase}), not one counted from the file's first sample. For each time $t$ (UTC at the site):
+\begin{enumerate}
+\item convert to TDB at the site's location (astropy);
+\item add the light-travel time from the site to the solar-system barycentre, in the direction of the pulsar's position at that date, proper motion applied. This is the Roemer delay, up to 500\,s over the year;
+\item subtract the dispersion delay $K\,\mathrm{DM}/f^2$ at the recording's centre frequency;
+\item evaluate the spin ephemeris at that barycentric time, with $\delta = t_\mathrm{bary} - \mathrm{PEPOCH}$:
+\begin{equation}
+\phi = F_0\,\delta + \tfrac12 F_1\,\delta^2 + \tfrac16 F_2\,\delta^3 + \phi_\mathrm{off}.
+\end{equation}
+\end{enumerate}
+
+The offset $\phi_\mathrm{off} = 0.3105$ was chosen once, from the first detection, so that its pulse folds to phase 0.5; with no offset that pulse fell at 0.1895. Every other run then lands at 0.5 \emph{by prediction}. Where a run actually lands is a combined check on the ephemeris, the barycentring and the clock. The offset must not be changed to centre any single night.
+
+The phase is evaluated on 60\,s knots and interpolated linearly; the curvature between knots is below $10^{-7}$ of a period. Whole periods are removed at the run's start, so the numbers stay small: the $F_1$ term alone amounts to about 3300 periods by 2026. The fractional phase, which is what matters, is unaffected.
+
+The older \code{phase\_track} integrated the topocentric period from the radial-velocity correction. It is kept only for the fixed-period test transmitter and for the \code{-f/-fd/-fdd} fit that prepfold needs.
+
+\paragraph{Checks.}
+\begin{itemize}
+\item The rate $d\phi/dt$ agrees with the independent radial-velocity route to $5\times10^{-8}$. The remainder is TDB's rate against UTC, which the two routes treat differently.
+\item Arrival times generated by PINT from the same par file, at our site, all fall at one fractional phase to within 1\,\textmu s over 5\,h.
+\end{itemize}
+
+%-----------------------------------------------------------------------------
+\section{Folding}
+\label{sec:fold}
+
+\code{pulsar\_fold.analyse\_file} folds a recording in one pass with bounded memory. A 16\,h run of 57.5 million rows takes 24\,s and 260\,MB. Keeping whole-run arrays in memory had taken 10 minutes and 2.8\,GB.
+
+\subsection{Per block (10 minutes of rows)}
+\begin{enumerate}
+\item Row times from the marks (mid-row), and phases interpolated from the absolute-phase knots.
+\item \textbf{Baseline:} each channel is divided by its median over 1\,s blocks, less one. The result is a fractional excess over the system level, the same units at any bandwidth. The 1\,s block matches the 408\,MHz pipeline; a 1\% duty-cycle pulse does not move a median.
+\item \textbf{Clipping:} samples beyond 6 robust $\sigma$ (1.4826\,MAD) are given zero weight, not set to zero. They are mostly positive-only broadband bursts.
+\item \textbf{Weights:} every sample in a second gets the weight $1/\sigma^2$, where $\sigma^2$ is that second's variance over its unclipped samples. This is weighting by \emph{noise}, not by SNR. Weighting by measured SNR would favour stretches where the noise happened to line up with the pulse.
+\item \textbf{Accumulate} $\sum w y$ and $\sum w$ into 60\,s sub-profiles of a 256-bin fold, and into a 1024-bin fold for timing when requested.
+\end{enumerate}
+
+\subsection{From the sub-profiles}
+\begin{description}
+\item[Profile.] The 256-bin fold summed over the run, and a 64-bin version for display.
+\item[Matched SNR.] A boxcar of width $W_{50}$ run across the 256-bin profile; the peak over the median, in units of 1.4826\,MAD. This is the SNR quoted at the \emph{predicted} period, and the headline number.
+\item[Period search.] The sub-profiles are shifted by whole fine bins, as a period offset $d$ would move them, and re-summed for $\pm150$\,ppm. The search is a check, not the quoted number: pure noise reaches SNR $\sim$3.5 somewhere in the range. For the first detection it peaked at $+0.0$\,ppm.
+\item[Sub-integrations.] 10-minute slices at the predicted period, for the time--phase image.
+\end{description}
+
+The quoted SNR moves by a few tenths depending on where the pulse falls against the bin edges. The second decimal place of any single SNR is not meaningful.
+
+\subsection{Expected sensitivity}
+\label{sec:expect}
+In the fold's fractional units, noise per 1\,ms row is $1/\sqrt{B\,\Delta t}$: 0.0112 at 8\,MHz and 0.0060 at 28\,MHz effective. Measured values are 1.05 and 1.08 times these. For a Gaussian pulse, the matched-filter SNR over an integration $T$ is
+\[
+\mathrm{SNR} \propto \frac{S\,G}{T_\mathrm{sys}}\sqrt{B\,T}\ \times\ \eta_\mathrm{profile}\,\eta_\mathrm{pol},
+\]
+with $G = A_e/2k = 2.55$\,mK\,Jy$^{-1}$ for one polarisation ($A_e = \lambda^2/\Omega_\mathrm{main} = 7.05$\,m$^2$) and $T_\mathrm{sys} \approx 187$\,K. Two factors reduce it:
+\begin{itemize}
+\item $\eta_\mathrm{profile} = 0.59$: the real profile holds less of its energy in the core than a single 6.6\,ms Gaussian.
+\item $\eta_\mathrm{pol} = 0.63$--$1.4$: the fraction of the circularly polarised core the single feed takes, which depends on the feed's unknown handedness.
+\end{itemize}
+The result is about 3.5$\sigma$ for 4\,h at 8\,MHz, and about 13$\sigma$ for 16\,h at 32\,MHz, 8--19$\sigma$ with the polarisation factor. Scintillation at 1.4\,GHz is coarse (scintles of order MHz, lasting minutes to tens of minutes), so a 28\,MHz band averages only a handful. A night can be twice or half the average.
+
+\subsection{Results so far}
+\begin{longtable}{@{}p{0.34\linewidth}p{0.61\linewidth}@{}}
+\toprule
+Run & Result \\
+\midrule
+26 Sep 01:00, 4\,h, 8\,MHz & matched SNR 2.0: not detected; 0 overflows; through transit \\
+26 Sep 08:00, 4\,h, 8\,MHz & about 3: not detected \\
+26--27 Sep, 16\,h, 32\,MHz & matched SNR 9.4--9.5, template SNR 14.9; period search +0.0\,ppm; PRESTO $9.9\sigma$; halves 7.8 and 7.2 at the same phase \\
+\bottomrule
+\end{longtable}
+
+\paragraph{Flux.} The flux density follows from the period-averaged pulse area over $\pm30$\,ms (so the outriders are included), times $T_\mathrm{sys}/G$: $188\pm17$\,mJy (statistical). Systematic uncertainty is about $\pm40\%$, from $T_\mathrm{sys}$ in this band, the polarisation factor and pointing. The ATNF value is $203\pm57$\,mJy.
+
+\paragraph{Scintillation.} The pulsar rose through the night: $135\pm24$ then $242\pm25$\,mJy by halves, and 91--368\,mJy in 2\,h pieces. The altitude count drift found at the next homing (0.5\,deg beyond the usual reading) would have lowered the late signal, not raised it.
+
+%-----------------------------------------------------------------------------
+\section{Times of arrival}
+\label{sec:toa}
+
+\subsection{Template}
+The template is the EPN 1410\,MHz Stokes-$I$ profile (hx97b, Effelsberg, 4096 bins), stored in \code{pulsar\_templates/}. Because it is noise-free and independent of our data, it cannot pull a TOA towards our own noise. It is smoothed exactly as our system smooths:
+\begin{itemize}
+\item one row (1\,ms);
+\item the dispersion sweep across the recording's band;
+\item one fold bin (1/1024 of a period).
+\end{itemize}
+Each is applied as a boxcar through its transfer function, a sinc. The main peak is placed at phase 0.5 and the template normalised to a peak of one.
+
+Our single feed sees $I$ plus a mixture of $Q$, $U$ and $V$, so our profile shape differs slightly from $I$. A constant difference becomes a phase offset, which the timing fit absorbs. One that changes with parallactic angle through a track would show as TOAs that depend on hour angle, and has to be tested for.
+
+\subsection{Fit}
+The run's 1024-bin profile $p$ is fitted as
+\begin{equation}
+p(\phi) = a + b\,T(\phi - \tau)
+\end{equation}
+in the Fourier domain (Taylor 1992), in \code{pulsar\_toa.fit\_shift}. The mean harmonic is excluded, so $a$ drops out.
+\begin{enumerate}
+\item A 16-times oversampled cross-correlation finds the peak approximately.
+\item A bounded one-dimensional maximisation of $\mathrm{Re}\sum_k P_k T_k^* e^{2\pi i k\tau}$ refines it, so $\tau$ is continuous rather than stepped by a bin.
+\item $b$ is fitted by least squares at that $\tau$.
+\end{enumerate}
+The error comes from the Fisher information:
+\begin{equation}
+\sigma_\tau = \frac{\sigma_\mathrm{bin}}{|b|\,\sqrt{\sum_j T'(\phi_j-\tau)^2}},
+\end{equation}
+with $\sigma_\mathrm{bin}$ the residual scatter per bin. The template SNR is $b\sqrt{\sum T^2}/\sigma_\mathrm{bin}$.
+
+For a resolved pulse the bin width drops out: splitting finer raises the per-bin noise by exactly as much as it sharpens the shape. For a Gaussian the precision is $\sigma_t \approx 0.6\,\mathrm{FWHM}/\mathrm{SNR}$, about 0.4\,ms for a 15$\sigma$ night.
+
+In 300 Monte Carlo trials the fitted shift was unbiased and its scatter matched the quoted error ($1.00\pm0.15$). On the first detection, $\sigma_\mathrm{bin}$ was 0.96 times the radiometer prediction.
+
+\subsection{Arrival time}
+The TOA is the time at which the folding phase model reads $n + 0.5 + \tau$, taking the pulse nearest the middle of the span. It is found by interpolating the phase knots (\code{arrival\_time}). This is a \textbf{topocentric UTC} time at the site and the \textbf{observing frequency}; barycentring and dispersion are left to the timing program, which applies them from the par file. Its error is $\sigma_\tau P_\mathrm{topo}$. The MJD is written to 13 decimal places from astropy's two-part time, never through a single float64, whose MJD resolution is about 0.6\,\textmu s.
+
+A TOA is written only when the template SNR is at least 6 (\code{MIN\_TOA\_SNR}); below that a fit can lock onto a noise feature.
+\begin{itemize}
+\item \textbf{Night TOA:} one per run, from the profile of the whole run folded at once. This is the timing datum, and the only kind fitted.
+\item \textbf{Segments} (\code{<recording>\_sN}): equal parts of the run, each fitted separately. A run's segments share its clock offset, so their differences are exact even without the PPS. They are a within-night check, never fitted, and will stop being written by default once nightly runs begin. The first night's four segments (SNR 6.1, 6.9, 6.4, 10.9) scatter at $\chi^2 = 10.9$ for 3 degrees of freedom. Three of the four sit near the SNR cut, where fits are least reliable.
+\end{itemize}
+
+\subsection{The .tim and par files}
+Each TOA is one line in tempo2 format in \code{pulsar\_timing/b0329.tim}:
+\begin{verbatim}
+<name> <freq MHz> <MJD UTC> <error us> ar -pps 0|1 -snr S -tobs s -bw MHz
+       -be b200 -fe sawbird -tmpl epn_hx97b_1410
+\end{verbatim}
+Lines are keyed by name, so re-analysing a recording replaces its lines rather than duplicating them, and the file is kept in time order. \code{-pps 0} marks a host-clock TOA; the par file adds \code{EQUAD -pps 0 2000} (\textmu s) in quadrature for those. \code{B0329+54.par} is written from the same parameters the fold uses (\code{UNITS TDB}, \code{EPHEM DE421}, \code{CLK TT(TAI)}). A JSON record next to each line keeps the full fit.
+
+%-----------------------------------------------------------------------------
+\section{Timing with PINT}
+PINT runs in its own conda environment, \code{radioconda/envs/pint}, never in the observing environment. \code{pint\_tools.py} is driven by subprocess and exchanges JSON.
+\begin{itemize}
+\item \textbf{Site.} Our surveyed position is registered as a custom observatory, \code{acre\_srt}, alias \code{ar}. PINT's own \code{acre} lies 49\,m away. No GPS or site clock corrections are applied, because the times are UTC from NTP or the PPS.
+\item \textbf{Fit.} Night TOAs only. PEPOCH is moved to the mean epoch of the data, so $P$ and $\dot P$ are quoted there rather than extrapolated 40 years. $F_0$ is freed once three night TOAs span at least a day. $F_1$ is freed once four span three weeks: the spin-down signature grows as $\tfrac12 F_1 t^2/F_0$, about 5\,ms in three weeks and 10\,ms in a month, against TOA errors of 0.4--2\,ms. Before that, the parameters are held at the catalogue values and only residuals are shown.
+\item \textbf{Checks.} PINT reads our \code{.tim} back with residuals below 0.1\,\textmu s. Our absolute phase and PINT's arrivals agree to 1\,\textmu s over 5\,h.
+\end{itemize}
+
+%-----------------------------------------------------------------------------
+\section{PRESTO as an independent check}
+PRESTO is installed in its own environment, and its \code{prepfold} is rebuilt with \code{tools/presto\_acre\_road.patch} so that it knows our site: telescope id 82, observatory code AR.
+
+\code{sigproc\_export.py} writes a SIGPROC \code{.fil} file. Channels are written highest first, as 32-bit floats. Every overflow gap is filled with rows at the channel median, because a \code{.fil} has one time grid: sample $i$ is at $t_\mathrm{start} + i\,t_\mathrm{samp}$. The export therefore rounds each post-overflow stretch to whole rows.
+
+\code{presto\_fold} runs
+\begin{verbatim}
+prepfold -topo -f f -fd fd -fdd fdd -phs phi0 -dm 26.7641 -n 64
+         -nsub 1 -nosearch -scaleparts
+\end{verbatim}
+Here $(f, \dot f, \ddot f)$ come from a cubic fit to our absolute phase over the run, and $-\mathrm{phs}$ is our absolute phase at the first sample, so PRESTO's pulse also sits at 0.5. The DM is never searched: 32\,MHz at 1.4\,GHz does not constrain it. PRESTO's significance is a reduced $\chi^2$ of the profile against a flat line, a weaker test than a matched filter. Each tool's number is quoted as its own; they are not interchangeable.
+
+%-----------------------------------------------------------------------------
+\section{The pulsar plot}
+Plot Result on a pulsar recording runs one fold with the timing bins and draws four panels.
+\begin{description}
+\item[Top left] This run's profile at the predicted period, in blue, with the best-searched period in orange. Two periods, pulse at 0.5 and 1.5; baseline at the off-pulse median; the matched SNR in the title.
+\item[Bottom left] 10-minute sub-integrations on exactly the same two-period axis: the pixel edges fall on the profile's bin edges, and the axes are shared.
+\item[Top right] All runs stacked at the absolute phase from the stored profiles, in units of the fitted template's peak, phase 0.25--0.75, with the template overlaid.
+\item[Bottom right] PINT residuals: night TOAs in red (filled for PPS time, open for host clock), segments in grey, statistical errors only, with $P$ and $\dot P$ fitted or held at the data epoch.
+\end{description}
+
+For a file in \code{data/observations/}, plotting also writes the run's TOAs and its stored profile. A test's temporary file never touches either. Plot and PRESTO requests are serialised by \code{observe\_plot\_lock}: pyplot is not thread-safe, and two plots share their outputs.
+
+%-----------------------------------------------------------------------------
+\section{Where the data are held}
+\begin{longtable}{@{}p{0.38\linewidth}p{0.12\linewidth}p{0.44\linewidth}@{}}
+\toprule
+Location & In git & Contents \\
+\midrule
+\code{data/observations/*\_pulsar.h5} & no & raw recordings (\S\ref{sec:file}), 14\,MB per hour; re-observable \\
+\code{pulsar\_timing/b0329.tim} & yes & all TOAs, night and segment \\
+\code{pulsar\_timing/B0329+54.par} & yes & the ephemeris the fold and PINT start from \\
+\code{pulsar\_timing/<name>.json} & yes & full record behind each TOA line \\
+\code{pulsar\_timing/profiles/<rec>.npz} & yes & each run's whole-run fold: 1024-bin $\sum wy$ and $\sum w$ at the absolute phase, with \code{phase\_offset}, \code{row\_centre}, \code{nbins}, frequency, bandwidth, time span and clock source \\
+\code{pulsar\_templates/} & yes & EPN template and its source file (CC BY 4.0, attribution in README) \\
+\code{data/presto/} & no & \code{.fil} exports and prepfold output \\
+\bottomrule
+\end{longtable}
+
+The TOAs and stored profiles are kept in git because each represents a night of telescope time, and a TOA history cannot be rebuilt from any single recording. The stacked profile is built from the stored profiles, not from the recordings on disk, so a night still counts after its recording has gone. A profile made under a different \code{phase\_offset} is rotated to the current one by a Fourier shift. Plotting writes these files; committing them is done by hand.
+
+%-----------------------------------------------------------------------------
+\section{How each step was established}
+\label{sec:checks}
+\begin{description}
+\item[Artificial pulsar.] The B200's transmitter sends gated noise through a 30\,dB pad and the vertex dipole (\code{H1\_PULSAR\_INJECT}). The replica mode shapes it as a 6.6\,ms Gaussian at the topocentric phase given by our own model.
+  \begin{itemize}
+  \item All 439 single pulses arrived at a fixed phase (MAD 0.66\,ms).
+  \item Pulse area was within 6\% of the level check, and scaled as amplitude$^2$ between amplitudes 0.1 and 0.2.
+  \item Fold noise was 0.96--1.12 times the radiometer prediction.
+  \end{itemize}
+  Below amplitude 0.05 the injection is unusable: whenever the transmit samples are non-zero, the received power dips by a roughly fixed amount. A transmit underflow slips the whole pulse train by 29--61\,ms, so the injection chain carries about a second of buffering.
+\item[Synthetic data.] Buried pulses are recovered at their phase. Two runs a day apart fold to the same phase. A run deliberately offset from the ephemeris returns the offset through its TOA. Error bars are checked by Monte Carlo. Overflow marks are exact to the sample.
+\item[PINT.] The phase agreement and \code{.tim} round trip described above.
+\item[The sky.] The detection: period search at $+0.0$\,ppm, both halves at the same phase, PRESTO's independent fold, and a flux consistent with the catalogue.
+\end{description}
+
+%-----------------------------------------------------------------------------
+\section{Open questions and next steps}
+\begin{itemize}
+\item \textbf{PPS.} Wiring is due next; the code is ready. Until then every TOA carries the host clock's 1--4\,ms, and nights cannot be stacked to sub-millisecond phase.
+\item \textbf{Segment scatter} on the first night ($\chi^2 = 10.9/3$). Two candidates: that file's $\pm0.5$\,ms overflow rounding (it predates exact marks), and the feed's view of the polarisation turning with parallactic angle; the $+2$\,ms segment contains transit. Weak fits near the SNR cut are a third. The test is TOAs split by hour angle across several nights.
+\item \textbf{Zenith pointing} (issue \#49). The controller clamps the model's azimuth correction at 10$^\circ$, which truncates the collimation term above altitude $\approx82^\circ$. On the transit of \psr{} the beam falls up to 1.7$^\circ$ off-target, costing about 2\% of a 16\,h run's signal. The fix belongs in the firmware.
+\item \textbf{Count drift.} About one pulse (0.5$^\circ$) per axis in 16--18\,h of tracking. Nightly runs home first.
+\item \textbf{Nightly runs.} 6\,h, the first full window after sunset, homing first. Transit enters that window in about six weeks, when a rule to avoid it will be needed.
+\item \textbf{Interference.} A broadband band at about 640\,min into the first detection run lights every phase at once. Lines at multiples of 12.5\,Hz and red noise at 0.05--0.3\,Hz are present on the sky and at the stow, but cost the fold only about 10\%.
+\item \textbf{Sensitivity.} A system temperature of 100\,K would give about 30$\sigma$ in 16\,h, or 5$\sigma$ in about 30 minutes. A second polarisation would add $\sqrt2$ and remove the feed-handedness uncertainty, but the B200 has one receive channel: it needs a B210 or a second B200 on the same reference.
+\end{itemize}
+
+%-----------------------------------------------------------------------------
+\section*{References}
+\begin{itemize}
+\item Hobbs, G. et al.\ 2004, MNRAS 353, 1311: timing noise and the ATNF parameters of \psr{}.
+\item Manchester, R.\,N., Hobbs, G.\,B., Teoh, A., Hobbs, M.\ 2005, AJ 129, 1993: the ATNF pulsar catalogue.
+\item Taylor, J.\,H.\ 1992, Phil.\ Trans.\ R.\ Soc.\ A 341, 117: pulsar timing and template matching in the Fourier domain.
+\item von Hoensbroech, A. \& Xilouris, K.\,M.\ 1997, A\&AS 126, 121: Effelsberg multifrequency pulsar polarimetry (EPN dataset hx97b).
+\item Luo, J. et al.\ 2021, ApJ 911, 45: PINT.
+\item Ransom, S.\,M.\ 2001, PhD thesis, Harvard: PRESTO.
+\end{itemize}
+
+\end{document}
