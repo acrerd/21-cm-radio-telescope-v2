@@ -1,0 +1,25 @@
+name: presto
+channels:
+  - conda-forge
+  - ryanvolz
+dependencies:
+  - python=3.11
+  - numpy
+  - scipy
+  - astropy
+  - matplotlib
+  - pgplot
+  - fftw
+  - cfitsio
+  - glib
+  - meson
+  - ninja
+  - pkg-config
+  - c-compiler
+  - fortran-compiler
+  - libpng
+  - xorg-libx11
+  - presto-pulsar
+  - ca-certificates
+  - certifi
+  - openssl

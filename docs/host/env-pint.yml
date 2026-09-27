@@ -1,0 +1,7 @@
+name: pint
+channels:
+  - conda-forge
+  - ryanvolz
+dependencies:
+  - pint-pulsar
+  - python=3.11
