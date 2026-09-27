@@ -1,0 +1,15 @@
+PSRJ           J0332+5434
+RAJ            03:32:59.409600
+DECJ           +54:34:43.329000
+PMRA           16.97
+PMDEC          -10.37
+POSEPOCH       56000.0
+F0             1.399541538720 1
+F1             -4.011970e-15
+F2             5.30e-28
+PEPOCH         46473.0
+DM             26.7641
+UNITS          TDB
+EPHEM          DE421
+CLK            TT(TAI)
+EQUAD -pps 0 2000.0

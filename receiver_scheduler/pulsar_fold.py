@@ -763,7 +763,7 @@ def plot_recording(path, out_path, pulsar=None):
                     if t["snr"] >= T.MIN_TOA_SNR]
             if toas:
                 T.write_tim(toas)
-            T.cache_profile(path, r["toa"])
+            T.cache_profile(path, r["toa"], attrs)
             acc = T.accumulated_profile(fold_missing=True)
             fitres = T.timing_fit()
         except Exception as exc:                          # noqa: BLE001 - the plot still draws

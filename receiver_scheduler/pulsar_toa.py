@@ -38,7 +38,10 @@ TOA_BINS = 1024
 # in pulsar_templates/README.md.
 TEMPLATE_FILE = os.path.join(HERE, "pulsar_templates", "b0329_1410_epn_hx97b.npz")
 TEMPLATE_NAME = "epn_hx97b_1410"
-TOA_DIR = os.path.join(HERE, "data", "pulsar_toas")
+# In git, unlike data/: the TOAs and the folded profiles are the hard-won
+# product - 16 h of telescope time each - where a raw recording is, in the
+# end, re-observable. Plotting writes here; committing stays a person's act.
+TOA_DIR = os.path.join(HERE, "pulsar_timing")
 TIM_FILE = os.path.join(TOA_DIR, "b0329.tim")
 PAR_FILE = os.path.join(TOA_DIR, "B0329+54.par")
 # Our site as a PINT observatory (pint_tools.register_site), at the surveyed
@@ -49,7 +52,7 @@ SITE_CODE = "ar"
 # wrong point to the timing fit (whole runs and segments alike).
 MIN_TOA_SNR = 6.0
 HOST_CLOCK_EQUAD_US = 2000.0      # NTP root distance ~1-4 ms (timesyncd), until the PPS
-PROFILE_CACHE_DIR = os.path.join(HERE, "data", "pulsar_profiles", "cache")
+PROFILE_CACHE_DIR = os.path.join(TOA_DIR, "profiles")    # one folded profile per recording
 OBS_DIR = os.path.join(HERE, "data", "observations")
 PINT_PY = "/home/astro/radioconda/envs/pint/bin/python"
 SEGMENT_SUFFIX = "_s"             # tim names: <recording> for the run, <recording>_sN per segment
@@ -286,17 +289,28 @@ def in_observations(path):
     return os.path.dirname(os.path.realpath(path)) == os.path.realpath(OBS_DIR)
 
 
-def cache_profile(path, toa):
-    """Keep a recording's whole-run fine fold (weighted sums, at the absolute
-    phase) so the stack does not refold every file each time."""
+def cache_profile(path, toa, attrs=None):
+    """Store a recording's whole-run fine fold - weighted sums at the absolute
+    phase - with what it is, so the profile stands on its own when the
+    recording is gone: the stack is built from these, not from the files."""
     os.makedirs(PROFILE_CACHE_DIR, exist_ok=True)
     out = os.path.join(PROFILE_CACHE_DIR, os.path.splitext(os.path.basename(path))[0] + ".npz")
+    a = attrs or {}
     np.savez(out, S=toa["S"].sum(axis=0), C=toa["C"].sum(axis=0), hours=(toa["t_last"] - toa["t_first"]) / 3600.0,
-             phase_offset=PF.B0329["phase_offset"], row_centre=PF.ROW_CENTRE, nbins=TOA_BINS)
+             phase_offset=PF.B0329["phase_offset"], row_centre=PF.ROW_CENTRE, nbins=TOA_BINS,
+             recording=os.path.basename(path), t_first_unix=toa["t_first"], t_last_unix=toa["t_last"],
+             freq_hz=toa["freq_hz"], bw_hz=toa["bw_hz"] or 0.0, dt_s=toa["dt_s"],
+             time_source=str(a.get("time_source", "host")), obs_name=str(a.get("obs_name", "")))
     return out
 
 
+def _store_path(path):
+    return os.path.join(PROFILE_CACHE_DIR, os.path.splitext(os.path.basename(path))[0] + ".npz")
+
+
 def _cache_valid(cache, path):
+    """A stored profile is current if it exists, was made after the recording
+    last changed, and on today's phase convention and binning."""
     if not os.path.exists(cache) or os.path.getmtime(cache) < os.path.getmtime(path):
         return False
     d = np.load(cache)
@@ -304,25 +318,36 @@ def _cache_valid(cache, path):
             and int(d["nbins"]) == TOA_BINS)
 
 
+def _rotated(x, dphase):
+    """A periodic profile moved later by `dphase` of a period, continuously."""
+    k = np.arange(len(x) // 2 + 1)
+    return np.fft.irfft(np.fft.rfft(x) * np.exp(-2j * np.pi * k * dphase), n=len(x))
+
+
 def accumulated_profile(fold_missing=True):
-    """All pulsar recordings folded at the absolute phase and summed with
-    their own noise weights (the per-second 1/sigma^2 the fold applied, so a
-    noisier 8 MHz night counts for less). A recording without a valid cache
-    is folded here if `fold_missing`."""
+    """Every stored profile, summed with its own noise weights (the
+    per-second 1/sigma^2 the fold applied, so a noisier 8 MHz night counts
+    for less). Recordings on disk whose profile is missing or stale are
+    folded first if `fold_missing`; a profile whose recording is gone still
+    counts. One made under another phase_offset is rotated to today's."""
     import glob
-    S = np.zeros(TOA_BINS); C = np.zeros(TOA_BINS); hours = 0.0; used = []
     for path in sorted(glob.glob(os.path.join(OBS_DIR, "*_pulsar.h5"))):
-        cache = os.path.join(PROFILE_CACHE_DIR, os.path.splitext(os.path.basename(path))[0] + ".npz")
-        if not _cache_valid(cache, path):
-            if not fold_missing:
-                continue
+        if not _cache_valid(_store_path(path), path) and fold_missing:
             try:
-                r, _ = PF.analyse_file(path, toa_bins=TOA_BINS)
+                r, attrs = PF.analyse_file(path, toa_bins=TOA_BINS)
             except Exception:                            # noqa: BLE001 - an unreadable file is skipped
                 continue
-            cache_profile(path, r["toa"])
-        d = np.load(cache)
-        S += d["S"]; C += d["C"]; hours += float(d["hours"]); used.append(os.path.basename(path))
+            cache_profile(path, r["toa"], attrs)
+    S = np.zeros(TOA_BINS); C = np.zeros(TOA_BINS); hours = 0.0; used = []
+    for store in sorted(glob.glob(os.path.join(PROFILE_CACHE_DIR, "*.npz"))):
+        d = np.load(store)
+        if int(d["nbins"]) != TOA_BINS or float(d["row_centre"]) != PF.ROW_CENTRE:
+            continue
+        s_, c_ = d["S"], d["C"]
+        shift = PF.B0329["phase_offset"] - float(d["phase_offset"])
+        if shift:
+            s_, c_ = _rotated(s_, shift), _rotated(c_, shift)
+        S += s_; C += c_; hours += float(d["hours"]); used.append(os.path.basename(store)[:-4])
     prof = np.where(C > 0, S / np.maximum(C, 1e-300), 0.0)
     return prof, hours, used
 
