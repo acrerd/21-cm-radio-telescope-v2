@@ -208,3 +208,34 @@ def test_an_artificial_pulsar_is_folded_at_its_own_period(tmp_path):
     assert r["pulsar"] == "artificial pulsar" and r["period_topo_mean_s"] == P
     assert r["snr_matched"] > 20 and r["observer_velocity_m_s"] == [0.0, 0.0]
     assert r["peak_bin_predicted"] == 0                          # the gate opens at phase 0
+
+
+def test_marks_after_an_overflow_are_exact_to_the_sample():
+    """A tag inside a row: downstream of the 1 ms sum GNU Radio rounds its
+    offset to a whole row (up to 0.5 ms wrong for every later row); the tap
+    on the radio's output keeps the exact sample, so row_times is exact."""
+    import pmt
+    from gnuradio import gr, blocks
+    import b210_h1_receiver as R
+    rate, spr = 1.0e6, 1000                        # 1 ms rows of 1000 samples
+    t_start = 1790400000.0
+    gap_samples = 12_345                           # dropped by the "overflow"
+    o = 3 * spr + 250                              # first sample after the gap, a quarter into row 3
+    tags = []
+    for off, t in ((0, t_start), (o, t_start + (o + gap_samples) / rate)):
+        tg = gr.tag_t(); tg.offset = off; tg.key = pmt.intern("rx_time")
+        tg.value = pmt.make_tuple(pmt.from_uint64(int(t)), pmt.from_double(t - int(t)))
+        tags.append(tg)
+    tb = gr.top_block()
+    src = blocks.vector_source_c([0j] * (10 * spr), False, 1, tags)
+    tap = R._TagTap(spr)
+    tb.connect(src, tap.block)
+    tb.run()
+    marks = np.array(tap.take_marks())
+    assert tap.take_marks() == []                  # each mark is handed over once
+    assert marks.shape == (2, 2) and marks[1, 0] == pytest.approx(3.25)
+    t = PF.row_times(10, 1e-3, t_start, marks)
+    # row 5 starts at received sample 5000, which the device clock puts at
+    # t_start + (5000 + gap) / rate - exactly, not to the nearest row
+    assert t[5] == pytest.approx(t_start + (5 * spr + gap_samples) / rate, abs=1e-9)
+    assert t[2] == pytest.approx(t_start + 2e-3, abs=1e-9)   # before the gap: the first mark

@@ -160,11 +160,16 @@ def row_times(n_rows, dt_s, t0_unix, time_marks=None):
     if not len(marks):
         return t0_unix + dt_s * i
     t = np.empty(n_rows)
-    rows = marks[:, 0].astype(int)
-    for k, (r, tm) in enumerate(zip(rows, marks[:, 1])):
-        lo = 0 if k == 0 else r
-        hi = rows[k + 1] if k + 1 < len(rows) else n_rows
-        t[lo:hi] = tm + dt_s * (i[lo:hi] - r)
+    # A mark's row may be fractional (the exact sample of an overflow's first
+    # sample over the samples per row, _TagTap): the arithmetic keeps the
+    # fraction, and a stretch starts at the first row wholly after its mark -
+    # the row the gap falls in began before it, on the previous mark.
+    r = marks[:, 0]
+    starts = np.ceil(r - 1e-9).astype(int)
+    for k, (rk, tm) in enumerate(zip(r, marks[:, 1])):
+        lo = 0 if k == 0 else min(max(starts[k], 0), n_rows)
+        hi = min(starts[k + 1], n_rows) if k + 1 < len(r) else n_rows
+        t[lo:hi] = tm + dt_s * (i[lo:hi] - rk)
     return t
 
 
@@ -337,21 +342,52 @@ def analyse(t, freq_hz, power, pulsar, nbins=NBINS, search_ppm=SEARCH_PPM):
 BLOCK_ROWS = 600_000     # 10 minutes of rows per read: 38 MB of float32
 
 
-def analyse_file(path, pulsar=None, nbins=NBINS, search_ppm=SEARCH_PPM, block_rows=BLOCK_ROWS):
-    """`analyse` for a recording on disk, without ever holding it in memory.
+STREAM_DETREND_S = 1.0  # analyse_file's baseline block (the 408 MHz pipeline's 1 s median)
+WEIGHT_S = 1.0          # per-second inverse-variance weighting, as the 408 MHz fold did
+SUB_S = 60.0            # sub-profile length the period search shifts
 
-    A four-hour run is 14 million rows by 16 channels, 900 MB as float32;
-    `analyse` works on the whole array in float64 and needed 5.3 GB for it,
-    which on this 7.7 GB host had the kernel kill the scheduler on
-    2026-09-26 (the Observe tab plots a recording as soon as it is chosen).
-    Here the rows are read ten minutes at a time. Each channel is divided by
-    its own median over 10 s blocks (the gain-drift baseline, piecewise
-    rather than running - the drift is far slower than 10 s), clipped at 6
-    robust sigma within the block, folded into the per-channel profiles and
-    summed into one float32 series; only that series, the row times and the
-    phase are kept whole. The period search then works on 60 s sub-profiles
-    of the fine (256-bin) fold, shifted per trial period, as prepfold does,
-    instead of refolding 14 million samples per trial.
+
+def _block_times(lo, hi, dt, t0, marks):
+    """row_times for rows lo..hi alone, so no whole-run array is built."""
+    i = np.arange(lo, hi, dtype=float)
+    if not len(marks):
+        return t0 + dt * i
+    k = np.clip(np.searchsorted(marks[:, 0], i, side="right") - 1, 0, len(marks) - 1)
+    return marks[k, 1] + dt * (i - marks[k, 0])
+
+
+def _matched_from_profile(prof, width_s, period_s):
+    """matched_snr's boxcar statistic on an already-folded fine profile."""
+    nb = len(prof)
+    w = max(1, int(round(width_s / period_s * nb)))
+    ext = np.concatenate([prof[-w:], prof, prof[:w]])
+    sm = np.convolve(ext, np.ones(w) / w, mode="same")[w:-w]
+    base = float(np.median(sm))
+    sig = float(1.4826 * np.median(np.abs(sm - base)))
+    if sig <= 0:
+        return 0.0, 0.0
+    k = int(np.argmax(sm))
+    return float((sm[k] - base) / sig), (k + 0.5) / nb
+
+
+def analyse_file(path, pulsar=None, nbins=NBINS, search_ppm=SEARCH_PPM, block_rows=BLOCK_ROWS):
+    """`analyse` for a recording on disk, in one pass and bounded memory.
+
+    Nothing the length of the run is kept. The first version held the row
+    times, the phase and the summed series whole, which on the 16 h run of
+    2026-09-27 (57.5 M rows) took the scheduler to 2.8 GB, into swap and ten
+    minutes. The one before that held the float64 array and the kernel
+    killed the scheduler (09-26). Now each block of rows is timed from the
+    radio's marks, phased by interpolating `phase_track` evaluated on 60 s
+    knots, divided by its own 1 s block medians, clipped at 6 robust sigma
+    (clipped samples get no weight rather than a zero) and weighted by the
+    inverse variance of its second, as the 408 MHz pipeline did. On that run
+    this gives matched 9.2 / peak bin 9.4 (the first version 9.4 / 9.3), in
+    24 s and 260 MB. A 1 s baseline cuts the red noise at 0.1-0.5 Hz from
+    7x to 2x white, but the pulse's harmonics lie above it. Everything is
+    accumulated into 60 s sub-profiles of the 256-bin fold. The 64-bin
+    profile, the matched filter, the period search (sub-profiles shifted per
+    trial, as prepfold does) and the time-phase panel all come from those.
     """
     import observation_plot
     with observation_plot.open_readonly(path) as hf:
@@ -359,7 +395,8 @@ def analyse_file(path, pulsar=None, nbins=NBINS, search_ppm=SEARCH_PPM, block_ro
         ds = hf["power"]
         n, nchan = ds.shape
         freq = np.asarray(hf["frequency_hz"][:], float)
-        marks = np.asarray(hf["time_marks"][:], float) if "time_marks" in hf else np.empty((0, 2))
+        marks = np.asarray(hf["time_marks"][:], float).reshape(-1, 2) if "time_marks" in hf else np.empty((0, 2))
+        marks = marks[np.argsort(marks[:, 0])] if len(marks) else marks
         if "overflow_marks" in hf and hf["overflow_marks"].shape[0]:
             attrs["overflows_total"] = int(np.asarray(hf["overflow_marks"][:])[:, 1].sum())
         attrs["n_time_marks"] = int(len(marks))
@@ -378,94 +415,114 @@ def analyse_file(path, pulsar=None, nbins=NBINS, search_ppm=SEARCH_PPM, block_ro
         if n < 1000:
             raise ValueError("too few samples to fold (%d rows)" % n)
         dt = float(attrs.get("dt_s", DT_S))
-        t0 = float(marks[0, 1] - dt * marks[0, 0]) if len(marks) else float(attrs.get("t0_unix", 0.0))
-        t = row_times(n, dt, t0, marks if len(marks) else None)
-        p_bary = period_at(t[0]) if pulsar.get("pdot") is not None else pulsar["period_s"]
+        t0_attr = float(attrs.get("t0_unix", 0.0))
+        t_first = float(_block_times(0, 1, dt, t0_attr, marks)[0])
+        t_last = float(_block_times(n - 1, n, dt, t0_attr, marks)[0])
+        p_bary = period_at(t_first) if pulsar.get("pdot") is not None else pulsar["period_s"]
         if pulsar.get("fixed_period"):
-            phase0, p_mean = (t - t[0]) / p_bary, p_bary
+            knots = np.array([t_first, t_last + 1.0])
+            phi_k, p_mean = (knots - t_first) / p_bary, p_bary
         else:
-            phase0, p_mean = phase_track(t, p_bary, pulsar["ra_deg"], pulsar["dec_deg"])
-        bins0 = np.clip(np.floor((phase0 % 1.0) * nbins).astype(np.int32), 0, nbins - 1)
-        total = np.empty(n, dtype=np.float32)
-        chan_sum = np.zeros((nchan, nbins))
-        chan_cnt = np.zeros((nchan, nbins))
-        per = max(1, int(round(DETREND_S / dt)))
+            knots = np.arange(t_first, t_last + 120.0, 60.0)
+            phi_k, p_mean = phase_track(knots, p_bary, pulsar["ra_deg"], pulsar["dec_deg"])
+        fb = FINE_BINS
+        nsub = int((t_last - t_first) // SUB_S) + 1
+        S = np.zeros((nsub, fb)); C = np.zeros((nsub, fb))
+        phi_sum = np.zeros(nsub); phi_n = np.zeros(nsub)
+        chan_sum = np.zeros((nchan, nbins)); chan_cnt = np.zeros((nchan, nbins))
+        per = max(1, int(round(STREAM_DETREND_S / dt)))
+        wper = max(1, int(round(WEIGHT_S / dt)))
+        n_clipped = 0
         for i in range(0, n, block_rows):
             x = np.asarray(ds[i:min(n, i + block_rows)], dtype=np.float64)
             m = len(x)
-            k = np.arange(m) // per
-            frac = np.empty_like(x)
-            for j in np.unique(k):
-                sl = k == j
-                base = np.median(x[sl], axis=0)
-                base[base <= 0] = np.nan
-                frac[sl] = x[sl] / base - 1.0
+            # 1 s block medians per channel, the tail folded into the last block
+            nb_ = max(1, m // per)
+            k = np.minimum(np.arange(m) // per, nb_ - 1)
+            base = (np.median(x[:nb_ * per].reshape(nb_, per, nchan), axis=1) if m >= per
+                    else np.median(x, axis=0)[None, :])
+            base[base <= 0] = np.nan
+            frac = x / base[k] - 1.0
             frac[~np.isfinite(frac)] = 0.0
-            b = bins0[i:i + m]
+            t = _block_times(i, i + m, dt, t0_attr, marks)
+            phase = np.interp(t, knots, phi_k)
+            b64 = np.clip(np.floor((phase % 1.0) * nbins).astype(np.int64), 0, nbins - 1)
             for c in range(nchan):
                 col = frac[:, c]
                 mad = 1.4826 * np.median(np.abs(col - np.median(col)))
                 good = np.abs(col) <= 6.0 * mad if mad > 0 else np.ones(m, bool)
-                chan_sum[c] += np.bincount(b[good], weights=col[good], minlength=nbins)
-                chan_cnt[c] += np.bincount(b[good], minlength=nbins)
-            total[i:i + m] = frac.mean(axis=1)
-    total, n_clipped = clip_rfi(total.astype(np.float64))
-    prof0, _ = fold(total, phase0, nbins)
+                chan_sum[c] += np.bincount(b64[good], weights=col[good], minlength=nbins)
+                chan_cnt[c] += np.bincount(b64[good], minlength=nbins)
+            y = frac.mean(axis=1)
+            mad = 1.4826 * np.median(np.abs(y - np.median(y)))
+            good = np.abs(y - np.median(y)) <= 6.0 * mad if mad > 0 else np.ones(m, bool)
+            n_clipped += int((~good).sum())
+            # inverse variance of each second, over its unclipped samples
+            sec = np.arange(m) // wper
+            g = good.astype(float)
+            cnt = np.bincount(sec, weights=g)
+            s1 = np.bincount(sec, weights=g * y)
+            s2 = np.bincount(sec, weights=g * y * y)
+            with np.errstate(invalid="ignore", divide="ignore"):
+                var = s2 / cnt - (s1 / cnt) ** 2
+            inv = np.where((cnt > 1) & (var > 0), 1.0 / np.where(var > 0, var, 1.0), 0.0)
+            w = np.where(good, inv[sec], 0.0)
+            sub = np.clip(((t - t_first) // SUB_S).astype(np.int64), 0, nsub - 1)
+            fbin = np.clip(np.floor((phase % 1.0) * fb).astype(np.int64), 0, fb - 1)
+            S += np.bincount(sub * fb + fbin, weights=w * y, minlength=nsub * fb).reshape(nsub, fb)
+            C += np.bincount(sub * fb + fbin, weights=w, minlength=nsub * fb).reshape(nsub, fb)
+            phi_sum += np.bincount(sub, weights=phase, minlength=nsub)
+            phi_n += np.bincount(sub, minlength=nsub)
+    group = fb // nbins
+    s_all = S.sum(axis=0); c_all = C.sum(axis=0)
+    fine = np.where(c_all > 0, s_all / np.maximum(c_all, 1e-300), 0.0)
+    s64 = s_all.reshape(nbins, group).sum(axis=1); c64 = c_all.reshape(nbins, group).sum(axis=1)
+    prof0 = np.where(c64 > 0, s64 / np.maximum(c64, 1e-300), 0.0)
     snr0 = profile_snr(prof0)
     width_s = float(pulsar.get("w50_ms", 6.6)) * 1e-3
-    m_snr, m_phase, _ = matched_snr(total, phase0, width_s, p_mean)
-    # 60 s sub-profiles of the fine fold, for the period search and the panel
-    fb = FINE_BINS
-    sub = np.floor((t - t[0]) / 60.0).astype(np.int64)
-    nsub = int(sub.max()) + 1
-    fbin = np.clip(np.floor((phase0 % 1.0) * fb).astype(np.int64), 0, fb - 1)
-    S = np.bincount(sub * fb + fbin, weights=total, minlength=nsub * fb).reshape(nsub, fb)
-    C = np.bincount(sub * fb + fbin, minlength=nsub * fb).reshape(nsub, fb).astype(float)
-    phi_mid = np.bincount(sub, weights=phase0, minlength=nsub) / np.maximum(np.bincount(sub, minlength=nsub), 1)
-    n_periods = float(phase0[-1] - phase0[0])
+    m_snr, m_phase = _matched_from_profile(fine, width_s, p_mean)
+    phi_mid = phi_sum / np.maximum(phi_n, 1)
+    n_periods = float(np.interp(t_last, knots, phi_k) - np.interp(t_first, knots, phi_k))
     step_ppm = max(0.25, 1e6 / (nbins * max(n_periods, 1.0)))
     trials = np.arange(-search_ppm, search_ppm + step_ppm, step_ppm)
-    group = fb // nbins
+    cols = np.arange(fb)
 
     def shifted(d_ppm):
-        # a period longer by d has phase phase0/(1+d): each sub-profile moves
+        # a period longer by d has phase phase/(1+d): each sub-profile moves
         # back by phi_mid * d (cycles), applied as a whole number of fine bins
-        shifts = np.round(-phi_mid * d_ppm * 1e-6 * fb).astype(int) % fb
-        ss = np.zeros(fb); cc = np.zeros(fb)
-        rows_s = np.empty_like(S); rows_c = np.empty_like(C)
-        for kk in range(nsub):
-            rows_s[kk] = np.roll(S[kk], shifts[kk]); rows_c[kk] = np.roll(C[kk], shifts[kk])
-        return rows_s, rows_c
+        shifts = np.round(-phi_mid * d_ppm * 1e-6 * fb).astype(np.int64) % fb
+        idx = (cols[None, :] - shifts[:, None]) % fb
+        return np.take_along_axis(S, idx, axis=1), np.take_along_axis(C, idx, axis=1)
 
     snrs = np.empty(len(trials))
     for ii, d in enumerate(trials):
         rs, rc = shifted(d)
-        s64 = rs.sum(axis=0).reshape(nbins, group).sum(axis=1)
-        c64 = rc.sum(axis=0).reshape(nbins, group).sum(axis=1)
-        snrs[ii] = profile_snr(np.where(c64 > 0, s64 / np.maximum(c64, 1), 0.0))[0]
+        ss = rs.sum(axis=0).reshape(nbins, group).sum(axis=1)
+        cc = rc.sum(axis=0).reshape(nbins, group).sum(axis=1)
+        snrs[ii] = profile_snr(np.where(cc > 0, ss / np.maximum(cc, 1e-300), 0.0))[0]
     kbest = int(np.argmax(snrs)); best_ppm = float(trials[kbest])
     rs, rc = shifted(best_ppm)
-    s64 = rs.sum(axis=0).reshape(nbins, group).sum(axis=1)
-    c64 = rc.sum(axis=0).reshape(nbins, group).sum(axis=1)
-    prof_best = np.where(c64 > 0, s64 / np.maximum(c64, 1), 0.0)
+    ss = rs.sum(axis=0).reshape(nbins, group).sum(axis=1)
+    cc = rc.sum(axis=0).reshape(nbins, group).sum(axis=1)
+    prof_best = np.where(cc > 0, ss / np.maximum(cc, 1e-300), 0.0)
     snr_best = profile_snr(prof_best)
-    per_sub = max(1, int(round(SUBINT_S / 60.0)))
+    per_sub = max(1, int(round(SUBINT_S / SUB_S)))
     ns2 = nsub // per_sub
     if ns2:
         s2 = rs[:ns2 * per_sub].reshape(ns2, per_sub, nbins, group).sum(axis=(1, 3))
         c2 = rc[:ns2 * per_sub].reshape(ns2, per_sub, nbins, group).sum(axis=(1, 3))
-        subints = np.where(c2 > 0, s2 / np.maximum(c2, 1), 0.0)
+        subints = np.where(c2 > 0, s2 / np.maximum(c2, 1e-300), 0.0)
     else:
         subints = prof_best[None, :]
     chan_prof = np.where(chan_cnt > 0, chan_sum / np.maximum(chan_cnt, 1), 0.0)
     f_ghz = freq / 1e9
     delay_s = 4.148808e-3 * pulsar["dm"] * (1.0 / f_ghz ** 2 - 1.0 / f_ghz.max() ** 2)
     v = (np.zeros(2) if pulsar.get("fixed_period")
-         else observer_velocity_toward(pulsar["ra_deg"], pulsar["dec_deg"], np.array([t[0], t[-1]])))
+         else observer_velocity_toward(pulsar["ra_deg"], pulsar["dec_deg"], np.array([t_first, t_last])))
     r = {
         "pulsar": pulsar["name"], "period_bary_s": p_bary, "period_topo_mean_s": p_mean,
         "observer_velocity_m_s": [float(v[0]), float(v[-1])],
-        "duration_s": float(t[-1] - t[0] + dt), "dt_s": dt, "n_periods": n_periods,
+        "duration_s": float(t_last - t_first + dt), "dt_s": dt, "n_periods": n_periods,
         "nbins": nbins, "n_clipped": n_clipped, "nchan": int(nchan),
         "profile_predicted": prof0.tolist(), "snr_predicted": snr0[0], "peak_bin_predicted": snr0[1],
         "snr_matched": m_snr, "matched_phase": m_phase, "matched_width_s": width_s,
@@ -473,7 +530,7 @@ def analyse_file(path, pulsar=None, nbins=NBINS, search_ppm=SEARCH_PPM, block_ro
         "best_ppm": best_ppm, "search_ppm": [float(trials.min()), float(trials.max())],
         "search_snr": snrs.tolist(), "search_trial_ppm": trials.tolist(),
         "channel_profiles": chan_prof.tolist(), "channel_freq_hz": freq.tolist(),
-        "dm_delay_s": delay_s.tolist(), "subints": subints.tolist(), "subint_s": per_sub * 60.0,
+        "dm_delay_s": delay_s.tolist(), "subints": subints.tolist(), "subint_s": per_sub * SUB_S,
         "duty_expected": None,
     }
     return r, attrs

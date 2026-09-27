@@ -89,6 +89,16 @@ INTEGRATION_TIME = float(os.environ.get('H1_INTEGRATION_TIME', 3.0))
 # nothing anywhere reporting it. The TCXO is good to about -2.4 ppm measured
 # (0.08 km/s), which is why this went unnoticed.
 CLOCK_SOURCE = (os.environ.get('H1_CLOCK_SOURCE') or 'auto').strip().lower()
+# The B210's device address, used by every source and sink that opens it (they
+# must match, or UHD may try to open the radio a second time). num_recv_frames:
+# UHD's default of 16 USB receive frames holds a millisecond or two of samples
+# at 32 Msps, so any host stall longer than that was an overflow. Measured
+# 2026-09-27, 32 Msps under the same 4-thread load for 5 min: 324 overflows at
+# 16 frames, 0 at 512 (~60 ms of slack, ~8 MB). H1_UHD_ARGS replaces the
+# transport part.
+UHD_TRANSPORT_ARGS = (os.environ.get('H1_UHD_ARGS') or 'num_recv_frames=512').strip()
+UHD_DEVICE_ARGS = ",".join(a for a in ("type=b200", UHD_TRANSPORT_ARGS) if a)
+AD9361_MAX_BW_HZ = 56e6      # the chip's analogue filter range is 0.2-56 MHz
 # How long to let the reference PLL settle before believing `ref_locked`.
 CLOCK_LOCK_TIMEOUT_S = float(os.environ.get('H1_CLOCK_LOCK_TIMEOUT', 2.0))
 # What the device actually ended up running from: (source, locked). Set by
@@ -220,7 +230,7 @@ def create_sdr_source(sdr_type, sample_rate, center_freq, gain):
     if sdr_type == 'b210':
         from gnuradio import uhd
         source = uhd.usrp_source(
-            ",".join(("type=b200", "")),
+            UHD_DEVICE_ARGS,
             uhd.stream_args(
                 cpu_format="fc32",
                 args="",
@@ -232,7 +242,7 @@ def create_sdr_source(sdr_type, sample_rate, center_freq, gain):
         global CLOCK_STATE
         CLOCK_STATE = select_clock_source(source)
         source.set_samp_rate(sample_rate)
-        source.set_bandwidth(sample_rate * ANALOG_BW_FACTOR, 0)
+        source.set_bandwidth(min(sample_rate * ANALOG_BW_FACTOR, AD9361_MAX_BW_HZ), 0)
         source.set_center_freq(center_freq, 0)
         source.set_gain(gain, 0)
         source.set_antenna("RX2", 0)
@@ -678,7 +688,7 @@ class TwoProductFlowgraph(gr.top_block):
         if self.sdr_type == 'b210':
             from gnuradio import uhd
             self.pilot_sink = uhd.usrp_sink(
-                ",".join(("type=b200", "")),
+                UHD_DEVICE_ARGS,
                 uhd.stream_args(cpu_format="fc32", args="", channels=[0]))
             self.pilot_sink.set_samp_rate(self.sample_rate)
             self.pilot_sink.set_center_freq(self.center_freq, 0)
@@ -1879,6 +1889,43 @@ class _ReplicaGate(gr.sync_block):
         return k
 
 
+class _TagTap:
+    """rx_time marks at their exact sample, read before the 1 ms sum.
+
+    Downstream of `integrate_ff` a tag's offset is the input offset divided
+    by the row length and ROUNDED (GNU Radio 3.10: 500 -> row 1, 499 -> row
+    0), so the position of an overflow's first sample inside its row is
+    lost, and every row after it would be stamped up to half a row (0.5 ms)
+    wrong until the next mark. On the radio's own output the offset is the
+    sample count itself; the mark is kept as a fractional row (sample /
+    samples-per-row), which `row_times` turns into the exact time of every
+    later row. The reading is GNU Radio's C++ `tag_debug`, silent and keeping
+    every tag: a Python block doing the same at 32 Msps, touching no sample,
+    still overflowed the radio every nine seconds (2026-09-27).
+    """
+
+    def __init__(self, samples_per_row):
+        self.samples_per_row = float(samples_per_row)
+        self.block = blocks.tag_debug(gr.sizeof_gr_complex, "pulsar_tag_tap", "rx_time")
+        self.block.set_display(False)
+        self.block.set_save_all(True)
+        self._seen = 0
+
+    def take_marks(self):
+        import pmt
+        tags = list(self.block.current_tags())
+        new, self._seen = tags[self._seen:], len(tags)
+        marks = []
+        for tag in new:
+            try:
+                full = pmt.to_uint64(pmt.tuple_ref(tag.value, 0))
+                frac = pmt.to_double(pmt.tuple_ref(tag.value, 1))
+            except Exception:                             # noqa: BLE001
+                continue
+            marks.append((int(tag.offset) / self.samples_per_row, float(full) + frac))
+        return marks
+
+
 class PulsarFlowgraph(gr.top_block):
     """One stream, NCHAN channel powers every DT_S."""
 
@@ -1946,10 +1993,27 @@ class PulsarFlowgraph(gr.top_block):
             chain = head + [self.s2v, self.fftb, self.mag, self.norm, self.summer, self.sink]
         for a, b in zip(chain[:-1], chain[1:]):
             self.connect(a, b)
+        # the marks at their exact sample (see _TagTap); the row sink's own,
+        # rounded to whole rows, are kept only as the fallback
+        self.tap = _TagTap(self.presum * n)
+        self.connect(head[-1], self.tap.block)
         self.inject = None
         self._build_injection()
         print("  %d channels of %.3f MHz, %d transforms per row, rows of %.4f ms"
               % (n, self.sample_rate / n / 1e6, self.presum, 1e3 * self.dt_s), flush=True)
+
+    def take_marks(self):
+        """rx_time marks as (row, unix time): exact fractional rows from the
+        tap; the row sink's rounded ones are discarded while the tap works,
+        and used only if it has produced nothing at all."""
+        exact = self.tap.take_marks()
+        rounded = self.sink.take_marks()
+        if exact or self._tap_seen:
+            self._tap_seen = self._tap_seen or bool(exact)
+            return exact
+        return rounded
+
+    _tap_seen = False
 
     def _build_injection(self):
         """An artificial pulsar (H1_PULSAR_INJECT): broadband noise bursts
@@ -1997,7 +2061,7 @@ class PulsarFlowgraph(gr.top_block):
                            'amplitude': amplitude, 'tx_gain_db': tx_gain}
             desc = "noise bursts every %d samples (%.9f s), duty %.4f" % (n_period, n_period / rate, n_on / n_period)
         self.inj_mult = blocks.multiply_cc()
-        self.inj_sink = uhd.usrp_sink(",".join(("type=b200", "")),
+        self.inj_sink = uhd.usrp_sink(UHD_DEVICE_ARGS,
                                       uhd.stream_args(cpu_format="fc32", args="", channels=[0]))
         self.inj_sink.set_samp_rate(rate)
         self.inj_sink.set_center_freq(self.center_freq, 0)
@@ -2051,8 +2115,9 @@ def init_pulsar_hdf5(filename, freq_axis_hz, dt_s, sdr_type, center_freq, sample
     hf.create_dataset('frequency_hz', data=np.asarray(freq_axis_hz, float))
     hf.create_dataset('power', shape=(0, n), maxshape=(None, n), dtype='f4', chunks=(1024, n))
     hf.create_dataset('overflow_marks', shape=(0, 2), maxshape=(None, 2), dtype='i8', chunks=(64, 2))
-    # (row index, device time in unix seconds) at the start and after every
-    # overflow, from gr-uhd's rx_time tags: the fold's time axis.
+    # (row, device time in unix seconds) at the start and after every
+    # overflow, from gr-uhd's rx_time tags: the fold's time axis. The row is
+    # fractional - the tag's exact sample over the samples per row (_TagTap).
     hf.create_dataset('time_marks', shape=(0, 2), maxshape=(None, 2), dtype='f8', chunks=(64, 2))
     hf.create_dataset('underflow_marks', shape=(0, 2), maxshape=(None, 2), dtype='i8', chunks=(64, 2))
     hf.attrs['mode'] = 'pulsar'
@@ -2061,6 +2126,8 @@ def init_pulsar_hdf5(filename, freq_axis_hz, dt_s, sdr_type, center_freq, sample
     hf.attrs['nchan'] = int(n)
     hf.attrs['channel_width_hz'] = float(sample_rate) / int(n)
     hf.attrs['t0_unix'] = float(t0_unix)
+    # time_marks rows are exact fractional rows (sample / samples-per-row), 2026-09-27
+    hf.attrs['time_marks_exact'] = 1
     hf.attrs['created_utc'] = datetime.now(timezone.utc).isoformat()
     hf.attrs['sdr_type'] = str(sdr_type)
     hf.attrs['center_freq_hz'] = float(center_freq)
@@ -2186,7 +2253,7 @@ class PulsarRecorder:
             while not self._stop.is_set():
                 self._stop.wait(self.TICK_S)
                 self._append(self.flowgraph.sink.take())
-                self._write_time_marks(self.flowgraph.sink.take_marks())
+                self._write_time_marks(self.flowgraph.take_marks())
                 self._mark_overflows(self.overflows.take())
                 self._mark_underflows(self.overflows.take_underflows())
                 now = time.time()
@@ -2205,7 +2272,7 @@ class PulsarRecorder:
             self.flowgraph.stop()
             self.flowgraph.wait()
             self._append(self.flowgraph.sink.take())
-            self._write_time_marks(self.flowgraph.sink.take_marks())
+            self._write_time_marks(self.flowgraph.take_marks())
             self._mark_overflows(self.overflows.take())
             self.hf.flush()
             self.hf.close()

@@ -113,14 +113,15 @@ def gap_plan(n_rows, dt_s, time_marks):
     marks = marks[np.argsort(marks[:, 0])] if len(marks) else marks
     if not len(marks):
         return [(0, n_rows, 0)]
-    rows = [int(r) for r in marks[:, 0]]
+    rows = [float(r) for r in marks[:, 0]]       # fractional when exact (_TagTap)
+    starts = [int(np.ceil(r - 1e-9)) for r in rows]
     times = list(marks[:, 1])
     plan = []
     t_start = times[0] - dt_s * rows[0]
     written = 0                                   # rows emitted so far, fill included
     for k, r in enumerate(rows):
-        lo = 0 if k == 0 else r
-        hi = rows[k + 1] if k + 1 < len(rows) else n_rows
+        lo = 0 if k == 0 else starts[k]
+        hi = starts[k + 1] if k + 1 < len(rows) else n_rows
         want = int(round((times[k] + dt_s * (lo - r) - t_start) / dt_s))
         fill = max(0, want - written)
         plan.append((lo, hi, fill))
