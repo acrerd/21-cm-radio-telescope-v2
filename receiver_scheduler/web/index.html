@@ -978,22 +978,33 @@
                 </div>
                 <div id="clashWarning" style="display:none; color:#ff4757; background:#3a1a1a; padding:8px 12px; border-radius:5px; margin-top:5px; font-size:13px;"></div>
 
-                <div class="section-title">Target Coordinates</div>
+                <div class="section-title">What to observe</div>
                 <div class="coord-section">
                     <div class="form-grid">
                         <div class="form-group">
-                            <label>Coordinate System</label>
-                            <select autocomplete="off" id="obsCoordSystem" onchange="updateCoordLabels()" data-help="How you specify the target. Alt/Az and Drift Scan park the dish and let the sky drift through the beam; RA/Dec, Galactic, Famous and Object track a source as it moves. Calibration and Horizon are maintenance scans.">
-                                <option value="altaz">Alt/Az (Horizontal)</option>
-                                <option value="radec">RA/Dec (Equatorial J2000)</option>
-                                <option value="galactic">Galactic (l, b)</option>
-                                <option value="famous">Famous targets</option>
-                                <option value="drift">Drift Scan (fixed pointing)</option>
-                                <option value="object">Solar System Object</option>
-                                <option value="pulsar">Pulsar B0329+54 (fold at the period)</option>
-                                <option value="satellite">Satellite (TLE)</option>
-                                <option value="calibration">Calibration Day (Sun Scan)</option>
-                                <option value="horizon">Horizon Scan</option>
+                            <label>Observation</label>
+                            <!-- Grouped by what the dish does. The saved field is still
+                                 coord_system with the same values, so entries, recordings
+                                 and the scheduler are unchanged; only the labels moved. -->
+                            <select autocomplete="off" id="obsCoordSystem" onchange="updateCoordLabels()" data-help="What the dish does. Tracked entries follow a position or a named target across the sky; parked ones hold the dish still and let the sky drift through the beam; the special observations are the pulsar fold and the maintenance scans.">
+                                <optgroup label="Track a position">
+                                    <option value="radec">RA/Dec (J2000)</option>
+                                    <option value="galactic">Galactic (l, b)</option>
+                                </optgroup>
+                                <optgroup label="Track a named target">
+                                    <option value="famous">Famous targets</option>
+                                    <option value="object">Sun or Moon</option>
+                                    <option value="satellite">Satellite (TLE)</option>
+                                </optgroup>
+                                <optgroup label="Park and let the sky drift">
+                                    <option value="altaz" selected>Fixed alt/az</option>
+                                    <option value="drift">Drift scan across a source</option>
+                                </optgroup>
+                                <optgroup label="Special observations">
+                                    <option value="pulsar">Pulsar B0329+54 (folded)</option>
+                                    <option value="calibration">Calibration day (Sun scans)</option>
+                                    <option value="horizon">Horizon scan</option>
+                                </optgroup>
                             </select>
                         </div>
                     </div>
@@ -1015,9 +1026,10 @@
                             <label>Pulsar</label>
                             <div id="pulsarNote" class="mono" style="color:#aaa; font-size:12px; margin-top:6px;">
                                 B0329+54 (J0332+5434): RA 03h33m Dec +54&deg;35', DM 26.8, P 0.7145 s, 203 mJy.
-                                Circumpolar. Folded at the period afterwards; about 1&frac34; h to 5&sigma; at the present T_sys (book 2&ndash;3 h),
-                                30 min at 100 K, and scintillation can halve or double either. The integration-time box
-                                does not apply: the receiver writes one row per millisecond.
+                                Circumpolar. Recorded as one 32 MHz channel at 1 ms and folded afterwards: about
+                                13&sigma; in 16 h and 8&sigma; in 6 h at the present T_sys (first detection 2026-09-27),
+                                but scintillation can halve or double a night and the feed's polarisation moves it too.
+                                Plan on 6 h or more, homing first. The integration-time box does not apply.
                             </div>
                         </div>
                     </div>
