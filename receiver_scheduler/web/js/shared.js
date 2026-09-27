@@ -374,6 +374,19 @@
                     tips.push('T_sys: from the gain fit of ' + (gain.created_utc || '').slice(0, 10) +
                               ' (drifts a few K an hour)');
                 }
+                // SEFD = 2 k T_sys / A_e, with A_e = lambda^2 / Omega from the
+                // measured main lobe - the effective area the flux scale uses. The
+                // main lobe is not the whole pattern, so this A_e is an upper bound
+                // and the SEFD a lower one.
+                if (gain.t_sys_k && beam.solid_angle_sq_deg) {
+                    const lambda = 299792458 / 1420.405751e6;
+                    const omega = beam.solid_angle_sq_deg * Math.pow(Math.PI / 180, 2);
+                    const ae = lambda * lambda / omega;
+                    const sefd = 2 * 1.380649e-23 * gain.t_sys_k / ae / 1e-26;
+                    parts.push('SEFD ' + (sefd / 1000).toFixed(0) + ' kJy');
+                    tips.push('SEFD = 2k T_sys / A_e, A_e = \u03bb\u00b2/\u03a9 = ' + ae.toFixed(2) +
+                              ' m\u00b2 from the main lobe at 1420 MHz (an upper bound on A_e, so a lower bound on the SEFD)');
+                }
                 parts.push('55.90\u00b0 N, 4.31\u00b0 W');
                 el.textContent = parts.join('  \u00b7  ');
                 el.title = tips.join('\n') || '';
