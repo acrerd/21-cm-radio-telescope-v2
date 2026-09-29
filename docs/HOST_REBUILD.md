@@ -37,7 +37,8 @@ This document takes a blank replacement machine to a working Acre Road SRT works
 | B200 RX2 | the receive chain: feed → SAWbird+ H1 → cable | |
 | B200 TX/RX | 30 dB pad → the vertex dipole | the pilot and the test transmitter; off by default |
 | B200 REF IN | Thunderbolt GPSDO **10 MHz** | selected and checked by `select_clock_source` through the `ref_locked` sensor |
-| B200 PPS IN | Thunderbolt **1 PPS** | **pending**. The input takes 1.8–5 V, so the Thunderbolt's TTL is fine. Picked up automatically (`H1_TIME_SOURCE=auto`). |
+| B200 PPS IN | Thunderbolt **1 PPS** | in use: the 2026-09-28 pulsar run recorded `time_source` pps. The input takes 1.8–5 V, so the Thunderbolt's TTL is fine. Picked up automatically (`H1_TIME_SOURCE=auto`). |
+| Thunderbolt serial (DB9) | USB, through an **RS-232** adapter (FTDI) | **pending the adapter**. TSIP status at 9600 8-N-1, read by `thunderbolt.py` from `/dev/thunderbolt` (§7). RS-232 levels: a 3.3 V TTL adapter will not read it. |
 | Controller (WT32-ETH01) | the second network card, TP-Link TG-3468 (`enp5s0`, `r8169`) | a private link: see `docs/OBSERVATORY_HOST_SETUP.md` |
 | Campus network | the motherboard network card | internet, NTP, GitHub, remote access |
 | Safety camera | USB (`/dev/video0`) | needs the `video` group (§7) |
@@ -63,7 +64,7 @@ This document takes a blank replacement machine to a working Acre Road SRT works
 ```
 # Ubuntu 24.04 LTS desktop, user astro (uid 1000)
 sudo apt update && sudo apt install -y git gh curl wmctrl openssh-server network-manager \
-     pipewire wireplumber gstreamer1.0-tools
+     pipewire wireplumber gstreamer1.0-tools gstreamer1.0-plugins-good   # v4l2src, jpegenc: the camera stream
 sudo usermod -aG video,dialout,plugdev astro      # camera, serial, USB
 # log out and back in: a new group reaches only processes started from a new login
 ```
@@ -106,6 +107,19 @@ sudo udevadm control --reload-rules && sudo udevadm trigger
 
 - The images needed are `usrp_b200_fw.hex` and `usrp_b200_fpga.bin`. The current machine has the full set in `/home/astro/radioconda/share/uhd/images/`.
 - If the rule file is somewhere else in the radioconda tree, find it with `find /home/astro/radioconda -name uhd-usrp.rules`.
+
+**Thunderbolt serial adapter** (pending, 2026-09-29). A fixed name, so the scheduler's `thunderbolt_device` (`/dev/thunderbolt`) survives other USB-serial devices appearing first. Fill in the adapter's own serial number from `udevadm info -a -n /dev/ttyUSB0 | grep '{serial}'`; the vendor and product are FTDI's FT232R.
+
+```
+sudo tee /etc/udev/rules.d/99-thunderbolt.rules <<'RULE'
+SUBSYSTEM=="tty", ATTRS{idVendor}=="0403", ATTRS{idProduct}=="6001", ATTRS{serial}=="<ADAPTER SERIAL>", SYMLINK+="thunderbolt", GROUP="dialout", MODE="0660"
+RULE
+sudo udevadm control --reload-rules && sudo udevadm trigger
+ls -l /dev/thunderbolt                                        # -> ttyUSBn
+/home/astro/radioconda/bin/python receiver_scheduler/thunderbolt.py /dev/thunderbolt --seconds 5
+```
+
+The last line should print an `AB` and an `AC` line each second. `astro` needs the `dialout` group (§4). No scheduler restart is needed: it looks for the device every 30 s.
 
 **Camera.** The camera needs the scheduler process itself to hold the `video` group. A scheduler started from a shell that predates `usermod` lacks it until the next login. The launch line used from such a shell is `setsid nohup sg video -c "bash start_scheduler.sh"`, and after a fresh login a plain start is enough. Check with `grep Groups /proc/<scheduler pid>/status`, which must list 44.
 
@@ -214,7 +228,7 @@ Do these in order; each depends on the ones before.
    The log must say `Clock: EXTERNAL 10 MHz reference, locked`, and the file's `overflows` must sum to 0.
 3. The controller: `curl http://192.168.50.120/status` answers. Check its NTP sync as `docs/OBSERVATORY_HOST_SETUP.md` §8 describes.
 4. The scheduler: start it from the desktop launcher, then check that `curl http://127.0.0.1:5000/api/status` answers and the page loads.
-5. The camera: `curl -o /tmp/s.jpg -w '%{http_code}' http://127.0.0.1:5000/api/camera/snapshot` returns 200.
+5. The camera: `curl -o /tmp/s.jpg -w '%{http_code}' http://127.0.0.1:5000/api/camera/snapshot` returns 200. The snapshot alone does not prove the live view, since it falls back to a one-shot read of the device: `curl -s -m 5 'http://127.0.0.1:5000/api/camera/stream?fps=5' | grep -a -c srt-camera` should count frames, and must do so with nobody logged in at the console.
 6. The tests: `cd receiver_scheduler && /home/astro/radioconda/bin/python -m pytest`.
    - About 700 should pass.
    - `TestFlaskAPI::test_post_config` fails on the observatory host by design, because it reaches the live controller.

@@ -10,6 +10,8 @@
             setInterval(updateStatus, 2000);
             setInterval(updateTelescope, 5000);
             setInterval(updateReceiver, 3000);
+            refreshClocks();
+            setInterval(refreshClocks, 15000);
             fetch('/api/config').then(r => r.json()).then(cfg => {
                 soundEnabled = cfg.sound_enabled !== false;
             });

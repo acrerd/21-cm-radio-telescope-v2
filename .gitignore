@@ -60,3 +60,4 @@ receiver_scheduler/last_observation.json
 # kept on the observatory host only.
 docs/SSH_ACCESS.txt
 docs/ettus3-tunnel.bat
+docs/ettus3-tunnel.sh

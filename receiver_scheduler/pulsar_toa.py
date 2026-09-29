@@ -27,6 +27,7 @@ is about 0.6 x FWHM / (matched S/N), ~0.45 ms for the first 16 h detection.
 """
 import json
 import os
+import re
 
 import numpy as np
 
@@ -42,7 +43,20 @@ TEMPLATE_NAME = "epn_hx97b_1410"
 # product - 16 h of telescope time each - where a raw recording is, in the
 # end, re-observable. Plotting writes here; committing stays a person's act.
 TOA_DIR = os.path.join(HERE, "pulsar_timing")
+# One TOA per night, and nothing else: what any timing program should fit.
+# The 4 h segments are the same photons again, so they live in a file of
+# their own - in one file PINT, tempo2 or pintk would count a night twice,
+# and nothing in the format can tell them not to (2026-09-28).
 TIM_FILE = os.path.join(TOA_DIR, "b0329.tim")
+# A pulsar-monitor night can come in pieces - a booking or a hand-started job
+# interrupts it and the monitor resumes afterwards - and every piece carries
+# `pulsar_session`, when its window opened. The night's TOA is fitted on
+# the pieces' folds added at the absolute phase (`night_<session>`), one per
+# night as for an unbroken run; each piece's own TOA (`<recording>_p`) goes
+# with the segments, a check on the same data rather than more of it.
+SEGMENT_NAME = re.compile(r"_(s\d+|p)$")
+PIECE_SUFFIX = "_p"
+NIGHT_PREFIX = "night_"
 PAR_FILE = os.path.join(TOA_DIR, "B0329+54.par")
 # Our site as a PINT observatory (pint_tools.register_site), at the surveyed
 # position rather than PINT's own "acre", which is 49 m away.
@@ -217,6 +231,80 @@ def toas_for_recording(path, segments=1, tmpl=None, pulsar=None, analysis=None):
     return out
 
 
+def _stored_session(d):
+    return str(d["session"]) if "session" in d.files else ""
+
+
+def session_toa(session, tmpl=None):
+    """One TOA for a pulsar-monitor night from every stored profile of that
+    session, added at the absolute phase - so it needs the pieces' profiles
+    cached first (cache_profile). None if none are stored. The TOA sits at
+    the pieces' time-weighted middle; tobs is the recorded time, not the span."""
+    import glob
+    S = C = None
+    pieces = []
+    for store in sorted(glob.glob(os.path.join(PROFILE_CACHE_DIR, "*.npz"))):
+        d = np.load(store)
+        if _stored_session(d) != session or int(d["nbins"]) != TOA_BINS \
+                or float(d["row_centre"]) != PF.ROW_CENTRE:
+            continue
+        s_, c_ = d["S"], d["C"]
+        shift = PF.B0329["phase_offset"] - float(d["phase_offset"])
+        if shift:
+            s_, c_ = _rotated(s_, shift), _rotated(c_, shift)
+        S = s_ if S is None else S + s_
+        C = c_ if C is None else C + c_
+        pps = int(d["pps"]) if "pps" in d.files else int(str(d["time_source"]) == "pps")
+        pieces.append({"t0": float(d["t_first_unix"]), "t1": float(d["t_last_unix"]),
+                       "freq_hz": float(d["freq_hz"]), "bw_hz": float(d["bw_hz"]),
+                       "dt_s": float(d["dt_s"]), "pps": pps,
+                       "exact": int(d["time_marks_exact"]) if "time_marks_exact" in d.files else 0})
+    if not pieces:
+        return None
+    prof = np.where(C > 0, S / np.maximum(C, 1e-300), 0.0)
+    first = pieces[0]
+    tm = tmpl if tmpl is not None else template(TOA_BINS, first["dt_s"], first["bw_hz"] or 8e6, first["freq_hz"])
+    fit = fit_shift(prof, tm)
+    dur = np.array([p["t1"] - p["t0"] for p in pieces])
+    mids = np.array([0.5 * (p["t0"] + p["t1"]) for p in pieces])
+    t_mid = float(np.sum(dur * mids) / np.sum(dur)) if dur.sum() > 0 else float(mids[0])
+    knots = t_mid + np.arange(-600.0, 601.0, 60.0)
+    phi_k, p_mean = PF.absolute_phase(knots, PF.B0329, first["freq_hz"])
+    t_toa = arrival_time({"knots": knots, "phi_k": phi_k}, fit["tau"], t_mid)
+    name = NIGHT_PREFIX + session
+    return {
+        "name": name, "recording": name, "session": session, "pieces": len(pieces),
+        "t_unix": t_toa, "mjd": mjd_string(t_toa),
+        "err_us": fit["sigma_tau"] * p_mean * 1e6, "freq_mhz": first["freq_hz"] / 1e6,
+        "snr": fit["snr"], "tau": fit["tau"], "sigma_tau": fit["sigma_tau"], "chi2_red": fit["chi2_red"],
+        "tobs_s": float(dur.sum()), "bw_mhz": first["bw_hz"] / 1e6,
+        "pps": int(all(p["pps"] for p in pieces)),
+        "time_source": "pps" if all(p["pps"] for p in pieces) else "host",
+        "time_marks_exact": int(all(p["exact"] for p in pieces)),
+        "template": TEMPLATE_NAME, "toa_bins": TOA_BINS, "phase_offset": PF.B0329["phase_offset"],
+    }
+
+
+def timing_toas(path, analysis, segments=4):
+    """The TOAs a recording contributes: its own run and segments, and - for a
+    piece of a pulsar-monitor night - the run renamed as a piece (a check)
+    and the whole night's TOA recomputed with this piece in. Cache the
+    recording's profile (cache_profile) before calling."""
+    r, attrs = analysis
+    toas = toas_for_recording(path, segments=segments, analysis=analysis)
+    session = str(attrs.get("pulsar_session", "") or "")
+    if not session:
+        return toas
+    base = os.path.basename(path)
+    for t in toas:
+        if t["name"] == base:
+            t["name"] = base + PIECE_SUFFIX
+    night = session_toa(session)
+    if night is not None:
+        toas.append(night)
+    return toas
+
+
 # ---------------------------------------------------------------------------
 # the .tim file
 
@@ -229,22 +317,49 @@ def tim_line(t):
                t["tobs_s"], t["bw_mhz"], t["template"]))
 
 
-def write_tim(toas, tim_file=TIM_FILE):
-    """Add or replace these TOAs (by name) in the .tim file, sorted by time;
-    rerunning a recording replaces its lines rather than duplicating them."""
-    os.makedirs(os.path.dirname(tim_file), exist_ok=True)
+def segment_file(tim_file=TIM_FILE):
+    """Where a .tim file's segments go: b0329.tim -> b0329_segments.tim."""
+    root, ext = os.path.splitext(tim_file)
+    return root + "_segments" + ext
+
+
+SEGMENT_HEADER = ("C 4 h segments of nights whose whole-run TOA is in %s. The same data again:\n"
+                  "C a within-night check, never to be fitted together with that file.\n")
+
+
+def _read_tim(path):
     lines = {}
-    if os.path.exists(tim_file):
-        for ln in open(tim_file):
+    if os.path.exists(path):
+        for ln in open(path):
             ln = ln.strip()
             if ln and not ln.startswith(("FORMAT", "C ", "#", "MODE")):
                 lines[ln.split()[0]] = ln
+    return lines
+
+
+def _write_lines(path, lines, header=""):
+    body = sorted(lines.values(), key=lambda ln: float(ln.split()[2]))
+    with open(path, "w") as fh:
+        fh.write("FORMAT 1\n" + header)
+        fh.write("".join(ln + "\n" for ln in body))
+
+
+def write_tim(toas, tim_file=TIM_FILE):
+    """Add or replace these TOAs (by name), sorted by time: whole-run TOAs in
+    `tim_file`, segments (`<recording>_sN`) in its segment_file(). Rerunning
+    a recording replaces its lines rather than duplicating them, and a
+    segment line found in the main file - one written before the split - is
+    moved across."""
+    os.makedirs(os.path.dirname(tim_file), exist_ok=True)
+    seg_file = segment_file(tim_file)
+    lines = {**_read_tim(tim_file), **_read_tim(seg_file)}
     for t in toas:
         lines[t["name"]] = tim_line(t)
-    body = sorted(lines.values(), key=lambda ln: float(ln.split()[2]))
-    with open(tim_file, "w") as fh:
-        fh.write("FORMAT 1\n")
-        fh.write("\n".join(body) + "\n")
+    whole = {k: v for k, v in lines.items() if not SEGMENT_NAME.search(k)}
+    segs = {k: v for k, v in lines.items() if SEGMENT_NAME.search(k)}
+    _write_lines(tim_file, whole)
+    if segs or os.path.exists(seg_file):
+        _write_lines(seg_file, segs, SEGMENT_HEADER % os.path.basename(tim_file))
     for t in toas:
         with open(os.path.join(os.path.dirname(tim_file), t["name"] + ".json"), "w") as fh:
             json.dump(t, fh, indent=1)
@@ -300,7 +415,10 @@ def cache_profile(path, toa, attrs=None):
              phase_offset=PF.B0329["phase_offset"], row_centre=PF.ROW_CENTRE, nbins=TOA_BINS,
              recording=os.path.basename(path), t_first_unix=toa["t_first"], t_last_unix=toa["t_last"],
              freq_hz=toa["freq_hz"], bw_hz=toa["bw_hz"] or 0.0, dt_s=toa["dt_s"],
-             time_source=str(a.get("time_source", "host")), obs_name=str(a.get("obs_name", "")))
+             time_source=str(a.get("time_source", "host")), obs_name=str(a.get("obs_name", "")),
+             session=str(a.get("pulsar_session", "") or ""),
+             pps=int(str(a.get("time_source", "host")) == "pps" and int(a.get("time_pps_verified", 0)) == 1),
+             time_marks_exact=int(a.get("time_marks_exact", 0)))
     return out
 
 
@@ -353,8 +471,9 @@ def accumulated_profile(fold_missing=True):
 
 
 def timing_fit(tim_file=TIM_FILE, par_file=PAR_FILE, timeout_s=600):
-    """PINT on the whole-run TOAs (segments are a check, never fitted with
-    them): F0 free from three nights, F1 free once they span three weeks;
+    """PINT on the whole-run TOAs in `tim_file`, with the segments from its
+    segment_file() given residuals under the same model but never fitted:
+    F0 free from three nights, F1 free once they span three weeks;
     otherwise residuals only. Returns pint_tools' dict, or {'error': ...}."""
     import subprocess
     import observatory
@@ -364,7 +483,8 @@ def timing_fit(tim_file=TIM_FILE, par_file=PAR_FILE, timeout_s=600):
         return {"error": "no TOAs yet"}
     write_par(par_file)
     cmd = [PINT_PY, os.path.join(HERE, "pint_tools.py"), "fit", par_file, tim_file,
-           str(observatory.SITE_LAT_DEG), str(observatory.SITE_LON_DEG), str(observatory.SITE_HEIGHT_M)]
+           str(observatory.SITE_LAT_DEG), str(observatory.SITE_LON_DEG), str(observatory.SITE_HEIGHT_M),
+           segment_file(tim_file)]
     try:
         out = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_s)
         return json.loads(out.stdout.strip().splitlines()[-1])
@@ -379,12 +499,18 @@ def main():
     ap.add_argument("--segments", type=int, default=1)
     ap.add_argument("--no-write", action="store_true")
     a = ap.parse_args()
-    toas = toas_for_recording(a.recording, segments=a.segments)
+    analysis = PF.analyse_file(a.recording, toa_bins=TOA_BINS)
+    if in_observations(a.recording) and not a.no_write:
+        cache_profile(a.recording, analysis[0]["toa"], analysis[1])
+    toas = timing_toas(a.recording, analysis, segments=a.segments)
     for t in toas:
         print("%-40s MJD %s  %8.1f us  S/N %5.1f  tau %+.5f  chi2r %.2f  pps %d"
               % (t["name"], t["mjd"], t["err_us"], t["snr"], t["tau"], t["chi2_red"], t["pps"]))
-    if not a.no_write:
-        print("written:", write_tim(toas), write_par())
+    keep = [t for t in toas if t["snr"] >= MIN_TOA_SNR]
+    if len(keep) < len(toas):
+        print("not written (S/N < %.0f):" % MIN_TOA_SNR, ", ".join(t["name"] for t in toas if t not in keep))
+    if not a.no_write and keep:
+        print("written:", write_tim(keep), write_par())
 
 
 if __name__ == "__main__":

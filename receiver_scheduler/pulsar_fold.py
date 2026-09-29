@@ -759,11 +759,13 @@ def plot_recording(path, out_path, pulsar=None):
     acc = fitres = None
     if timing:
         try:
-            toas = [t for t in T.toas_for_recording(path, segments=4, analysis=(r, attrs))
+            # Profile first: a piece of a pulsar-monitor night needs its own
+            # stored beside the others for the night's combined TOA.
+            T.cache_profile(path, r["toa"], attrs)
+            toas = [t for t in T.timing_toas(path, (r, attrs), segments=4)
                     if t["snr"] >= T.MIN_TOA_SNR]
             if toas:
                 T.write_tim(toas)
-            T.cache_profile(path, r["toa"], attrs)
             acc = T.accumulated_profile(fold_missing=True)
             fitres = T.timing_fit()
         except Exception as exc:                          # noqa: BLE001 - the plot still draws
@@ -855,15 +857,23 @@ def plot_recording(path, out_path, pulsar=None):
         pps = np.array([p == "1" for p in fitres["pps"]])
         m0 = np.floor(mjd.min()) if len(mjd) else 0.0
         raw = np.array(fitres.get("err_raw_us", fitres["err_us"])) / 1e3
-        # Statistical errors throughout. The fit itself still weights a
-        # host-clock TOA with its clock term (EQUAD); drawn, that bar hid the
-        # measurement, and a run's segments share one clock offset anyway.
+        # Statistical errors as the main bars. A host-clock night also gets a
+        # faint outer bar: statistical and the clock term (EQUAD) together,
+        # which is what the fit weights it by. Without it a host-clock night
+        # looked better than a PPS one of lower S/N, the opposite of how the
+        # fit counts them (2026-09-29). Segments share their night's clock
+        # offset, so they carry no clock term among themselves and get none.
         # One TOA per night (red, fitted) - over weeks these show the pulsar and
         # the model, timing noise included - and that night's 4 h segments
         # (grey), a check on how its arrival times behave within the night.
         if (~whole).any():
             a3.errorbar(mjd[~whole] - m0, res[~whole], raw[~whole], fmt=".", color="0.6", ms=5, lw=0.8,
                         label="4 h segments (a check, not fitted)")
+        host = whole & ~pps
+        if host.any():
+            a3.errorbar(mjd[host] - m0, res[host], err[host], fmt="none", ecolor="C3", alpha=0.25,
+                        lw=3, capsize=0, label="with the host clock's %.0f ms, as fitted" % (np.median(
+                            np.sqrt(np.maximum(err[host] ** 2 - raw[host] ** 2, 0))) or 0))
         for sel, mk, lab in ((whole & pps, "o", "night TOA (fitted), PPS time"),
                              (whole & ~pps, "s", "night TOA (fitted), host clock")):
             if sel.any():
@@ -871,7 +881,8 @@ def plot_recording(path, out_path, pulsar=None):
                             ms=7, lw=1.4, capsize=3, label=lab)
         a3.legend(fontsize=8, loc="lower left")
         a3.axhline(0, color="k", lw=0.5)
-        lo_y = float(np.min(res - raw)); hi_y = float(np.max(res + raw))
+        outer = np.where(host, err, raw)
+        lo_y = float(np.min(res - outer)); hi_y = float(np.max(res + outer))
         span_y = max(hi_y - lo_y, 1.0)
         a3.set_ylim(lo_y - 0.12 * span_y, hi_y + 0.75 * span_y)      # headroom for the numbers
         a3.set_xlabel("MJD - %d" % m0); a3.set_ylabel("residual (ms)")

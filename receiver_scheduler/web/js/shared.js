@@ -116,6 +116,45 @@
             }).catch(() => { el.textContent = 'instrument unavailable'; });
         }
 
+        function inMinutes(ms) {
+            const m = Math.max(0, Math.round(ms / 60000));
+            if (m < 60) return m + ' min';
+            return Math.floor(m / 60) + ' h ' + (m % 60) + ' min';
+        }
+
+        // The pulsar monitor's standing order, said before it acts: when it
+        // will start, and that anything booked or started by hand comes first.
+        // The window times come from /api/status (naive local ISO, which
+        // Date parses as local time - the scheduler's frame).
+        function pulsarNotice(data) {
+            const pm = data.pulsar_monitor;
+            if (!pm || !pm.enabled || !pm.window || !pm.window.opens) return '';
+            const now = new Date();
+            const opens = new Date(pm.window.opens);
+            const hhmm = d => d.toTimeString().slice(0, 5);
+            const running = data.running ? data.observation : null;
+            if (running && running.pulsar_monitor) return '';
+            if (running && running.sun_monitor) {
+                if (pm.window.open) return ' — pulsar observation takes over now';
+                if (running && data.remaining_seconds != null
+                        && opens - now < data.remaining_seconds * 1000) {
+                    return ' — pulsar observation takes over in ' + inMinutes(opens - now);
+                }
+                return '';
+            }
+            if (running || data.background) return '';
+            if (pm.holdoff_until) {
+                return ' — pulsar observation held off until ' + hhmm(new Date(pm.holdoff_until))
+                    + (pm.holdoff_reason ? ' (' + pm.holdoff_reason + ')' : '');
+            }
+            if (pm.window.open) {
+                return pm.waiting ? ' — pulsar observation waiting: ' + pm.waiting
+                                  : ' — pulsar observation starting';
+            }
+            return ' — pulsar observation will start in ' + inMinutes(opens - now)
+                + ' (' + hhmm(opens) + ') unless interrupted';
+        }
+
         function updateStatus() {
             fetch('/api/status').then(r => r.json()).then(data => {
                 const dot = document.getElementById('statusDot');
@@ -129,7 +168,7 @@
                     // aborts the slew wait.
                     text.textContent = data.starting
                         ? `Starting: ${data.observation?.name || '?'} (pointing the telescope)`
-                        : `Running: ${data.observation?.name || '?'}${remaining}`;
+                        : `Running: ${data.observation?.name || '?'}${remaining}${pulsarNotice(data)}`;
                     btn.style.display = 'inline-block';
                     if (wasRunning === false) playStartSound();
                     currentObs = data.observation;
@@ -148,7 +187,7 @@
                     currentObs = null;
                 } else {
                     dot.classList.remove('running');
-                    text.textContent = 'Idle' + nextObsCountdown();
+                    text.textContent = 'Idle' + nextObsCountdown() + pulsarNotice(data);
                     btn.style.display = 'none';
                     if (wasRunning === true) playStopSound();
                     currentObs = null;
@@ -286,6 +325,7 @@
             if (name === 'rf') {
                 rfRefresh(); rfRefreshTarget(); rfShowChosen();
                 rfLoadBandpassPlot(); rfLoadGainPlot();
+                refreshClocks();
             }
             if (name === 'simulator') showSimulator();
             if (name === 'observe') { loadObserveParams(false); loadObserveLast(); }

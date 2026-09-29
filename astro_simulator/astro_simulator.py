@@ -83,7 +83,8 @@ def never_rises(dec_deg):
 
 
 K_B = 1.380649e-23
-LANDMARKS = [("M31", 121.17, -21.57)]   # map markers, no continuum flux
+# map markers, no continuum flux; kept in step with LANDMARKS in web/js/map.js
+LANDMARKS = [("M31", 121.17, -21.57), ("0329", 144.995, -1.221)]
 
 # notable pointings: (label, l, b, min bandwidth MHz to cover the line)
 # notable pointings: (label, l, b, min bandwidth MHz, short description)

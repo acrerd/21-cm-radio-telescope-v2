@@ -123,10 +123,15 @@
                 document.getElementById('cfgCameraDevice').value = cfg.camera_device || '';
                 document.getElementById('cfgCameraResolution').value = cfg.camera_resolution || '';
                 document.getElementById('cfgReceiverPythonPath').value = cfg.receiver_python_path || cfg.python_path || '';
+                document.getElementById('cfgSdrType').value = cfg.sdr_type || 'b210';
                 document.getElementById('cfgDataFolder').value = cfg.data_output_folder || '';
                 document.getElementById('cfgLogLines').value = cfg.log_lines || 100;
                 document.getElementById('cfgSoundEnabled').value = cfg.sound_enabled !== false ? 'true' : 'false';
                 document.getElementById('cfgSunMonitor').value = cfg.sun_monitor ? 'true' : 'false';
+                document.getElementById('cfgPulsarMonitor').value = cfg.pulsar_monitor ? 'true' : 'false';
+                document.getElementById('cfgPulsarMonitorWindow').value = cfg.pulsar_monitor_window || 'follow';
+                document.getElementById('cfgPulsarMonitorStart').value = cfg.pulsar_monitor_start || '20:00';
+                document.getElementById('cfgPulsarMonitorHours').value = cfg.pulsar_monitor_hours ?? 16;
                 soundEnabled = cfg.sound_enabled !== false;
             });
         }
@@ -137,6 +142,7 @@
             // straight through the trees.
             const cfg = {
                 banner_name: document.getElementById('cfgBannerName').value,
+                sdr_type: document.getElementById('cfgSdrType').value,
                 banner_subtitle: document.getElementById('cfgBannerSubtitle').value,
                 srt_controller_url: document.getElementById('cfgControllerUrl').value,
                 slew_timeout: parseInt(document.getElementById('cfgSlewTimeout').value) || 300,
@@ -152,6 +158,10 @@
                 log_lines: parseInt(document.getElementById('cfgLogLines').value) || 100,
                 sound_enabled: document.getElementById('cfgSoundEnabled').value === 'true',
                 sun_monitor: document.getElementById('cfgSunMonitor').value === 'true',
+                pulsar_monitor: document.getElementById('cfgPulsarMonitor').value === 'true',
+                pulsar_monitor_window: document.getElementById('cfgPulsarMonitorWindow').value,
+                pulsar_monitor_start: document.getElementById('cfgPulsarMonitorStart').value.trim() || '20:00',
+                pulsar_monitor_hours: parseFloat(document.getElementById('cfgPulsarMonitorHours').value) || 16,
             };
             // The instrument: warn before a change goes through, because the
             // calibrations belong to the tuning and every recording after

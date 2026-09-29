@@ -44,6 +44,8 @@ from observatory import SITE_HEIGHT_M, SITE_LAT_DEG, SITE_LON_DEG, beam_fwhm_deg
 # module scope), so the convention lives in a module they can both have.
 import observation_files
 import solar_reference
+import clocks
+import thunderbolt
 # The one place the power meters' centre frequency is written down.
 from tuning import POWER_METER_CENTER_HZ
 import numpy as np
@@ -126,6 +128,10 @@ _DEFAULT_CONFIG = {
     "platformio_path": "",
     "firmware_update_env": "wt32-eth01-ota",
     "receiver_python_path": "/home/astro/radioconda/bin/python",
+    # Which radio a run started from the Observe tab uses (b210 means the
+    # B200; the label predates knowing which it was). An entry that names its
+    # own sdr_type - the schedule form, the Sun scan, the horizon scan - keeps it.
+    "sdr_type": "b210",
     # The true site, identical to OBSERVER_LAT/OBSERVER_LON in
     # esp32_controller_arduino/src/config.h and to sun_scan.py.
     "observer_lat": SITE_LAT_DEG,
@@ -188,6 +194,23 @@ _DEFAULT_CONFIG = {
     # Track the Sun whenever nothing else wants the telescope (issue #44).
     # Off by default: it makes the host busy most of a summer day.
     "sun_monitor": False,
+    # Record B0329+54 in pulsar mode every night, from pulsar_monitor_start
+    # (local time) for pulsar_monitor_hours, ahead of the Sun monitor. Off by
+    # default.
+    "pulsar_monitor": False,
+    # "follow": the window opens each day when B0329+54 comes out from behind
+    # the measured horizon (it is circumpolar here, but hidden ~6 h a day by
+    # the northern obstruction, and that moves 2 h a month round the clock).
+    # "clock": it opens at pulsar_monitor_start every day.
+    "pulsar_monitor_window": "follow",
+    "pulsar_monitor_start": "20:00",
+    "pulsar_monitor_hours": 16,
+    # The Trimble Thunderbolt's serial status (TSIP), read by thunderbolt.py.
+    # A missing device is looked for every 30 s, so plugging the adapter in
+    # needs no restart. /dev/thunderbolt is the name a udev rule gives the
+    # adapter (docs/HOST_REBUILD.md); /dev/ttyUSB0 also works until then.
+    "thunderbolt_device": "/dev/thunderbolt",
+    "thunderbolt_baud": 9600,
     # Safety camera: a USB webcam watching the dish. One frame per request, on
     # demand - see /api/camera/snapshot.
     "camera_device": "/dev/video0",
@@ -229,6 +252,12 @@ def save_config(cfg: dict):
     with open(CONFIG_FILE, 'w') as f:
         json.dump(cfg, f, indent=2)
     log.info("Configuration saved")
+
+
+def observation_sdr(obs: dict) -> str:
+    """The radio an entry records with: its own sdr_type if it names one,
+    else the configured default (the Observe tab sends none)."""
+    return str(obs.get("sdr_type") or get_config_value("sdr_type") or "b210")
 
 
 def get_config_value(key: str):
@@ -2260,7 +2289,7 @@ def start_observation(obs: dict, duration_override: int = None) -> bool:
         # follows preempts the scans and stops a receiver started by hand, which
         # is right for a booking and wrong for the lowest claimant of all; its
         # tick checked hardware_in_use(), but a start can land between the two.
-        if _is_sun_monitor(obs) and (
+        if _is_monitor(obs) and (
                 sun_scan_state["running"] or cal_day_state["running"]
                 or horizon_state["running"] or rf_state["running"]
                 or _proc_running(receiver_boot_process)):
@@ -2396,6 +2425,11 @@ def start_observation(obs: dict, duration_override: int = None) -> bool:
             # So the recordings list can file a Sun monitor run apart from a
             # booked Sun observation without trusting the name.
             'sun_monitor': bool(obs.get('sun_monitor')),
+            # A pulsar monitor run, and the night it belongs to: the date its
+            # window opened. A night interrupted by a booking comes in pieces,
+            # and this is what puts them back together.
+            'pulsar_monitor': bool(obs.get('pulsar_monitor')),
+            'pulsar_session': obs.get('pulsar_session', ''),
             # Free text from the schedule form. Lands as the `comment`
             # attribute - the receiver skips empty strings, so a recording
             # without one simply has no such attribute.
@@ -2446,6 +2480,10 @@ def start_observation(obs: dict, duration_override: int = None) -> bool:
             'homing_count_error_az_deg':
                 (obs.get('homing_counters') or {}).get('first', {}).get('az', ''),
             **pulsar_meta,
+            # The frequency reference's own account of itself at the start:
+            # locked or in holdover, alarms, its 10 MHz and PPS estimates.
+            # 'absent' when no Thunderbolt is being read - see thunderbolt.py.
+            **thunderbolt.recording_attrs(_thunderbolt),
         })
 
         python_exe = receiver_python_path()
@@ -2462,7 +2500,7 @@ def start_observation(obs: dict, duration_override: int = None) -> bool:
             # receiver boot (/api/receiver/start) keeps the window - that is
             # what it is for.
             '--headless',
-            '--sdr', obs.get('sdr_type', 'b210'),
+            '--sdr', observation_sdr(obs),
         ]
 
         # Give the receiver its own log file rather than letting it inherit the
@@ -2737,6 +2775,12 @@ def stop_observation() -> bool:
             # ends; the result is adopted only if it meets beam_scan's bar.
             threading.Thread(target=_analyse_beam_scan,
                              args=(current_observation['output_file'],), daemon=True).start()
+        if current_observation and current_observation.get('coord_system') == 'pulsar' \
+                and current_observation.get('output_file'):
+            # Every pulsar run adds its TOAs to the .tim when it ends, rather
+            # than waiting for somebody to plot it.
+            threading.Thread(target=update_pulsar_timing,
+                             args=(current_observation['output_file'],), daemon=True).start()
         current_process = None
         current_observation = None
         current_receiver_log = None
@@ -3006,11 +3050,18 @@ def _sun_clear_minutes(now: datetime, profile, max_minutes: int, min_alt: float)
     """
     if not EPHEM_AVAILABLE:
         return 0
+    return _body_clear_minutes(now, ephem.Sun(), profile, max_minutes, min_alt)
+
+
+def _body_clear_minutes(now: datetime, body, profile, max_minutes: int, min_alt: float) -> int:
+    """_sun_clear_minutes for any ephem body."""
+    if not EPHEM_AVAILABLE:
+        return 0
     import horizon_store
     floors = bool(profile) and bool(horizon_store.profile_floors(profile))
     margin = horizon_store.beam_margin_deg()
     observer = _get_observer()
-    sun = ephem.Sun()
+    sun = body
     for m in range(int(max_minutes) + 1):
         observer.date = _local_to_ephem_utc(now + timedelta(minutes=m))
         sun.compute(observer)
@@ -3037,13 +3088,21 @@ def _next_booking_start(schedule, now: datetime) -> Optional[datetime]:
     return best
 
 
-def sun_monitor_plan(now: datetime, schedule, profile, min_alt: float):
+def sun_monitor_plan(now: datetime, schedule, profile, min_alt: float,
+                     pulsar_from: Optional[datetime] = None):
     """(minutes, reason): how long a monitor run starting now should last.
 
     Zero minutes, with the reason, when it should not start. Pure apart from
     the ephemeris, so the tests can hand it any sky and any schedule.
+    `pulsar_from` is when the pulsar monitor next wants the telescope, which
+    ends a Sun run like a booking does.
     """
     limit = SUN_MONITOR_MAX_MINUTES
+    if pulsar_from is not None:
+        limit = min(limit, int((pulsar_from - now).total_seconds() // 60)
+                    - SUN_MONITOR_GUARD_MINUTES)
+        if limit < SUN_MONITOR_MIN_MINUTES:
+            return 0, "the pulsar monitor's window opens at %s" % pulsar_from.strftime('%H:%M')
     booking = _next_booking_start(schedule, now)
     if booking is not None:
         limit = min(limit, int((booking - now).total_seconds() // 60)
@@ -3087,6 +3146,17 @@ def _is_sun_monitor(obs) -> bool:
     return bool(obs) and bool(obs.get('sun_monitor'))
 
 
+def _is_monitor(obs) -> bool:
+    """A standing-order run (Sun or pulsar): gives way to anything by hand."""
+    return _is_sun_monitor(obs) or _is_pulsar_monitor(obs)
+
+
+def monitors_hold(reason: str, minutes: float = SUN_MONITOR_HOLDOFF_MINUTES):
+    """Hold both standing orders off: someone is using the telescope."""
+    sun_monitor_hold(reason, minutes)
+    pulsar_monitor_hold(reason, minutes)
+
+
 def sun_monitor_hold(reason: str, minutes: float = SUN_MONITOR_HOLDOFF_MINUTES):
     """Keep the monitor from starting for `minutes`."""
     until = datetime.now() + timedelta(minutes=minutes)
@@ -3104,17 +3174,19 @@ def sun_monitor_yield(reason: str) -> bool:
     Called at the top of every manual start path, before its own busy check,
     so the monitor never refuses anything - it is the one claimant that always
     gives way. Takes process_lock, so never call it while holding that.
+    The pulsar monitor gives way the same way: a night in pieces combines,
+    so an interruption costs only the time it takes.
     """
-    sun_monitor_hold(reason)
+    monitors_hold(reason)
     with process_lock:
-        mine = (_is_sun_monitor(current_observation)
-                or (observation_starting and _is_sun_monitor(starting_observation)))
+        mine = (_is_monitor(current_observation)
+                or (observation_starting and _is_monitor(starting_observation)))
         # Whoever it gives way to is about to command the mount; a stow on
         # the way out would send it to the zenith first, for nothing.
-        if mine and _is_sun_monitor(current_observation):
+        if mine and _is_monitor(current_observation):
             current_observation['end_action'] = 'none'
     if mine:
-        log.info("Sun monitor gives way: %s", reason)
+        log.info("Monitor run gives way: %s", reason)
         stop_observation()
     return mine
 
@@ -3149,7 +3221,8 @@ def _sun_monitor_tick(now: datetime, schedule):
         return
     import horizon_store
     minutes, why = sun_monitor_plan(now, schedule, horizon_store.load_active(),
-                                    float(cfg.get('min_elevation', 10.0)))
+                                    float(cfg.get('min_elevation', 10.0)),
+                                    pulsar_from=_pulsar_monitor_next(now, cfg))
     with sun_monitor_lock:
         changed = sun_monitor_state["waiting"] != why
         sun_monitor_state["waiting"] = why
@@ -3163,6 +3236,310 @@ def _sun_monitor_tick(now: datetime, schedule):
         log.warning("Sun monitor: the start failed; retrying in %d min",
                     SUN_MONITOR_RETRY_MINUTES)
         sun_monitor_hold("a start failed", SUN_MONITOR_RETRY_MINUTES)
+
+
+# =============================================================================
+# Pulsar monitor
+# =============================================================================
+#
+# A standing order like the Sun monitor, one rank above it: B0329+54 in pulsar
+# mode every day for `pulsar_monitor_hours`. It never sets here, but the
+# northern obstruction hides it ~6 h a day, and that stretch moves round the
+# clock through the year; the window either follows it ('follow': opens as
+# the pulsar comes out from behind the measured horizon) or opens at
+# `pulsar_monitor_start` ('clock'). With the PPS the folds are on an absolute
+# phase, so a window that a booking or a hand-started job interrupts is not
+# lost: each run stops short of whatever is booked, the monitor resumes for
+# what is left of the window afterwards, and the pieces combine. Every piece
+# carries `pulsar_session`, when its window opened, so a window is one
+# session however many files it came in and whichever side of midnight they
+# fall. Bookings preempt it and anything by hand makes it give way
+# (sun_monitor_yield), exactly as for the Sun; over the Sun monitor it wins -
+# a Sun run never starts into the window, and one running when the window
+# opens is stopped for it.
+PULSAR_MONITOR_NAME = "Pulsar monitor"
+PULSAR_MONITOR_MIN_MINUTES = 30      # homing and slew cost ~5 min; less is not worth a file
+PULSAR_MONITOR_GUARD_MINUTES = 2
+PULSAR_MONITOR_RETRY_MINUTES = 10
+PULSAR_MONITOR_COMMENT = ("Pulsar monitor: B0329+54 in its nightly window. A night "
+                          "interrupted comes in pieces sharing pulsar_session.")
+
+pulsar_monitor_lock = threading.Lock()
+pulsar_monitor_state = {"holdoff_until": None, "holdoff_reason": "", "waiting": ""}
+
+
+def _is_pulsar_monitor(obs) -> bool:
+    return bool(obs) and bool(obs.get('pulsar_monitor'))
+
+
+def pulsar_clock_window(now: datetime, start_hhmm: str, hours: float):
+    """(opens, closes, open_now): the window containing `now`, else the next one.
+
+    Windows are named by the day they open, so 20:00 for 16 h is one window
+    from 20:00 to 12:00 the next day - never two halves of different days.
+    """
+    try:
+        h, m = (int(x) for x in str(start_hhmm).split(':'))
+    except ValueError:
+        h, m = 20, 0
+    hours = min(max(float(hours), 0.5), 23.5)     # windows must not overlap
+    today = now.replace(hour=h % 24, minute=m % 60, second=0, microsecond=0)
+    length = timedelta(hours=hours)
+    for opens in (today - timedelta(days=1), today):
+        if opens <= now < opens + length:
+            return opens, opens + length, True
+    opens = today if today > now else today + timedelta(days=1)
+    return opens, opens + length, False
+
+
+_follow_cache = {}
+
+
+def _pulsar_blocked_minutes(t0: datetime, n: int, profile, min_alt: float):
+    """Per minute from t0 for n minutes: is B0329+54 hidden (below min_alt, or
+    within a full beam of the measured floor - the booking trim's test)?"""
+    import horizon_store
+    floors = bool(profile) and bool(horizon_store.profile_floors(profile))
+    margin = horizon_store.beam_margin_deg()
+    observer = _get_observer()
+    body = _pulsar_body()
+    out = []
+    for m in range(n):
+        observer.date = _local_to_ephem_utc(t0 + timedelta(minutes=m))
+        body.compute(observer)
+        alt, az = math.degrees(body.alt), math.degrees(body.az)
+        floor = float(min_alt)
+        if floors:
+            floor = max(floor, horizon_store.horizon_floor(profile, az) + margin)
+        out.append(alt < floor)
+    return out
+
+
+def pulsar_follow_window(now: datetime, hours: float, profile, min_alt: float):
+    """(opens, closes, open_now) with the window opening when B0329+54 last
+    came, or next comes, out from behind the horizon; closing `hours` later or
+    when it goes behind again, whichever is first. None if nothing hides it
+    (no profile, or a sky with no obstruction there) - then there is no
+    emergence to follow and the caller falls back to the clock window.
+
+    The track is sampled a minute at a time from 26 h before `now` to 26 h
+    after, which always contains one whole clear stretch and the next
+    emergence (the pulsar is hidden ~6 h in every sidereal day).
+    """
+    if not EPHEM_AVAILABLE:
+        return None
+    # Keyed by the profile's content (1.5 ms to hash), not its identity:
+    # load_active() hands back a fresh object every call.
+    key = (now.replace(second=0, microsecond=0), float(hours), float(min_alt),
+           hash(json.dumps(profile, sort_keys=True, default=str)))
+    if key in _follow_cache:
+        return _follow_cache[key]
+    t0 = now.replace(second=0, microsecond=0) - timedelta(hours=26)
+    n = 52 * 60
+    blocked = _pulsar_blocked_minutes(t0, n, profile, min_alt)
+    starts = [i for i in range(1, n) if blocked[i - 1] and not blocked[i]]
+    ends = [i for i in range(1, n) if not blocked[i - 1] and blocked[i]]
+    result = None
+    if starts:
+        length = timedelta(hours=min(max(float(hours), 0.5), 23.5))
+        i_now = 26 * 60
+        for s in starts:
+            opens = t0 + timedelta(minutes=s)
+            end_i = next((e for e in ends if e > s), n)
+            closes = min(opens + length, t0 + timedelta(minutes=end_i))
+            if s <= i_now and now < closes:
+                result = (opens, closes, now >= opens)
+                break
+            if s > i_now:
+                result = (opens, closes, False)
+                break
+    if len(_follow_cache) > 64:
+        _follow_cache.clear()
+    _follow_cache[key] = result
+    return result
+
+
+def pulsar_window_for(now: datetime, cfg, profile, min_alt: float):
+    """(opens, closes, open_now) for the configured mode: 'follow' the
+    pulsar out from behind the horizon, or the fixed 'clock' time (also the
+    fallback when nothing hides the pulsar, so there is no emergence)."""
+    hours = cfg.get('pulsar_monitor_hours', 16)
+    if cfg.get('pulsar_monitor_window', 'follow') == 'follow':
+        w = pulsar_follow_window(now, hours, profile, min_alt)
+        if w is not None:
+            return w
+    return pulsar_clock_window(now, cfg.get('pulsar_monitor_start', '20:00'), hours)
+
+
+def _pulsar_monitor_next(now: datetime, cfg) -> Optional[datetime]:
+    """When the pulsar monitor next wants the telescope: now, if its window is
+    open; None if it is off."""
+    if not cfg.get('pulsar_monitor', False):
+        return None
+    import horizon_store
+    opens, _, open_now = pulsar_window_for(now, cfg, horizon_store.load_active(),
+                                           float(cfg.get('min_elevation', 10.0)))
+    return now if open_now else opens
+
+
+def _pulsar_body():
+    import pulsar_fold
+    p = pulsar_fold.B0329
+    body = ephem.FixedBody()
+    body._ra = math.radians(p['ra_deg'])
+    body._dec = math.radians(p['dec_deg'])
+    body._epoch = ephem.J2000
+    return body
+
+
+def pulsar_session_name(opens: datetime) -> str:
+    """A window's name: when it opened, to the minute. The date alone is not
+    unique - a window that follows the pulsar moves 4 min a day, so once a
+    year two open on one calendar date."""
+    return opens.strftime('%Y-%m-%dT%H%M')
+
+
+def pulsar_monitor_plan(now: datetime, schedule, profile, min_alt: float,
+                        start_hhmm: str, hours: float, mode: str = "clock"):
+    """(minutes, reason, session): how long a run starting now should last,
+    and the window (session) it belongs to. Zero minutes, with the reason,
+    when it should not start."""
+    cfg = {'pulsar_monitor_window': mode, 'pulsar_monitor_start': start_hhmm,
+           'pulsar_monitor_hours': hours}
+    opens, closes, open_now = pulsar_window_for(now, cfg, profile, min_alt)
+    if not open_now:
+        return 0, "the window opens at %s" % opens.strftime('%d %b %H:%M'), ""
+    session = pulsar_session_name(opens)
+    limit = int((closes - now).total_seconds() // 60)
+    booking = _next_booking_start(schedule, now)
+    if booking is not None:
+        limit = min(limit, int((booking - now).total_seconds() // 60)
+                    - PULSAR_MONITOR_GUARD_MINUTES)
+    if limit < PULSAR_MONITOR_MIN_MINUTES:
+        return 0, ("the next booking starts at %s" % booking.strftime('%H:%M')
+                   if booking is not None and booking < closes
+                   else "the window closes at %s" % closes.strftime('%H:%M')), session
+    if EPHEM_AVAILABLE:
+        clear = _body_clear_minutes(now, _pulsar_body(), profile, limit, min_alt)
+        if clear == 0:
+            return 0, "B0329+54 is behind the horizon", session
+        if clear < limit:
+            limit = clear - PULSAR_MONITOR_GUARD_MINUTES
+        if limit < PULSAR_MONITOR_MIN_MINUTES:
+            return 0, "B0329+54 is clear for only %d min" % clear, session
+    return limit, "", session
+
+
+def pulsar_monitor_entry(now: datetime, minutes: int, session: str) -> dict:
+    """A pulsar monitor run: an ordinary pulsar-mode entry, tagged with its night."""
+    return {
+        'name': PULSAR_MONITOR_NAME, 'comment': PULSAR_MONITOR_COMMENT,
+        'pulsar_monitor': True, 'pulsar_session': session,
+        'coord_system': 'pulsar', 'object_name': 'B0329+54',
+        'coord1_deg': 0, 'coord1_min': 0, 'coord1_sec': 0.0,
+        'coord2_deg': 0, 'coord2_min': 0, 'coord2_sec': 0.0,
+        'start_date': now.strftime('%Y-%m-%d'), 'start_time': now.strftime('%H:%M'),
+        'duration_minutes': int(minutes), 'integration_time_s': 3.0,
+        # Homed first, as every pointed run after a stow is (issue #47).
+        'end_action': 'stow', 'sdr_type': 'b210', 'enabled': True,
+        'respect_local_horizon': True, 'home_first': True,
+    }
+
+
+def pulsar_monitor_hold(reason: str, minutes: float = SUN_MONITOR_HOLDOFF_MINUTES):
+    until = datetime.now() + timedelta(minutes=minutes)
+    with pulsar_monitor_lock:
+        held = pulsar_monitor_state["holdoff_until"]
+        if held is None or until > held:
+            pulsar_monitor_state["holdoff_until"] = until
+            pulsar_monitor_state["holdoff_reason"] = reason
+
+
+def pulsar_monitor_status() -> dict:
+    cfg = load_config()
+    now = datetime.now()
+    with pulsar_monitor_lock:
+        held = pulsar_monitor_state["holdoff_until"]
+        reason = pulsar_monitor_state["holdoff_reason"]
+        waiting = pulsar_monitor_state["waiting"]
+    held = held if held is not None and held > now else None
+    window = None
+    if cfg.get('pulsar_monitor', False):
+        try:
+            import horizon_store
+            opens, closes, open_now = pulsar_window_for(
+                now, cfg, horizon_store.load_active(), float(cfg.get('min_elevation', 10.0)))
+            window = {'opens': opens.isoformat(timespec='minutes'),
+                      'closes': closes.isoformat(timespec='minutes'), 'open': open_now}
+        except Exception as exc:                          # noqa: BLE001 - status must answer
+            window = {'error': str(exc)}
+    return {
+        'enabled': bool(cfg.get('pulsar_monitor', False)),
+        'mode': cfg.get('pulsar_monitor_window', 'follow'),
+        'start': cfg.get('pulsar_monitor_start', '20:00'),
+        'hours': cfg.get('pulsar_monitor_hours', 16),
+        'window': window,
+        'holdoff_until': held.isoformat(timespec='seconds') if held else None,
+        'holdoff_reason': reason if held else '',
+        'waiting': waiting,
+    }
+
+
+def _pulsar_monitor_tick(now: datetime, schedule) -> bool:
+    """Start a pulsar monitor run if its window is open and nothing else wants
+    the telescope. True if it started one (so the Sun monitor does not try
+    the same tick). Scheduler thread only."""
+    cfg = load_config()
+    if not cfg.get('pulsar_monitor', False):
+        return False
+    with pulsar_monitor_lock:
+        held = pulsar_monitor_state["holdoff_until"]
+    if held is not None and now < held:
+        return False
+    if hardware_in_use():
+        return False
+    import horizon_store
+    minutes, why, session = pulsar_monitor_plan(
+        now, schedule, horizon_store.load_active(), float(cfg.get('min_elevation', 10.0)),
+        cfg.get('pulsar_monitor_start', '20:00'), cfg.get('pulsar_monitor_hours', 16),
+        cfg.get('pulsar_monitor_window', 'follow'))
+    with pulsar_monitor_lock:
+        changed = pulsar_monitor_state["waiting"] != why
+        pulsar_monitor_state["waiting"] = why
+    if minutes <= 0:
+        if changed:
+            log.info("Pulsar monitor waiting: %s", why)
+        return False
+    log.info("Pulsar monitor: recording B0329+54 for %d min (window of %s)", minutes, session)
+    if not start_observation(pulsar_monitor_entry(now, minutes, session)):
+        log.warning("Pulsar monitor: the start failed; retrying in %d min",
+                    PULSAR_MONITOR_RETRY_MINUTES)
+        pulsar_monitor_hold("a start failed", PULSAR_MONITOR_RETRY_MINUTES)
+    return True
+
+
+def _pulsar_takes_over_from_sun(now: datetime) -> bool:
+    """The pulsar window has opened while a Sun monitor run holds the
+    telescope: stop the Sun run so the pulsar tick can start. True if it did."""
+    with process_lock:
+        sun_running = (not observation_starting and current_process is not None
+                       and current_process.poll() is None
+                       and _is_sun_monitor(current_observation))
+    if not sun_running:
+        return False
+    cfg = load_config()
+    if _pulsar_monitor_next(now, cfg) != now:
+        return False
+    with pulsar_monitor_lock:
+        held = pulsar_monitor_state["holdoff_until"]
+    if held is not None and now < held:
+        return False
+    with process_lock:
+        if _is_sun_monitor(current_observation):
+            current_observation['end_action'] = 'none'   # the pulsar homes and slews next
+    log.info("Sun monitor gives way to the pulsar monitor's window")
+    stop_observation()
+    return True
 
 
 def scheduler_thread():
@@ -3260,6 +3637,9 @@ def scheduler_thread():
                         if _is_sun_monitor(dead_obs):
                             sun_monitor_hold("the receiver exited early",
                                              SUN_MONITOR_RETRY_MINUTES)
+                        if _is_pulsar_monitor(dead_obs):
+                            pulsar_monitor_hold("the receiver exited early",
+                                                PULSAR_MONITOR_RETRY_MINUTES)
                     stop_observation()
 
             # Find which observation should be active right now
@@ -3337,7 +3717,10 @@ def scheduler_thread():
                         if not start_observation(due_obs, duration_override=due_remaining):
                             _record_start_failure(due_obs, "failed to start")
             elif not is_running:
-                _sun_monitor_tick(now, schedule)
+                if not _pulsar_monitor_tick(now, schedule):
+                    _sun_monitor_tick(now, schedule)
+            else:
+                _pulsar_takes_over_from_sun(now)
 
         except Exception as e:
             log.error("Scheduler error: %s", e, exc_info=True)
@@ -4462,6 +4845,52 @@ def _run_rf_calibration(job, params):
         rf_state["running"] = False
         rf_state["stage_ends_utc"] = None
         rf_state["stage_total_s"] = None
+
+
+# The Thunderbolt reader (thunderbolt.Monitor), started in main(); None in
+# tests and until then, which the clock panel reports as "not configured".
+_thunderbolt = None
+_clock_cache = {}                 # name -> (monotonic, value)
+CLOCK_CACHE_S = 20.0              # the host and controller clocks change slowly
+
+
+def _cached_clock(name, compute):
+    now = time.monotonic()
+    hit = _clock_cache.get(name)
+    if hit and now - hit[0] < CLOCK_CACHE_S:
+        return hit[1]
+    value = compute()
+    _clock_cache[name] = (now, value)
+    return value
+
+
+def _start_thunderbolt():
+    """Start reading the Thunderbolt, logging each change of its state."""
+    global _thunderbolt
+    device = str(get_config_value("thunderbolt_device") or "")
+    if not device:
+        return
+    def changed(level, text):
+        (log.warning if level in ("bad", "stale", "warn") else log.info)("Reference: %s (%s)", text, level)
+    _thunderbolt = thunderbolt.Monitor(device, int(get_config_value("thunderbolt_baud") or thunderbolt.BAUD),
+                                       on_change=changed).start()
+
+
+@app.route('/api/clock', methods=['GET'])
+def api_clock():
+    """The three clocks for the banner and the clock panel: the Thunderbolt,
+    this computer's NTP, the controller's NTP. `?history=1` adds the
+    Thunderbolt's recent status for the traces."""
+    tb = clocks.thunderbolt_clock(_thunderbolt)
+    host = _cached_clock("host", clocks.host_clock)
+    ctrl = _cached_clock("controller", lambda: clocks.controller_clock(srt_api_call("/time/status")))
+    # The banner shows the worst of what is there: a Thunderbolt not yet
+    # connected is a fact, not a fault, and must not colour the page.
+    present = [c["level"] for c in (tb, host, ctrl) if c.get("level") != "absent"]
+    out = {"overall": clocks.worst(present), "thunderbolt": tb, "host": host, "controller": ctrl}
+    if request.args.get("history") and _thunderbolt is not None:
+        out["history"] = _thunderbolt.history_points()
+    return jsonify(out)
 
 
 @app.route('/api/rf/status', methods=['GET'])
@@ -6157,6 +6586,7 @@ def get_status():
             'remaining_seconds': None,
             'background': None,
             'sun_monitor': sun_monitor_status(),
+            'pulsar_monitor': pulsar_monitor_status(),
         })
     # Also count calibration day as running
     if not running and current_observation and current_observation.get('coord_system') == 'calibration':
@@ -6176,6 +6606,7 @@ def get_status():
         # while it drives the mount for two hours.
         'background': None if running else _background_activity(),
         'sun_monitor': sun_monitor_status(),
+        'pulsar_monitor': pulsar_monitor_status(),
     })
 
 
@@ -6285,7 +6716,7 @@ def api_start():
 def api_stop():
     # Stopping by hand means stop: without the hold, a stopped monitor run
     # would start again on the next tick.
-    sun_monitor_hold("an observation was stopped by hand")
+    monitors_hold("an observation was stopped by hand")
     success = stop_observation()
     return jsonify({'success': success})
 
@@ -6410,6 +6841,31 @@ def api_post_config():
                         "bandpass templates and gain calibration belong to the old "
                         "tuning; re-measure them before trusting any kelvin.",
                         tuning.describe_instrument(before), tuning.describe_instrument(inst))
+    # The pulsar monitor's window: a time of day, and a length that leaves the
+    # windows apart (each night is one session).
+    if 'pulsar_monitor_start' in updates:
+        try:
+            hh, mm = (int(x) for x in str(updates['pulsar_monitor_start']).split(':'))
+            if not (0 <= hh < 24 and 0 <= mm < 60):
+                raise ValueError
+        except ValueError:
+            return jsonify({'success': False,
+                            'error': 'pulsar monitor start must be HH:MM'}), 400
+        updates['pulsar_monitor_start'] = '%02d:%02d' % (hh, mm)
+    if 'sdr_type' in updates and updates['sdr_type'] not in ('b210', 'rtlsdr'):
+        return jsonify({'success': False, 'error': "sdr_type must be 'b210' or 'rtlsdr'"}), 400
+    if 'pulsar_monitor_window' in updates and updates['pulsar_monitor_window'] not in ('follow', 'clock'):
+        return jsonify({'success': False,
+                        'error': "pulsar monitor window must be 'follow' or 'clock'"}), 400
+    if 'pulsar_monitor_hours' in updates:
+        try:
+            hours = float(updates['pulsar_monitor_hours'])
+            if not 0.5 <= hours <= 23.5:
+                raise ValueError
+        except (TypeError, ValueError):
+            return jsonify({'success': False,
+                            'error': 'pulsar monitor hours must be 0.5-23.5'}), 400
+        updates['pulsar_monitor_hours'] = hours
     cfg.update(updates)
     save_config(cfg)
     # Apply to running process, as one unit: the scheduler thread must not see
@@ -6970,6 +7426,68 @@ def _beam_summary(doc):
     return {k: v for k, v in doc.items() if k != "profile"}
 
 
+PULSAR_TIMING_MIN_MINUTES = 10     # shorter is a failed start, not a run
+PULSAR_TIMING_TIMEOUT_S = 1800
+PULSAR_SEGMENT_HOURS = 4
+
+
+def pulsar_timing_command(path: str, hours: float) -> list:
+    """The TOA update for one recording: pulsar_toa.py (fold, stored profile,
+    the run's TOAs - and a pulsar-monitor window's combined one - into the
+    .tim) at the lowest CPU and disk priority, since the next run may already
+    be recording. About one segment per 4 h, rounded to the nearest: a 16 h
+    window records 15.98 h, and rounding down gave three 5.3 h segments that
+    replaced the 4 h ones of the same names (`_s0`, `_s1`)."""
+    segments = max(1, int(round(hours / PULSAR_SEGMENT_HOURS)))
+    cmd = [sys.executable, os.path.join(_SCRIPT_DIR, 'pulsar_toa.py'), path,
+           '--segments', str(segments)]
+    if sys.platform != 'win32':
+        cmd = ['nice', '-n', '19'] + (['ionice', '-c', '3'] if shutil.which('ionice') else []) + cmd
+    return cmd
+
+
+def update_pulsar_timing(path: str) -> Optional[dict]:
+    """Add a finished pulsar recording's TOAs to the .tim. Thread target, run
+    from stop_observation for every pulsar run however it ended - a piece
+    stopped by a booking is as good as a full window. Skips a recording
+    outside the observations folder or too short to be one. Returns
+    {'returncode', 'output'} or None if skipped."""
+    import pulsar_toa
+    if not path or not os.path.exists(path) or not pulsar_toa.in_observations(path):
+        return None
+    try:
+        import h5py
+        with h5py.File(path, 'r') as hf:
+            rows = int(hf['power'].shape[0])
+            dt = float(hf.attrs.get('dt_s', 1e-3))
+    except Exception as exc:                              # noqa: BLE001
+        log.warning("Pulsar timing: cannot read %s (%s); TOAs not updated",
+                    os.path.basename(path), exc)
+        return None
+    hours = rows * dt / 3600.0
+    if hours * 60.0 < PULSAR_TIMING_MIN_MINUTES:
+        log.info("Pulsar timing: %s is %.1f min long; no TOA", os.path.basename(path), hours * 60)
+        return None
+    cmd = pulsar_timing_command(path, hours)
+    log.info("Pulsar timing: folding %s (%.1f h) for its TOAs", os.path.basename(path), hours)
+    # The plot writes the same .tim and profiles: one at a time.
+    with observe_plot_lock:
+        try:
+            out = subprocess.run(cmd, capture_output=True, text=True, cwd=_SCRIPT_DIR,
+                                 timeout=PULSAR_TIMING_TIMEOUT_S)
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            log.error("Pulsar timing failed for %s: %s", os.path.basename(path), exc)
+            return {'returncode': None, 'output': str(exc)}
+    lines = [ln for ln in out.stdout.splitlines() if ln.strip()]
+    if out.returncode == 0:
+        for ln in lines:
+            log.info("Pulsar timing: %s", ln)
+    else:
+        log.error("Pulsar timing failed for %s (exit %s): %s", os.path.basename(path),
+                  out.returncode, (out.stderr or '').strip().splitlines()[-3:])
+    return {'returncode': out.returncode, 'output': out.stdout}
+
+
 def _analyse_beam_scan(path, adopt=True):
     """Reduce a Sun drift; adopt it as the beam if it passes. Thread target."""
     import beam_scan
@@ -7500,8 +8018,9 @@ def api_horizon_plot():
 # viewer of /api/camera/stream; /api/camera/snapshot serves the newest settled
 # frame. The process is stopped CAMERA_IDLE_S after the last snapshot with no
 # viewer connected, so nothing holds the camera across an overnight run unless
-# someone is looking at it. Through PipeWire the stream is shared, so nothing
-# else loses the camera meanwhile.
+# someone is looking at it. The stream reads the V4L2 device directly (see
+# _camera_stream_command for why not PipeWire), so while it runs it holds the
+# camera; nothing else on this host uses it.
 _camera_lock = threading.Lock()
 CAMERA_CAPTURE_TIMEOUT = 20      # s: longest a request waits for a frame
 CAMERA_JPEG_QUALITY = 80
@@ -7609,13 +8128,25 @@ def _apply_camera_controls(device: str, controls: dict) -> None:
         os.close(fd)
 
 
-def _camera_stream_command(width: int, height: int, target: str) -> list:
+def _camera_stream_command(width: int, height: int, target: str,
+                           device: str = "/dev/video0") -> list:
+    """The capture pipeline. Straight from the V4L2 device unless a PipeWire
+    target is configured. Through PipeWire it worked only while someone was
+    logged in at the console: WirePlumber 0.4 offers devices only to a user
+    with an active session on the seat, so when the desktop was logged out and
+    the seat went to the GDM greeter (found 2026-09-29) every device vanished
+    from PipeWire and pipewiresrc failed with "target not found", while the
+    one-shot snapshot, reading the device directly, went on working. The
+    scheduler is in the video group, so v4l2src needs no session; the device
+    is idle between streams (the one-shot fallback is only used when no
+    stream is running)."""
     gst = shutil.which("gst-launch-1.0", path="/usr/bin:/bin")
     if not gst:
         return []
-    source = ["pipewiresrc"]
     if target:
-        source.append(f"target-object={target}")
+        source = ["pipewiresrc", f"target-object={target}"]
+    else:
+        source = ["v4l2src", f"device={device}"]
     return [gst, "-q"] + source + [
         "!", "videoconvert", "!", "videoscale",
         "!", f"video/x-raw,width={width},height={height}",
@@ -7653,10 +8184,11 @@ def _reap_stale_camera_streams() -> None:
                 pass
 
 
-def _start_camera_stream(width: int, height: int, target: str) -> str:
+def _start_camera_stream(width: int, height: int, target: str,
+                         device: str = "/dev/video0") -> str:
     """Start the stream. Returns '' or why it could not. Caller holds _camera_lock."""
     global _camera_stream
-    command = _camera_stream_command(width, height, target)
+    command = _camera_stream_command(width, height, target, device)
     if not command:
         return "the system gst-launch-1.0 is not installed"
     stderr = tempfile.TemporaryFile(prefix="srt-camera-")
@@ -7867,7 +8399,7 @@ def _ensure_camera_stream(cfg: dict) -> tuple[dict | None, str]:
         # camera that was re-enumerated meanwhile has forgotten them.
         _apply_camera_controls(device, cfg.get("camera_controls") or {})
         width, height = _camera_resolution(cfg)
-        error = _start_camera_stream(width, height, str(cfg.get("camera_pipewire_target") or ""))
+        error = _start_camera_stream(width, height, str(cfg.get("camera_pipewire_target") or ""), device)
         if error:
             return None, error
     return _camera_stream, ""
@@ -8096,6 +8628,7 @@ def main():
     signal.signal(signal.SIGTERM, _handle_sigterm)
 
     _reap_stale_camera_streams()
+    _start_thunderbolt()
 
     # Start background scheduler thread
     sched_thread = threading.Thread(target=scheduler_thread, daemon=True)

@@ -127,7 +127,7 @@
                 coord2_deg: solar ? 0 : b, coord2_min: 0, coord2_sec: 0,
                 duration_minutes: Math.round(num('obvDuration', 30)),
                 integration_time_s: num('obvIntegration', 3.0),
-                sdr_type: document.getElementById('obvSdr').value,
+                // No sdr_type: the radio is a Configuration setting.
                 filename: document.getElementById('obvFilename').value.trim(),
                 end_action: document.getElementById('obvEndAction').value,
                 respect_local_horizon:

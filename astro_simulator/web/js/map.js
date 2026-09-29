@@ -14,6 +14,8 @@ for (let i = 0; i < 256; i++)
                 parseInt(INFERNO_HEX.slice(i * 6 + 4, i * 6 + 6), 16)]);
 
 const SQRT2 = Math.SQRT2;
+// Map markers with no continuum flux in the model: [label, l, b].
+const LANDMARKS = [["M31", 121.17, -21.57], ["0329", 144.995, -1.221]];
 
 // The lowest clean altitude at an azimuth, from a measured horizon profile.
 //
@@ -471,7 +473,7 @@ export class SkyMap {
                     text: `measured horizon (${this.horizon.date})` });
     }
 
-    // continuum sources + M31 landmark
+    // continuum sources + landmarks
     ctx.save();
     ctx.font = "14px sans-serif";
     for (const s of this.sources) {
@@ -487,14 +489,19 @@ export class SkyMap {
       const tx = p.x + 6 + tw > W - 2 ? p.x - 6 - tw : p.x + 6;
       this._label(s.name, tx, p.y - 4);
     }
-    const m31 = this.toCanvas(121.17, -21.57);
-    ctx.fillStyle = "#a8e6ff";
-    ctx.strokeStyle = "#333639";
-    ctx.beginPath();
-    ctx.moveTo(m31.x, m31.y - 4); ctx.lineTo(m31.x + 4, m31.y);
-    ctx.lineTo(m31.x, m31.y + 4); ctx.lineTo(m31.x - 4, m31.y);
-    ctx.closePath(); ctx.fill(); ctx.stroke();
-    this._label("M31", m31.x + 6, m31.y - 4);
+    // Landmarks: objects worth finding on the map that carry no continuum
+    // flux in the model. Kept in step with LANDMARKS in astro_simulator.py.
+    for (const [name, l, b] of LANDMARKS) {
+      const p = this.toCanvas(l, b);
+      ctx.fillStyle = "#a8e6ff";
+      ctx.strokeStyle = "#333639";
+      ctx.beginPath();
+      ctx.moveTo(p.x, p.y - 4); ctx.lineTo(p.x + 4, p.y);
+      ctx.lineTo(p.x, p.y + 4); ctx.lineTo(p.x - 4, p.y);
+      ctx.closePath(); ctx.fill(); ctx.stroke();
+      const tw = ctx.measureText(name).width;
+      this._label(name, p.x + 6 + tw > W - 2 ? p.x - 6 - tw : p.x + 6, p.y - 4);
+    }
     ctx.restore();
 
     // drift-scan track

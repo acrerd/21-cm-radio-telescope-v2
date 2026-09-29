@@ -1,6 +1,6 @@
 # Pulsar profile templates
 
-`b0329_1410_epn_hx97b.npz` is the template `pulsar_toa.py` times against. It holds B0329+54's full-Stokes profile at 1410 MHz (Effelsberg, 4096 bins), centred on the main peak:
+`b0329_1410_epn_hx97b.npz` is the template `pulsar_toa.py` times against. It holds PSR B0329+54's full-Stokes profile at 1410 MHz (Effelsberg, 4096 bins), centred on the main peak:
 
 - `t_ms`: time from the peak (ms)
 - `I`, `Q`, `U`, `V`: the Stokes profiles, baseline removed

@@ -1,8 +1,8 @@
 
         * { box-sizing: border-box; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; }
-        body { margin: 0; padding: 20px; background: #1a1a2e; color: #eee; min-height: 100vh; }
-        h1 { color: #00d4ff; margin-bottom: 10px; }
-        .subtitle { color: #888; margin-bottom: 20px; }
+        body { margin: 0; padding: 10px 20px 20px; background: #1a1a2e; color: #eee; min-height: 100vh; }
+        h1 { color: #00d4ff; font-size: 26px; margin: 0 0 2px; }
+        .subtitle { color: #888; font-size: 13px; margin: 0; }
         .container { max-width: 1400px; margin: 0 auto; }
         /* The bandpass check is read on the observatory console, never on a
            phone, and the whole point is seeing fine structure across the band.
@@ -18,8 +18,9 @@
            The live solar plot is drawn at 1920 and shown at whatever the
            window gives it. */
         .rf-wide canvas { display: block; width: 100%; height: auto; }
-        .status-bar { background: #16213e; padding: 15px; border-radius: 8px; margin-bottom: 20px; display: flex; justify-content: space-between; align-items: center; gap: 18px; flex-wrap: wrap; }
+        .status-bar { background: #16213e; padding: 6px 12px; border-radius: 8px; margin: 8px 0 10px; display: flex; justify-content: space-between; align-items: center; gap: 18px; flex-wrap: wrap; }
         .status-indicator { display: flex; align-items: center; gap: 10px; }
+        .status-bar .btn { padding: 4px 12px; font-size: 13px; }
         .status-group { display: flex; align-items: center; gap: 26px; flex-wrap: wrap; }
         .status-dot { width: 12px; height: 12px; border-radius: 50%; background: #666; }
         .status-dot.running { background: #00ff88; animation: pulse 1s infinite; }
@@ -96,6 +97,17 @@
            squeezed those. It gets the whole 1400px container, which is also
            the width the .rf-wide pull-out was sized for. */
         .config-form.observe-form { max-width: 1400px; }
+        /* The Observe panel uses its width: the fields in two rows on the left,
+           the fixed instrument beside them, tighter spacing than a settings
+           form needs. */
+        .observe-form { padding: 14px 20px; }
+        .observe-form .section-title { margin: 0 0 6px 0; }
+        .observe-form .form-grid { gap: 10px; margin-bottom: 10px; }
+        .config-form.observe-form .form-group { margin-bottom: 0; }
+        .observe-layout { display: flex; gap: 20px; align-items: flex-start; flex-wrap: wrap; }
+        .observe-fields { flex: 1 1 640px; }
+        .observe-instrument { flex: 0 1 360px; padding: 8px 12px; background: #16162e; border: 1px solid #333; border-radius: 6px; }
+        .observe-instrument label { color: #aaa; font-size: 12px; }
         /* The camera frame is 640x480 native and was rendering ~1:1 in the
            700px settings card. Widen the camera card and let the frame fill it
            so it shows larger - upscaled and a little softer, which is fine for

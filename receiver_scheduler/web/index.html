@@ -14,17 +14,19 @@
                 <p class="subtitle" id="bannerSubtitle"></p>
             </div>
             <div style="text-align:right;">
-                <div id="currentDate" style="color:#888; font-size:14px;"></div>
+                <div id="currentDate" style="color:#888; font-size:12px;"></div>
                 <div style="display:flex; gap:20px; justify-content:flex-end; align-items:baseline;">
                     <div>
                         <div style="color:#888; font-size:10px; text-transform:uppercase;">Local Time</div>
-                        <div id="currentTime" style="color:#00d4ff; font-size:32px; font-family:monospace; font-weight:bold;"></div>
+                        <div id="currentTime" style="color:#00d4ff; font-size:22px; font-family:monospace; font-weight:bold;"></div>
                     </div>
                     <div>
                         <div style="color:#888; font-size:10px; text-transform:uppercase;">UTC</div>
-                        <div id="utcTime" style="color:#ff9500; font-size:24px; font-family:monospace; font-weight:bold;"></div>
+                        <div id="utcTime" style="color:#ff9500; font-size:18px; font-family:monospace; font-weight:bold;"></div>
                     </div>
                 </div>
+                <div id="clockChip" onclick="showClockPanel()" style="color:#666; font-size:12px; margin-top:1px; cursor:pointer;"
+                     data-help="The telescope's three clocks: the GPS reference (Thunderbolt), this computer's and the controller's. Green when all is well; click for the panel.">&#9679; Clocks</div>
             </div>
         </div>
         <div class="status-bar">
@@ -45,9 +47,6 @@
                 </div>
             </div>
             <div style="display:flex; align-items:center; gap:14px;">
-                <label class="help-toggle" title="Show a short explanation when you hover over a control. New to the telescope? Open the Guide tab.">
-                    <input autocomplete="off" type="checkbox" id="helpTipsToggle" onchange="setHelpEnabled(this.checked)"> Help tips
-                </label>
                 <button title="Stop the observation that is recording now. The file keeps what it has; the dish stows or homes if the entry asked for it." class="btn btn-danger" id="stopBtn" style="display:none" onclick="stopObs()">Stop</button>
             </div>
         </div>
@@ -350,6 +349,23 @@
                 <div class="section-title">Progress</div>
                 <div id="rfProgress" style="color:#888; font-size:13px;">Idle.</div>
             </div>
+
+            <div class="card" id="clockPanel">
+                <div class="section-title">Clocks</div>
+                <div style="color:#888; font-size:13px; margin-bottom:12px; max-width:70ch;">
+                    Three clocks the telescope depends on. The <strong>Thunderbolt</strong>, a
+                    GPS-disciplined oscillator, supplies the radio&rsquo;s 10&nbsp;MHz (the spectra&rsquo;s
+                    frequency axis) and its PPS (pulsar arrival times); its serial port says whether it
+                    is really locked, since a unit in holdover goes on putting out a perfect-looking
+                    10&nbsp;MHz. <strong>This computer&rsquo;s</strong> NTP clock names the whole second
+                    the radio is set to and times anything recorded without the PPS. The
+                    <strong>controller&rsquo;s</strong> NTP clock sets where the dish points: a time
+                    error there is a pointing error.
+                </div>
+                <table id="clockTable" class="mono" style="font-size:12px; border-collapse:collapse;"></table>
+                <div id="clockAlarms" class="mono" style="color:#ff9500; font-size:12px; margin-top:8px;"></div>
+                <div id="clockTraces" style="margin-top:12px;"></div>
+            </div>
         </div>
 
         <div class="tab-content" id="tab-horizon">
@@ -500,11 +516,13 @@
         <div class="tab-content" id="tab-observe">
             <div class="config-form observe-form">
                 <div class="section-title">Observation</div>
-                <div id="obvSource" style="color:#888; font-size:12px; margin-bottom:12px;">
+                <div id="obvSource" style="color:#888; font-size:12px; margin-bottom:10px;">
                     Set the fields here for a run now. To book what you are
                     simulating for later, use <strong>Schedule</strong> in the
                     Simulator tab instead.
                 </div>
+                <div class="observe-layout">
+                <div class="observe-fields">
                 <div class="form-grid">
                     <div class="form-group">
                         <label>Type</label>
@@ -538,32 +556,11 @@
                         <label id="obvDurationLabel">Total integration time <span class="unit">(min)</span></label>
                         <input autocomplete="off" type="number" id="obvDuration" min="1" max="1435" step="1" value="30">
                     </div>
-                </div>
-                <div class="section-title">Receiver Settings</div>
-                <div class="form-group wide" style="margin-bottom:8px;">
-                    <label>Instrument <span class="unit">(fixed)</span></label>
-                    <div id="obvTuning" class="mono" style="color:#888; font-size:12px;">
-                        Loading the instrument&hellip;
-                    </div>
-                </div>
-                <div class="form-grid">
                     <div class="form-group">
                         <label>Integration per record <span class="unit">(s)</span></label>
                         <input autocomplete="off" type="number" id="obvIntegration" min="0.1" step="0.1" value="3.0">
                     </div>
-                    <div class="form-group">
-                        <label>SDR</label>
-                        <select autocomplete="off" id="obvSdr">
-                            <option value="b210">B200</option>
-                            <option value="rtlsdr">RTL-SDR</option>
-                        </select>
-                    </div>
                 </div>
-                <div id="obvTuning" style="margin-top:10px; padding:10px 12px; background:#0f0f23; border:1px solid #333; border-radius:6px; color:#888; font-size:12px;">
-                    Working out the tuning&hellip;
-                </div>
-
-                <div class="section-title">Output</div>
                 <div class="form-grid">
                     <div class="form-group">
                         <label>Name</label>
@@ -582,20 +579,23 @@
                         </select>
                     </div>
                 </div>
-                <div style="margin-top:12px;">
-                    <label style="display:flex; align-items:center; gap:8px; cursor:pointer;">
-                        <input autocomplete="off" type="checkbox" id="obvRespectHorizon" checked>
-                        Respect local horizon
-                    </label>
-                    <span style="color:#888; font-size:12px;">
-                        Notes in the log if the dish ends up pointing into the measured
-                        treeline. Advisory &mdash; the observation still runs.
-                    </span>
                 </div>
-                <div style="display:flex; gap:10px; align-items:center; margin-top:15px; flex-wrap:wrap;">
+                <div class="observe-instrument">
+                    <label>Instrument <span class="unit">(fixed)</span></label>
+                    <div id="obvTuning" class="mono" style="color:#888; font-size:12px; line-height:1.5;">
+                        Loading the instrument&hellip;
+                    </div>
+                </div>
+                </div>
+                <div style="display:flex; gap:10px; align-items:center; margin-top:10px; flex-wrap:wrap;">
                     <button title="Point and start recording now with the settings above. Refused if something is already recording." class="btn btn-success" id="obvStartBtn" onclick="observeStartNow()">Start Now</button>
                     <button title="Open the schedule form filled in from these settings, to book it for later instead." class="btn btn-secondary" onclick="observeToScheduler()">Send to Scheduler&hellip;</button>
                     <button title="Fill these fields from the last hand-off the Simulator tab made." class="btn btn-secondary" onclick="loadObserveParams(true)">Copy from Simulator</button>
+                    <label style="display:flex; align-items:center; gap:6px; cursor:pointer; margin-left:10px;"
+                           title="Notes in the log if the dish ends up pointing into the measured treeline. Advisory: the observation still runs.">
+                        <input autocomplete="off" type="checkbox" id="obvRespectHorizon" checked>
+                        Respect local horizon
+                    </label>
                     <span id="obvStatus" style="color:#888; font-size:12px;"></span>
                 </div>
             </div><!-- .config-form ends here: everything below is a plot, and
@@ -608,20 +608,13 @@
                     <!-- Two observations get a live plot and they say different
                          things, so the blurb is swapped by obvLiveDraw rather
                          than written once and hedged. -->
-                    <div id="obvLiveBlurbSolar" style="color:#888; font-size:12px; margin-bottom:8px; max-width:80ch; display:none;">
-                        Band power from the record the receiver has just written,
-                        turned into flux with the stored gain and the system
-                        temperature subtracted, so what is plotted is the Sun
-                        alone, then divided by the atmospheric transmission at
-                        the Sun's elevation so the number is the flux above the
-                        atmosphere &mdash; which is what a published index quotes.
-                        All of that is display only; the recording keeps what the
-                        receiver measured. Read from a summary the receiver writes beside its
-                        file &mdash; the recording itself cannot be opened while
-                        it is being written. The full spectra are recorded as
-                        usual and can be reduced properly afterwards.
+                    <div id="obvLiveBlurbSolar" style="color:#888; font-size:12px; margin-bottom:8px; display:none;">
+                        Band power of each record as it is written, in flux: the stored gain applied, the system
+                        temperature taken off so only the Sun is left, and corrected for the atmosphere at the
+                        Sun's elevation, as published fluxes are. Display only: the recording keeps the full
+                        spectra, to be reduced properly afterwards.
                     </div>
-                    <div id="obvLiveBlurbDrift" style="color:#888; font-size:12px; margin-bottom:8px; max-width:80ch; display:none;">
+                    <div id="obvLiveBlurbDrift" style="color:#888; font-size:12px; margin-bottom:8px; display:none;">
                         Band power from the record the receiver has just written,
                         in antenna temperature with the system temperature
                         subtracted. The time axis is the observation's own window
@@ -716,6 +709,12 @@
                     <label>Banner Subtitle</label>
                     <input autocomplete="off" type="text" id="cfgBannerSubtitle" placeholder="blank: show the telescope's figures (beam, T_sys)">
                 </div>
+                <div class="form-group">
+                    <label class="help-toggle" title="Show a short explanation when you hover over a control. New to the telescope? Open the Guide tab.">
+                        <input autocomplete="off" type="checkbox" id="helpTipsToggle" onchange="setHelpEnabled(this.checked)"> Help tips
+                    </label>
+                    <div style="color:#666; font-size:12px; margin-top:4px;">A one-line explanation when you hover over a control. For this browser only, and it takes effect at once: not part of Save.</div>
+                </div>
                 </div>
                 <div class="config-section">
                 <div class="section-title">SRT Telescope Controller</div>
@@ -788,6 +787,14 @@
                 <div class="form-group">
                     <label>Receiver Python Executable</label>
                     <input autocomplete="off" type="text" id="cfgReceiverPythonPath" placeholder="/home/astro/radioconda/bin/python">
+                </div>
+                <div class="form-group">
+                    <label>SDR</label>
+                    <select autocomplete="off" id="cfgSdrType">
+                        <option value="b210">B200</option>
+                        <option value="rtlsdr">RTL-SDR</option>
+                    </select>
+                    <div style="color:#666; font-size:12px; margin-top:4px;">The radio a run started from the Observe tab records with. Schedule entries and scans keep their own choice.</div>
                 </div>
                 </div>
                 <div class="config-section">
@@ -901,6 +908,31 @@
                 </div>
                 </div>
                 <div class="config-section">
+                <div class="section-title">Pulsar monitor</div>
+                <div class="form-group">
+                    <label title="Record B0329+54 in pulsar mode every night in the window below, ahead of the Sun monitor. Bookings still win: a run stops short of one and resumes after it for the rest of the window, and the pieces of a night share one session. Anything started by hand stops it and keeps it off for 30 min.">Record B0329+54 nightly</label>
+                    <select autocomplete="off" id="cfgPulsarMonitor">
+                        <option value="false">Off</option>
+                        <option value="true">On</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label title="B0329+54 never sets here, but the northern obstruction hides it about 6 h a day, and that stretch moves 2 h a month round the clock. 'Follow' opens the window when it comes out from behind the measured horizon, so each day is one unbroken run; by winter that is a daytime run. 'Clock' opens at the fixed time below, and loses whatever the obstruction hides inside it.">Window</label>
+                    <select autocomplete="off" id="cfgPulsarMonitorWindow">
+                        <option value="follow">Follow the pulsar</option>
+                        <option value="clock">Fixed clock time</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label title="Local time the window opens, for a fixed clock window (and the fallback when no horizon profile is measured)">Window opens (HH:MM)</label>
+                    <input autocomplete="off" type="text" id="cfgPulsarMonitorStart" placeholder="20:00">
+                </div>
+                <div class="form-group">
+                    <label title="How long the window stays open; one night is one session">Window length (hours)</label>
+                    <input autocomplete="off" type="number" id="cfgPulsarMonitorHours" min="0.5" max="23.5" step="0.5">
+                </div>
+                </div>
+                <div class="config-section">
                 <div class="section-title">Notifications</div>
                 <div class="form-group">
                     <label>Sound on Start/Stop</label>
@@ -1001,7 +1033,7 @@
                                     <option value="drift">Drift scan across a source</option>
                                 </optgroup>
                                 <optgroup label="Special observations">
-                                    <option value="pulsar">Pulsar B0329+54 (folded)</option>
+                                    <option value="pulsar">PSR B0329+54 (folded)</option>
                                     <option value="calibration">Calibration day (Sun scans)</option>
                                     <option value="horizon">Horizon scan</option>
                                 </optgroup>
@@ -1025,7 +1057,7 @@
                         <div class="form-group">
                             <label>Pulsar</label>
                             <div id="pulsarNote" class="mono" style="color:#aaa; font-size:12px; margin-top:6px;">
-                                B0329+54 (J0332+5434): RA 03h33m Dec +54&deg;35', DM 26.8, P 0.7145 s, 203 mJy.
+                                PSR B0329+54 (J0332+5434): RA 03h33m Dec +54&deg;35', DM 26.8, P 0.7145 s, 203 mJy.
                                 Circumpolar. Recorded as one 32 MHz channel at 1 ms and folded afterwards: about
                                 13&sigma; in 16 h and 8&sigma; in 6 h at the present T_sys (first detection 2026-09-27),
                                 but scintillation can halve or double a night and the feed's polarisation moves it too.
@@ -1277,7 +1309,7 @@
                     <button class="guide-nav-item" data-guide="spectrum" onclick="showGuide('spectrum')">Reading a spectrum</button>
                     <button class="guide-nav-item" data-guide="datafile" onclick="showGuide('datafile')">The data file (HDF5)</button>
                     <button class="guide-nav-item" data-guide="suncal" onclick="showGuide('suncal')">Sun scan &amp; calibration</button>
-                    <button class="guide-nav-item" data-guide="pulsar" onclick="showGuide('pulsar')">Pulsars (B0329+54)</button>
+                    <button class="guide-nav-item" data-guide="pulsar" onclick="showGuide('pulsar')">Pulsars (PSR B0329+54)</button>
                     <button class="guide-nav-item" data-guide="simhorizon" onclick="showGuide('simhorizon')">Simulator &amp; horizon</button>
                     <div class="guide-nav-group">Theory</div>
                     <button class="guide-nav-item" data-guide="line" onclick="showGuide('line')">The 21&nbsp;cm line</button>
@@ -1313,7 +1345,7 @@
                         <p>The strip at the top of every tab always tells you the state of the system: whether an observation is <strong>running</strong>, where the <strong>telescope</strong> is pointing and whether it is slewing or homed, and whether the <strong>receiver</strong> is busy. Glance at it before you start anything.</p>
                         <h3>Ground rules</h3>
                         <div class="callout warn"><span class="tag">Be gentle with the mount</span>The dish is a real, wearing machine. It has hard limits in both axes and homes itself against them. Avoid needless slewing, and never assume it has finished moving &mdash; watch the status bar. If something looks wrong, the red <strong>Stop</strong> button halts the current run.</div>
-                        <div class="callout note"><span class="tag">Turn on Help tips</span>The <strong>Help tips</strong> switch at the top right shows a one-line explanation whenever you hover over a control. Leave it on while you are learning.</div>
+                        <div class="callout note"><span class="tag">Turn on Help tips</span>The <strong>Help tips</strong> box on the <span class="guide-jump" onclick="guideGoto('config')">Configuration</span> tab (under Appearance) shows a one-line explanation whenever you hover over a control. Leave it on while you are learning.</div>
                         <p>When you are ready, read <span class="guide-jump" onclick="showGuide('first')">Your first observation</span>.</p>
                     </div>
 
@@ -1370,7 +1402,7 @@
 
                     <div class="guide-section" id="guide-datafile">
                         <h2>The data file (HDF5)</h2>
-                        <p>Every observation is one <strong>HDF5</strong> file in <code>data/observations/</code>, named <code>YYYYMMDD_HHMMSS_&lt;mode&gt;.h5</code> &mdash; the UTC time it started and whether it was a <code>track</code> or a <code>drift</code> scan. HDF5 is a self-describing scientific format: one file holds several named arrays (its <em>datasets</em>) and a set of labelled values (its <em>attributes</em>), and it reads the same way from Python, MATLAB or a notebook.</p>
+                        <p>Every observation is one <strong>HDF5</strong> file in <code>data/observations/</code>, named <code>YYYYMMDD_HHMMSS_&lt;mode&gt;.h5</code> &mdash; the UTC time it started and whether it was a <code>track</code>, a <code>drift</code> scan or a <code>pulsar</code> run (the last has a layout of its own, described at the end of this section). HDF5 is a self-describing scientific format: one file holds several named arrays (its <em>datasets</em>) and a set of labelled values (its <em>attributes</em>), and it reads the same way from Python, MATLAB or a notebook.</p>
 
                         <h3>Two products in every file</h3>
                         <p>From the one radio stream the receiver records <strong>two views</strong> of the sky at once:</p>
@@ -1395,6 +1427,17 @@ with h5py.File('data/observations/20260828_060018_drift.h5', 'r') as f:
     meta    = dict(f.attrs)               # all the metadata</pre>
 
                         <div class="callout note"><span class="tag">Reading a live file</span>A recording still being written must be opened with <code>swmr=True</code> (single-writer, many-reader); a plain open otherwise hits the file lock. The scheduler's own <code>observation_plot.py</code> handles that, reverses the kelvin scale to counts, and puts the axis on the LSR velocity frame &mdash; use it when you want exactly the reduction the Observe tab shows.</div>
+
+                        <h3 id="guide-pulsarfile">Pulsar recordings (<code>_pulsar.h5</code>)</h3>
+                        <p>A pulsar run records no spectra. The whole 1397&ndash;1429&nbsp;MHz band is summed into <strong>one channel</strong>, one sample per millisecond, because the pulse is only a few milliseconds wide and there is nothing to see in frequency (the dispersion sweep across the band is 2.5&nbsp;ms).</p>
+                        <ul>
+                            <li><code>power</code> &mdash; (samples, 1), float32: the received power summed over each millisecond. Raw, uncalibrated counts; the fold only needs relative changes. A 16-hour run is about 58 million rows.</li>
+                            <li><code>frequency_hz</code> &mdash; the channel's centre (1413&nbsp;MHz); attributes <code>channel_width_hz</code> (32&nbsp;MHz), <code>nchan</code> (1) and <code>dt_s</code> (0.001).</li>
+                            <li><code>time_marks</code> &mdash; (row, radio time in Unix seconds) at the first sample and after every gap. Row <em>i</em> is timed from the latest mark before it plus the row count, so a dropped block moves only the rows after it, by exactly what was dropped. The row may be fractional (<code>time_marks_exact</code> = 1 in files from 27&nbsp;September 2026). <code>t0_unix</code> is the start.</li>
+                            <li><code>overflow_marks</code>, <code>underflow_marks</code> &mdash; (row, count) wherever the radio dropped samples. A few in a night is normal.</li>
+                        </ul>
+                        <p>The attributes carry the catalogue values the fold used (<code>pulsar_name</code>, <code>pulsar_period_s</code>, <code>pulsar_pdot</code>, <code>pulsar_pepoch_mjd</code>, <code>pulsar_dm</code>, <code>pulsar_ra_deg</code>/<code>_dec_deg</code>), the clock (<code>time_source</code>: <code>pps</code> or <code>host</code>), the site, the pointing model and the homing result, as for any recording.</p>
+                        <p>To fold one yourself use <code>pulsar_fold.analyse_file(path)</code>, which does the timing, barycentring and folding the Observe tab shows. <code>sigproc_export.py</code> writes the recording as a SIGPROC <code>.fil</code> for PRESTO or any other pulsar package, with the gaps filled so every row sits on one time grid.</p>
                     </div>
 
                     <div class="guide-section" id="guide-suncal">
@@ -1408,14 +1451,14 @@ with h5py.File('data/observations/20260828_060018_drift.h5', 'r') as f:
                     </div>
 
                     <div class="guide-section" id="guide-pulsar">
-                        <h2>Pulsars (B0329+54)</h2>
-                        <p class="lead">A pulsar is a spinning neutron star that sweeps a beam of radio emission past the Earth once a turn. This telescope can detect one: <strong>B0329+54</strong>, which pulses every 0.7145&nbsp;s. Each pulse is far too faint to see, so thousands are added together at exactly the right period &mdash; <em>folding</em> &mdash; until the pulse stands out of the noise. First detected here on 27&nbsp;September 2026.</p>
+                        <h2>Pulsars (PSR B0329+54)</h2>
+                        <p class="lead">A pulsar is a spinning neutron star that sweeps a beam of radio emission past the Earth once a turn. This telescope can detect one: <strong>PSR B0329+54</strong>, which pulses every 0.7145&nbsp;s. Each pulse is far too faint to see, so thousands are added together at exactly the right period &mdash; <em>folding</em> &mdash; until the pulse stands out of the noise. First detected here on 27&nbsp;September 2026.</p>
                         <h3>Why only this one</h3>
                         <p>At 1.4&nbsp;GHz B0329+54 averages about 200&nbsp;mJy, bright for a pulsar. Even so its pulse adds only about 0.5&nbsp;mK to a system temperature near 190&nbsp;K. The next candidate, B0950+08, would need of order twenty times the observing time, so the pulsar mode is built for B0329+54 alone. It is circumpolar from Glasgow and can be observed at any hour.</p>
                         <h3>Booking a run</h3>
                         <ul>
-                            <li>In <span class="guide-jump" onclick="guideGoto('scheduler')">Schedule</span>, choose <strong>Observation &rarr; Pulsar B0329+54 (folded)</strong>. Plan on <strong>6&nbsp;hours or more</strong>; tick <strong>home first</strong>.</li>
-                            <li>The integration-time box does not apply: the receiver records the whole 1397&ndash;1429&nbsp;MHz band as a single channel, one sample every millisecond (about 14&nbsp;MB an hour).</li>
+                            <li>In <span class="guide-jump" onclick="guideGoto('scheduler')">Schedule</span>, choose <strong>Observation &rarr; PSR B0329+54 (folded)</strong>. Plan on <strong>6&nbsp;hours or more</strong>; tick <strong>home first</strong>.</li>
+                            <li>The integration-time box does not apply: the receiver records the whole 1397&ndash;1429&nbsp;MHz band as a single channel, one sample every millisecond (about 14&nbsp;MB an hour; what is in the file is under <span class="guide-jump" onclick="showGuide('datafile'); document.getElementById('guide-pulsarfile').scrollIntoView()">The data file</span>).</li>
                             <li>Expect roughly 8&sigma; in 6&nbsp;h and 13&sigma; in 16&nbsp;h. A night can be half or double that: the pulsar's brightness varies by factors of two over hours (interstellar scintillation), and our single feed sees only part of its partly polarised signal.</li>
                         </ul>
                         <h3>Reading the plot</h3>
@@ -1431,7 +1474,7 @@ with h5py.File('data/observations/20260828_060018_drift.h5', 'r') as f:
                         <p>Plotting a run measures its <strong>time of arrival (TOA)</strong>: the moment the pulse reached the telescope, found by fitting the Effelsberg profile to our fold. Runs below SNR&nbsp;6 give no TOA (a weak fit would lock onto noise). TOAs go into a standard <code>.tim</code> file, which the timing program PINT fits for the pulsar's period and spin-down. Over months that shows the pulsar slowing down and, eventually, its irregularities.</p>
                         <div class="callout note"><span class="tag">Clock</span>Until the Thunderbolt's pulse-per-second is wired into the radio, times come from the computer's network clock, good to a few milliseconds; such TOAs are flagged <code>-pps 0</code> and weighted accordingly. With the PPS the radio's clock is set to GPS time and the flag becomes <code>-pps 1</code>. Nothing needs switching: the receiver uses the PPS automatically when it sees one.</div>
                         <h3>Where the results are kept</h3>
-                        <p>The raw recording stays in <code>data/observations/</code> like any other. The results that took a night of telescope time &mdash; the TOAs (<code>b0329.tim</code>), the ephemeris (<code>B0329+54.par</code>) and each run's folded profile &mdash; are written to <code>receiver_scheduler/pulsar_timing/</code>, which is kept in git. The added-up profile is built from those stored profiles, so a night still counts after its recording has been deleted. Plotting writes them; committing them is done by hand.</p>
+                        <p>The raw recording stays in <code>data/observations/</code> like any other. The results that took a night of telescope time &mdash; the TOAs (<code>b0329.tim</code>, one per night, the file to fit; the 4-hour pieces are kept apart in <code>b0329_segments.tim</code> so that no timing program counts a night twice), the ephemeris (<code>B0329+54.par</code>) and each run's folded profile &mdash; are written to <code>receiver_scheduler/pulsar_timing/</code>, which is kept in git. The added-up profile is built from those stored profiles, so a night still counts after its recording has been deleted. Plotting writes them; committing them is done by hand.</p>
                         <div class="callout note"><span class="tag">Full details</span>How the recording, folding, phase model, TOAs and PINT fit work is written up in <code>docs/PULSAR_PROCESSING.tex</code>.</div>
                     </div>
 
@@ -1710,6 +1753,7 @@ with h5py.File('data/observations/20260828_060018_drift.h5', 'r') as f:
 <script src="/js/simulator.js"></script>
 <script src="/js/help.js"></script>
 <script src="/js/guide.js"></script>
+<script src="/js/clock.js"></script>
 <script src="/js/boot.js"></script>
 </body>
 </html>

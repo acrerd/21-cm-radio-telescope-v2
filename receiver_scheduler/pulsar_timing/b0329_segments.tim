@@ -1,0 +1,10 @@
+FORMAT 1
+C 4 h segments of nights whose whole-run TOA is in b0329.tim. The same data again:
+C a within-night check, never to be fitted together with that file.
+20260926_203116_pulsar.h5_s0 1413.000000 61309.8967333087270 875.561 ar -pps 0 -snr 6.1 -tobs 14400 -bw 32.0 -be b200 -fe sawbird -tmpl epn_hx97b_1410
+20260926_203116_pulsar.h5_s1 1413.000000 61310.0634018582989 768.156 ar -pps 0 -snr 6.9 -tobs 14400 -bw 32.0 -be b200 -fe sawbird -tmpl epn_hx97b_1410
+20260926_203116_pulsar.h5_s2 1413.000000 61310.2300705180400 834.543 ar -pps 0 -snr 6.4 -tobs 14400 -bw 32.0 -be b200 -fe sawbird -tmpl epn_hx97b_1410
+20260926_203116_pulsar.h5_s3 1413.000000 61310.3964001661649 488.722 ar -pps 0 -snr 10.9 -tobs 14341 -bw 32.0 -be b200 -fe sawbird -tmpl epn_hx97b_1410
+20260927_201114_pulsar.h5_s0 1413.000000 61310.8828610732793 449.249 ar -pps 0 -snr 11.8 -tobs 14400 -bw 32.0 -be b200 -fe sawbird -tmpl epn_hx97b_1410
+20260927_201114_pulsar.h5_s1 1413.000000 61311.0495214543906 579.385 ar -pps 0 -snr 9.2 -tobs 14400 -bw 32.0 -be b200 -fe sawbird -tmpl epn_hx97b_1410
+20260928_194315_pulsar.h5_p 1413.000000 61312.1130676850980 557.031 ar -pps 1 -snr 9.5 -tobs 57536 -bw 32.0 -be b200 -fe sawbird -tmpl epn_hx97b_1410

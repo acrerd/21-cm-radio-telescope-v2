@@ -1328,6 +1328,17 @@ class TestFlaskAPI:
         assert f"boundary={sched.CAMERA_STREAM_MARKER}" in command
         assert "multipartmux" in command and "fd=1" in command
 
+    def test_camera_stream_reads_the_device_unless_a_pipewire_target_is_set(self):
+        """PipeWire offers the camera only while someone is logged in at the
+        console (2026-09-29: logged out, every live view failed); the device
+        itself needs no session."""
+        with patch.object(sched.shutil, 'which', return_value='/usr/bin/gst-launch-1.0'):
+            direct = sched._camera_stream_command(640, 480, '', '/dev/video2')
+            piped = sched._camera_stream_command(640, 480, '42')
+        assert direct[2:4] == ["v4l2src", "device=/dev/video2"]
+        assert "pipewiresrc" not in direct
+        assert piped[2:4] == ["pipewiresrc", "target-object=42"]
+
     def test_camera_snapshot_reports_why_both_paths_failed(self, client):
         with patch.object(sched, '_live_camera_frame',
                           return_value=(None, None, "no PipeWire session")), \

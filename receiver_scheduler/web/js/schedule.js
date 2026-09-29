@@ -326,7 +326,7 @@
                 return `Object: ${name.charAt(0).toUpperCase() + name.slice(1)}`;
             }
             if (sys === 'pulsar') {
-                return 'Pulsar B0329+54 (folded)';
+                return 'PSR B0329+54 (folded)';
             }
             if (sys === 'satellite') {
                 const tle = obs.tle_text || '';

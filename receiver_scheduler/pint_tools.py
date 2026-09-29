@@ -4,6 +4,7 @@
 pulsar_toa / tests through a subprocess, exchanging JSON.
 
     pint_tools.py residuals PAR TIM LAT LON HEIGHT   -> residuals (us) per TOA
+    pint_tools.py fit PAR TIM LAT LON HEIGHT [SEG_TIM] -> fit the nights, check the segments
     pint_tools.py fake PAR MJDS.json FREQ LAT LON HEIGHT -> PINT's own arrival times
 
 The site is registered as our own observatory, "acre_srt" (alias "ar"), at the
@@ -13,10 +14,20 @@ Times are UTC from NTP or the PPS, so no GPS or site clock correction applies
 network for BIPM files - a microsecond-level choice, far below our errors.
 """
 import json
+import os
 import sys
 import warnings
 
 warnings.filterwarnings("ignore")
+
+
+def _has_toas(tim):
+    """A .tim with at least one TOA line: a header-only file makes PINT fail."""
+    for ln in open(tim):
+        ln = ln.strip()
+        if ln and not ln.startswith(("FORMAT", "C ", "#", "MODE")):
+            return True
+    return False
 
 
 def register_site(lat, lon, height):
@@ -64,24 +75,42 @@ def fake(par, mjds_json, freq_mhz, lat, lon, height):
     return {"t_unix": out}
 
 
-def fit(par, tim, lat, lon, height):
-    """Fit the whole-run TOAs (names without a _sN suffix): F0 free from
-    three runs spanning a day, F1 free from four spanning three weeks,
-    otherwise nothing free and the residuals are against the catalogue par.
-    Residuals are returned for every TOA - segments too, under the same
-    model - with the weighted mean of the whole-run ones removed."""
+def fit(par, tim, lat, lon, height, seg_tim=""):
+    """Fit the whole-run TOAs in `tim`: F0 free from three runs spanning a
+    day, F1 free from four spanning three weeks, otherwise nothing free and
+    the residuals are against the catalogue par. The segments in `seg_tim`
+    (4 h pieces of the same nights) are never fitted; they get residuals
+    under the fitted model, as a check. Residuals are returned for every TOA,
+    in time order, with the weighted mean of the whole-run ones removed. A
+    `_sN` line still in `tim` (written before the files were split) is
+    treated as a segment."""
     import re
     import numpy as np
     from pint.models import get_model
-    from pint.toa import get_TOAs
+    from pint.toa import get_TOAs, merge_TOAs
     from pint.residuals import Residuals
     from pint.fitter import WLSFitter
     register_site(lat, lon, height)
     m = get_model(par)
     t = get_TOAs(tim, model=m, planets=False, include_bipm=False)
+    if seg_tim and os.path.exists(seg_tim) and _has_toas(seg_tim):
+        t = merge_TOAs([t, get_TOAs(seg_tim, model=m, planets=False, include_bipm=False)])
+    # One line per name: a segment left in `tim` by a writer from before the
+    # split and also in `seg_tim` is the same TOA, not two.
+    seen = set()
+    keep = []
+    for i, fl in enumerate(t.table["flags"]):
+        n = fl.get("name", "")
+        keep.append(not n or n not in seen)
+        seen.add(n)
+    t = t[np.array(keep)]
+    order = np.argsort(t.get_mjds().value, kind="stable")
+    t = t[order]
     flags = list(t.table["flags"])
     names = [f.get("name", "") for f in flags]
-    whole = np.array([re.search(r"_s\d+$", n) is None for n in names])
+    # Segments (_sN) and pieces of a pulsar-monitor night (_p) are checks,
+    # the same data as a night's TOA; pulsar_toa.SEGMENT_NAME, kept in step.
+    whole = np.array([re.search(r"_(s\d+|p)$", n) is None for n in names])
     tw = t[whole]
     mjd_w = tw.get_mjds().value
     span = float(np.ptp(mjd_w)) if len(mjd_w) else 0.0
@@ -110,8 +139,10 @@ def fit(par, tim, lat, lon, height):
     if chi2 is None and whole.sum() > 1:
         chi2 = float(np.sum((res[whole] / err[whole]) ** 2)); dof = int(whole.sum() - 1)
     f0, f1 = m.F0.value, m.F1.value
-    ef0 = m.F0.uncertainty_value if "F0" in free else None
-    ef1 = m.F1.uncertainty_value if "F1" in free else None
+    # float(): PINT gives the uncertainties as longdouble, which json cannot
+    # write - unseen until 2026-09-29, the first night F0 was free.
+    ef0 = float(m.F0.uncertainty_value) if "F0" in free else None
+    ef1 = float(m.F1.uncertainty_value) if "F1" in free else None
     P = 1.0 / f0
     Pdot = -f1 / f0 ** 2
     return {"mjd": [float(x) for x in t.get_mjds().value], "resid_us": [float(x) for x in res],

@@ -20,7 +20,7 @@ recording, folding, times of arrival and the data kept}
 \maketitle
 
 \begin{abstract}
-The Acre Road 3\,m telescope detects the pulsar \psr{} at 1.4\,GHz. It first did so on the night of 26--27 September 2026, at a matched signal-to-noise ratio (SNR) of 9.4 in 16\,h. PRESTO confirmed the detection independently at $9.9\sigma$.
+The Acre Road 3\,m telescope detects PSR~\psr{} at 1.4\,GHz. It first did so on the night of 26--27 September 2026, at a matched signal-to-noise ratio (SNR) of 9.4 in 16\,h. PRESTO confirmed the detection independently at $9.9\sigma$.
 
 This document describes the pulsar mode end to end:
 \begin{itemize}
@@ -40,7 +40,7 @@ It closes with the checks that established each step and the questions still ope
 %-----------------------------------------------------------------------------
 \section{Scope and the target}
 
-The mode is built for \psr{} (J0332+5434) and nothing else. At 1.4\,GHz it is the only pulsar within reach of a 3\,m dish at the present system temperature: its mean flux density is $203\pm57$\,mJy, and the next candidate, B0950+08, would need of order twenty times the integration. Its parameters are therefore hard-wired in \code{pulsar\_fold.B0329}; there is no catalogue lookup and no pulsar picker.
+The mode is built for PSR~\psr{} (J0332+5434) and nothing else. At 1.4\,GHz it is the only pulsar within reach of a 3\,m dish at the present system temperature: its mean flux density is $203\pm57$\,mJy, and the next candidate, B0950+08, would need of order twenty times the integration. Its parameters are therefore hard-wired in \code{pulsar\_fold.B0329}; there is no catalogue lookup and no pulsar picker.
 
 \begin{table}[h]
 \centering
@@ -285,7 +285,7 @@ A TOA is written only when the template SNR is at least 6 (\code{MIN\_TOA\_SNR})
 \end{itemize}
 
 \subsection{The .tim and par files}
-Each TOA is one line in tempo2 format in \code{pulsar\_timing/b0329.tim}:
+Each TOA is one line in tempo2 format. Night TOAs go in \code{pulsar\_timing/b0329.tim} and segments in \code{pulsar\_timing/b0329\_segments.tim}. The two are kept apart because a segment is the same data as its night again: a timing program given both in one file cannot know that, and would count every night twice. \code{b0329.tim} is the file to fit, with any timing program; the segments file is a check on it and is never fitted with it. The line format is the same in both:
 \begin{verbatim}
 <name> <freq MHz> <MJD UTC> <error us> ar -pps 0|1 -snr S -tobs s -bw MHz
        -be b200 -fe sawbird -tmpl epn_hx97b_1410
@@ -297,7 +297,7 @@ Lines are keyed by name, so re-analysing a recording replaces its lines rather t
 PINT runs in its own conda environment, \code{radioconda/envs/pint}, never in the observing environment. \code{pint\_tools.py} is driven by subprocess and exchanges JSON.
 \begin{itemize}
 \item \textbf{Site.} Our surveyed position is registered as a custom observatory, \code{acre\_srt}, alias \code{ar}. PINT's own \code{acre} lies 49\,m away. No GPS or site clock corrections are applied, because the times are UTC from NTP or the PPS.
-\item \textbf{Fit.} Night TOAs only. PEPOCH is moved to the mean epoch of the data, so $P$ and $\dot P$ are quoted there rather than extrapolated 40 years. $F_0$ is freed once three night TOAs span at least a day. $F_1$ is freed once four span three weeks: the spin-down signature grows as $\tfrac12 F_1 t^2/F_0$, about 5\,ms in three weeks and 10\,ms in a month, against TOA errors of 0.4--2\,ms. Before that, the parameters are held at the catalogue values and only residuals are shown.
+\item \textbf{Fit.} Night TOAs only, from \code{b0329.tim}. The segments get residuals under the fitted model, for the plot. PEPOCH is moved to the mean epoch of the data, so $P$ and $\dot P$ are quoted there rather than extrapolated 40 years. $F_0$ is freed once three night TOAs span at least a day. $F_1$ is freed once four span three weeks: the spin-down signature grows as $\tfrac12 F_1 t^2/F_0$, about 5\,ms in three weeks and 10\,ms in a month, against TOA errors of 0.4--2\,ms. Before that, the parameters are held at the catalogue values and only residuals are shown.
 \item \textbf{Checks.} PINT reads our \code{.tim} back with residuals below 0.1\,\textmu s. Our absolute phase and PINT's arrivals agree to 1\,\textmu s over 5\,h.
 \end{itemize}
 
@@ -333,7 +333,8 @@ For a file in \code{data/observations/}, plotting also writes the run's TOAs and
 Location & In git & Contents \\
 \midrule
 \code{data/observations/*\_pulsar.h5} & no & raw recordings (\S\ref{sec:file}), 14\,MB per hour; re-observable \\
-\code{pulsar\_timing/b0329.tim} & yes & all TOAs, night and segment \\
+\code{pulsar\_timing/b0329.tim} & yes & night TOAs, one per run: the file to fit \\
+\code{pulsar\_timing/b0329\_segments.tim} & yes & 4\,h segment TOAs, a check; never fitted with the nights \\
 \code{pulsar\_timing/B0329+54.par} & yes & the ephemeris the fold and PINT start from \\
 \code{pulsar\_timing/<name>.json} & yes & full record behind each TOA line \\
 \code{pulsar\_timing/profiles/<rec>.npz} & yes & each run's whole-run fold: 1024-bin $\sum wy$ and $\sum w$ at the absolute phase, with \code{phase\_offset}, \code{row\_centre}, \code{nbins}, frequency, bandwidth, time span and clock source \\
