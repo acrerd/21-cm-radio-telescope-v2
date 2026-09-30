@@ -2,6 +2,7 @@
 
 #include "srt_serial.h"
 #include "sync.h"
+#include "diag.h"
 
 SRTSerial srtSerial;
 
@@ -49,6 +50,10 @@ void SRTSerial::logMessage(char direction, const String &msg) {
     logBuffer[logHead].message = msg;
     logHead = (logHead + 1) % SERIAL_LOG_SIZE;
     if (logCount < SERIAL_LOG_SIZE) logCount++;
+    // The controller's own events also go to the RTC record, which outlives
+    // a reset (diag.h); under this lock, so writers from two tasks cannot
+    // interleave in it.
+    if (direction == 'E') diagEvent(msg.c_str());
 }
 
 void SRTSerial::logESP(const String &msg) {

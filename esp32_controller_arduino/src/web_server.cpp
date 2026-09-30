@@ -16,6 +16,7 @@ extern String ethIP;
 #include "srt_serial.h"
 #include "coordinates.h"
 #include "pointing.h"
+#include "diag.h"
 #include "index_html.h"
 #include <time.h>
 #include <WiFi.h>
@@ -81,8 +82,17 @@ static String jsonEscape(const String &value) {
 // either all of a change or none of it - never a target name from one request
 // paired with the RA/Dec of another.
 
-static void clearCurrentTracking() {
+// `why` and `req` name who ended the tracking: on 2026-09-30 it stopped with no
+// record of what had stopped it, so every clearing of a live target is now
+// logged with the endpoint and the client's address - into the serial log and
+// the RTC record that survives a reboot (diag.h).
+static void clearCurrentTracking(const char *why, AsyncWebServerRequest *req = nullptr) {
     SRTLock lock;
+    if (state.trackingEnabled || state.targetName.length()) {
+        String who = req && req->client() ? req->client()->remoteIP().toString() : String("?");
+        srtSerial.logESP(String("Tracking ") + (state.targetName.length() ? state.targetName : String("(unnamed)"))
+                         + " cleared by " + why + " from " + who);
+    }
     state.trackingEnabled = false;
     state.targetName = "";
     state.waitingForWrap = false;
@@ -123,9 +133,10 @@ static void setTrackingTarget(double ra, double dec, const String &name) {
 // the dish sidereally tracked (and auto-parked at set) after a button that
 // promised "slew once" (issue #3, C7). Returns false with a JSON error in
 // `err` when the drive position is outside the mount limits.
-static bool slewOnceTrue(double tAlt, double tAz, char *err, size_t errLen) {
+static bool slewOnceTrue(double tAlt, double tAz, char *err, size_t errLen,
+                         AsyncWebServerRequest *req = nullptr) {
     SRTLock lock;
-    clearCurrentTracking();
+    clearCurrentTracking("goto", req);
     double driveAlt, driveAz;
     trueToDrive(tAlt, tAz, driveAlt, driveAz);
     if (!driveAltWithinLimits(driveAlt) || !driveAzWithinLimits(driveAz)) {
@@ -253,12 +264,26 @@ void setupWebServer() {
         // Whether the Due is acknowledging drive targets, and what was
         // refused, re-sent or lost (issue #34). "lost" should stay at zero.
         json += "\"drive_ack\":" + srtSerial.getDriveAckJSON() + ",";
+        // Enough to notice a reboot or a hung loop from a poll; /diag has the
+        // rest, including the previous boot's record (diag.h).
+        json += "\"uptime_s\":" + String((unsigned long)(millis() / 1000)) + ",";
+        json += "\"boot\":" + String((unsigned long)diagBootCount()) + ",";
+        json += "\"reset_reason\":\"" + String(diagResetReason()) + "\",";
+        json += "\"loop_age_ms\":" + String((unsigned long)diagLoopAgeMs()) + ",";
+        json += "\"free_heap\":" + String((unsigned long)ESP.getFreeHeap()) + ",";
         json += "\"raw\":\"" + jsonEscape(srtSerial.getLastStatus()) + "\"";
         json += "}";
         request->send(200, "application/json", json);
     });
 
     // Serial log endpoint
+    // What the controller was doing when it last stopped or restarted (diag.h).
+    // Deliberately lock-free: it must answer even if the loop is stuck
+    // holding the lock.
+    webServer.on("/diag", HTTP_GET, [](AsyncWebServerRequest *request) {
+        request->send(200, "application/json", diagJSON());
+    });
+
     webServer.on("/serial/log", HTTP_GET, [](AsyncWebServerRequest *request) {
         request->send(200, "application/json", srtSerial.getLogJSON());
     });
@@ -350,7 +375,7 @@ void setupWebServer() {
             setTrackingTarget(ra, dec, "Gal l=" + String(l, 1) + " b=" + String(b, 1));
         } else {
             char err[160];
-            if (!slewOnceTrue(tAlt, tAz, err, sizeof(err))) {
+            if (!slewOnceTrue(tAlt, tAz, err, sizeof(err), request)) {
                 request->send(400, "application/json", err);
                 return;
             }
@@ -383,7 +408,7 @@ void setupWebServer() {
             setTrackingTarget(ra, dec, "");
         } else {
             char err[160];
-            if (!slewOnceTrue(tAlt, tAz, err, sizeof(err))) {
+            if (!slewOnceTrue(tAlt, tAz, err, sizeof(err), request)) {
                 request->send(400, "application/json", err);
                 return;
             }
@@ -397,9 +422,10 @@ void setupWebServer() {
     webServer.on("/tracking/enable", HTTP_GET, [](AsyncWebServerRequest *request) {
         SRTLock lock;
         bool enable = request->arg("enable") == "1";
-        state.trackingEnabled = enable;
-        if (!enable) {
-            clearCurrentTracking();
+        if (enable) {
+            state.trackingEnabled = true;
+        } else {
+            clearCurrentTracking("/tracking/enable?enable=0", request);
             srtSerial.logESP("Tracking stopped");
         }
         request->send(200, "application/json", "{\"ok\":true}");
@@ -426,7 +452,7 @@ void setupWebServer() {
     webServer.on("/stop/tracking", HTTP_GET, [](AsyncWebServerRequest *request) {
         SRTLock lock;
         state.movementHoldUntil = 0;
-        clearCurrentTracking();
+        clearCurrentTracking("/stop/tracking", request);
         srtSerial.logESP("Tracking stopped");
         request->send(200, "application/json", "{\"ok\":true}");
     });
@@ -435,7 +461,7 @@ void setupWebServer() {
     webServer.on("/stop/all", HTTP_GET, [](AsyncWebServerRequest *request) {
         SRTLock lock;
         state.movementHoldUntil = 0;
-        clearCurrentTracking();
+        clearCurrentTracking("/stop/all", request);
         srtSerial.sendStop();
         srtSerial.logESP("STOP all");
         request->send(200, "application/json", "{\"ok\":true}");
@@ -459,7 +485,7 @@ void setupWebServer() {
     webServer.on("/home", HTTP_GET, [](AsyncWebServerRequest *request) {
         SRTLock lock;
         state.movementHoldUntil = 0;
-        clearCurrentTracking();
+        clearCurrentTracking("/home", request);
         srtSerial.sendHome();
         srtSerial.logESP("HOME");
         request->send(200, "application/json", "{\"ok\":true}");
@@ -477,7 +503,7 @@ void setupWebServer() {
     webServer.on("/go-home", HTTP_GET, [](AsyncWebServerRequest *request) {
         SRTLock lock;
         state.movementHoldUntil = 0;
-        clearCurrentTracking();
+        clearCurrentTracking("/go-home", request);
         double driveAlt = settings.stowAlt, driveAz = settings.stowAz;
         clampToMountLimits(driveAlt, driveAz);
         srtSerial.sendDriveTarget(driveAlt, driveAz);
@@ -657,7 +683,7 @@ void setupWebServer() {
         state.targetAlt = alt;
         state.targetAz = az;
         state.movementHoldUntil = 0;
-        clearCurrentTracking();
+        clearCurrentTracking("/direct", request);
         trueToDrive(alt, az, driveAlt, driveAz);
         if (!driveAltWithinLimits(driveAlt) || !driveAzWithinLimits(driveAz)) {
             char err[192];

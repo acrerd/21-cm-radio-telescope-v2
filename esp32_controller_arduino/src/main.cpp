@@ -27,6 +27,7 @@
 #include "stellarium.h"
 #include "coordinates.h"
 #include "pointing.h"
+#include "diag.h"
 
 // External state
 extern SRTState state;
@@ -71,6 +72,7 @@ void startOTAService() {
             srtSerial.logESP("OTA update complete");
         })
         .onProgress([](unsigned int progress, unsigned int total) {
+            diagOtaProgress();      // the upload runs inside one loop pass
             static int lastPercent = -1;
             int percent = total ? (progress * 100 / total) : 0;
             if (percent != lastPercent && percent % 10 == 0) {
@@ -326,6 +328,7 @@ void updateTracking() {
     // lock is taken: these block on the UART, and holding the lock across a
     // blocking read would stall async_tcp. It takes the lock internally where
     // needed.
+    diagStage(DIAG_TRACK_READ);
     srtSerial.readStatus();
 
     // Only poll Due once per second
@@ -335,6 +338,7 @@ void updateTracking() {
     lastTrackingUpdate = now;
 
     // Request fresh status
+    diagStage(DIAG_TRACK_POLL);
     srtSerial.requestStatus();
 
     // Everything below reads and writes SRTState and Settings that async_tcp
@@ -342,7 +346,9 @@ void updateTracking() {
     // waiting flags. Holding the lock for the rest of the function makes one
     // tracking update atomic against any request that lands mid-computation,
     // so a target cannot change between being converted and being sent.
+    diagStage(DIAG_TRACK_LOCK);
     SRTLock lock;
+    diagStage(DIAG_TRACK_COMPUTE);
 
     if (state.movementHoldUntil != 0) {
         if ((long)(now - state.movementHoldUntil) < 0) {
@@ -520,7 +526,9 @@ void updateTracking() {
                     DBG(Serial.printf("Tracking %s: true Alt=%.1f Az=%.1f, sending drive %.1f/%.1f\n",
                                   state.targetName.c_str(), alt, az, driveAlt, driveAz));
                 }
+                diagStage(DIAG_TRACK_SEND);
                 srtSerial.sendDriveTarget(driveAlt, driveAz);
+                diagTargetSent();
                 lastSentAlt = driveAlt;
                 lastSentAz = driveAz;
             }
@@ -535,6 +543,9 @@ void setup() {
     // Must come first: everything below may lock, and no other task exists yet
     // to contend with, so this is the one safe moment to create the mutex.
     srtSyncInit();
+    // Before anything can log: takes over the previous boot's record from
+    // RTC memory and notes how that boot ended (diag.h).
+    diagBoot();
 
     // Initialize USB Serial for debug
     Serial.begin(115200);
@@ -627,16 +638,23 @@ void setup() {
         Serial.printf("WiFi IP: %s\n", WiFi.localIP().toString().c_str());
     }
     Serial.printf("AP IP: %s\n", WiFi.softAPIP().toString().c_str());
+    diagWatchdogStart();
 }
 
 void loop() {
+    diagLoopTick();
 #if OTA_ENABLED
+    diagStage(DIAG_OTA);
     ArduinoOTA.handle();
 #endif
+    diagStage(DIAG_WEB);
     handleWebServer();
+    diagStage(DIAG_STELLARIUM);
     handleStellariumServer();
     updateTracking();
+    diagStage(DIAG_CLOCK);
     updateClockStatus();
+    diagStage(DIAG_WIFI);
     // Radio power changes requested by /wifi/power happen here, not in the
     // handler: they involve hundreds of milliseconds of delays that would
     // otherwise freeze every network client.
@@ -645,6 +663,7 @@ void loop() {
     // Check if Ethernet connected and needs NTP sync. syncTimeNTP() no longer
     // blocks, so this cannot stall tracking or Due status parsing on a link flap.
     #if ETHERNET_ENABLED
+    diagStage(DIAG_ETH);
     if (ethNeedNtpSync && ethConnected) {
         ethNeedNtpSync = false;
         // A new lease can carry a different resolver, so re-cache before the
@@ -660,7 +679,9 @@ void loop() {
     // 10 s repair left DNS working only in narrow windows. Checked every
     // iteration instead — a pointer test and a compare against zero, and it only
     // writes when it finds the list empty.
+    diagStage(DIAG_RESOLVER);
     ensureResolver();
 
+    diagStage(DIAG_IDLE);
     delay(10);
 }
