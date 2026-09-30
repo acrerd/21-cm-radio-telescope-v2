@@ -47,6 +47,8 @@ DLE, ETX = 0x10, 0x03
 BAUD = 9600
 STALE_S = 10.0            # no packet for this long and the status is stale
 RETRY_S = 30.0            # how often a missing device is looked for again
+PARAMS_EVERY_S = 1800.0   # how often the disciplining parameters are asked for
+LOG_EVERY_S = 600         # one summary row per this many seconds (reference_log/)
 HISTORY_S = 6 * 3600      # status kept in memory for the panel's traces
 
 RECEIVER_MODES = {0: "automatic 2D/3D", 1: "single satellite", 3: "2D", 4: "3D",
@@ -200,6 +202,31 @@ def decode_levels(p):
     return {"levels": levels}
 
 
+def decode_disciplining(p):
+    """0x8F-A8, the reply to a 0x8E-A8 request (read only - a request carries
+    just the type byte, so nothing is changed). Type 0: the loop's time
+    constant and damping; type 1: the oscillator's steering gain and the DAC
+    voltage range. Verified on the unit 2026-09-30: 60 s, damping 1.0;
+    1.516 Hz/V over 0-5 V."""
+    if len(p) < 2 or p[0] != 0xA8:
+        return None
+    if p[1] == 0 and len(p) >= 10:
+        tc, damping = struct.unpack(">ff", p[2:10])
+        # A zero time constant is not a setting the unit can hold: an all-zero
+        # reply of this type arrived right after a set command on 2026-09-30,
+        # while clean queries read the value just set. Refused, not shown.
+        if not tc > 0:
+            return None
+        return {"type": 0, "time_constant_s": tc, "damping": damping}
+    if p[1] == 1 and len(p) >= 14:
+        gain, vmin, vmax = struct.unpack(">fff", p[2:14])
+        return {"type": 1, "efc_gain_hz_per_v": gain, "dac_min_v": vmin, "dac_max_v": vmax}
+    return None
+
+
+PARAM_REQUESTS = (encode(0x8E, bytes([0xA8, 0])), encode(0x8E, bytes([0xA8, 1])))
+
+
 def decode(packet_id, payload):
     """(kind, fields) or None for a packet we do not use."""
     if packet_id == 0x8F and payload:
@@ -207,6 +234,9 @@ def decode(packet_id, payload):
             return "primary", decode_primary(payload)
         if payload[0] == 0xAC:
             return "supplemental", decode_supplemental(payload)
+        if payload[0] == 0xA8:
+            got = decode_disciplining(payload)
+            return ("loop" if got and got["type"] == 0 else "oscillator"), got
     elif packet_id == 0x6D:
         return "satellites", decode_satellites(payload)
     elif packet_id == 0x47:
@@ -279,14 +309,93 @@ def open_port(path, baud=BAUD):
     return fd
 
 
+LOG_COLUMNS = ("utc_start", "utc_end", "n_s", "normal_s", "holdover_s_max",
+               "critical_alarm_s", "serious_minor_alarm_s", "critical_bits", "minor_bits",
+               "osc_ppb_mean", "osc_ppb_std", "pps_ns_mean", "pps_ns_std", "pps_ns_min", "pps_ns_max",
+               "dac_v_mean", "dac_v_min", "dac_v_max", "temp_c_mean", "temp_c_min", "temp_c_max",
+               "sats_mean", "sats_min", "level_mean", "level_top4", "time_constant_s", "damping")
+
+
+class Summary:
+    """Statistics of the unit over one interval, for the long-term log: what
+    shows the reference degrading. The steering voltage walks as the
+    oscillator ages (x EFC gain = an ageing rate); the strongest satellites'
+    levels, the satellite count and the PPS scatter fall or rise as an
+    antenna, its cable or its preamp fails, long before the antenna alarms."""
+
+    def __init__(self, start):
+        self.start = start
+        self.n = self.normal = self.crit_s = self.minor_s = 0
+        self.crit_bits = self.minor_bits = 0
+        self.holdover = 0
+        self.vals = {"osc": [], "pps": [], "dac": [], "temp": []}
+        self.sats, self.level_mean, self.level_top = [], [], []
+
+    def add_supplemental(self, f):
+        self.n += 1
+        self.normal += f["disciplining_mode"] == 0
+        self.holdover = max(self.holdover, int(f["holdover_s"]))
+        self.crit_bits |= f["critical_alarms"]
+        self.minor_bits |= f["minor_alarms"]
+        self.crit_s += bool(f["critical_alarms"])
+        self.minor_s += any(f["minor_alarms"] >> b & 1 for b in MINOR_SERIOUS)
+        for key, field in (("osc", "osc_offset_ppb"), ("pps", "pps_offset_ns"),
+                           ("dac", "dac_v"), ("temp", "temperature_c")):
+            self.vals[key].append(float(f[field]))
+
+    def add_satellites(self, f):
+        self.sats.append(int(f["n_sats"]))
+
+    def add_levels(self, f):
+        lv = sorted((v for v in f["levels"].values() if v > 0), reverse=True)
+        if lv:
+            self.level_mean.append(sum(lv) / len(lv))
+            self.level_top.append(sum(lv[:4]) / len(lv[:4]))
+
+    def row(self, end, loop=None):
+        import statistics as st
+        def stats(v):
+            if not v:
+                return ("",) * 4
+            return (st.fmean(v), st.pstdev(v), min(v), max(v))
+        def iso(t):
+            return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(t))
+        o, p, d, t = (stats(self.vals[k]) for k in ("osc", "pps", "dac", "temp"))
+        fmt = lambda x, n: "" if x == "" else ("%.*f" % (n, x))
+        return [iso(self.start), iso(end), self.n, self.normal, self.holdover, self.crit_s, self.minor_s,
+                "0x%04x" % self.crit_bits, "0x%04x" % self.minor_bits,
+                fmt(o[0], 4), fmt(o[1], 4), fmt(p[0], 2), fmt(p[1], 2), fmt(p[2], 2), fmt(p[3], 2),
+                fmt(d[0], 5), fmt(d[2], 5), fmt(d[3], 5), fmt(t[0], 3), fmt(t[2], 3), fmt(t[3], 3),
+                fmt(sum(self.sats) / len(self.sats), 2) if self.sats else "", min(self.sats) if self.sats else "",
+                fmt(sum(self.level_mean) / len(self.level_mean), 2) if self.level_mean else "",
+                fmt(sum(self.level_top) / len(self.level_top), 2) if self.level_top else "",
+                fmt(loop["time_constant_s"], 1) if loop else "", fmt(loop["damping"], 3) if loop else ""]
+
+
+def append_log_row(log_dir, row):
+    """One row into the month's CSV, with a header if the file is new."""
+    import csv
+    os.makedirs(log_dir, exist_ok=True)
+    path = os.path.join(log_dir, "thunderbolt_%s.csv" % row[0][:7])
+    new = not os.path.exists(path)
+    with open(path, "a", newline="") as fh:
+        w = csv.writer(fh)
+        if new:
+            w.writerow(LOG_COLUMNS)
+        w.writerow(row)
+    return path
+
+
 class Monitor:
     """Reads the unit in a thread and keeps the latest of each packet and a
     history of the supplemental status. A missing device is looked for every
     RETRY_S, so plugging the adapter in needs no restart; `on_change(level,
     text)` is called when the assessment changes (for the log)."""
 
-    def __init__(self, device, baud=BAUD, on_change=None):
+    def __init__(self, device, baud=BAUD, on_change=None, log_dir=None):
         self.device, self.baud, self.on_change = device, baud, on_change
+        self.log_dir = log_dir           # the long-term summary log (reference_log/), or None
+        self._summary = None
         self.lock = threading.Lock()
         self.latest = {}                 # kind -> (monotonic, unix, fields)
         self.history = collections.deque()
@@ -316,6 +425,10 @@ class Monitor:
         with self.lock:
             self.packets += 1
             self.latest[kind] = (now, wall, fields)
+            loop = self.latest.get("loop")
+        if self.log_dir:
+            self._log(kind, fields, wall, loop[2] if loop else None)
+        with self.lock:
             if kind == "supplemental":
                 self.history.append((wall, fields["osc_offset_ppb"], fields["pps_offset_ns"],
                                      fields["dac_v"], fields["temperature_c"], fields["disciplining_mode"]))
@@ -323,6 +436,24 @@ class Monitor:
                     self.history.popleft()
         if kind == "supplemental":
             self._note_level(now)
+
+    def _log(self, kind, fields, wall, loop):
+        """Accumulate the interval's statistics; write a row as each
+        LOG_EVERY_S boundary passes. Only from the reader thread."""
+        slot = int(wall // LOG_EVERY_S) * LOG_EVERY_S
+        if self._summary is not None and slot > self._summary.start and self._summary.n:
+            try:
+                append_log_row(self.log_dir, self._summary.row(min(wall, self._summary.start + LOG_EVERY_S), loop))
+            except OSError as exc:
+                self.error = "log: %s" % exc
+        if self._summary is None or slot > self._summary.start:
+            self._summary = Summary(slot)
+        if kind == "supplemental":
+            self._summary.add_supplemental(fields)
+        elif kind == "satellites":
+            self._summary.add_satellites(fields)
+        elif kind == "levels":
+            self._summary.add_levels(fields)
 
     def _note_level(self, now):
         level, text, _ = self.status(now)["assessment"]
@@ -345,8 +476,17 @@ class Monitor:
             out["supplemental"] = sup[2] if sup else None
             out["primary"] = pri[2] if pri else None
             out["satellites"] = sat[2] if sat else None
+            loop, osc = self.latest.get("loop"), self.latest.get("oscillator")
+            out["loop"] = loop[2] if loop else None
+            out["oscillator"] = osc[2] if osc else None
         out["assessment"] = assess(out["supplemental"], out["primary"], age)
         return out
+
+    def rows(self):
+        """The whole kept history at full resolution, one row a second:
+        (wall, osc_ppb, pps_ns, dac_v, temp_c, mode). For the stability plot."""
+        with self.lock:
+            return list(self.history)
 
     def history_points(self, max_points=720):
         """The kept history, thinned evenly to at most `max_points`."""
@@ -365,12 +505,20 @@ class Monitor:
                 continue
             self.connected, self.error = True, ""
             framer = Framer()
+            asked = 0.0
             try:
                 while not self._stop.is_set():
+                    if time.monotonic() - asked > PARAMS_EVERY_S:
+                        for req in PARAM_REQUESTS:
+                            os.write(fd, req)
+                        asked = time.monotonic()
                     ready, _, _ = select.select([fd], [], [], 1.0)
                     if not ready:
                         continue
-                    data = os.read(fd, 1024)
+                    try:
+                        data = os.read(fd, 1024)
+                    except BlockingIOError:              # another reader took the bytes
+                        continue
                     if not data:
                         raise OSError("device closed")
                     for pid, payload in framer.feed(data):

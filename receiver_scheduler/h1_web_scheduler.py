@@ -3542,6 +3542,76 @@ def _pulsar_takes_over_from_sun(now: datetime) -> bool:
     return True
 
 
+CONTROLLER_WATCH_S = 60            # how often the scheduler checks the controller
+CONTROLLER_LOOP_STALL_MS = 10000   # a loop pass this old means the loop is stuck
+_controller_watch = {"last": 0.0, "boot": None, "uptime": None, "stall_logged": False}
+
+
+def _observation_is_tracked(obs: Optional[dict]) -> bool:
+    """A running observation whose mount should be following the sky: the
+    tracked coordinate systems and pulsar mode, not a drift scan."""
+    if not obs:
+        return False
+    system = obs.get('coord_system', 'altaz')
+    return system == 'pulsar' or system in observation_files.TRACKING_COORD_SYSTEMS - {'satellite'}
+
+
+def controller_watchdog():
+    """Once a minute: has the controller restarted, is its loop alive, and -
+    during a tracked observation - is it still tracking?
+
+    On 2026-09-30 the controller stopped sending targets at 14:09 and rebooted
+    at 14:35, and the scheduler went on recording blank sky as a Sun track
+    until someone noticed. The controller now keeps a record that survives a
+    reset (/diag, esp32_controller_arduino/src/diag.h); this reads it the moment
+    a restart is seen, so the reason and the last loop stage land in
+    scheduler.log while they are still there, and it re-points a tracked
+    observation whose target the controller has lost, from a restart or
+    anything else."""
+    now = time.time()
+    if now - _controller_watch["last"] < CONTROLLER_WATCH_S or not SRT_CONTROLLER_URL:
+        return
+    _controller_watch["last"] = now
+    st = srt_api_call("/status")
+    if not st:
+        return
+    up, boot = st.get("uptime_s"), st.get("boot")
+    if up is not None:
+        prev_up, prev_boot = _controller_watch["uptime"], _controller_watch["boot"]
+        if prev_up is not None and (up < prev_up or (boot is not None and prev_boot is not None and boot != prev_boot)):
+            log.error("SRT controller restarted (reset by %s; up %s s)", st.get("reset_reason", "?"), up)
+            diag = srt_api_call("/diag") or {}
+            pb = diag.get("previous_boot") or {}
+            if pb:
+                log.error("  previous boot: up %s s, last loop stage '%s', last target sent %s s before, "
+                          "longest loop pass %s ms, lowest free heap %s, smallest largest-block %s",
+                          pb.get("uptime_s"), pb.get("last_stage"), pb.get("last_target_age_s"),
+                          pb.get("max_loop_gap_ms"), pb.get("min_free_heap"), pb.get("min_max_alloc"))
+                for ev in (pb.get("events") or [])[-12:]:
+                    log.error("    %s", ev)
+        _controller_watch["uptime"], _controller_watch["boot"] = up, boot
+    age = st.get("loop_age_ms")
+    if age is not None:
+        if age > CONTROLLER_LOOP_STALL_MS and not _controller_watch["stall_logged"]:
+            log.error("SRT controller loop has not run for %.0f s - it is stuck (the loop watchdog "
+                      "restarts it at 30 s)", age / 1000.0)
+            _controller_watch["stall_logged"] = True
+        elif age <= CONTROLLER_LOOP_STALL_MS:
+            _controller_watch["stall_logged"] = False
+    with process_lock:
+        obs = current_observation
+        alive = current_process is not None and current_process.poll() is None
+    if not (alive and _observation_is_tracked(obs)):
+        return
+    tr = srt_api_call("/tracking")
+    if tr is None or tr.get("enabled"):
+        return
+    log.error("SRT controller is not tracking '%s' although the observation is running - "
+              "re-pointing it", obs.get('name', '?'))
+    if not srt_point_telescope(obs):
+        log.error("Re-pointing '%s' failed", obs.get('name', '?'))
+
+
 def scheduler_thread():
     """Background thread that checks schedule and starts/stops observations."""
     global scheduler_running
@@ -3597,6 +3667,11 @@ def scheduler_thread():
 
             if observation_end_time and now >= observation_end_time:
                 stop_observation()
+
+            try:
+                controller_watchdog()
+            except Exception as exc:                     # noqa: BLE001 - never stop the scheduler for it
+                log.debug("Controller watchdog: %s", exc)
 
             # A receiver that exits by itself ends the observation, whether or
             # not a schedule slot is still due.
@@ -4864,6 +4939,14 @@ def _cached_clock(name, compute):
     return value
 
 
+# The Thunderbolt's long-term log: one row of statistics every 10 minutes,
+# monthly CSVs, kept in git because they cannot be regenerated. It is what
+# shows the reference degrading - the steering voltage walking as the
+# oscillator ages, the strongest satellites' levels falling as an antenna or
+# its cable fails (thunderbolt.Summary).
+REFERENCE_LOG_DIR = os.path.join(_SCRIPT_DIR, "reference_log")
+
+
 def _start_thunderbolt():
     """Start reading the Thunderbolt, logging each change of its state."""
     global _thunderbolt
@@ -4873,7 +4956,17 @@ def _start_thunderbolt():
     def changed(level, text):
         (log.warning if level in ("bad", "stale", "warn") else log.info)("Reference: %s (%s)", text, level)
     _thunderbolt = thunderbolt.Monitor(device, int(get_config_value("thunderbolt_baud") or thunderbolt.BAUD),
-                                       on_change=changed).start()
+                                       on_change=changed, log_dir=REFERENCE_LOG_DIR).start()
+
+
+@app.route('/api/clock/stability', methods=['GET'])
+def api_clock_stability():
+    """Modified Allan deviation of the Thunderbolt's PPS-offset record, with
+    the GPS-noise and output-noise components fitted by slope. Computed only
+    when the panel's button asks (clocks.stability)."""
+    if _thunderbolt is None:
+        return jsonify({"ok": False, "error": "no Thunderbolt monitor running"})
+    return jsonify(clocks.stability(_thunderbolt.rows()))
 
 
 @app.route('/api/clock', methods=['GET'])
@@ -5834,7 +5927,7 @@ def _velocity_frame_text(attrs, stamps):
             mid = None
         lsr = observation_plot.lsr_offset_km_s(attrs, mid) if mid is not None else None
         cal, _, _ = rf_calibration.calibration_for(attrs)
-        clock = rf_calibration.trustworthy_velocity_shift(cal) if cal else None
+        clock = rf_calibration.trustworthy_velocity_shift(cal, attrs) if cal else None
         return observation_plot.velocity_frame_note(lsr, clock, mid)
     except Exception as exc:                              # noqa: BLE001
         return "velocity frame unknown (%s)" % exc
@@ -6875,6 +6968,11 @@ def api_post_config():
         SRT_SLEW_TIMEOUT = cfg.get("slew_timeout", 300)
         SRT_POSITION_TOLERANCE = cfg.get("position_tolerance", 0.5)
         PYTHON_PATH = cfg.get("python_path") or None
+    # The Thunderbolt monitor reopens a missing device every 30 s from its own
+    # `device`, so a new path takes effect on its next attempt - no restart.
+    # A connected monitor keeps its port until it drops.
+    if _thunderbolt is not None and "thunderbolt_device" in updates:
+        _thunderbolt.device = str(cfg.get("thunderbolt_device") or _thunderbolt.device)
     # Re-sync observer location if controller URL changed
     sync_observer_from_controller()
     return jsonify({'success': True})

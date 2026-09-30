@@ -32,5 +32,6 @@
     "lo_hz": 1418905751.9985752,
     "sample_rate_hz": 8000000.0,
     "gain_db": 20.0
-  }
+  },
+  "reference_locked": true
 }

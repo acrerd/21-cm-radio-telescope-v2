@@ -461,3 +461,43 @@ def test_the_cached_simulator_follows_an_adopted_beam(tmp_path, monkeypatch):
     # and the first is still there for its own beam, not rebuilt
     beam.write_text(json.dumps({"fwhm_deg": 4.3, "solid_angle_sq_deg": 21.0}))
     assert R.load_simulator() is first
+
+
+def test_a_locked_reference_is_recognised():
+    import rf_calibration as R
+    assert R.reference_locked({"clock_source": "external", "clock_ref_locked": 1})
+    assert not R.reference_locked({"clock_source": "internal", "clock_ref_locked": 1})
+    assert not R.reference_locked({"clock_source": "external", "clock_ref_locked": 0})
+    assert not R.reference_locked({})
+    assert not R.reference_locked({"clock_source": "external", "clock_ref_locked": 1, "reference_state": "bad"})
+
+
+def test_no_shift_is_carried_when_the_clock_is_known():
+    """A shift fitted on the locked reference is the field's pointing and model,
+    not a clock; and a recording on the locked reference needs no clock
+    correction whatever the calibration found (2026-09-30: the 09-25
+    calibration's -0.225 km/s had been applied to every spectrum)."""
+    import rf_calibration as R
+    tcxo_cal = {"velocity_shift_km_s": -0.7, "correlation": 0.999}
+    locked_cal = dict(tcxo_cal, reference_locked=True)
+    locked = {"clock_source": "external", "clock_ref_locked": 1}
+    tcxo = {"clock_source": "internal"}
+    assert R.trustworthy_velocity_shift(tcxo_cal, tcxo) == -0.7
+    assert R.trustworthy_velocity_shift(tcxo_cal, locked) is None
+    assert R.trustworthy_velocity_shift(locked_cal, tcxo) is None
+    assert R.trustworthy_velocity_shift(dict(tcxo_cal, shift_fixed=True)) is None
+
+
+def test_a_held_shift_fits_the_gain_at_zero():
+    """With fit_shift=False the fit evaluates the model where it is, and gets
+    the same gain as the free fit on data that has no shift in it."""
+    import numpy as np
+    import rf_calibration as R
+    f = np.linspace(1419.5e6, 1421.5e6, 800)
+    model = 5.0 + 60.0 * np.exp(-0.5 * ((f - 1420.4e6) / 40e3) ** 2)
+    counts = 3.0 * (180.0 + model)
+    free, _ = R.fit_gain_with_shift(f, counts, f, model)
+    held, _ = R.fit_gain_with_shift(f, counts, f, model, fit_shift=False)
+    assert held["shift_fixed"] and held["velocity_shift_km_s"] == 0.0
+    key = [k for k in held if "gain" in k][0]
+    assert held[key] == pytest.approx(free[key], rel=1e-3)

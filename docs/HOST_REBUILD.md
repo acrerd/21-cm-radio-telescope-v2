@@ -38,7 +38,7 @@ This document takes a blank replacement machine to a working Acre Road SRT works
 | B200 TX/RX | 30 dB pad → the vertex dipole | the pilot and the test transmitter; off by default |
 | B200 REF IN | Thunderbolt GPSDO **10 MHz** | selected and checked by `select_clock_source` through the `ref_locked` sensor |
 | B200 PPS IN | Thunderbolt **1 PPS** | in use: the 2026-09-28 pulsar run recorded `time_source` pps. The input takes 1.8–5 V, so the Thunderbolt's TTL is fine. Picked up automatically (`H1_TIME_SOURCE=auto`). |
-| Thunderbolt serial (DB9) | USB, through an **RS-232** adapter (FTDI) | **pending the adapter**. TSIP status at 9600 8-N-1, read by `thunderbolt.py` from `/dev/thunderbolt` (§7). RS-232 levels: a 3.3 V TTL adapter will not read it. |
+| Thunderbolt serial (DB9) | USB, through an **RS-232** adapter (FTDI FT232R, serial `A9DZ2ZSW`) | **connected 2026-09-30**, decoded first time: locked, 8 satellites, osc ±0.14 ppb, PPS ~1 ns, DAC 2.111 V, 43.5 °C. TSIP at 9600 8-N-1, read by `thunderbolt.py`. Until the udev rule of §7 exists, `scheduler_config.json` sets `thunderbolt_device` to `/dev/serial/by-id/usb-FTDI_FT232R_USB_UART_A9DZ2ZSW-if00-port0`. Unit settings (in its EEPROM, not on this computer): loop time constant **100 s**, damping 1.0 (set 2026-09-30; read them with `thunderbolt.py`'s monitor or TSIP 0x8E-A8, and a replacement unit should be set the same). RS-232 levels: a 3.3 V TTL adapter will not read it. **Plugging it in reset the B200** (it dropped off USB 4 s later and the running receiver aborted): plug USB devices in between observations. |
 | Controller (WT32-ETH01) | the second network card, TP-Link TG-3468 (`enp5s0`, `r8169`) | a private link: see `docs/OBSERVATORY_HOST_SETUP.md` |
 | Campus network | the motherboard network card | internet, NTP, GitHub, remote access |
 | Safety camera | USB (`/dev/video0`) | needs the `video` group (§7) |
@@ -108,11 +108,11 @@ sudo udevadm control --reload-rules && sudo udevadm trigger
 - The images needed are `usrp_b200_fw.hex` and `usrp_b200_fpga.bin`. The current machine has the full set in `/home/astro/radioconda/share/uhd/images/`.
 - If the rule file is somewhere else in the radioconda tree, find it with `find /home/astro/radioconda -name uhd-usrp.rules`.
 
-**Thunderbolt serial adapter** (pending, 2026-09-29). A fixed name, so the scheduler's `thunderbolt_device` (`/dev/thunderbolt`) survives other USB-serial devices appearing first. Fill in the adapter's own serial number from `udevadm info -a -n /dev/ttyUSB0 | grep '{serial}'`; the vendor and product are FTDI's FT232R.
+**Thunderbolt serial adapter** (connected 2026-09-30, serial `A9DZ2ZSW`; the rule below is not yet installed - it needs sudo - so the config uses the by-id path instead). A fixed name, so the scheduler's `thunderbolt_device` (`/dev/thunderbolt`) survives other USB-serial devices appearing first. Fill in the adapter's own serial number from `udevadm info -a -n /dev/ttyUSB0 | grep '{serial}'`; the vendor and product are FTDI's FT232R.
 
 ```
 sudo tee /etc/udev/rules.d/99-thunderbolt.rules <<'RULE'
-SUBSYSTEM=="tty", ATTRS{idVendor}=="0403", ATTRS{idProduct}=="6001", ATTRS{serial}=="<ADAPTER SERIAL>", SYMLINK+="thunderbolt", GROUP="dialout", MODE="0660"
+SUBSYSTEM=="tty", ATTRS{idVendor}=="0403", ATTRS{idProduct}=="6001", ATTRS{serial}=="A9DZ2ZSW", SYMLINK+="thunderbolt", GROUP="dialout", MODE="0660"
 RULE
 sudo udevadm control --reload-rules && sudo udevadm trigger
 ls -l /dev/thunderbolt                                        # -> ttyUSBn

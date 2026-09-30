@@ -501,7 +501,7 @@ def plot_observation(path, output_path, name="", mode="spectrum",
     # hold the shift is used - see trustworthy_velocity_shift - since a shift
     # fitted against a weak line is confidently wrong by several km/s, which is
     # worse than leaving it out.
-    clock_shift = rf_calibration.trustworthy_velocity_shift(cal) if cal_ok else None
+    clock_shift = rf_calibration.trustworthy_velocity_shift(cal, header) if cal_ok else None
     # Say which frame the velocity axis is in, in words, in the header - the
     # axis label carries it too, but a reader asked "what frame is this?"
     # should not have to find it there (2026-08-26).

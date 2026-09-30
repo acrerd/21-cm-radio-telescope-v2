@@ -748,8 +748,28 @@ def reduce_for_fit(path, glon, glat, sim=None, bandwidth_hz=None,
 MAX_SHIFT_KM_S = 12.0
 
 
+def reference_locked(header):
+    """True when the recording's sample clock ran from the external 10 MHz
+    and the B200 reported it locked (`clock_source`, `clock_ref_locked`,
+    written since 2026-08; the Thunderbolt since 2026-09-22), and the
+    Thunderbolt itself - where its serial status was read - was not in
+    trouble. Then the frequency axis is good to well under 1e-9 and a fitted
+    velocity shift is not a clock term: it is the field's pointing and model
+    mismatch (clock-ppm-is-pointing-on-plane-fields)."""
+    h = header or {}
+    if str(h.get("clock_source", "")) != "external":
+        return False
+    try:
+        if int(h.get("clock_ref_locked", 0)) != 1:
+            return False
+    except (TypeError, ValueError):
+        return False
+    return str(h.get("reference_state", "absent")) not in ("bad", "stale")
+
+
 def fit_gain_with_shift(freq_hz, counts, model_freq_hz, model_k,
-                        min_t_sys_k=MIN_T_SYS_K, max_shift_km_s=MAX_SHIFT_KM_S):
+                        min_t_sys_k=MIN_T_SYS_K, max_shift_km_s=MAX_SHIFT_KM_S,
+                        fit_shift=True):
     """Fit gain, system temperature and a frequency-scale error together.
 
     The B200 runs from its own TCXO, and an error in it scales the whole
@@ -837,6 +857,20 @@ def fit_gain_with_shift(freq_hz, counts, model_freq_hz, model_k,
         return out, float(np.std(counts[ok] - predicted[ok]))
 
     best, best_cost = None, np.inf
+    if not fit_shift:
+        # The frequency axis is known (external reference locked): hold the
+        # shift at zero rather than let it take up the field's pointing and
+        # model slack. On a bright plane line 0.2 km/s of misalignment moves
+        # the gain by ~0.05%, so nothing is lost by holding it.
+        out, cost = score(0.0)
+        if out is None:
+            raise ValueError("no usable fit")
+        out["velocity_shift_km_s"] = 0.0
+        out["implied_ppm"] = 0.0
+        out["shift_fixed"] = True
+        out["shift_search_limit_km_s"] = 0.0
+        out["shift_at_search_limit"] = False
+        return out, at(0.0)
     coarse = np.linspace(-max_shift_km_s, max_shift_km_s, 97)
     for shift in coarse:
         out, cost = score(shift)
@@ -869,10 +903,12 @@ def calibrate_observation(path, glon, glat, sim=None, min_t_sys_k=MIN_T_SYS_K,
     red = reduce_for_fit(path, glon, glat, sim, bandwidth_hz, record_window)
     usable = red["usable"]
     obstime, header, note = red["obstime"], red["header"], red["bandpass_note"]
+    locked = reference_locked(header)
     result, _model_used = fit_gain_with_shift(
         red["sim_freq_hz"][usable], red["binned_counts"][usable],
-        red["sim_freq_hz"], red["sim_ta_k"], min_t_sys_k)
+        red["sim_freq_hz"], red["sim_ta_k"], min_t_sys_k, fit_shift=not locked)
     result.update({
+        "reference_locked": bool(locked),
         "rfi_channels_flagged": red.get("rfi_channels", 0),
         "rfi_found": red.get("rfi_found", []),
         "version": CALIBRATION_VERSION,
@@ -941,14 +977,27 @@ def load_calibration(path=CALIBRATION_FILE):
 MIN_SHIFT_CORRELATION = 0.99
 
 
-def trustworthy_velocity_shift(cal):
-    """The fitted velocity shift in km/s, or None if the fit could not hold it.
+def trustworthy_velocity_shift(cal, header=None):
+    """The fitted velocity shift in km/s to carry to a recording as a clock
+    correction, or None.
 
     Returned separately from the gain because the two do not fail together: a
     fit against a weak line can give a defensible slope while its shift is
     several km/s out, having slid to wherever the residual happened to fall.
+
+    None whenever a clock is not what the shift measures (2026-09-30): if the
+    recording `header` ran on the locked external reference, its clock error
+    is under 1e-9 whatever the calibration found; and a calibration fitted on
+    the locked reference never measured a clock at all - its shift is the
+    field's pointing and model mismatch. The 09-25 calibration's -0.225 km/s
+    (-0.75 ppm) was carried into every spectrum as a clock correction until
+    this.
     """
     if not cal:
+        return None
+    if cal.get("reference_locked") or cal.get("shift_fixed"):
+        return None
+    if header is not None and reference_locked(header):
         return None
     shift = cal.get("velocity_shift_km_s")
     corr = cal.get("correlation")

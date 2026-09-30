@@ -252,3 +252,66 @@ def test_the_clock_endpoint(client):
         d = client.get("/api/clock").get_json()
     sched._clock_cache.clear()
     assert d["thunderbolt"]["level"] == "absent" and d["overall"] == "ok"
+
+
+def test_the_disciplining_parameters_decode_as_the_unit_sent_them():
+    """The two replies the unit gave on 2026-09-30, byte for byte."""
+    import thunderbolt as T
+    kind, loop = T.decode(0x8F, bytes.fromhex("a800427000003f800000"))
+    assert kind == "loop" and loop["time_constant_s"] == 60.0 and loop["damping"] == 1.0
+    kind, osc = T.decode(0x8F, bytes.fromhex("a8013fc1fdb80000000040a00000"))
+    assert kind == "oscillator" and abs(osc["efc_gain_hz_per_v"] - 1.516) < 1e-3
+    assert (osc["dac_min_v"], osc["dac_max_v"]) == (0.0, 5.0)
+
+
+def test_a_request_carries_only_the_type_byte():
+    """A read-only query: 0x8E-A8 with the type and no values, which would set them."""
+    import thunderbolt as T
+    assert T.PARAM_REQUESTS == (bytes([0x10, 0x8E, 0xA8, 0x00, 0x10, 0x03]),
+                                bytes([0x10, 0x8E, 0xA8, 0x01, 0x10, 0x03]))
+
+
+def test_an_all_zero_loop_reply_is_refused():
+    import thunderbolt as T
+    assert T.decode_disciplining(bytes.fromhex("a8000000000000000000")) is None
+    assert T.decode_disciplining(bytes.fromhex("a80042c800003f800000"))["time_constant_s"] == 100.0
+
+
+def test_the_long_term_log_writes_one_row_per_interval(tmp_path):
+    """Packets across two 10-minute boundaries give two rows, each with the
+    interval's statistics, in the month's CSV under a header."""
+    import csv
+    import thunderbolt as T
+    m = T.Monitor("/dev/null", log_dir=str(tmp_path))
+    t0 = 1_790_000_400.0                                  # a 600 s boundary
+    sup = {"disciplining_mode": 0, "holdover_s": 0, "critical_alarms": 0, "minor_alarms": 0,
+           "osc_offset_ppb": 0.1, "pps_offset_ns": 1.0, "dac_v": 2.111, "temperature_c": 43.5}
+    for i in range(1300):                                 # 21.7 minutes, one packet a second
+        f = dict(sup, dac_v=2.111 + 1e-5 * (i // 600), pps_offset_ns=(-1.0) ** i)
+        m._log("supplemental", f, t0 + i, {"time_constant_s": 100.0, "damping": 1.0})
+        if i % 10 == 0:
+            m._log("levels", {"levels": {1: 40.0, 2: 44.0, 3: 46.0, 4: 42.0, 5: 30.0}}, t0 + i, None)
+            m._log("satellites", {"n_sats": 8}, t0 + i, None)
+    files = list(tmp_path.glob("thunderbolt_*.csv"))
+    assert len(files) == 1
+    rows = list(csv.DictReader(open(files[0])))
+    assert len(rows) == 2                                 # the third interval is still open
+    r = rows[0]
+    assert r["n_s"] == "600" and r["normal_s"] == "600" and r["time_constant_s"] == "100.0"
+    assert float(r["pps_ns_std"]) == 1.0 and float(r["dac_v_mean"]) == 2.111
+    assert float(r["level_top4"]) == 43.0 and float(r["sats_mean"]) == 8.0
+    assert float(rows[1]["dac_v_mean"]) == 2.11101
+
+
+def test_a_serious_minor_alarm_is_counted_and_leap_second_is_not(tmp_path):
+    import csv
+    import thunderbolt as T
+    m = T.Monitor("/dev/null", log_dir=str(tmp_path))
+    t0 = 1_790_000_400.0
+    base = {"disciplining_mode": 0, "holdover_s": 0, "critical_alarms": 0, "osc_offset_ppb": 0.0,
+            "pps_offset_ns": 0.0, "dac_v": 2.1, "temperature_c": 40.0}
+    for i in range(601):
+        minor = (1 << 1) if i < 5 else (1 << 7)           # antenna open for 5 s, then leap second pending
+        m._log("supplemental", dict(base, minor_alarms=minor), t0 + i, None)
+    r = list(csv.DictReader(open(next(tmp_path.glob("*.csv")))))[0]
+    assert r["serious_minor_alarm_s"] == "5" and r["minor_bits"] == "0x0082"
