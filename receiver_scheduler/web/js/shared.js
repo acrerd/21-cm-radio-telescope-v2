@@ -218,7 +218,19 @@
                     const t = data.tracking;
                     dot.style.background = '#00ff88';
                     let info = `Alt ${s.alt.toFixed(1)}° Az ${s.az.toFixed(1)}°`;
-                    if (t && t.enabled) {
+                    // The controller's tracking flag is set the moment a track
+                    // starts, so it read "Tracking" through the whole slew to
+                    // the target. The Due's own state says what the mount is
+                    // doing; a move of under 1 deg is a tracking step (each
+                    // is a brief "Slewing"), not a slew.
+                    const st = String(s.status || '');
+                    const far = s.target_alt != null && s.target_az != null &&
+                        (Math.abs(s.target_alt - s.alt) > 1 || Math.abs(s.target_az - s.az) > 1);
+                    if (/homing/i.test(st)) {
+                        info += ' [Homing]';
+                    } else if (/slewing|reversing/i.test(st) && far) {
+                        info += ` [Slewing to ${s.target_alt.toFixed(1)}° ${s.target_az.toFixed(1)}°]`;
+                    } else if (t && t.enabled) {
                         info += ' [Tracking]';
                     }
                     text.textContent = info;

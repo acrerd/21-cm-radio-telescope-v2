@@ -225,6 +225,11 @@
 
         <div class="tab-content" id="tab-rf">
             <div class="card">
+                <div class="section-title">Progress</div>
+                <div id="rfProgress" style="color:#888; font-size:13px;">Idle.</div>
+            </div>
+
+            <div class="card">
                 <div class="section-title">Bandpass template</div>
                 <div style="color:#888; font-size:13px; margin-bottom:12px; max-width:70ch;">
                     Everything from the feed to the spectrum shapes the band &mdash; the
@@ -345,11 +350,6 @@
                 </div>
             </div>
 
-            <div class="card">
-                <div class="section-title">Progress</div>
-                <div id="rfProgress" style="color:#888; font-size:13px;">Idle.</div>
-            </div>
-
             <div class="card" id="clockPanel">
                 <div class="section-title">Clocks</div>
                 <div style="color:#888; font-size:13px; margin-bottom:12px; max-width:70ch;">
@@ -364,13 +364,14 @@
                 </div>
                 <table id="clockTable" class="mono" style="font-size:12px; border-collapse:collapse;"></table>
                 <div id="clockAlarms" class="mono" style="color:#ff9500; font-size:12px; margin-top:8px;"></div>
-                <div id="clockSats" style="margin-top:10px;"></div>
-                <div id="clockTraces" style="margin-top:12px;"></div>
-                <div style="margin-top:10px;">
-                    <button class="btn btn-secondary" id="clockStabilityBtn" onclick="drawClockStability()">Stability plot (modified Allan deviation)</button>
-                    <span id="clockStabilityNote" style="color:#888; font-size:12px; margin-left:10px;"></span>
+                <div style="display:flex; flex-wrap:wrap; gap:14px 24px; align-items:flex-start; margin-top:12px;">
+                    <div style="flex:0 1 620px; min-width:0;">
+                        <div id="clockStabilityNote" style="color:#888; font-size:12px; margin-bottom:6px;"></div>
+                        <div id="clockStability"></div>
+                    </div>
+                    <div id="clockTraces" style="flex:1 1 300px; min-width:260px; max-width:460px;"></div>
                 </div>
-                <div id="clockStability" style="margin-top:10px;"></div>
+                <div id="clockSats"></div>
             </div>
         </div>
 

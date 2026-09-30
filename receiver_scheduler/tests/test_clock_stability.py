@@ -1,5 +1,5 @@
-"""Modified Allan deviation of the Thunderbolt's PPS record, and the fit that
-separates GPS measurement noise from the output's noise by slope."""
+"""Modified Allan deviation of the Thunderbolt's PPS record, and the
+transition read off it: where the curve stops falling and turns up."""
 import numpy as np
 import pytest
 
@@ -32,23 +32,40 @@ def _rows(x_s, start=1_790_000_000.0, gap_at=None):
     return [(float(ti), 0.0, float(xi * 1e9), 2.11, 43.5, 0) for ti, xi in zip(t, x_s)]
 
 
-def test_the_fit_puts_each_noise_where_it_belongs():
-    """GPS-like white phase noise (2 ns) plus oscillator-like white frequency
-    noise (3e-12) over 5.5 h: the GPS component dominates at 1 s and the output
-    at the longest tau, and the crossover lands near where the two curves
-    cross. Analytically that is 1620 s (white PM measured at 3.44e-9 tau^-3/2
-    for 2 ns; white FM at 3e-12 / sqrt(2) tau^-1/2 at long tau). Six seeds gave
-    930-3300 s: with this much record the crossover is good to a factor of
-    about two, and the tolerance says so."""
-    for seed in (3, 5, 8):
-        rng = np.random.default_rng(seed)
-        n = 20_000
-        x = rng.normal(0, 2e-9, n) + np.concatenate([[0.0], np.cumsum(rng.normal(0, 3e-12, n - 1))])
-        s = C.stability(_rows(x))
-        assert s["ok"]
-        gps, out = np.array(s["fit_gps"]), np.array(s["fit_output"])
-        assert gps[0] > 10 * out[0] and out[-1] > gps[-1]
-        assert np.log(s["crossover_s"]) == pytest.approx(np.log(1620.0), abs=np.log(2.5))
+def _white_pm_and_random_walk_fm(rng, n, rw):
+    """2 ns of white phase noise (GPS-like) plus random-walk frequency noise:
+    MDEV falls, bottoms out and rises, so the curve has a transition."""
+    y = np.cumsum(rng.normal(0, rw, n))
+    return rng.normal(0, 2e-9, n) + np.concatenate([[0.0], np.cumsum(y[:-1])])
+
+
+def test_the_transition_is_where_the_measured_curve_turns_up():
+    """Averaged over 20 runs the curve bottoms out at 205 s with rw = 3e-13
+    over 20 000 s; each single run finds it there or one point along, and
+    says the rise beyond it is real."""
+    for seed in (1, 2, 5, 8):
+        x = _white_pm_and_random_walk_fm(np.random.default_rng(seed), 20_000, 3e-13)
+        tr = C.stability(_rows(x))["transition"]
+        assert tr["found"]
+        assert 140.0 <= tr["tau_s"] <= 300.0
+        assert tr["span_s"][0] <= tr["tau_s"] <= tr["span_s"][1]
+
+
+def test_a_curve_still_falling_has_no_transition():
+    """White phase noise alone falls at every tau: no turn is claimed, and
+    the lowest point is the last, where the record ends."""
+    for seed in (1, 2, 3):
+        s = C.stability(_rows(np.random.default_rng(seed).normal(0, 2e-9, 20_000)))
+        tr = s["transition"]
+        assert not tr["found"]
+        assert tr["tau_s"] == tr["tau_max_s"] == s["tau"][-1]
+
+
+def test_no_noise_model_is_fitted_or_reported():
+    """The GPS/output split cannot be made from a record the unit has
+    smoothed (clocks.py, 2026-09-30); nothing may claim it."""
+    s = C.stability(_rows(np.random.default_rng(1).normal(0, 2e-9, 3000)))
+    assert not any(k.startswith("fit_") or k in ("coefficients", "crossover_s") for k in s)
 
 
 def test_only_the_last_unbroken_run_is_used():

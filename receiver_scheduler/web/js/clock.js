@@ -30,7 +30,7 @@
             const panelOpen = document.getElementById('tab-rf').classList.contains('active');
             fetch('/api/clock' + (panelOpen ? '?history=1' : '')).then(r => r.json()).then(d => {
                 drawClockChip(d);
-                if (panelOpen) drawClockPanel(d);
+                if (panelOpen) { drawClockPanel(d); drawClockStability(); }
             }).catch(() => {
                 const chip = document.getElementById('clockChip');
                 chip.textContent = 'Clocks: scheduler not answering';
@@ -113,52 +113,58 @@
             const warn = tb.warnings || [];
             document.getElementById('clockAlarms').textContent = warn.length ? '⚠ ' + warn.join(' · ') : '';
             drawClockSats(tb);
-            drawClockTraces(d.history || []);
+            drawClockTraces(d.history || [], tb);
         }
 
         // Signal level of every satellite the unit hears (0x47), the ones in its
         // timing solution (0x6D) bright, the rest dim: a failing antenna, cable
-        // or preamp shows here as all the bars sinking together. Beneath, where
-        // the unit thinks its antenna is and the cable delay it compensates.
-        function drawClockSats(tb) {
-            const box = document.getElementById('clockSats');
+        // or preamp shows here as all the bars sinking together. A tile the
+        // height of the traces, so it sits in their row (drawClockTraces).
+        function clockSatsTile(tb) {
             const lv = (tb.levels && tb.levels.levels) || {};
             const used = new Set(((tb.satellites && tb.satellites.prns) || []).map(Number));
             const prns = Object.keys(lv).map(Number).sort((a, b) => a - b);
-            let html = '';
-            if (prns.length) {
-                const W = 22, H = 70, lo = 20, hi = 55;
-                const bars = prns.map((p, i) => {
-                    const v = lv[p], h = Math.max(1, Math.min(1, (v - lo) / (hi - lo)) * H);
-                    const colour = used.has(p) ? '#00d4ff' : '#446';
-                    return '<rect x="' + (i * W + 2) + '" y="' + (H - h) + '" width="' + (W - 4) + '" height="' + h +
-                           '" fill="' + colour + '"><title>PRN ' + p + ': ' + v.toFixed(1) +
-                           (used.has(p) ? ' (in the solution)' : ' (tracked, not used)') + '</title></rect>' +
-                           '<text x="' + (i * W + W / 2) + '" y="' + (H + 12) + '" fill="#888" font-size="9" text-anchor="middle">' + p + '</text>' +
-                           '<text x="' + (i * W + W / 2) + '" y="' + (H - h - 3) + '" fill="#aaa" font-size="9" text-anchor="middle">' + Math.round(v) + '</text>';
-                }).join('');
-                html += '<div style="color:#888; font-size:11px;">Satellite signal levels (' + prns.length +
-                        ' heard, ' + used.size + ' in the timing solution; scale ' + lo + '–' + hi + ')</div>' +
-                        '<svg width="' + (prns.length * W + 4) + '" height="' + (H + 16) + '">' + bars + '</svg>';
-            }
+            if (!prns.length) return '';
+            const W = 22, top = 11, H = 36, lo = 20, hi = 55;
+            const bars = prns.map((p, i) => {
+                const v = lv[p], h = Math.max(1, Math.min(1, (v - lo) / (hi - lo)) * H);
+                const colour = used.has(p) ? '#00d4ff' : '#446';
+                return '<rect x="' + (i * W + 2) + '" y="' + (top + H - h) + '" width="' + (W - 4) + '" height="' + h +
+                       '" fill="' + colour + '"><title>PRN ' + p + ': ' + v.toFixed(1) +
+                       (used.has(p) ? ' (in the solution)' : ' (tracked, not used)') + '</title></rect>' +
+                       '<text x="' + (i * W + W / 2) + '" y="' + (top + H + 11) + '" fill="#888" font-size="9" text-anchor="middle">' + p + '</text>' +
+                       '<text x="' + (i * W + W / 2) + '" y="' + (top + H - h - 2) + '" fill="#aaa" font-size="9" text-anchor="middle">' + Math.round(v) + '</text>';
+            }).join('');
+            return '<div style="flex:0 0 auto;" title="Signal level of each satellite the unit hears, scale ' + lo + '–' + hi +
+                   '; bright bars are in the timing solution, dim ones tracked but not used. All sinking together means the antenna, its cable or preamp.">' +
+                   '<div style="color:#888; font-size:11px; white-space:nowrap;">Satellites: ' + used.size + ' used, ' + prns.length + ' heard</div>' +
+                   '<svg width="' + (prns.length * W + 4) + '" height="60" style="background:#0f0f23; border:1px solid #333;">' +
+                   bars + '</svg></div>';
+        }
+
+        // Beneath the traces: where the unit thinks its antenna is, and the
+        // cable delay it compensates.
+        function drawClockSats(tb) {
+            const box = document.getElementById('clockSats');
             const s = tb.supplemental, pc = tb.pps_config;
-            if (s) {
-                html += '<div style="color:#888; font-size:11px; margin-top:4px;" title="The position the unit surveyed and now holds fixed for timing; height is above the WGS-84 ellipsoid, not sea level. An error in it puts up to (error / c) into the PPS.">' +
-                        'Antenna (as the unit holds it): ' + s.lat_deg.toFixed(7) + ', ' + s.lon_deg.toFixed(7) +
-                        ', ' + s.alt_m.toFixed(1) + ' m above the ellipsoid' +
-                        (pc ? ' · cable delay compensation ' + pc.cable_delay_ns.toFixed(1) + ' ns' : '') + '</div>';
-            }
-            box.innerHTML = html;
+            box.innerHTML = s
+                ? '<div style="color:#888; font-size:11px; margin-top:4px;" title="The position the unit surveyed and now holds fixed for timing; height is above the WGS-84 ellipsoid, not sea level. An error in it puts up to (error / c) into the PPS.">' +
+                  'Antenna (as the unit holds it): ' + s.lat_deg.toFixed(7) + ', ' + s.lon_deg.toFixed(7) +
+                  ', ' + s.alt_m.toFixed(1) + ' m above the ellipsoid' +
+                  (pc ? ' · cable delay compensation ' + pc.cable_delay_ns.toFixed(1) + ' ns' : '') + '</div>'
+                : '';
         }
 
         // Four small traces of the Thunderbolt's last six hours: its own
         // estimates of the 10 MHz and PPS errors, the steering voltage (a
         // voltage walking to a rail is the ageing oscillator running out of
         // range) and the temperature. Plain SVG; nothing to load.
-        function drawClockTraces(h) {
+        function drawClockTraces(h, tb) {
             const box = document.getElementById('clockTraces');
+            const sats = clockSatsTile(tb || {});
             if (!h.length) {
-                box.innerHTML = '<div style="color:#666; font-size:12px;">No Thunderbolt history yet.</div>';
+                box.innerHTML = sats +
+                                '<div style="color:#666; font-size:12px;">No Thunderbolt history yet.</div>';
                 return;
             }
             // Floors only: they stop a flat trace vanishing into the border,
@@ -167,8 +173,9 @@
             const series = [['osc_ppb', '10 MHz error vs GPS', 'ppb'], ['pps_ns', 'PPS vs GPS second', 'ns'],
                             ['dac_v', 'Oscillator steering', 'V'], ['temp_c', 'Temperature inside', '°C']];
             const t0 = h[0].t, t1 = h[h.length - 1].t || t0 + 1;
-            const W = 260, H = 60;
-            box.innerHTML = series.map(([key, label, unit]) => {
+            const W = 260, H = 44;
+            box.innerHTML = '<div style="display:flex; flex-direction:column; gap:8px; margin-bottom:8px;">' +
+                series.map(([key, label, unit]) => {
                 const v = h.map(p => p[key]);
                 const lo = Math.min(...v), hi = Math.max(...v);
                 // At least CLOCK_MIN_SPAN tall, centred on the data: autoscaled
@@ -182,44 +189,71 @@
                 const pts = h.map((p, i) => ((p.t - t0) / ((t1 - t0) || 1) * W).toFixed(1) + ',' +
                                             (H - 2 - (v[i] - base) / span * (H - 4)).toFixed(1)).join(' ');
                 const last = v[v.length - 1];
-                return '<div style="display:inline-block; margin:0 18px 10px 0;" title="' + CLOCK_TRACE_HELP[key] + '">' +
+                // One above the other, to the right of the stability plot,
+                // each as wide as the column.
+                return '<div title="' + CLOCK_TRACE_HELP[key] + '">' +
                        '<div style="color:#888; font-size:11px;">' + label + ': ' + last.toFixed(dp) + ' ' + unit +
                        ' <span style="color:#555;">(' + lo.toFixed(dp) + '…' + hi.toFixed(dp) + ')</span></div>' +
-                       '<svg width="' + W + '" height="' + H + '" style="background:#0f0f23; border:1px solid #333;">' +
-                       '<polyline fill="none" stroke="#00d4ff" stroke-width="1" points="' + pts + '"/></svg></div>';
-            }).join('') +
+                       '<svg viewBox="0 0 ' + W + ' ' + H + '" preserveAspectRatio="none" width="100%" height="' + H +
+                       '" style="display:block; background:#0f0f23; border:1px solid #333; box-sizing:border-box;">' +
+                       '<polyline fill="none" stroke="#00d4ff" stroke-width="1" vector-effect="non-scaling-stroke" points="' + pts + '"/></svg></div>';
+            }).join('') + sats + '</div>' +
             '<div style="color:#555; font-size:11px;">' + ((t1 - t0) / 3600).toFixed(1) + ' h to now · ' +
             'all four are the Thunderbolt\u2019s own reports: its estimates of how far its 10 MHz and PPS are from ' +
             'GPS, the voltage it steers its oscillator with, and its temperature (hover for more)</div>';
         }
 
         // Modified Allan deviation of the Thunderbolt's PPS-offset record, on
-        // demand (/api/clock/stability). The record is the unit's PPS output
-        // against its own GPS solution, so on short timescales it is GPS
-        // measurement noise; the dashed lines separate that from the output
-        // (oscillator and steering) by the slopes of the fitted noise terms.
+        // demand (/api/clock/stability): the measured points only, and the
+        // transition - where the curve stops falling and turns up - read off
+        // them (clocks.transition). No noise model is drawn: the unit smooths
+        // what it reports, so GPS and oscillator noise cannot be told apart by
+        // slope, and the fit that tried said the opposite of the data
+        // (2026-09-30).
+        function clockTransitionText(d) {
+            const tr = d.transition || {};
+            const fmt = v => v >= 100 ? Math.round(v) + ' s' : v.toFixed(v >= 10 ? 0 : 1) + ' s';
+            if (tr.found) {
+                return 'transition at ~' + fmt(tr.tau_s) + ' (the data place it ' + fmt(tr.span_s[0]) + '–' +
+                       fmt(tr.span_s[1]) + '; rise beyond it ' + tr.rise_slope.toFixed(2) + ' ± ' + tr.rise_sigma.toFixed(2) + ')';
+            }
+            if (tr.tau_s != null && tr.tau_s < tr.tau_max_s) {
+                return 'lowest at ~' + fmt(tr.tau_s) + ', but the rise beyond it is not yet significant - more record needed';
+            }
+            return 'still falling at ' + fmt(tr.tau_max_s || 0) + ', the longest the record reaches: no transition yet';
+        }
+
         function drawClockStability() {
             const box = document.getElementById('clockStability');
             const note = document.getElementById('clockStabilityNote');
-            note.textContent = 'Computing…';
+            if (!box.innerHTML) note.textContent = 'Computing…';
             fetch('/api/clock/stability').then(r => r.json()).then(d => {
                 if (!d.ok) { note.textContent = d.error || 'not available'; box.innerHTML = ''; return; }
-                note.textContent = (d.n_s / 3600).toFixed(2) + ' h of one-second data' +
-                    (d.crossover_s ? ' · GPS noise and output noise cross at ~' + Math.round(d.crossover_s) + ' s' : '');
+                note.textContent = (d.n_s / 3600).toFixed(2) + ' h of one-second data · ' + clockTransitionText(d);
                 box.innerHTML = stabilitySvg(d);
             }).catch(e => { note.textContent = 'Failed: ' + e; });
         }
 
         function stabilitySvg(d) {
-            const W = 620, H = 330, L = 72, R = 170, T = 14, B = 44;
+            const W = 620, H = 330, L = 72, R = 20, T = 14, B = 44;
             const pw = W - L - R, ph = H - T - B;
             const lx = v => Math.log10(v);
-            const x0 = 0, x1 = Math.ceil(lx(d.tau[d.tau.length - 1]));
-            const vals = d.mdev.concat(d.fit_total).filter(v => v > 0);
-            const ylo = Math.floor(lx(Math.min(...vals)) - 0.2), yhi = Math.ceil(lx(Math.max(...vals)) + 0.1);
+            const x0 = 0, x1 = Math.max(1, Math.ceil(lx(d.tau[d.tau.length - 1])));
+            const vals = d.mdev.map((v, i) => v + d.err[i]).concat(d.mdev.map((v, i) => Math.max(v - d.err[i], v * 0.1)))
+                               .filter(v => v > 0);
+            const ylo = Math.floor(lx(Math.min(...vals)) - 0.1), yhi = Math.ceil(lx(Math.max(...vals)) + 0.05);
             const X = t => L + (lx(t) - x0) / ((x1 - x0) || 1) * pw;
             const Y = v => T + (yhi - lx(Math.max(v, Math.pow(10, ylo)))) / (yhi - ylo) * ph;
             let g = '';
+            const tr = d.transition || {};
+            if (tr.found) {
+                g += '<rect x="' + X(tr.span_s[0]) + '" y="' + T + '" width="' + Math.max(1, X(tr.span_s[1]) - X(tr.span_s[0])) +
+                     '" height="' + ph + '" fill="#4caf50" fill-opacity="0.12"/>' +
+                     '<line x1="' + X(tr.tau_s) + '" x2="' + X(tr.tau_s) + '" y1="' + T + '" y2="' + (T + ph) +
+                     '" stroke="#4caf50" stroke-width="1.5"/>' +
+                     '<text x="' + (X(tr.tau_s) + 5) + '" y="' + (T + 14) + '" fill="#4caf50" font-size="11">transition ~' +
+                     Math.round(tr.tau_s) + ' s</text>';
+            }
             for (let k = x0; k <= x1; k++) {
                 g += '<line x1="' + X(Math.pow(10, k)) + '" x2="' + X(Math.pow(10, k)) + '" y1="' + T + '" y2="' + (T + ph) +
                      '" stroke="#223" /><text x="' + X(Math.pow(10, k)) + '" y="' + (T + ph + 16) +
@@ -230,40 +264,24 @@
                      '" stroke="#223" /><text x="' + (L - 6) + '" y="' + (Y(Math.pow(10, k)) + 4) +
                      '" fill="#888" font-size="11" text-anchor="end">1e' + k + '</text>';
             }
-            const line = (ys, colour, dash) => {
-                const pts = d.fit_tau.map((t, i) => ys[i] > 0 ? X(t).toFixed(1) + ',' + Y(ys[i]).toFixed(1) : null)
-                                     .filter(Boolean).join(' ');
-                return '<polyline fill="none" stroke="' + colour + '" stroke-width="1.5"' +
-                       (dash ? ' stroke-dasharray="6,4"' : '') + ' points="' + pts + '"/>';
-            };
-            g += line(d.fit_total, '#777', false) + line(d.fit_gps, '#ff9500', true) + line(d.fit_output, '#4caf50', true);
             d.tau.forEach((t, i) => {
                 const v = d.mdev[i], e = d.err[i];
                 g += '<line x1="' + X(t) + '" x2="' + X(t) + '" y1="' + Y(v + e) + '" y2="' + Y(Math.max(v - e, v * 0.1)) +
-                     '" stroke="#00d4ff" stroke-width="1"/><circle cx="' + X(t) + '" cy="' + Y(v) + '" r="2.6" fill="#00d4ff"/>';
-            });
-            if (d.crossover_s) {
-                g += '<line x1="' + X(d.crossover_s) + '" x2="' + X(d.crossover_s) + '" y1="' + T + '" y2="' + (T + ph) +
-                     '" stroke="#aaa" stroke-dasharray="2,3"/>';
-            }
-            const key = [['#00d4ff', 'measured (PPS vs GPS)', false], ['#ff9500', 'GPS measurement noise', true],
-                         ['#4caf50', 'output: oscillator + steering', true], ['#777', 'sum of the fit', false]];
-            key.forEach(([c, label, dash], i) => {
-                const y = T + 14 + i * 18, x = L + pw + 14;
-                g += '<line x1="' + x + '" x2="' + (x + 22) + '" y1="' + y + '" y2="' + y + '" stroke="' + c +
-                     '" stroke-width="2"' + (dash ? ' stroke-dasharray="6,4"' : '') + '/><text x="' + (x + 28) + '" y="' +
-                     (y + 4) + '" fill="#ccc" font-size="11">' + label + '</text>';
+                     '" stroke="#00d4ff" stroke-width="1"/><circle cx="' + X(t) + '" cy="' + Y(v) + '" r="2.6" fill="#00d4ff">' +
+                     '<title>τ ' + t + ' s: ' + v.toExponential(2) + ' ± ' + e.toExponential(1) + '</title></circle>';
             });
             g += '<text x="' + (L + pw / 2) + '" y="' + (H - 6) + '" fill="#aaa" font-size="12" text-anchor="middle">averaging time τ (s)</text>' +
                  '<text x="14" y="' + (T + ph / 2) + '" fill="#aaa" font-size="12" text-anchor="middle" transform="rotate(-90 14 ' +
                  (T + ph / 2) + ')">modified Allan deviation</text>';
-            return '<svg width="' + W + '" height="' + H + '" style="background:#0f0f23; border:1px solid #333;">' + g + '</svg>' +
+            return '<svg viewBox="0 0 ' + W + ' ' + H + '" width="100%" style="display:block; max-width:' + W +
+                   'px; background:#0f0f23; border:1px solid #333;">' + g + '</svg>' +
                    '<div style="color:#666; font-size:11px; max-width:620px; margin-top:4px;">The unit’s own report of its ' +
                    'oscillator-derived PPS against its GPS solution — how closely it tracks GPS, not the stability of the ' +
                    '10 MHz itself, which needs an independent reference (against a hydrogen maser a Thunderbolt reads about ' +
                    '1e-12 at 1 s, a hump to 1e-11 near its loop time constant, mid-1e-14 at a day: Van Baak, leapsecond.com). ' +
-                   'The reported offset is filtered inside the unit, so the shortest taus show that filter too. ' +
-                   'Dashed: fitted by slope — GPS measurement noise as white and flicker phase noise ' +
-                   '(τ^−3/2, τ^−1), the output as white, flicker and random-walk frequency noise ' +
-                   '(τ^−1/2, flat, τ^+1/2). The record restarts with the scheduler.</div>';
+                   'Measured points only. The transition is where the curve stops falling and turns up, beyond which ' +
+                   'averaging longer buys nothing; it is claimed only when the points beyond the lowest rise by more than ' +
+                   'twice their error, and the shading is the range the data allow. No noise model is drawn: the unit smooths ' +
+                   'what it reports, so GPS and oscillator noise cannot be separated by slope. Points reach a quarter of the ' +
+                   'unbroken record, and it restarts with the scheduler - a transition at T needs roughly 20 T of record.</div>';
         }
