@@ -734,6 +734,74 @@ def presto_fold(path, out_dir, timeout_s=1800):
 # plot
 
 
+BOLTZMANN = 1.380649e-23
+ON_PULSE_HALF_WIDTH_S = 0.030       # the pulse and its outriders (W10 is 47 ms)
+
+
+def calibration_in_force():
+    """The calibration now on file, as recording attributes: `cal_t_sys_k`
+    and `cal_t_sys_utc` from gain_calibration.json, `cal_effective_area_m2`
+    and `cal_beam_utc` from the measured beam. {} when no T_sys has been
+    measured - a fallback constant is not worth recording as a calibration.
+    The receiver writes this into every pulsar recording at its start, so the
+    file carries the scale it was taken under (2026-09-30)."""
+    import observatory                     # puts astro_simulator/ on the path
+    import instrument
+    t = instrument.measured_t_sys_k(default=float("nan"))
+    if not math.isfinite(t):
+        return {}
+    out = {"cal_t_sys_k": float(t), "cal_effective_area_m2": float(observatory.effective_area_m2())}
+    try:
+        with open(instrument._GAIN_CALIBRATION) as fh:
+            out["cal_t_sys_utc"] = str(json.load(fh).get("created_utc") or "")
+    except (OSError, ValueError):
+        pass
+    beam = instrument.measured_beam()
+    if beam and beam.get("measured_utc"):
+        out["cal_beam_utc"] = str(beam["measured_utc"])
+    return out
+
+
+def radiometer_scale(attrs=None):
+    """(T_sys in K, K per Jy, where from) for turning the fold into physical
+    units: the recording's own `cal_*` attributes when it has them (written at
+    its start, from 2026-09-30), else the calibration in force now, which is
+    right for every run since the 09-25 calibration and wrong for anything
+    re-plotted across a re-calibration - hence 'recorded' / 'current'.
+
+    The fold is the fractional excess over the off-pulse total power, so the
+    antenna temperature is that fraction times the system temperature, which
+    is measured on the H I band at 8 Msps - an approximation for the 32 MHz
+    pulsar band, where T_sys is not separately measured. K per Jy is A_e / 2k
+    for one linear polarisation of an unpolarised source, A_e from the measured
+    beam (lambda^2 / Omega, which is frequency-independent to first order for
+    a fixed aperture). B0329's V/I of -0.34 makes the single feed's share
+    uncertain besides. (None, None, '') when there is no calibration at all."""
+    a = attrs or {}
+    if "cal_t_sys_k" in a and "cal_effective_area_m2" in a:
+        t, ae, where = float(a["cal_t_sys_k"]), float(a["cal_effective_area_m2"]), "recorded"
+    else:
+        c = calibration_in_force()
+        if not c:
+            return None, None, ""
+        t, ae, where = c["cal_t_sys_k"], c["cal_effective_area_m2"], "current"
+    return t, ae / (2 * BOLTZMANN) * 1e-26, where
+
+
+def mean_flux_mjy(profile, period_s, t_sys_k, k_per_jy):
+    """Period-averaged flux density from a baseline-zeroed fractional profile:
+    the on-pulse area (within ON_PULSE_HALF_WIDTH_S of phase 0.5) over the
+    whole period, and its error from the off-pulse scatter. (mJy, mJy)."""
+    p = np.asarray(profile, float)
+    nb = len(p)
+    ph = (np.arange(nb) + 0.5) / nb
+    on = np.abs(ph - 0.5) < ON_PULSE_HALF_WIDTH_S / period_s
+    off = np.abs(ph - 0.5) > 0.1
+    sig = 1.4826 * np.median(np.abs(p[off] - np.median(p[off])))
+    scale = t_sys_k / k_per_jy * 1e3
+    return float(p[on].sum() / nb * scale), float(sig * math.sqrt(on.sum()) / nb * scale)
+
+
 def plot_recording(path, out_path, pulsar=None):
     """Reduce a pulsar-mode recording and draw it.
 
@@ -766,7 +834,7 @@ def plot_recording(path, out_path, pulsar=None):
                     if t["snr"] >= T.MIN_TOA_SNR]
             if toas:
                 T.write_tim(toas)
-            acc = T.accumulated_profile(fold_missing=True)
+            acc = T.accumulated_profile(fold_missing=True, calibrated=True)
             fitres = T.timing_fit()
         except Exception as exc:                          # noqa: BLE001 - the plot still draws
             fitres = {"error": str(exc)}
@@ -775,7 +843,7 @@ def plot_recording(path, out_path, pulsar=None):
     edges = np.linspace(0.0, 2.0, 2 * nb + 1)
 
     fig = plt.figure(figsize=(16, 10))
-    gs = fig.add_gridspec(2, 2, height_ratios=[1, 1.15], hspace=0.28, wspace=0.18)
+    gs = fig.add_gridspec(2, 2, height_ratios=[1, 1.15], hspace=0.32, wspace=0.28)
     a0 = fig.add_subplot(gs[0, 0])
     a1 = fig.add_subplot(gs[1, 0], sharex=a0)
 
@@ -787,16 +855,33 @@ def plot_recording(path, out_path, pulsar=None):
     off64 = np.abs(ph64 - 0.5) > 0.1
     p0 = 100 * np.array(r["profile_predicted"]); pb = 100 * np.array(r["profile_best"])
     p0 = p0 - np.median(p0[off64]); pb = pb - np.median(pb[off64])
+    # Calibrated: % of total power -> antenna temperature (mK), the axis the
+    # profile is drawn on; % stays as a small axis on the right. Without a
+    # calibration it falls back to % alone.
+    try:
+        t_sys, k_jy, cal_where = radiometer_scale(attrs)
+    except Exception:                                    # noqa: BLE001 - the plot still draws
+        t_sys = k_jy = None; cal_where = ""
+    ysc = t_sys * 10.0 if t_sys else 1.0                 # % -> mK
     # One SNR, the matched one at the predicted period (in the title): the
     # peak-bin figure differs by the bin's share of the pulse and only confused.
-    a0.stairs(np.concatenate([pb, pb]), edges, color="C1", lw=0.8, alpha=0.8, baseline=None,
+    a0.stairs(np.concatenate([pb, pb]) * ysc, edges, color="C1", lw=0.8, alpha=0.8, baseline=None,
               label="best searched period (%+.1f ppm)" % r["best_ppm"])
-    a0.stairs(np.concatenate([p0, p0]), edges, color="C0", lw=1.6, baseline=None, label="predicted period")
+    a0.stairs(np.concatenate([p0, p0]) * ysc, edges, color="C0", lw=1.6, baseline=None, label="predicted period")
     a0.axhline(0, color="k", lw=0.5)
-    a0.set_ylabel("excess over the off-pulse level (%)")
-    a0.set_title("this run: matched SNR %.1f at the predicted period, %.0f min, %d periods"
-                 % (r["snr_matched"], r["duration_s"] / 60, r["n_periods"]), fontsize=10)
     a0.legend(fontsize=8, loc="upper center"); a0.grid(alpha=0.3)
+    flux = ""
+    if t_sys:
+        a0.set_ylabel("antenna temperature (mK)")
+        a0.secondary_yaxis("right", functions=(lambda v: v / ysc, lambda q: q * ysc)
+                           ).set_ylabel("% of total power")
+        s_, e_ = mean_flux_mjy(p0 / 100.0, r["period_topo_mean_s"], t_sys, k_jy)
+        flux = "\nmean flux density %.0f +- %.0f mJy  (T_sys %.0f K, A_e %.2f m2, one polarisation; %s calibration)" % (
+            s_, e_, t_sys, k_jy * 2 * BOLTZMANN / 1e-26, cal_where)
+    else:
+        a0.set_ylabel("excess over the off-pulse level (%)")
+    a0.set_title("this run: matched SNR %.1f at the predicted period, %.0f min, %d periods%s"
+                 % (r["snr_matched"], r["duration_s"] / 60, r["n_periods"], flux), fontsize=10)
     plt.setp(a0.get_xticklabels(), visible=False)
 
     # the sub-integrations on the same axis, two periods, pixel edges on the bin edges
@@ -817,8 +902,8 @@ def plot_recording(path, out_path, pulsar=None):
 
     # every run so far, added at the absolute phase
     a2 = fig.add_subplot(gs[0, 1])
-    if acc is not None and acc[2]:
-        prof, hours, used = acc
+    if acc is not None and acc["used"]:
+        prof, hours, used = acc["profile"], acc["hours"], acc["used"]
         tm = T.template(T.TOA_BINS, toa["dt_s"], toa["bw_hz"] or 8e6, toa["freq_hz"])
         f = T.fit_shift(prof, tm)
         ph = (np.arange(T.TOA_BINS) + 0.5) / T.TOA_BINS
@@ -828,26 +913,42 @@ def plot_recording(path, out_path, pulsar=None):
         Tk = np.fft.rfft(tm)
         ts = np.fft.irfft(np.concatenate([[Tk[0]], Tk[1:] * np.exp(-2j * np.pi * k * f["tau"])]), n=T.TOA_BINS)
         g = 4                                             # shown at 256 bins, fitted at 1024
-        # in units of the fitted template's peak: the template reads 1 there
+        # In mK when calibrated, else in units of the fitted template's peak.
         model = f["b"] * (ts - np.median(ts[off]))
         unit = float(np.max(model)) if np.max(model) > 0 else 1.0
-        shown = prof.reshape(-1, g).mean(axis=1) / unit
+        # Each night on its own T_sys (its recorded calibration, else the one
+        # in force): acc["kelvin"] is the same weighted sum with every night's
+        # fraction converted first; the template is drawn at the stack's
+        # weighted-mean T_sys.
+        cal = acc.get("kelvin") is not None
+        ysc2 = acc["t_sys_mean_k"] * 1e3 if cal else 1.0 / unit
+        pk = (acc["kelvin"] - np.median(acc["kelvin"][off])) * 1e3 if cal else prof * ysc2
+        shown = pk.reshape(-1, g).mean(axis=1)
         a2.stairs(shown, np.linspace(0, 1, T.TOA_BINS // g + 1),
                   color="C0", lw=1.2, baseline=None, label="all runs (%d, %.1f h)" % (len(used), hours))
         a2.axhline(0, color="k", lw=0.5)
-        a2.plot(ph, model / unit, color="C3", lw=1.0, alpha=0.4, label="EPN 1410 MHz")
+        a2.plot(ph, model * ysc2, color="C3", lw=1.0, alpha=0.4, label="EPN 1410 MHz, fitted")
         a2.axvline(0.5, color="0.5", lw=0.6, ls=":")
         a2.set_xlim(0.25, 0.75)                          # the pulse and its outriders, stretched
         a2.set_title("accumulated profile: template SNR %.1f" % f["snr"], fontsize=10)
-        # unity near the top, the noise below zero in view, room for the legend
+        # the template's peak near the top, the noise below zero in view, room for the legend
+        top = unit * ysc2
         mid = (np.arange(len(shown)) + 0.5) / len(shown)
         vis = shown[(mid > 0.25) & (mid < 0.75)]             # the limits from what is on screen
-        a2.set_ylim(min(float(np.min(vis)) * 1.15, -0.1), max(1.2, float(np.max(vis)) * 1.08))
+        a2.set_ylim(min(float(np.min(vis)) * 1.15, -0.1 * top), max(1.2 * top, float(np.max(vis)) * 1.08))
         a2.legend(fontsize=8, loc="upper left")
+        if cal:
+            pj = acc["jansky"] - np.median(acc["jansky"][off])
+            s_, e_ = mean_flux_mjy(pj, r["period_topo_mean_s"], 1.0, 1.0)
+            a2.text(0.99, 0.97, "mean flux density\n%.0f +- %.0f mJy" % (s_, e_), transform=a2.transAxes,
+                    ha="right", va="top", fontsize=8,
+                    bbox=dict(boxstyle="round", fc="white", ec="0.7", alpha=0.9))
     else:
         a2.text(0.5, 0.5, "the accumulated profile covers the observatory's own\nrecordings only",
                 ha="center", va="center", transform=a2.transAxes, color="0.4")
-    a2.set_xlabel("pulse phase (absolute)"); a2.set_ylabel("relative to the template peak"); a2.grid(alpha=0.3)
+    a2.set_xlabel("pulse phase (absolute)"); a2.grid(alpha=0.3)
+    a2.set_ylabel("antenna temperature (mK)" if acc is not None and acc.get("kelvin") is not None
+                  else "relative to the template peak")
 
     # timing residuals and the fitted period
     a3 = fig.add_subplot(gs[1, 1])

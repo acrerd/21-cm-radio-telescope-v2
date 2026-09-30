@@ -202,3 +202,57 @@ def test_the_fit_reports_when_f0_is_free(tmp_path):
     c = T.PF.B0329                                   # the catalogue, carried to the data epoch
     f_then = c["f0"] + c["f1"] * (fit["pepoch"] - c["pepoch_mjd"]) * 86400.0
     assert 0 < fit["P_err"] < 1e-7 and abs(fit["P"] - 1 / f_then) < 5 * fit["P_err"]
+
+
+def _stored_night(store, name, frac, weight, cal=None):
+    """A profile store entry made directly: weighted sums S = C * frac."""
+    extra = {} if cal is None else {"cal_t_sys_k": cal[0], "cal_effective_area_m2": cal[1]}
+    np.savez(os.path.join(store, name + ".npz"), S=weight * frac, C=weight * np.ones_like(frac), hours=1.0,
+             phase_offset=PF.B0329["phase_offset"], row_centre=PF.ROW_CENTRE, nbins=T.TOA_BINS, **extra)
+
+
+def test_the_stack_puts_each_night_on_its_own_calibration(tmp_path, monkeypatch):
+    """Two nights with the same fractional pulse, recorded at T_sys 200 and
+    400 K, and a third with no calibration stored, which takes the one in
+    force (300 K). Equal weights, so the stack in kelvin is 300 K times the
+    fraction - each night converted before adding, not one T_sys for all."""
+    store = tmp_path / "profiles"; store.mkdir()
+    monkeypatch.setattr(T, "PROFILE_CACHE_DIR", str(store))
+    monkeypatch.setattr(T, "OBS_DIR", str(tmp_path / "none"))
+    monkeypatch.setattr(PF, "calibration_in_force",
+                        lambda: {"cal_t_sys_k": 300.0, "cal_effective_area_m2": 7.0})
+    frac = np.zeros(T.TOA_BINS); frac[T.TOA_BINS // 2] = 1e-4
+    _stored_night(str(store), "a_pulsar", frac, 2.0, cal=(200.0, 7.0))
+    _stored_night(str(store), "b_pulsar", frac, 2.0, cal=(400.0, 7.0))
+    _stored_night(str(store), "c_pulsar", frac, 2.0)
+    acc = T.accumulated_profile(fold_missing=False, calibrated=True)
+    assert acc["t_sys_mean_k"] == pytest.approx(300.0)
+    assert acc["kelvin"].max() == pytest.approx(300.0 * 1e-4)
+    k_jy = 7.0 / (2 * PF.BOLTZMANN) * 1e-26
+    assert acc["jansky"].max() == pytest.approx(300.0 * 1e-4 / k_jy)
+    prof, hours, used = T.accumulated_profile(fold_missing=False)      # the plain form is unchanged
+    assert len(used) == 3 and prof.max() == pytest.approx(1e-4)
+
+
+def test_a_recording_is_scaled_by_its_own_calibration_not_todays(monkeypatch):
+    monkeypatch.setattr(PF, "calibration_in_force",
+                        lambda: {"cal_t_sys_k": 187.0, "cal_effective_area_m2": 7.0})
+    t, k, where = PF.radiometer_scale({"cal_t_sys_k": 349.0, "cal_effective_area_m2": 6.2})
+    assert (t, where) == (349.0, "recorded") and k == pytest.approx(6.2 / (2 * PF.BOLTZMANN) * 1e-26)
+    t, k, where = PF.radiometer_scale({})
+    assert (t, where) == (187.0, "current")
+    monkeypatch.setattr(PF, "calibration_in_force", lambda: {})
+    assert PF.radiometer_scale({}) == (None, None, "")
+
+
+def test_the_mean_flux_is_the_pulse_area_over_the_period():
+    """A boxcar 10 ms wide of fractional height h in a 0.714 s period: the
+    period-averaged fraction is h * 10 ms / P, times T_sys over K/Jy."""
+    nb, P, h = 1024, 0.714, 1e-3
+    ph = (np.arange(nb) + 0.5) / nb
+    p = np.where(np.abs(ph - 0.5) < 0.005 / P, h, 0.0)
+    s, e = PF.mean_flux_mjy(p, P, 200.0, 2.5e-3)
+    area = p.sum() / nb
+    assert s == pytest.approx(area * 200.0 / 2.5e-3 * 1e3)
+    assert s == pytest.approx(h * 0.010 / P * 200.0 / 2.5e-3 * 1e3, rel=0.05)
+    assert e == 0.0                                            # a noiseless off-pulse region

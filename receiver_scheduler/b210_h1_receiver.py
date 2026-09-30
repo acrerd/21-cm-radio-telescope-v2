@@ -162,6 +162,40 @@ CLOCK_LOCK_TIMEOUT_S = float(os.environ.get('H1_CLOCK_LOCK_TIMEOUT', 2.0))
 # create_sdr_source and written into every recording, because "which clock was
 # this taken on" is not recoverable from the data afterwards.
 CLOCK_STATE = (None, None)
+
+# What the radio says it is, read from UHD when the source opens: the product
+# code in its EEPROM ("B200") and serial. The `sdr_type` label 'b210' is the
+# code's name for the UHD path and predates identifying the radio (2026-09-27);
+# the file records the radio, not the label - see recorded_sdr_type().
+RADIO_ID = {}
+KNOWN_RADIO = {'b210': 'b200'}      # the label -> the radio actually attached
+
+
+def _radio_identity(source):
+    try:
+        info = source.get_usrp_info(0)
+        try:
+            d = dict(info)
+        except Exception:                                  # noqa: BLE001 - uhd::dict binding
+            d = {k: info[k] for k in info.keys()}
+        out = {k: str(d[k]) for k in ('mboard_id', 'mboard_serial') if d.get(k)}
+        return out
+    except Exception:                                      # noqa: BLE001 - identity is a nicety
+        return {}
+
+
+def recorded_sdr_type(sdr_type):
+    """The radio, for the file's `sdr_type`: UHD's own product code when the
+    source reported one, else the radio the label stands for."""
+    if RADIO_ID.get('mboard_id'):
+        return RADIO_ID['mboard_id'].lower()
+    return KNOWN_RADIO.get(str(sdr_type), str(sdr_type))
+
+
+def _write_radio_attrs(hf, sdr_type):
+    hf.attrs['sdr_type'] = recorded_sdr_type(sdr_type)
+    if RADIO_ID.get('mboard_serial'):
+        hf.attrs['sdr_serial'] = RADIO_ID['mboard_serial']
 # Where to record. The scheduler always sets H1_OUTPUT_FILE, so this default
 # is for running the receiver by hand from a terminal - and it is resolved
 # against this file rather than the working directory. It used to be the bare
@@ -296,8 +330,9 @@ def create_sdr_source(sdr_type, sample_rate, center_freq, gain):
         )
         # Before the rate and the tuning: changing the reference re-locks the
         # synthesisers, so a frequency set against the old one would be redone.
-        global CLOCK_STATE
+        global CLOCK_STATE, RADIO_ID
         CLOCK_STATE = select_clock_source(source)
+        RADIO_ID = _radio_identity(source)
         source.set_samp_rate(sample_rate)
         source.set_bandwidth(min(sample_rate * ANALOG_BW_FACTOR, AD9361_MAX_BW_HZ), 0)
         source.set_center_freq(center_freq, 0)
@@ -1050,7 +1085,7 @@ def init_hdf5(filename, freq_axis_hz, fft_size, sdr_type, center_freq,
                       maxshape=(None,),
                       dtype='float32')
 
-    hf.attrs['sdr_type'] = sdr_type
+    _write_radio_attrs(hf, sdr_type)
     hf.attrs['center_freq_hz'] = center_freq
     hf.attrs['sample_rate_hz'] = sample_rate
     hf.attrs['fft_size'] = fft_size
@@ -2188,7 +2223,7 @@ def init_pulsar_hdf5(filename, freq_axis_hz, dt_s, sdr_type, center_freq, sample
     # time_marks rows are exact fractional rows (sample / samples-per-row), 2026-09-27
     hf.attrs['time_marks_exact'] = 1
     hf.attrs['created_utc'] = datetime.now(timezone.utc).isoformat()
-    hf.attrs['sdr_type'] = str(sdr_type)
+    _write_radio_attrs(hf, sdr_type)
     hf.attrs['center_freq_hz'] = float(center_freq)
     hf.attrs['sample_rate_hz'] = float(sample_rate)
     hf.attrs['gain_db'] = float(gain)
@@ -2196,6 +2231,15 @@ def init_pulsar_hdf5(filename, freq_axis_hz, dt_s, sdr_type, center_freq, sample
     hf.attrs['site_lat_deg'] = float(_inst.SITE_LAT_DEG)
     hf.attrs['site_lon_deg'] = float(_inst.SITE_LON_DEG)
     hf.attrs['site_height_m'] = float(_inst.SITE_HEIGHT_M)
+    # The calibration in force at the start (T_sys, A_e and their dates), so
+    # the plot's mK and mJy scales are this recording's, not whatever is in
+    # force when it is re-plotted. Before the SWMR switch: nothing is added after.
+    try:
+        import pulsar_fold
+        for key, val in pulsar_fold.calibration_in_force().items():
+            hf.attrs[key] = val
+    except Exception as exc:                               # noqa: BLE001 - never stop a recording for it
+        print(f"  calibration not recorded: {exc}")
     _embed_obs_metadata(hf)
     for key, val in (time_info or {}).items():
         hf.attrs[key] = val

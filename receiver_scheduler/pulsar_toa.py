@@ -26,6 +26,7 @@ is about 0.6 x FWHM / (matched S/N), ~0.45 ms for the first 16 h detection.
     python pulsar_toa.py data/observations/20260926_203116_pulsar.h5 [--segments 4] [--no-write]
 """
 import json
+import math
 import os
 import re
 
@@ -411,6 +412,11 @@ def cache_profile(path, toa, attrs=None):
     os.makedirs(PROFILE_CACHE_DIR, exist_ok=True)
     out = os.path.join(PROFILE_CACHE_DIR, os.path.splitext(os.path.basename(path))[0] + ".npz")
     a = attrs or {}
+    # The calibration the recording was made under, so the stack can put each
+    # night on its own scale: recorded in the file from 2026-09-30, else the
+    # one in force when the profile is stored (right for every earlier run,
+    # all made under the 09-25 calibration). NaN when there is none.
+    cal = a if "cal_t_sys_k" in a else PF.calibration_in_force()
     np.savez(out, S=toa["S"].sum(axis=0), C=toa["C"].sum(axis=0), hours=(toa["t_last"] - toa["t_first"]) / 3600.0,
              phase_offset=PF.B0329["phase_offset"], row_centre=PF.ROW_CENTRE, nbins=TOA_BINS,
              recording=os.path.basename(path), t_first_unix=toa["t_first"], t_last_unix=toa["t_last"],
@@ -418,7 +424,10 @@ def cache_profile(path, toa, attrs=None):
              time_source=str(a.get("time_source", "host")), obs_name=str(a.get("obs_name", "")),
              session=str(a.get("pulsar_session", "") or ""),
              pps=int(str(a.get("time_source", "host")) == "pps" and int(a.get("time_pps_verified", 0)) == 1),
-             time_marks_exact=int(a.get("time_marks_exact", 0)))
+             time_marks_exact=int(a.get("time_marks_exact", 0)),
+             cal_t_sys_k=float(cal.get("cal_t_sys_k", float("nan"))),
+             cal_effective_area_m2=float(cal.get("cal_effective_area_m2", float("nan"))),
+             cal_recorded=int("cal_t_sys_k" in a))
     return out
 
 
@@ -442,7 +451,7 @@ def _rotated(x, dphase):
     return np.fft.irfft(np.fft.rfft(x) * np.exp(-2j * np.pi * k * dphase), n=len(x))
 
 
-def accumulated_profile(fold_missing=True):
+def accumulated_profile(fold_missing=True, calibrated=False):
     """Every stored profile, summed with its own noise weights (the
     per-second 1/sigma^2 the fold applied, so a noisier 8 MHz night counts
     for less). Recordings on disk whose profile is missing or stale are
@@ -457,6 +466,8 @@ def accumulated_profile(fold_missing=True):
                 continue
             cache_profile(path, r["toa"], attrs)
     S = np.zeros(TOA_BINS); C = np.zeros(TOA_BINS); hours = 0.0; used = []
+    SK = np.zeros(TOA_BINS); SJ = np.zeros(TOA_BINS); TC = 0.0; CT = 0.0; all_cal = True
+    now = PF.calibration_in_force() if calibrated else {}
     for store in sorted(glob.glob(os.path.join(PROFILE_CACHE_DIR, "*.npz"))):
         d = np.load(store)
         if int(d["nbins"]) != TOA_BINS or float(d["row_centre"]) != PF.ROW_CENTRE:
@@ -466,8 +477,27 @@ def accumulated_profile(fold_missing=True):
         if shift:
             s_, c_ = _rotated(s_, shift), _rotated(c_, shift)
         S += s_; C += c_; hours += float(d["hours"]); used.append(os.path.basename(store)[:-4])
+        if calibrated:
+            # this night's own calibration, else the one in force now
+            t = float(d["cal_t_sys_k"]) if "cal_t_sys_k" in d.files else float("nan")
+            ae = float(d["cal_effective_area_m2"]) if "cal_effective_area_m2" in d.files else float("nan")
+            if not (math.isfinite(t) and math.isfinite(ae)):
+                t, ae = now.get("cal_t_sys_k", float("nan")), now.get("cal_effective_area_m2", float("nan"))
+            if math.isfinite(t) and math.isfinite(ae):
+                SK += t * s_; SJ += t / (ae / (2 * PF.BOLTZMANN) * 1e-26) * s_
+                TC += t * float(c_.sum()); CT += float(c_.sum())
+            else:
+                all_cal = False
     prof = np.where(C > 0, S / np.maximum(C, 1e-300), 0.0)
-    return prof, hours, used
+    if not calibrated:
+        return prof, hours, used
+    # Weighted sums of each night converted first, with the same weights: the
+    # stack in kelvin and in janskys even when nights differ in T_sys or A_e.
+    ok = all_cal and CT > 0
+    return {"profile": prof, "hours": hours, "used": used,
+            "kelvin": np.where(C > 0, SK / np.maximum(C, 1e-300), 0.0) if ok else None,
+            "jansky": np.where(C > 0, SJ / np.maximum(C, 1e-300), 0.0) if ok else None,
+            "t_sys_mean_k": TC / CT if ok else None}
 
 
 def timing_fit(tim_file=TIM_FILE, par_file=PAR_FILE, timeout_s=600):
