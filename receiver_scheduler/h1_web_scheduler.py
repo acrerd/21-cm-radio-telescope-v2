@@ -4959,6 +4959,65 @@ def _start_thunderbolt():
                                        on_change=changed, log_dir=REFERENCE_LOG_DIR).start()
 
 
+@app.route('/api/clock/survey', methods=['GET', 'POST'])
+def api_clock_survey():
+    """GET: the Thunderbolt's survey settings and progress. POST: restart its
+    self-survey (TSIP 0x8E-A6), which replaces the antenna position it holds
+    for timing with a fresh GPS average; timing is slightly degraded while it
+    runs. The held position is logged first, so the old value is on record."""
+    if _thunderbolt is None:
+        return jsonify({"ok": False, "error": "no Thunderbolt monitor running"}), 400
+    st = _thunderbolt.status()
+    sup = st.get("supplemental") or {}
+    info = {"ok": True, "survey_params": st.get("survey_params"),
+            "survey_pct": sup.get("survey_pct"), "receiver_mode": sup.get("receiver_mode_text"),
+            "held_position": ({"lat_deg": sup.get("lat_deg"), "lon_deg": sup.get("lon_deg"),
+                               "alt_m_ellipsoid": sup.get("alt_m")} if sup else None)}
+    if request.method == 'GET':
+        return jsonify(info)
+    if not sup:
+        return jsonify({"ok": False, "error": "no status from the unit yet"}), 400
+    log.warning("Thunderbolt: restarting the self-survey; the held position was %.7f %.7f, %.2f m "
+                "(above the ellipsoid); settings %s", sup["lat_deg"], sup["lon_deg"], sup["alt_m"],
+                st.get("survey_params"))
+    if not _thunderbolt.send(thunderbolt.START_SURVEY):
+        return jsonify({"ok": False, "error": "the unit is not connected"}), 400
+    info["started"] = True
+    return jsonify(info)
+
+
+@app.route('/api/clock/cable-delay', methods=['POST'])
+def api_clock_cable_delay():
+    """Set the Thunderbolt's cable-delay compensation, {"ns": delay} for the
+    antenna cable's delay (10 m of RG-58 at velocity factor 0.66: 50.5 ns).
+    Written through the monitor (the port's only user), read back, and saved
+    to EEPROM only if the unit reports the value just set."""
+    if _thunderbolt is None:
+        return jsonify({"ok": False, "error": "no Thunderbolt monitor running"}), 400
+    try:
+        ns = float((request.get_json(silent=True) or {}).get("ns"))
+    except (TypeError, ValueError):
+        return jsonify({"ok": False, "error": "give the delay as {\"ns\": number}"}), 400
+    if not 0.0 <= ns <= 2000.0:
+        return jsonify({"ok": False, "error": "a cable delay of %.1f ns is not plausible" % ns}), 400
+    cur = _thunderbolt.status().get("pps_config")
+    if not cur:
+        return jsonify({"ok": False, "error": "the unit's PPS settings have not been read yet"}), 400
+    log.warning("Thunderbolt: cable delay compensation %.1f ns -> %.1f ns", -cur["cable_delay_ns"], ns)
+    if not _thunderbolt.send(thunderbolt.set_cable_delay_packet(cur, ns)):
+        return jsonify({"ok": False, "error": "the unit is not connected"}), 400
+    deadline = time.time() + 15.0
+    while time.time() < deadline:
+        time.sleep(0.5)
+        now = _thunderbolt.status().get("pps_config") or {}
+        if abs(now.get("cable_delay_ns", 1e9) + ns) < 0.05:
+            _thunderbolt.send(thunderbolt.SAVE_SETTINGS)
+            log.warning("Thunderbolt: cable delay %.1f ns confirmed and saved to EEPROM", ns)
+            return jsonify({"ok": True, "cable_delay_ns": ns, "saved": True, "pps_config": now})
+    log.error("Thunderbolt: the cable delay did not read back within 15 s; not saved")
+    return jsonify({"ok": False, "error": "did not read back; not saved"}), 504
+
+
 @app.route('/api/clock/stability', methods=['GET'])
 def api_clock_stability():
     """Modified Allan deviation of the Thunderbolt's PPS-offset record, with

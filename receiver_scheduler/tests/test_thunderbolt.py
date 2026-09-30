@@ -268,7 +268,9 @@ def test_a_request_carries_only_the_type_byte():
     """A read-only query: 0x8E-A8 with the type and no values, which would set them."""
     import thunderbolt as T
     assert T.PARAM_REQUESTS == (bytes([0x10, 0x8E, 0xA8, 0x00, 0x10, 0x03]),
-                                bytes([0x10, 0x8E, 0xA8, 0x01, 0x10, 0x03]))
+                                bytes([0x10, 0x8E, 0xA8, 0x01, 0x10, 0x03]),
+                                bytes([0x10, 0x8E, 0x4A, 0x10, 0x03]),
+                                bytes([0x10, 0x8E, 0xA9, 0x10, 0x03]))
 
 
 def test_an_all_zero_loop_reply_is_refused():
@@ -315,3 +317,56 @@ def test_a_serious_minor_alarm_is_counted_and_leap_second_is_not(tmp_path):
         m._log("supplemental", dict(base, minor_alarms=minor), t0 + i, None)
     r = list(csv.DictReader(open(next(tmp_path.glob("*.csv")))))[0]
     assert r["serious_minor_alarm_s"] == "5" and r["minor_bits"] == "0x0082"
+
+
+def _sup(**kw):
+    base = {"minor_alarms": 0, "critical_alarms": 0, "holdover_s": 0, "disciplining_mode": 0,
+            "disciplining_mode_text": "normal", "gps_decoding": 0, "gps_decoding_text": "doing fixes",
+            "receiver_mode_text": "overdetermined clock"}
+    base.update(kw)
+    return base
+
+
+def test_warnings_are_only_what_is_active_now():
+    import thunderbolt as T
+    ok_primary = {"time_set": True, "utc_known": True, "utc": True}
+    assert T.active_warnings(_sup(), ok_primary) == []
+    w = T.active_warnings(_sup(minor_alarms=1 << 7, holdover_s=40), dict(ok_primary, utc=False))
+    assert "leap second pending" in w and any("holdover for 40 s" in x for x in w)
+    assert "reporting GPS time, not UTC" in w
+    assert any(x.startswith("CRITICAL") for x in T.active_warnings(_sup(critical_alarms=1 << 4)))
+
+
+def test_the_pps_configuration_decodes_the_cable_delay():
+    import struct
+    import thunderbolt as T
+    p = bytes([0x4A, 1, 0, 0]) + struct.pack(">df", -120e-9, 300.0)
+    got = T.decode_pps_config(p)
+    assert got["pps_enabled"] and abs(got["cable_delay_ns"] + 120.0) < 1e-6
+    assert T.decode(0x8F, p)[0] == "pps_config"
+    assert T.decode_pps_config(bytes([0x4A, 1, 0, 0]) + struct.pack(">df", 5.0, 0.0)) is None   # not a delay
+
+
+def test_the_survey_settings_decode_and_commands_queue_only_when_connected():
+    import struct
+    import thunderbolt as T
+    p = bytes([0xA9, 1, 1]) + struct.pack(">II", 2000, 0)
+    assert T.decode(0x8F, p) == ("survey_params", {"survey_enabled": True, "survey_saves_position": True,
+                                                   "survey_length_fixes": 2000})
+    m = T.Monitor("/dev/null")
+    assert m.send(T.START_SURVEY) is False          # nothing connected: refused, not queued
+    m.connected = True
+    assert m.send(T.START_SURVEY) and list(m._outbox) == [bytes([0x10, 0x8E, 0xA6, 0x00, 0x10, 0x03])]
+
+
+def test_the_cable_delay_packet_advances_the_pps_and_keeps_the_rest():
+    """-50.5 ns for 10 m of RG-58, the enable, reserved and polarity bytes and
+    the bias threshold exactly as the unit reported them (its reply of
+    2026-09-30)."""
+    import thunderbolt as T
+    cur = T.decode_pps_config(bytes.fromhex("4a010100000000000000000043960000"))
+    pkt = T.set_cable_delay_packet(cur, 50.5)
+    body = pkt[1:-2].replace(b"\x10\x10", b"\x10")
+    assert body[0] == 0x8E and body[1:5] == bytes.fromhex("4a010100")
+    got = T.decode_pps_config(body[1:])
+    assert abs(got["cable_delay_ns"] + 50.5) < 1e-9 and got["bias_threshold_m"] == 300.0

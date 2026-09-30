@@ -224,7 +224,42 @@ def decode_disciplining(p):
     return None
 
 
-PARAM_REQUESTS = (encode(0x8E, bytes([0xA8, 0])), encode(0x8E, bytes([0xA8, 1])))
+def decode_pps_config(p):
+    """0x8F-4A, the reply to a bare 0x8E-4A request: the PPS characteristics.
+    The offset is the cable-delay compensation the unit applies (seconds in
+    the packet; a negative value advances the PPS to make up for the antenna
+    cable). Kept with its raw bytes until checked against the unit."""
+    if len(p) < 16 or p[0] != 0x4A:
+        return None
+    enabled, _res, polarity, offset, bias_m = struct.unpack(">BBBdf", p[1:16])
+    if not (offset == offset and abs(offset) < 1e-3):
+        return None
+    return {"pps_enabled": bool(enabled), "pps_polarity": int(polarity),
+            "cable_delay_ns": offset * 1e9, "bias_threshold_m": bias_m, "raw": p.hex()}
+
+
+def decode_survey_params(p):
+    """0x8F-A9, the reply to a bare 0x8E-A9 request: whether self-survey is
+    enabled, whether its result is saved to EEPROM, and its length in fixes."""
+    if len(p) < 7 or p[0] != 0xA9:
+        return None
+    enabled, save, length = struct.unpack(">BBI", p[1:7])
+    return {"survey_enabled": bool(enabled), "survey_saves_position": bool(save), "survey_length_fixes": length}
+
+
+PARAM_REQUESTS = (encode(0x8E, bytes([0xA8, 0])), encode(0x8E, bytes([0xA8, 1])), encode(0x8E, bytes([0x4A])),
+                  encode(0x8E, bytes([0xA9])))
+START_SURVEY = encode(0x8E, bytes([0xA6, 0x00]))   # restart the self-survey
+SAVE_SETTINGS = encode(0x8E, bytes([0x26]))         # write the current settings to EEPROM
+
+
+def set_cable_delay_packet(current, delay_ns):
+    """0x8E-4A setting the PPS offset to -delay_ns (Trimble: "Negative values
+    advance the 1 PPS and compensate for cable delay"; ThunderBolt E guide
+    p. 17, 65), with every other field as the unit last reported it."""
+    raw = bytes.fromhex(current["raw"])
+    bias = struct.unpack(">f", raw[12:16])[0]
+    return encode(0x8E, raw[0:4] + struct.pack(">df", -float(delay_ns) * 1e-9, bias))
 
 
 def decode(packet_id, payload):
@@ -237,6 +272,10 @@ def decode(packet_id, payload):
         if payload[0] == 0xA8:
             got = decode_disciplining(payload)
             return ("loop" if got and got["type"] == 0 else "oscillator"), got
+        if payload[0] == 0x4A:
+            return "pps_config", decode_pps_config(payload)
+        if payload[0] == 0xA9:
+            return "survey_params", decode_survey_params(payload)
     elif packet_id == 0x6D:
         return "satellites", decode_satellites(payload)
     elif packet_id == 0x47:
@@ -246,6 +285,38 @@ def decode(packet_id, payload):
 
 # ---------------------------------------------------------------------------
 # what it all means
+
+
+def active_warnings(sup, primary=None):
+    """Plain-language warnings that are true NOW, and nothing else: an empty
+    list means there is nothing to show. The timing ones matter most here - a
+    leap second is the one event that would upset pulsar timing and every
+    recording's timestamps - and a surveying or holdover unit is putting out a
+    reference that is not what it usually is."""
+    out = []
+    if sup:
+        for b, text in sorted(MINOR_ALARMS.items()):
+            if sup["minor_alarms"] >> b & 1:
+                out.append(text)
+        for b, text in sorted(CRITICAL_ALARMS.items()):
+            if sup["critical_alarms"] >> b & 1:
+                out.append("CRITICAL: " + text)
+        if sup.get("holdover_s"):
+            out.append("in holdover for %d s: the 10 MHz and PPS are free-running" % sup["holdover_s"])
+        if sup.get("disciplining_mode") not in (0, None):
+            out.append("disciplining: " + sup["disciplining_mode_text"])
+        if sup.get("gps_decoding") not in (0, None):
+            out.append("GPS: " + sup["gps_decoding_text"])
+        if sup.get("receiver_mode_text") not in ("overdetermined clock", None):
+            out.append("receiver mode: " + sup["receiver_mode_text"])
+    if primary:
+        if not primary.get("time_set", True):
+            out.append("GPS time not set")
+        if not primary.get("utc_known", True):
+            out.append("UTC offset not yet known")
+        if not primary.get("utc", True):
+            out.append("reporting GPS time, not UTC")
+    return out
 
 
 def assess(sup, primary=None, age_s=None):
@@ -396,6 +467,7 @@ class Monitor:
         self.device, self.baud, self.on_change = device, baud, on_change
         self.log_dir = log_dir           # the long-term summary log (reference_log/), or None
         self._summary = None
+        self._outbox = collections.deque()  # commands to write, from the reader thread only
         self.lock = threading.Lock()
         self.latest = {}                 # kind -> (monotonic, unix, fields)
         self.history = collections.deque()
@@ -479,8 +551,23 @@ class Monitor:
             loop, osc = self.latest.get("loop"), self.latest.get("oscillator")
             out["loop"] = loop[2] if loop else None
             out["oscillator"] = osc[2] if osc else None
+            ppsc, lev = self.latest.get("pps_config"), self.latest.get("levels")
+            out["pps_config"] = ppsc[2] if ppsc else None
+            sv = self.latest.get("survey_params")
+            out["survey_params"] = sv[2] if sv else None
+            out["levels"] = lev[2] if lev else None
         out["assessment"] = assess(out["supplemental"], out["primary"], age)
+        out["warnings"] = active_warnings(out["supplemental"], out["primary"])
         return out
+
+    def send(self, packet):
+        """Queue a TSIP packet for the unit. Written by the reader thread, the
+        port's only user: a second process on the port splits the replies
+        (2026-09-30). Returns False when no unit is connected."""
+        if not self.connected:
+            return False
+        self._outbox.append(bytes(packet))
+        return True
 
     def rows(self):
         """The whole kept history at full resolution, one row a second:
@@ -512,6 +599,9 @@ class Monitor:
                         for req in PARAM_REQUESTS:
                             os.write(fd, req)
                         asked = time.monotonic()
+                    while self._outbox:
+                        os.write(fd, self._outbox.popleft())
+                        asked = time.monotonic() - PARAMS_EVERY_S + 3.0   # re-read the settings in 3 s
                     ready, _, _ = select.select([fd], [], [], 1.0)
                     if not ready:
                         continue

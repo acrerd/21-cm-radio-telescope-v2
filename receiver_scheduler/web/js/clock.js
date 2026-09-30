@@ -109,12 +109,46 @@
                 clockRow(CLOCK_NAMES.thunderbolt, tb, tbDetail) +
                 clockRow(CLOCK_NAMES.host, host, hostDetail) +
                 clockRow(CLOCK_NAMES.controller, ctrl, ctrlDetail);
-            let alarms = '';
-            if (s && (s.critical_alarms || s.minor_alarms)) {
-                alarms = 'Alarms: ' + s.critical_alarms_text.concat(s.minor_alarms_text).map(escapeClock).join(', ');
-            }
-            document.getElementById('clockAlarms').textContent = alarms;
+            // Only what is true now: nothing is shown when all is well.
+            const warn = tb.warnings || [];
+            document.getElementById('clockAlarms').textContent = warn.length ? '⚠ ' + warn.join(' · ') : '';
+            drawClockSats(tb);
             drawClockTraces(d.history || []);
+        }
+
+        // Signal level of every satellite the unit hears (0x47), the ones in its
+        // timing solution (0x6D) bright, the rest dim: a failing antenna, cable
+        // or preamp shows here as all the bars sinking together. Beneath, where
+        // the unit thinks its antenna is and the cable delay it compensates.
+        function drawClockSats(tb) {
+            const box = document.getElementById('clockSats');
+            const lv = (tb.levels && tb.levels.levels) || {};
+            const used = new Set(((tb.satellites && tb.satellites.prns) || []).map(Number));
+            const prns = Object.keys(lv).map(Number).sort((a, b) => a - b);
+            let html = '';
+            if (prns.length) {
+                const W = 22, H = 70, lo = 20, hi = 55;
+                const bars = prns.map((p, i) => {
+                    const v = lv[p], h = Math.max(1, Math.min(1, (v - lo) / (hi - lo)) * H);
+                    const colour = used.has(p) ? '#00d4ff' : '#446';
+                    return '<rect x="' + (i * W + 2) + '" y="' + (H - h) + '" width="' + (W - 4) + '" height="' + h +
+                           '" fill="' + colour + '"><title>PRN ' + p + ': ' + v.toFixed(1) +
+                           (used.has(p) ? ' (in the solution)' : ' (tracked, not used)') + '</title></rect>' +
+                           '<text x="' + (i * W + W / 2) + '" y="' + (H + 12) + '" fill="#888" font-size="9" text-anchor="middle">' + p + '</text>' +
+                           '<text x="' + (i * W + W / 2) + '" y="' + (H - h - 3) + '" fill="#aaa" font-size="9" text-anchor="middle">' + Math.round(v) + '</text>';
+                }).join('');
+                html += '<div style="color:#888; font-size:11px;">Satellite signal levels (' + prns.length +
+                        ' heard, ' + used.size + ' in the timing solution; scale ' + lo + '–' + hi + ')</div>' +
+                        '<svg width="' + (prns.length * W + 4) + '" height="' + (H + 16) + '">' + bars + '</svg>';
+            }
+            const s = tb.supplemental, pc = tb.pps_config;
+            if (s) {
+                html += '<div style="color:#888; font-size:11px; margin-top:4px;" title="The position the unit surveyed and now holds fixed for timing; height is above the WGS-84 ellipsoid, not sea level. An error in it puts up to (error / c) into the PPS.">' +
+                        'Antenna (as the unit holds it): ' + s.lat_deg.toFixed(7) + ', ' + s.lon_deg.toFixed(7) +
+                        ', ' + s.alt_m.toFixed(1) + ' m above the ellipsoid' +
+                        (pc ? ' · cable delay compensation ' + pc.cable_delay_ns.toFixed(1) + ' ns' : '') + '</div>';
+            }
+            box.innerHTML = html;
         }
 
         // Four small traces of the Thunderbolt's last six hours: its own
@@ -127,7 +161,9 @@
                 box.innerHTML = '<div style="color:#666; font-size:12px;">No Thunderbolt history yet.</div>';
                 return;
             }
-            const CLOCK_MIN_SPAN = {osc_ppb: 0.2, pps_ns: 2.0, dac_v: 0.005, temp_c: 0.5};
+            // Floors only: they stop a flat trace vanishing into the border,
+            // and are below what each trace really does (steering wanders ~1.5 mV).
+            const CLOCK_MIN_SPAN = {osc_ppb: 0.02, pps_ns: 0.2, dac_v: 0.0005, temp_c: 0.05};
             const series = [['osc_ppb', '10 MHz error vs GPS', 'ppb'], ['pps_ns', 'PPS vs GPS second', 'ns'],
                             ['dac_v', 'Oscillator steering', 'V'], ['temp_c', 'Temperature inside', '°C']];
             const t0 = h[0].t, t1 = h[h.length - 1].t || t0 + 1;
@@ -140,13 +176,15 @@
                 // steep rise, and a constant value drew along the bottom
                 // border and vanished (2026-09-30).
                 const span = Math.max(hi - lo, CLOCK_MIN_SPAN[key]);
+                // enough decimals to show the span: two significant figures of it
+                const dp = Math.max(0, Math.min(6, 1 - Math.floor(Math.log10(span))));
                 const base = (lo + hi) / 2 - span / 2;
                 const pts = h.map((p, i) => ((p.t - t0) / ((t1 - t0) || 1) * W).toFixed(1) + ',' +
                                             (H - 2 - (v[i] - base) / span * (H - 4)).toFixed(1)).join(' ');
                 const last = v[v.length - 1];
                 return '<div style="display:inline-block; margin:0 18px 10px 0;" title="' + CLOCK_TRACE_HELP[key] + '">' +
-                       '<div style="color:#888; font-size:11px;">' + label + ': ' + last.toPrecision(4) + ' ' + unit +
-                       ' <span style="color:#555;">(' + lo.toPrecision(3) + '…' + hi.toPrecision(3) + ')</span></div>' +
+                       '<div style="color:#888; font-size:11px;">' + label + ': ' + last.toFixed(dp) + ' ' + unit +
+                       ' <span style="color:#555;">(' + lo.toFixed(dp) + '…' + hi.toFixed(dp) + ')</span></div>' +
                        '<svg width="' + W + '" height="' + H + '" style="background:#0f0f23; border:1px solid #333;">' +
                        '<polyline fill="none" stroke="#00d4ff" stroke-width="1" points="' + pts + '"/></svg></div>';
             }).join('') +
