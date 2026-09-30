@@ -66,6 +66,14 @@ public:
     // re-approach after the back-off is the repeatability. NaN until seen.
     String getHomingReportJSON();
 
+    // Drive acknowledgement (issue #34). The Due answers every drive target
+    // with "ACK DRIVE <alt> <az>" or "ERR DRIVE <reason>". A target with no
+    // answer after DRIVE_ACK_TIMEOUT_MS is sent once more, and counted lost if
+    // that goes unanswered too. Re-sending starts only once an ACK has been
+    // seen, so a Due flashed before 2026-09-30 is left alone. Counters, the
+    // last refusal and whether ACKs are arriving at all go to /status.
+    String getDriveAckJSON();
+
     // Serial log access
     String getLogJSON();
     void logESP(const String &msg);  // Log ESP32 diagnostic message
@@ -74,6 +82,8 @@ private:
     void logMessage(char direction, const String &msg);
     void parseStatus(const String &line);
     void handleHomingLine(const String &line);
+    void handleDriveReply(const String &line);
+    void serviceDriveAck();
 
     HardwareSerial *uart;
     String lastStatus;
@@ -97,6 +107,21 @@ private:
     bool homingSecondApproach;
     bool homingReapproachSkipped;   // the Due found no need for a re-approach (#33)
     time_t homingReportTime;
+
+    // Drive acknowledgement state (see getDriveAckJSON).
+    String drivePendingCmd;         // the line last sent, as sent
+    float drivePendingAlt;          // its target rounded to the Due's 0.5 deg grid
+    float drivePendingAz;
+    unsigned long drivePendingSince;
+    bool drivePending;
+    bool driveResent;
+    bool driveAckSeen;
+    uint32_t driveAcks;
+    uint32_t driveErrors;
+    uint32_t driveResends;
+    uint32_t driveLost;
+    uint32_t unknownCommands;
+    String lastDriveError;
 
     // Ring buffer for serial log
     SerialLogEntry logBuffer[SERIAL_LOG_SIZE];

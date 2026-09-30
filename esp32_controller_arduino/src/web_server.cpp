@@ -250,6 +250,9 @@ void setupWebServer() {
         json += "\"malformed_status\":" + String((unsigned long)srtSerial.getMalformedCount()) + ",";
         // The encoder error reported at the last homing (issue #24), or null.
         json += "\"last_homing\":" + srtSerial.getHomingReportJSON() + ",";
+        // Whether the Due is acknowledging drive targets, and what was
+        // refused, re-sent or lost (issue #34). "lost" should stay at zero.
+        json += "\"drive_ack\":" + srtSerial.getDriveAckJSON() + ",";
         json += "\"raw\":\"" + jsonEscape(srtSerial.getLastStatus()) + "\"";
         json += "}";
         request->send(200, "application/json", json);

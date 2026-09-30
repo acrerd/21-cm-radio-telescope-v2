@@ -2245,23 +2245,50 @@ void showConfig() {
 }
 
 // Execute a drive command
+// The controller's answer to a drive command (issue #34). printAll writes to
+// the USB port only, so until 2026-09-30 the controller never learnt whether a
+// target had been taken: a line lost on the wire and a target refused (FAULT,
+// homing, beyond a limit) looked the same from the ESP32, and the dawn test of
+// that morning sat at the stow for four minutes leaving no record of which it
+// was. Every drive command read from Serial1 now gets one line back on Serial1:
+// "ACK DRIVE <alt> <az>" with the target as rounded to the pulse grid, or
+// "ERR DRIVE <reason>". The ESP32 re-sends a target that is not acknowledged.
+static void driveAck() {
+    if (!cmdFromSerial1) return;
+    char b[48];
+    snprintf(b, sizeof(b), "ACK DRIVE %.1f %.1f",
+             (float)targetAlt / PULSES_PER_DEGREE, (float)targetAz / PULSES_PER_DEGREE);
+    Serial1.println(b);
+}
+
+static void driveErr(const char* reason) {
+    if (!cmdFromSerial1) return;
+    Serial1.print("ERR DRIVE ");
+    Serial1.println(reason);
+}
+
 void executeDrive(float alt, float az) {
-    if (isValidTarget(alt, az)) {
-        if (systemState == STATE_FAULT) {
-            printAllLn("ERROR: Cannot slew while in FAULT state. Power cycle to reset.");
-        } else if (systemState == STATE_HOMING) {
-            printAllLn("ERROR: Cannot slew while homing in progress.");
-        } else {
-            targetAlt = (int32_t)round(alt * PULSES_PER_DEGREE);
-            targetAz = (int32_t)round(az * PULSES_PER_DEGREE);
-            newTargetAlt = true;
-            newTargetAz = true;
-            printAll("Slewing to Alt:");
-            printAllFloat(alt, 1);
-            printAll(" Az:");
-            printAllFloat(az, 1);
-            printAllLn("");
-        }
+    if (!isValidTarget(alt, az)) {
+        driveErr("limits");
+        return;
+    }
+    if (systemState == STATE_FAULT) {
+        printAllLn("ERROR: Cannot slew while in FAULT state. Power cycle to reset.");
+        driveErr("fault");
+    } else if (systemState == STATE_HOMING) {
+        printAllLn("ERROR: Cannot slew while homing in progress.");
+        driveErr("homing");
+    } else {
+        targetAlt = (int32_t)round(alt * PULSES_PER_DEGREE);
+        targetAz = (int32_t)round(az * PULSES_PER_DEGREE);
+        newTargetAlt = true;
+        newTargetAz = true;
+        printAll("Slewing to Alt:");
+        printAllFloat(alt, 1);
+        printAll(" Az:");
+        printAllFloat(az, 1);
+        printAllLn("");
+        driveAck();
     }
 }
 
@@ -2613,6 +2640,14 @@ void processCommand(const char* buffer) {
         } else {
             printAll("Unknown command: "); printAllLn(cmd);
             printAllLn("Type HELP for commands.");
+            // Tell the controller too: a truncated poll or a drive target
+            // spliced behind one ("STATUS59.2 176.4") lands here, and was
+            // dropped without trace before (issue #34).
+            if (cmdFromSerial1) {
+                char b[40];
+                snprintf(b, sizeof(b), "ERR UNKNOWN %.24s", buffer);
+                Serial1.println(b);
+            }
         }
     }
 }

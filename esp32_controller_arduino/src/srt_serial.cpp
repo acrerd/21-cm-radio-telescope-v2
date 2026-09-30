@@ -24,6 +24,17 @@ SRTSerial::SRTSerial() :
     homingSecondApproach(false),
     homingReapproachSkipped(false),
     homingReportTime(0),
+    drivePendingAlt(0),
+    drivePendingAz(0),
+    drivePendingSince(0),
+    drivePending(false),
+    driveResent(false),
+    driveAckSeen(false),
+    driveAcks(0),
+    driveErrors(0),
+    driveResends(0),
+    driveLost(0),
+    unknownCommands(0),
     logHead(0),
     logCount(0) {
 }
@@ -200,7 +211,82 @@ void SRTSerial::sendDriveTarget(float driveAlt, float driveAz) {
         SRTLock lock;
         logMessage('T', cmd);
         uart->println(cmd);
+        // What the Due will make of it: the text it receives, rounded to a
+        // pulse (executeDrive), which is what its ACK echoes.
+        float a = 0, z = 0;
+        sscanf(cmd, "%f %f", &a, &z);
+        drivePendingCmd = cmd;
+        drivePendingAlt = roundf(a * 2.0f) / 2.0f;
+        drivePendingAz = roundf(z * 2.0f) / 2.0f;
+        drivePendingSince = millis();
+        drivePending = true;
+        driveResent = false;
     }
+}
+
+#define DRIVE_ACK_TIMEOUT_MS 2000UL
+
+void SRTSerial::handleDriveReply(const String &line) {
+    SRTLock lock;
+    if (line.startsWith("ACK DRIVE")) {
+        float a = NAN, z = NAN;
+        sscanf(line.c_str() + 9, "%f %f", &a, &z);
+        driveAcks++;
+        driveAckSeen = true;
+        // An ACK for an earlier target (a reply crossing a newer command on
+        // the wire) does not answer the one pending.
+        if (drivePending && fabsf(a - drivePendingAlt) < 0.3f && fabsf(z - drivePendingAz) < 0.3f) {
+            drivePending = false;
+        }
+    } else if (line.startsWith("ERR DRIVE")) {
+        driveErrors++;
+        driveAckSeen = true;
+        String reason = line.substring(9);
+        reason.trim();
+        lastDriveError = reason + " (" + drivePendingCmd + ")";
+        drivePending = false;
+        logESP("Due refused drive " + drivePendingCmd + ": " + reason);
+    } else if (line.startsWith("ERR UNKNOWN")) {
+        unknownCommands++;
+    }
+}
+
+// Called on every read pass. A target the Due has not answered is sent once
+// more - safe, since a drive target is an absolute position - and a second
+// silence is counted as lost and logged, so it is at least on the record.
+void SRTSerial::serviceDriveAck() {
+    SRTLock lock;
+    if (!drivePending || !driveAckSeen || !uart) return;
+    if (millis() - drivePendingSince < DRIVE_ACK_TIMEOUT_MS) return;
+    if (!driveResent) {
+        logMessage('T', drivePendingCmd + " (resend: no ACK)");
+        uart->println(drivePendingCmd);
+        driveResent = true;
+        drivePendingSince = millis();
+        driveResends++;
+    } else {
+        drivePending = false;
+        driveLost++;
+        logESP("Drive target " + drivePendingCmd + " never acknowledged");
+    }
+}
+
+String SRTSerial::getDriveAckJSON() {
+    SRTLock lock;
+    String e = lastDriveError;
+    e.replace("\\", "\\\\");
+    e.replace("\"", "\\\"");
+    String json = "{\"ack_seen\":" + String(driveAckSeen ? "true" : "false");
+    json += ",\"acks\":" + String((unsigned long)driveAcks);
+    json += ",\"refused\":" + String((unsigned long)driveErrors);
+    json += ",\"resends\":" + String((unsigned long)driveResends);
+    json += ",\"lost\":" + String((unsigned long)driveLost);
+    json += ",\"unknown_commands\":" + String((unsigned long)unknownCommands);
+    json += ",\"pending\":" + String(drivePending ? "true" : "false");
+    json += ",\"last_refusal\":";
+    json += e.length() ? "\"" + e + "\"" : String("null");
+    json += "}";
+    return json;
 }
 
 void SRTSerial::sendHome() {
@@ -309,12 +395,26 @@ bool SRTSerial::readStatus() {
             // status flood has scrolled the line out of the log buffer.
             logMessage('R', line);
             handleHomingLine(line);
+            // A drive target that reaches the Due mid-homing is refused with
+            // "Homing: busy - ignored '<cmd>'": an answer, not a lost line.
+            int q = line.indexOf("busy - ignored '");
+            if (q >= 0) {
+                char c = line.charAt(q + 16);
+                if (isdigit((unsigned char)c) || c == '-' || c == '.') {
+                    handleDriveReply("ERR DRIVE homing");
+                }
+            }
+        } else if (line.startsWith("ACK ") || line.startsWith("ERR ")) {
+            logMessage('R', line);
+            handleDriveReply(line);
         } else if (line.length() > 0) {
             // Kept visible rather than dropped silently: a run of these is the
             // signature of the UART being flooded again.
             spliceCount++;
         }
     }
+
+    serviceDriveAck();
 
     if (lastValidLine.length() > 0) {
         parseStatus(lastValidLine);
