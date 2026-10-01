@@ -34,7 +34,7 @@
 #define AZ_DIR_INVERT   1       // 1 = invert azimuth direction sense
 #define ALT_DIR_INVERT  1       // 1 = invert altitude direction sense
 
-// Position encoder pulse inputs (2 pulses per degree, FALLING edge)
+// Position encoder pulse inputs (2 pulses per degree, RISING edge since 2026-05-12)
 #define PIN_PULSE_AZ    12      // Azimuth encoder (yellow)
 #define PIN_PULSE_ALT   13      // Altitude encoder (blue)
 

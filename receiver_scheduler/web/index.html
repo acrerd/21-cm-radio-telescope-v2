@@ -31,11 +31,11 @@
         </div>
         <div class="status-bar">
             <div class="status-group">
-                <div class="status-indicator" data-help="Scheduler state: whether an observation is running now, and which one.">
+                <div class="status-indicator" data-help="What the scheduler is doing: the observation or scan running now, or Idle with a countdown to the next booking. When the pulsar monitor is on, it also says when its window opens.">
                     <div class="status-dot" id="statusDot"></div>
                     <span id="statusText">Idle</span>
                 </div>
-                <div class="status-indicator" data-help="Where the dish is pointing and what it is doing - homed, idle, slewing, or faulted.">
+                <div class="status-indicator" data-help="The mount's drive position (encoder frame: the sky position differs by the pointing model) and what it is doing: [Homing], [Slewing to alt az] or [Tracking]. Amber means an operator offset is set on the controller or the last homing looks suspect. Offline: the controller is not answering.">
                     <div class="status-dot" id="telescopeDot"></div>
                     <span id="telescopeText">Telescope: --</span>
                 </div>
@@ -47,18 +47,18 @@
                 </div>
             </div>
             <div style="display:flex; align-items:center; gap:14px;">
-                <button title="Stop the observation that is recording now. The file keeps what it has; the dish stows or homes if the entry asked for it." class="btn btn-danger" id="stopBtn" style="display:none" onclick="stopObs()">Stop</button>
+                <button title="Stop the observation that is recording now. The file keeps what it has; the dish stows or homes if the entry asked for it. The Sun and pulsar monitors are held off for 30 min." class="btn btn-danger" id="stopBtn" style="display:none" onclick="stopObs()">Stop</button>
             </div>
         </div>
         <div class="tabs">
             <div class="tab active" onclick="switchTab('scheduler')" data-help="Plan and run observations. This is the telescope's diary: each entry says what to observe, when, and how.">Scheduler</div>
-            <div class="tab" onclick="switchTab('sunscan')" data-help="Scan the Sun to measure and correct the mount's pointing, and to set the temperature (kelvin) scale.">Sun Scan</div>
+            <div class="tab" onclick="switchTab('sunscan')" data-help="Scan the Sun to measure and correct the mount's pointing, and drift it through the beam to measure the beam. The kelvin scale is set on the RF calibration tab.">Sun Scan</div>
             <div class="tab" onclick="switchTab('horizon')" data-help="Map the obstructed skyline (trees, towers) radiometrically, so observations avoid pointing through warm obstructions.">Horizon</div>
             <div class="tab" onclick="switchTab('rf')" data-help="Radio-frequency calibration: measure the receiver's bandpass shape and gain so spectra read in kelvin.">RF calibration</div>
-            <div class="tab" onclick="switchTab('camera')" data-help="A live still from the safety webcam watching the dish.">Camera</div>
+            <div class="tab" onclick="switchTab('camera')" data-help="The safety camera watching the dish: a still on demand, auto-refresh, or live video. Nothing is recorded.">Camera</div>
             <div class="tab" onclick="switchTab('simulator')" data-help="A planetarium for the telescope: the sky, horizon, Sun, Moon and bright sources, in real time. Use it to plan.">Simulator</div>
-            <div class="tab" onclick="switchTab('observe')" data-help="View recordings, plot spectra on a velocity axis, and fit calibration or drift models.">Observe</div>
-            <div class="tab" onclick="switchTab('config')" data-help="Site and receiver settings. Change with care - some settings invalidate the calibration.">Configuration</div>
+            <div class="tab" onclick="switchTab('observe')" data-help="Start a run now, and list, plot, fit and download recordings: spectra on an LSR velocity axis, drift and solar traces, pulsar folds.">Observe</div>
+            <div class="tab" onclick="switchTab('config')" data-help="Site, controller, receiver and instrument settings, and the Sun and pulsar monitors. Changing the instrument invalidates the calibration.">Configuration</div>
             <div class="tab" onclick="switchTab('log')" data-help="The operational log: a running record of what the telescope actually did.">Log</div>
             <div class="tab" onclick="switchTab('guide')" title="How to operate the telescope, and the astronomy behind it. Start here." data-help="How to operate the telescope, and the astronomy behind it. New here? Start on this tab.">Guide</div>
         </div>
@@ -66,8 +66,8 @@
         <div class="tab-content active" id="tab-scheduler">
             <div class="toolbar">
                 <button title="Book a new observation: target, times, receiver settings and a comment." class="btn btn-primary" onclick="openAddModal()">+ Add Observation</button>
-                <button title="Save the schedule to the server now. Edits auto-save anyway; this is for reassurance." class="btn btn-secondary" onclick="saveSchedule()">Save Schedule</button>
-                <button title="Load a schedule from a JSON file, replacing the current list." class="btn btn-secondary" onclick="document.getElementById('loadFile').click()">Load</button>
+                <button title="Save the schedule to the server now. Edits auto-save; a list loaded from a file does not, and needs this." class="btn btn-secondary" onclick="saveSchedule()">Save Schedule</button>
+                <button title="Show a schedule from a JSON file in place of the current list. It is not stored until Save Schedule, and the page re-reads the server's list every 30 s, so save promptly." class="btn btn-secondary" onclick="document.getElementById('loadFile').click()">Load</button>
                 <input autocomplete="off" type="file" id="loadFile" class="file-input" accept=".json" onchange="loadFile(event)">
                 <button title="Download the current schedule as JSON." class="btn btn-secondary" onclick="exportSchedule()">Export JSON</button>
                 <button title="Remove every entry whose slot has already passed." class="btn btn-secondary" onclick="clearPast()">Clear Past</button>
@@ -129,7 +129,7 @@
                         </label>
                     </div>
                     <div style="margin-top:15px; display:flex; gap:10px;">
-                        <button title="Raster the Sun now to measure the pointing offset. Refused if any raster point would clip the measured horizon." class="btn btn-primary" id="ssStartBtn" onclick="startSunScan()">Start Sun Scan</button>
+                        <button title="Raster the Sun now to measure the pointing offset. With Respect local horizon ticked, refused if any raster point would clip the measured horizon; untick to force it." class="btn btn-primary" id="ssStartBtn" onclick="startSunScan()">Start Sun Scan</button>
                         <button title="Cancel the Sun scan in progress. Nothing is fitted from a partial raster." class="btn btn-danger" id="ssStopBtn" style="display:none" onclick="stopSunScan()">Stop</button>
                     </div>
                 </div>
@@ -158,8 +158,10 @@
                     <div class="config-form" style="flex:0 0 340px;">
                         <div class="section-title">Calibration Day</div>
                         <p style="color:#888; font-size:12px; margin-bottom:15px;">
-                            Run repeated sun scans to determine the effective observer lat/lon
-                            (correcting for mount tilt) and constant alt/az offsets.
+                            Run repeated Sun scans through the day and fit the pointing model
+                            (IE, IA, AN, AE, and CA and AZSCALE where the coverage allows).
+                            Applying it sends the terms to the controller; the observer position
+                            stays the true site.
                         </p>
                         <div class="form-group">
                             <label>Scan Interval (minutes)</label>
@@ -169,7 +171,7 @@
                             <label title="Before the first raster, archive the stored Sun scans and erase the controller's model, so the day's fit comes from new scans only. For a new feed or a re-zeroed encoder."><input autocomplete="off" type="checkbox" id="cdStartFresh"> Start fresh (archive old scans, clear the controller's model first)</label>
                         </div>
                         <div class="form-group">
-                            <label title="A feed change moves only the beam skew: IE in elevation and CA in cross-elevation. The tilt (AN, AE), the azimuth index (IA) and the azimuth scale are the mount and are taken from the archived fit chosen here, so a short day's scans determine two terms instead of six."><input autocomplete="off" type="checkbox" id="cdHoldMount"> Fit beam terms only (IE, CA); hold the mount terms from</label>
+                            <label title="A feed change moves only the beam skew: IE in elevation and CA in cross-elevation. The tilt (AN, AE), the azimuth index (IA) and the azimuth scale are the mount and are taken from the archived fit chosen here, so a short day's scans determine two terms instead of six. Applies when you press Fit Model."><input autocomplete="off" type="checkbox" id="cdHoldMount"> Fit beam terms only (IE, CA); hold the mount terms from</label>
                             <select autocomplete="off" id="cdHoldFrom" style="margin-left:6px;"><option value="">(no archived fits)</option></select>
                         </div>
                         <div style="margin-top:15px; display:flex; gap:10px; flex-wrap:wrap;">
@@ -260,7 +262,7 @@
                     <div id="rfGotoNote" class="mono" style="color:#888; font-size:12px; margin-top:8px;"></div>
                     <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:center; margin-top:12px;">
                         <select autocomplete="off" id="rfBandpassFile" style="flex:1; min-width:320px;"
-                                title="Tracked spectra on disk at the instrument in force, newest first. A template wants a long run on an empty field, TX off; the Sun is excluded."></select>
+                                title="Tracked spectra on disk, newest first; Sun and Moon runs are left out. A template wants a long run on an empty field, TX off. A recording made at another tuning or gain than the instrument in force is refused."></select>
                         <button title="Fit both bandpass templates from the chosen recording and make them the templates in force. The gain must be refitted afterwards: the two are a pair." class="btn" onclick="rfBandpassFromRecording()">Fit from recording</button>
                     </div>
                 </div>
@@ -323,7 +325,7 @@
                         continuum the sky model has no term for, so it lands in T_sys and
                         the fitted gain instead of being spotted as a bad field.
                     </div>
-                    <button title="Point at a plane field and fit counts per kelvin and the system temperature against the simulator's sky." class="btn" onclick="rfRun('gain')">Calibrate gain now</button>
+                    <button title="Slew to the field in the boxes (or, if blank, the brightest clear H I field now), record 3 min, and fit counts per kelvin and T_sys against the simulator's H I model. The result becomes the calibration in force." class="btn" onclick="rfRun('gain')">Calibrate gain now</button>
                     <button title="Redraw the gain check: measured spectrum over the model, scatter and residual." class="btn" onclick="rfLoadGainPlot()">Refresh plot</button>
                     <button title="Cancel the RF calibration in progress. The calibration in force is unchanged." class="btn btn-danger" onclick="rfCancel()">Stop</button>
                     <span style="color:#666; font-size:12px; margin-left:10px;">
@@ -424,7 +426,7 @@
                     </div>
                     <div style="display:flex; gap:10px; margin-top:15px;">
                         <button title="Sweep azimuth strip by strip to map where trees and buildings end the sky. About two hours." class="btn btn-primary" id="hzStartBtn" onclick="startHorizon()">Start Scan</button>
-                        <button title="Abandon the horizon scan. A partial profile is not saved." class="btn btn-danger" id="hzStopBtn" style="display:none" onclick="stopHorizon()">Stop</button>
+                        <button title="Abandon the horizon scan. The strips measured so far are kept in a partial file under data/; it is not archived as a profile and never takes effect." class="btn btn-danger" id="hzStopBtn" style="display:none" onclick="stopHorizon()">Stop</button>
                     </div>
                     <div id="hzStatus" style="margin-top:12px; font-size:13px;">
                         <span style="color:#888;">Idle.</span>
@@ -595,7 +597,7 @@
                 </div>
                 </div>
                 <div style="display:flex; gap:10px; align-items:center; margin-top:10px; flex-wrap:wrap;">
-                    <button title="Point and start recording now with the settings above. Refused if something is already recording." class="btn btn-success" id="obvStartBtn" onclick="observeStartNow()">Start Now</button>
+                    <button title="Point and start recording now with the settings above. Refused if something is already recording; a Sun or pulsar monitor run gives way, and both monitors are held off for 30 min." class="btn btn-success" id="obvStartBtn" onclick="observeStartNow()">Start Now</button>
                     <button title="Open the schedule form filled in from these settings, to book it for later instead." class="btn btn-secondary" onclick="observeToScheduler()">Send to Scheduler&hellip;</button>
                     <button title="Fill these fields from the last hand-off the Simulator tab made." class="btn btn-secondary" onclick="loadObserveParams(true)">Copy from Simulator</button>
                     <label style="display:flex; align-items:center; gap:6px; cursor:pointer; margin-left:10px;"
@@ -666,15 +668,15 @@
                     </select>
                     <select autocomplete="off" id="obvFileSelect" onchange="onObserveFileChange()"
                             style="max-width:100%; min-width:320px;" title="which recording to plot or fit"></select>
-                    <button title="Draw the selected recording: spectrum in kelvin on an LSR axis, or the drift trace." class="btn btn-secondary" onclick="showObservePlot()">Plot Result</button>
+                    <button title="Draw the selected recording: a spectrum on an LSR axis (kelvin when calibrated), a drift trace, a solar track as flux in SFU, or a pulsar fold in mK and mJy on the recording's own calibration." class="btn btn-secondary" onclick="showObservePlot()">Plot Result</button>
                     <button class="btn btn-secondary" id="obvPrestoBtn" onclick="showPrestoFold()"
                             title="Pulsar recordings only: export to a SIGPROC .fil and fold with PRESTO's prepfold at the topocentric period and DM 26.76, no search. An independent check on our own fold; takes a minute or two for a four-hour run.">PRESTO fold</button>
                     <button class="btn btn-secondary" id="obvLogBtn2" onclick="obvLiveToggleLog()"
-                            title="Log y axis for the drift trace and the live view: a Sun drift's sidelobes are a percent of the peak. In dB relative to the peak, floored at -30 dB. Redraws the plot.">dB scale</button>
+                            title="Log y axis for solar and drift plots and the live view: a Sun drift's sidelobes are a percent of the peak. In dB relative to the peak, floored at -30 dB. Redraws the plot.">dB scale</button>
                     <button class="btn btn-secondary" id="obvLiveViewBtn" style="display:none;" onclick="viewLiveRecording()"
                             title="plot the recording in progress, as it stands; refreshes while it records">View live recording</button>
                     <button class="btn btn-secondary" id="obvFitBtn" onclick="fitObserveModel()"
-                            title="fit the simulator's sky to this recording: gain and system temperature">Fit model</button>
+                            title="Fit the simulator's sky to this recording. A tracked spectrum gets the per-channel gain and T_sys, which Apply can make the calibration; a drift scan gets a total-power fit, reported only. Not for Sun or Moon tracks or pulsar recordings.">Fit model</button>
                     <button class="btn btn-secondary" onclick="downloadObserveFile()"
                             title="download the selected HDF5 recording">Download file</button>
                     <button class="btn btn-primary" id="obvFitApplyBtn" style="display:none;"
@@ -887,7 +889,7 @@
                     off, less the burst records.
                 </div>
                 <div style="margin-bottom:14px;">
-                    <button class="btn btn-secondary" title="Clear every instrument override so the defaults in tuning.py apply again" onclick="resetInstrumentConfig()">Instrument defaults</button>
+                    <button class="btn btn-secondary" title="Empty every instrument and pilot box, so the defaults in tuning.py apply once you press Save Configuration" onclick="resetInstrumentConfig()">Instrument defaults</button>
                 </div>
                 </div>
                 <div class="config-section">
@@ -907,7 +909,7 @@
                 <div class="config-section">
                 <div class="section-title">Sun monitor</div>
                 <div class="form-group">
-                    <label title="Track the Sun, 3 s records, whenever nothing is booked or running and the Sun is clear of the measured horizon. Never runs into a booking; anything started by hand stops it and keeps it off for 30 min.">Track the Sun when idle</label>
+                    <label title="Track the Sun, 3 s records, whenever nothing is booked or running and the Sun is clear of the measured horizon. Never runs into a booking or the pulsar monitor's window, and stows between runs; anything started by hand stops it and keeps it off for 30 min.">Track the Sun when idle</label>
                     <select autocomplete="off" id="cfgSunMonitor">
                         <option value="false">Off</option>
                         <option value="true">On</option>
@@ -917,7 +919,7 @@
                 <div class="config-section">
                 <div class="section-title">Pulsar monitor</div>
                 <div class="form-group">
-                    <label title="Record B0329+54 in pulsar mode every night in the window below, ahead of the Sun monitor. Bookings still win: a run stops short of one and resumes after it for the rest of the window, and the pieces of a night share one session. Anything started by hand stops it and keeps it off for 30 min.">Record B0329+54 nightly</label>
+                    <label title="Record B0329+54 in pulsar mode every day in the window below, ahead of the Sun monitor. Bookings still win: a run stops short of one and resumes after it for the rest of the window, and the pieces of one window share one session and one TOA. Anything started by hand stops it and keeps it off for 30 min.">Record B0329+54 nightly</label>
                     <select autocomplete="off" id="cfgPulsarMonitor">
                         <option value="false">Off</option>
                         <option value="true">On</option>
@@ -935,7 +937,7 @@
                     <input autocomplete="off" type="text" id="cfgPulsarMonitorStart" placeholder="20:00">
                 </div>
                 <div class="form-group">
-                    <label title="How long the window stays open; one night is one session">Window length (hours)</label>
+                    <label title="How long the window stays open; one window is one session, even across midnight">Window length (hours)</label>
                     <input autocomplete="off" type="number" id="cfgPulsarMonitorHours" min="0.5" max="23.5" step="0.5">
                 </div>
                 </div>
@@ -1122,8 +1124,8 @@
                     </div>
                     <div id="calibrationInput" style="margin-top:15px; display:none">
                         <p style="color:#888; font-size:12px; margin-bottom:10px;">
-                            Runs repeated sun scans for the observation duration to determine
-                            effective observer lat/lon and pointing offsets.
+                            Runs repeated Sun scans for the observation duration and fits the
+                            pointing model terms from them.
                         </p>
                         <div class="form-grid">
                             <div class="form-group">
@@ -1145,8 +1147,9 @@
                     </div>
                     <div id="horizonInput" style="margin-top:15px; display:none">
                         <p style="color:#888; font-size:12px; margin-bottom:10px;">
-                            Maps the obstructed horizon by radiometry, one altitude cut
-                            per azimuth. Schedule it for a dark, dry, calm night: the Sun
+                            Maps the obstructed horizon by radiometry: strips in azimuth at
+                            constant altitude, 5&deg; apart, climbing from 5&deg;, re-homing
+                            every second strip. Schedule it for a dark, dry, calm night: the Sun
                             swamps the sky level, and wet or wind-blown foliage is not the
                             horizon you want recorded. Allow about two hours.
                         </p>
@@ -1234,7 +1237,9 @@
                     <span style="color:#666; font-size:12px;">
                         The tuning is not the observation's to choose: every recording carries
                         an H I sub-band and a continuum product from the same fixed band.
-                        Change it in <code>scheduler_config.json</code>, deliberately.
+                        It is changed only on the Configuration tab, deliberately: every
+                        recording after a change is uncalibrated until the bandpass and gain
+                        are re-measured.
                     </span>
                 </div>
                 <div class="form-grid">
@@ -1254,8 +1259,8 @@
                         <label>When Done</label>
                         <select autocomplete="off" id="obsEndAction">
                             <option value="none">Stay</option>
-                            <option value="home">Go Home (Alt 0, Az 0)</option>
-                            <option value="stow">Stow (Alt 90, Az 180)</option>
+                            <option value="home">Home: run the homing (ends at drive Alt 0, Az 0)</option>
+                            <option value="stow">Stow (drive Alt 90, Az 180; no pointing model)</option>
                         </select>
                     </div>
                     <div class="form-group wide">
@@ -1264,8 +1269,9 @@
                             Respect local horizon
                         </label>
                         <span style="color:#888; font-size:12px;">
-                            Notes in the log if this observation points into the measured
-                            treeline. Advisory &mdash; it never stops the run.
+                            Trims the booking to the longest stretch in which the target
+                            clears the measured horizon by a full beamwidth, and skips it if
+                            there is none. Untick to observe through the treeline anyway.
                         </span>
                     </div>
                     <div class="form-group wide">
@@ -1350,6 +1356,7 @@
                         </ul>
                         <h3>The status bar</h3>
                         <p>The strip at the top of every tab always tells you the state of the system: whether an observation is <strong>running</strong>, where the <strong>telescope</strong> is pointing and whether it is slewing or homed, and whether the <strong>receiver</strong> is busy. Glance at it before you start anything.</p>
+                        <p>Under the local and UTC times, <span class="guide-jump" onclick="showClockPanel()">&#9679;&nbsp;Clocks</span> is coloured by the worst of the three clocks the telescope depends on: the Thunderbolt GPS reference (the radio's 10&nbsp;MHz and pulse-per-second), this computer's NTP clock, and the controller's NTP clock, which sets where the dish points. Click it for the Clocks card on the <span class="guide-jump" onclick="guideGoto('rf')">RF calibration</span> tab: the state of each clock, the Thunderbolt's satellites, and a stability plot on request.</p>
                         <h3>Ground rules</h3>
                         <div class="callout warn"><span class="tag">Be gentle with the mount</span>The dish is a real, wearing machine. It has hard limits in both axes and homes itself against them. Avoid needless slewing, and never assume it has finished moving &mdash; watch the status bar. If something looks wrong, the red <strong>Stop</strong> button halts the current run.</div>
                         <div class="callout note"><span class="tag">Turn on Help tips</span>The <strong>Help tips</strong> box on the <span class="guide-jump" onclick="guideGoto('config')">Configuration</span> tab (under Appearance) shows a one-line explanation whenever you hover over a control. Leave it on while you are learning.</div>
@@ -1379,7 +1386,14 @@
                             <li><strong>Mode.</strong> Track the source across the sky, or park and let it drift through the beam &mdash; <span class="guide-jump" onclick="showGuide('types')">Tracked vs drift scan</span>.</li>
                             <li><strong>Respect local horizon.</strong> Leave this on: it keeps the dish from observing through the trees and dome towers, which are warm and would contaminate the data.</li>
                         </ul>
-                        <div class="callout note"><span class="tag">One telescope, one user</span>Only one thing can hold the dish and receiver at a time: an observation, a Sun scan, a calibration, a horizon scan. A scheduled observation takes priority and will interrupt a calibration to run on time.</div>
+                        <div class="callout note"><span class="tag">One telescope, one user</span>Only one thing can hold the dish and receiver at a time: a scheduled observation, a Sun scan, a calibration day, a horizon scan, an RF calibration, or the receiver GUI started by hand from the button at the top of the page. A scheduled observation takes priority and will interrupt a calibration to run on time; the others refuse to start while something else holds the hardware.</div>
+                        <h3>Runs the telescope starts on its own</h3>
+                        <p>Two standing orders on the <span class="guide-jump" onclick="guideGoto('config')">Configuration</span> tab start runs whenever the telescope is idle. Both are off unless someone has switched them on.</p>
+                        <ul>
+                            <li><strong>Pulsar monitor.</strong> Records PSR B0329+54 in pulsar mode every day for the window length set there (16&nbsp;h by default). <em>Follow the pulsar</em> opens the window when it comes out from behind the northern obstruction on the measured horizon, which moves about 4 minutes earlier each day; <em>Fixed clock time</em> opens it at the time given.</li>
+                            <li><strong>Sun monitor.</strong> Tracks the Sun in 3&nbsp;s records whenever nothing is booked or running and the Sun clears the measured horizon. It never starts inside the pulsar window, and ends each run at the stow.</li>
+                        </ul>
+                        <p>Bookings come first: a monitor run ends two minutes short of the next booking, and the pulsar monitor resumes afterwards if at least 30&nbsp;minutes of its window are left. Anything started by hand from this page &mdash; an observation on the Observe tab, a Sun scan, beam drift, horizon scan or RF calibration, the receiver GUI &mdash; stops a monitor run and holds both monitors off for 30&nbsp;minutes, and so does <strong>Stop</strong>. A goto made from the controller's own page is not seen by the scheduler, so switch a monitor off before driving the dish from there. The status bar shows a monitor run like any other observation.</p>
                         <div class="callout warn"><span class="tag">The tuning is fixed</span>Every scheduled observation records with the same receiver setup (the &ldquo;fixed instrument&rdquo;), chosen so the hydrogen line always lands in a clean part of the band. You do not set the frequency per observation; it is shown for reference only.</div>
                     </div>
 
@@ -1389,7 +1403,7 @@
                         <h3>Tracked observation</h3>
                         <p>The mount continuously re-points to keep the source in the beam as the Earth turns. Every spectrum in the file looks at the <strong>same piece of sky</strong>, so you can add them up to beat down the noise and study one direction deeply. Use it to measure the hydrogen profile of a chosen point.</p>
                         <h3>Drift scan</h3>
-                        <p>The mount is parked at a fixed spot and the sky <strong>drifts through the beam</strong> as the Earth rotates (about 15&deg; per hour, so a 5&deg; beam takes ~20&nbsp;minutes to cross). Successive spectra look at <strong>different sky</strong>: the source rises in signal as it enters the beam, peaks at the centre, and falls as it leaves. Use it to measure a source's brightness and the beam's shape, with the mount barely moving.</p>
+                        <p>The mount is parked at a fixed spot and the sky <strong>drifts through the beam</strong> as the Earth rotates (15&deg; per hour on the celestial equator, so the 4.3&deg; beam takes about 17&nbsp;minutes to cross; longer for a source further north). Successive spectra look at <strong>different sky</strong>: the source rises in signal as it enters the beam, peaks at the centre, and falls as it leaves. Use it to measure a source's brightness and the beam's shape, with the mount barely moving.</p>
                         <div class="callout note"><span class="tag">Why the distinction is recorded</span>The file stores <code>track</code> or <code>drift</code> as the observation mode, because it is the difference between &ldquo;these rows are the same sky&rdquo; and &ldquo;these rows are a cut across the sky.&rdquo; An alt/az &ldquo;fixed direction&rdquo; entry is a drift scan.</div>
                     </div>
 
@@ -1415,7 +1429,7 @@
                         <p>From the one radio stream the receiver records <strong>two views</strong> of the sky at once:</p>
                         <ul>
                             <li><strong>The H&nbsp;I sub-band</strong> &mdash; a narrow, finely-channelled band around the 21&nbsp;cm line (~0.8&nbsp;km/s per channel), for the line itself. Datasets <code>frequency_hz</code> and <code>spectra_kelvin</code> (or <code>spectra_linear</code>).</li>
-                            <li><strong>The continuum</strong> &mdash; the whole 8&nbsp;MHz in coarser channels with the line cut out, for broadband sources. Datasets <code>frequency_hz_wide</code> and <code>spectra_wide_kelvin</code> (or <code>_linear</code>).</li>
+                            <li><strong>The continuum product</strong> &mdash; the whole 8&nbsp;MHz in 1024 channels of 7.8&nbsp;kHz, for broadband sources. It includes the line; continuum is measured over 1415.7&ndash;1418.8&nbsp;MHz, where there is no hydrogen. Datasets <code>frequency_hz_wide</code> and <code>spectra_wide_kelvin</code> (or <code>_linear</code>).</li>
                         </ul>
                         <p>Each row of a <code>spectra_*</code> array is one integration. Alongside them, one value per row: <code>timestamps</code> (Unix seconds, at the <em>centre</em> of the integration), <code>integration_times</code>, and <code>overflows</code> (samples the SDR dropped that record &mdash; should be zero).</p>
 
@@ -1425,7 +1439,7 @@
                         <p>The tuning, the calibration constants (<code>applied_gain_counts_per_k</code>, <code>applied_t_sys_k</code>), where the dish pointed, the site position, the beam width, and the observation's name and mode are all stored as file attributes. A drift scan also records the computed beam-crossing time. Nothing about the observation lives only in the filename.</p>
 
                         <h3>Reading one</h3>
-                        <p>The repository ships a notebook, <code>receiver_scheduler/read_h1_data.ipynb</code>, that opens a recording, prints all of this and plots it &mdash; a tracked spectrum as a spectrum, a drift scan as its power-through-time curve. Start there. The essence is only a few lines:</p>
+                        <p>The repository ships a notebook, <code>notebooks/read_h1_data.ipynb</code>, that opens a recording, prints all of this and plots it &mdash; a tracked spectrum as a spectrum, a drift scan as its power-through-time curve. Start there. The essence is only a few lines:</p>
                         <pre style="background:#0f0f23; border:1px solid #333; border-radius:6px; padding:12px; overflow-x:auto; font-size:12px; color:#ccd; line-height:1.5;">import h5py
 with h5py.File('data/observations/20260828_060018_drift.h5', 'r') as f:
     freq    = f['frequency_hz'][:]        # Hz
@@ -1443,18 +1457,20 @@ with h5py.File('data/observations/20260828_060018_drift.h5', 'r') as f:
                             <li><code>time_marks</code> &mdash; (row, radio time in Unix seconds) at the first sample and after every gap. Row <em>i</em> is timed from the latest mark before it plus the row count, so a dropped block moves only the rows after it, by exactly what was dropped. The row may be fractional (<code>time_marks_exact</code> = 1 in files from 27&nbsp;September 2026). <code>t0_unix</code> is the start.</li>
                             <li><code>overflow_marks</code>, <code>underflow_marks</code> &mdash; (row, count) wherever the radio dropped samples. A few in a night is normal.</li>
                         </ul>
-                        <p>The attributes carry the catalogue values the fold used (<code>pulsar_name</code>, <code>pulsar_period_s</code>, <code>pulsar_pdot</code>, <code>pulsar_pepoch_mjd</code>, <code>pulsar_dm</code>, <code>pulsar_ra_deg</code>/<code>_dec_deg</code>), the clock (<code>time_source</code>: <code>pps</code> or <code>host</code>), the site, the pointing model and the homing result, as for any recording.</p>
+                        <p>The attributes carry the catalogue values the fold used (<code>pulsar_name</code>, <code>pulsar_period_s</code>, <code>pulsar_pdot</code>, <code>pulsar_pepoch_mjd</code>, <code>pulsar_dm</code>, <code>pulsar_ra_deg</code>/<code>_dec_deg</code>), the clock (<code>time_source</code>: <code>pps</code> or <code>host</code>), the site, the pointing model and the homing result, as for any recording. From 30&nbsp;September 2026 each file also carries the calibration it is scaled with: <code>cal_t_sys_k</code> and <code>cal_effective_area_m2</code>, with the dates they were measured (<code>cal_t_sys_utc</code>, <code>cal_beam_utc</code>).</p>
                         <p>To fold one yourself use <code>pulsar_fold.analyse_file(path)</code>, which does the timing, barycentring and folding the Observe tab shows. <code>sigproc_export.py</code> writes the recording as a SIGPROC <code>.fil</code> for PRESTO or any other pulsar package, with the gaps filled so every row sits on one time grid.</p>
                     </div>
 
                     <div class="guide-section" id="guide-suncal">
                         <h2>Sun scan &amp; calibration</h2>
-                        <p>Two things must be true before your numbers mean anything: the dish must point where it says it does, and received counts must convert to a real temperature. Both are settled by looking at the <strong>Sun</strong>, which is a strong, well-known radio source.</p>
+                        <p>Two things must be true before your numbers mean anything: the dish must point where it says it does, and received counts must convert to a real temperature. The Sun settles the first; the temperature scale comes from the hydrogen sky on the <span class="guide-jump" onclick="guideGoto('rf')">RF calibration</span> tab.</p>
                         <h3>Pointing</h3>
                         <p>On the <span class="guide-jump" onclick="guideGoto('sunscan')">Sun Scan</span> tab the telescope rasters a small grid around the Sun and finds where the signal actually peaks. The offset between that and where it aimed is a pointing error. Collect these over a range of Sun positions and fit a <strong>pointing model</strong> that corrects the mount everywhere &mdash; see <span class="guide-jump" onclick="showGuide('pointing')">Pointing &amp; calibration</span>.</p>
+                        <h3>The beam</h3>
+                        <p><strong>Start beam drift</strong> on the same tab parks the dish ahead of the Sun and lets it drift through the beam for two hours. The main lobe's solid angle is integrated from that crossing and adopted if the scan passes its checks. The beam in force, 21.0&nbsp;deg&sup2; (4.30&deg; FWHM equivalent), was measured on 25&nbsp;September 2026.</p>
                         <h3>Temperature scale</h3>
-                        <p>The same measurement gives the <strong>gain</strong> (counts per kelvin) and the <strong>system temperature</strong> <span class="var">T</span><sub>sys</sub>, which together put spectra on a kelvin scale. Because the receiver cools through the evening the gain drifts a little, so calibrate close in time to the observation that needs absolute temperatures.</p>
-                        <div class="callout note"><span class="tag">Why the Sun, and not hydrogen</span>Calibrating a hydrogen measurement against a hydrogen model would be circular. The Sun is an independent, broadband source, so it is an honest ruler for both pointing and temperature.</div>
+                        <p>Two steps on the RF calibration tab. First the <strong>bandpass</strong>: the receiver's sensitivity against frequency, measured on sky with almost no hydrogen (the Lockman Hole, <span class="var">l</span>=150, <span class="var">b</span>=+52) or fitted from a suitable recording on disk. Then the <strong>gain</strong> (counts per kelvin) and the <strong>system temperature</strong> <span class="var">T</span><sub>sys</sub>, from a bright hydrogen field fitted against the simulator's model of what that field should show through this beam. The values in force are shown on the tab. Replacing the bandpass means refitting the gain: the two are a pair. The receiver cools through the evening and the gain drifts with it, so calibrate close in time to an observation that needs absolute temperatures.</p>
+                        <div class="callout note"><span class="tag">Why hydrogen, and where the Sun comes in</span>A bright H&nbsp;I field gives brightness from near zero to over 100&nbsp;K across one spectrum, and that spread is what separates the gain from <span class="var">T</span><sub>sys</sub>. The cost is that the kelvin scale is tied to the survey model, which is circular for anyone measuring H&nbsp;I brightness. The independent check is the Sun: a solar track reports its flux in solar flux units beside the professional stations' reading for the same day.</div>
                     </div>
 
                     <div class="guide-section" id="guide-pulsar">
@@ -1464,22 +1480,22 @@ with h5py.File('data/observations/20260828_060018_drift.h5', 'r') as f:
                         <p>At 1.4&nbsp;GHz B0329+54 averages about 200&nbsp;mJy, bright for a pulsar. Even so its pulse adds only about 0.5&nbsp;mK to a system temperature near 190&nbsp;K. The next candidate, B0950+08, would need of order twenty times the observing time, so the pulsar mode is built for B0329+54 alone. It is circumpolar from Glasgow and can be observed at any hour.</p>
                         <h3>Booking a run</h3>
                         <ul>
-                            <li>In <span class="guide-jump" onclick="guideGoto('scheduler')">Schedule</span>, choose <strong>Observation &rarr; PSR B0329+54 (folded)</strong>. Plan on <strong>6&nbsp;hours or more</strong>; tick <strong>home first</strong>.</li>
+                            <li>In <span class="guide-jump" onclick="guideGoto('scheduler')">Schedule</span>, choose <strong>Observation &rarr; PSR B0329+54 (folded)</strong>. Plan on <strong>6&nbsp;hours or more</strong>; tick <strong>home first</strong>. The pulsar monitor on the Configuration tab records it daily without bookings &mdash; see <span class="guide-jump" onclick="showGuide('scheduling')">Scheduling observations</span>.</li>
                             <li>The integration-time box does not apply: the receiver records the whole 1397&ndash;1429&nbsp;MHz band as a single channel, one sample every millisecond (about 14&nbsp;MB an hour; what is in the file is under <span class="guide-jump" onclick="showGuide('datafile'); document.getElementById('guide-pulsarfile').scrollIntoView()">The data file</span>).</li>
                             <li>Expect roughly 8&sigma; in 6&nbsp;h and 13&sigma; in 16&nbsp;h. A night can be half or double that: the pulsar's brightness varies by factors of two over hours (interstellar scintillation), and our single feed sees only part of its partly polarised signal.</li>
                         </ul>
                         <h3>Reading the plot</h3>
                         <p>Open the recording in <span class="guide-jump" onclick="guideGoto('observe')">Observe</span> (the <em>Pulsar</em> filter lists them) and press <strong>Plot Result</strong>. It takes about half a minute for a long run.</p>
                         <ul>
-                            <li><strong>Top left &mdash; this run's pulse.</strong> The data folded at the period predicted from the pulsar's catalogue values and the Earth's motion, shown twice. The pulse sits at phase <strong>0.5</strong> (and 1.5) by design: every run shares one phase zero, so a pulse elsewhere means something is wrong. The title gives the matched <strong>SNR</strong>; 5 or more is a detection.</li>
+                            <li><strong>Top left &mdash; this run's pulse.</strong> The data folded at the period predicted from the pulsar's catalogue values and the Earth's motion, shown twice. The pulse sits at phase <strong>0.5</strong> (and 1.5) by design: every run shares one phase zero, so a pulse elsewhere means something is wrong. The title gives the matched <strong>SNR</strong>; 5 or more is a detection. The baseline is zeroed at the off-pulse level; the left axis is antenna temperature in mK, the right the same as a percentage of total power, and the title gives the <strong>mean flux density</strong> in mJy. Each run is scaled with the <span class="var">T</span><sub>sys</sub> and effective area recorded in its own file (&ldquo;recorded calibration&rdquo;); a run from before 30&nbsp;September 2026 uses the calibration now in force and says &ldquo;current&rdquo;. Treat the flux as good to about &plusmn;40%: <span class="var">T</span><sub>sys</sub> is measured on the H&nbsp;I band, not the 32&nbsp;MHz pulsar band, and the feed's response to the pulsar's polarisation is unknown.</li>
                             <li><strong>Bottom left &mdash; how it built up.</strong> 10-minute slices on the same phase axis. The pulse appears as a vertical line where it is bright enough; a horizontal band lighting every phase is interference, not the pulsar.</li>
-                            <li><strong>Top right &mdash; every run added together,</strong> with the published profile from Effelsberg (red) for comparison. With enough nights the shoulder and the trailing component become visible.</li>
+                            <li><strong>Top right &mdash; every run added together,</strong> each night converted to mK on its own calibration before adding, with the stack's mean flux density and the published profile from Effelsberg (red) for comparison. With enough nights the shoulder and the trailing component become visible.</li>
                             <li><strong>Bottom right &mdash; timing.</strong> Each red point is one night's time of arrival compared with the prediction; grey points are that night's 4-hour pieces, a consistency check. The box gives the period and its rate of change, fitted once there are enough nights (a period from three nights spanning a day, the slow-down from four spanning three weeks).</li>
                         </ul>
                         <p><strong>PRESTO fold</strong> refolds the same recording with PRESTO, the standard professional package, as an independent check. Its significance is a different statistic from ours; quote each tool's number as its own.</p>
                         <h3>Times of arrival and the timing record</h3>
                         <p>Plotting a run measures its <strong>time of arrival (TOA)</strong>: the moment the pulse reached the telescope, found by fitting the Effelsberg profile to our fold. Runs below SNR&nbsp;6 give no TOA (a weak fit would lock onto noise). TOAs go into a standard <code>.tim</code> file, which the timing program PINT fits for the pulsar's period and spin-down. Over months that shows the pulsar slowing down and, eventually, its irregularities.</p>
-                        <div class="callout note"><span class="tag">Clock</span>Until the Thunderbolt's pulse-per-second is wired into the radio, times come from the computer's network clock, good to a few milliseconds; such TOAs are flagged <code>-pps 0</code> and weighted accordingly. With the PPS the radio's clock is set to GPS time and the flag becomes <code>-pps 1</code>. Nothing needs switching: the receiver uses the PPS automatically when it sees one.</div>
+                        <div class="callout note"><span class="tag">Clock</span>Since 28&nbsp;September 2026 the Thunderbolt's pulse-per-second is wired into the radio, which sets its clock on a PPS edge; those TOAs are flagged <code>-pps 1</code>. The first two nights were timed from the computer's network clock, good to a few milliseconds, and are flagged <code>-pps 0</code> and weighted accordingly. Nothing needs switching: the receiver uses the PPS whenever it sees one, falls back to the computer's clock if no edge arrives, and records which it used as <code>time_source</code>.</div>
                         <h3>Where the results are kept</h3>
                         <p>The raw recording stays in <code>data/observations/</code> like any other. The results that took a night of telescope time &mdash; the TOAs (<code>b0329.tim</code>, one per night, the file to fit; the 4-hour pieces are kept apart in <code>b0329_segments.tim</code> so that no timing program counts a night twice), the ephemeris (<code>B0329+54.par</code>) and each run's folded profile &mdash; are written to <code>receiver_scheduler/pulsar_timing/</code>, which is kept in git. The added-up profile is built from those stored profiles, so a night still counts after its recording has been deleted. Plotting writes them; committing them is done by hand.</p>
                         <div class="callout note"><span class="tag">Full details</span>How the recording, folding, phase model, TOAs and PINT fit work is written up in <code>docs/PULSAR_PROCESSING.tex</code>.</div>
@@ -1540,14 +1556,14 @@ with h5py.File('data/observations/20260828_060018_drift.h5', 'r') as f:
                         <h3>Angular resolution</h3>
                         <p>Diffraction blurs any aperture. For a dish of diameter <span class="var">D</span> observing wavelength <span class="var">&lambda;</span>, the beam width is about</p>
                         <div class="eqn"><span class="var">&theta;</span> &asymp; <span class="var">&lambda;</span> / <span class="var">D</span> &nbsp;(radians) &nbsp;=&nbsp; 0.211&nbsp;m / 3&nbsp;m &asymp; 0.07&nbsp;rad &asymp; 4&deg;</div>
-                        <span class="eqn-where">In practice this dish's beam is measured at about <strong>5&deg;</strong> across (full width at half maximum). That is roughly ten times the width of the full Moon.</span>
+                        <span class="eqn-where">Measured from a two-hour Sun drift on 25&nbsp;September 2026, the main lobe covers <strong>21.0&nbsp;deg&sup2;</strong>, the same as a Gaussian beam <strong>4.30&deg;</strong> across (full width at half maximum): about eight times the width of the full Moon.</span>
                         <h3>What that means for you</h3>
                         <ul>
-                            <li>The telescope <strong>cannot resolve</strong> individual clouds; it averages everything within ~5&deg; into one measurement.</li>
+                            <li>The telescope <strong>cannot resolve</strong> individual clouds; it averages everything within ~4&deg; into one measurement.</li>
                             <li>A source smaller than the beam (like the Sun, half a degree across) is smeared out to the beam's width &mdash; that smearing <em>is</em> the beam shape, which a drift scan measures.</li>
                             <li>To point and calibrate well you must know the beam, because it sets how much of a source's signal you actually collect.</li>
                         </ul>
-                        <div class="callout note"><span class="tag">A wide beam is not a handicap here</span>A wide beam is poor for imaging but good for surveying diffuse gas. The Milky Way's hydrogen fills the sky on scales far larger than 5&deg;, so a dish this size maps it well.</div>
+                        <div class="callout note"><span class="tag">A wide beam is not a handicap here</span>A wide beam is poor for imaging but good for surveying diffuse gas. The Milky Way's hydrogen fills the sky on scales far larger than 4&deg;, so a dish this size maps it well.</div>
                     </div>
 
                     <div class="guide-section" id="guide-temperature">
@@ -1556,7 +1572,7 @@ with h5py.File('data/observations/20260828_060018_drift.h5', 'r') as f:
                         <h3>Antenna temperature</h3>
                         <p>In the radio, the power a receiver collects in a bandwidth <span class="var">&Delta;&nu;</span> is proportional to a temperature (the Rayleigh&ndash;Jeans law), so signals are quoted in <strong>kelvin</strong>:</p>
                         <div class="eqn"><span class="var">P</span> = <span class="var">k</span><sub>B</sub> <span class="var">T</span> <span class="var">&Delta;&nu;</span></div>
-                        <p>The telescope always measures the <strong>sum</strong> of the sky signal and the receiver's own noise. The receiver noise is captured by the <strong>system temperature</strong> <span class="var">T</span><sub>sys</sub> (a few hundred kelvin for this instrument); the source adds an <strong>antenna temperature</strong> <span class="var">T</span><sub>A</sub> on top.</p>
+                        <p>The telescope always measures the <strong>sum</strong> of the sky signal and the receiver's own noise. The receiver noise is captured by the <strong>system temperature</strong> <span class="var">T</span><sub>sys</sub> (about 190&nbsp;K for this instrument since the feed was replaced in September 2026); the source adds an <strong>antenna temperature</strong> <span class="var">T</span><sub>A</sub> on top.</p>
                         <h3>The radiometer equation</h3>
                         <p>You cannot measure <span class="var">T</span><sub>A</sub> perfectly, because the total power fluctuates. The noise on a measurement falls as you average more:</p>
                         <div class="eqn">&Delta;<span class="var">T</span> = <span class="var">T</span><sub>sys</sub> / &radic;( <span class="var">&Delta;&nu;</span> &middot; <span class="var">&tau;</span> )</div>
@@ -1572,10 +1588,10 @@ with h5py.File('data/observations/20260828_060018_drift.h5', 'r') as f:
                         <p>No real mount is perfect. Its azimuth axis is slightly tilted, its zero points are offset, the structure flexes under gravity, and the feed is not perfectly centred. Left uncorrected these add up to a degree or more &mdash; a large fraction of the beam. A <strong>pointing model</strong> describes these errors with a handful of terms (axis tilts, index offsets, collimation) fitted from Sun scans, and the controller applies it to every command so the beam lands where you asked.</p>
                         <div class="callout note"><span class="tag">Judge a model by prediction</span>A pointing model is good if it <em>predicts</em> where a source will be on a day it was not fitted to &mdash; not because any single term looks reasonable. This telescope's model predicts blind to about 0.03&deg;, a small fraction of the beam.</div>
                         <h3>From counts to kelvin</h3>
-                        <p>A raw spectrum is in arbitrary receiver counts. Two measurements fix the scale: the <strong>gain</strong> <span class="var">G</span> (counts per kelvin) and the <strong>system temperature</strong> <span class="var">T</span><sub>sys</sub>, both from a Sun scan against the known solar flux. Then</p>
+                        <p>A raw spectrum is in arbitrary receiver counts. Two measurements fix the scale: the <strong>gain</strong> <span class="var">G</span> (counts per kelvin) and the <strong>system temperature</strong> <span class="var">T</span><sub>sys</sub>, both fitted on the <span class="guide-jump" onclick="guideGoto('rf')">RF calibration</span> tab from a bright hydrogen field against the survey model. Then</p>
                         <div class="eqn"><span class="var">T</span><sub>A</sub> = (counts) / <span class="var">G</span> &minus; <span class="var">T</span><sub>sys</sub></div>
-                        <p>There is also a fixed <strong>bandpass</strong> shape &mdash; the receiver is more sensitive at some frequencies than others &mdash; which is measured and divided out so a flat sky looks flat. With pointing, bandpass and gain all in hand, a spectrum becomes a real map of hydrogen temperature versus velocity.</p>
-                        <div class="callout tip"><span class="tag">An external check</span>Put through this chain, the telescope measured the Sun at 112 solar flux units against a reference network's 88&ndash;108 that day &mdash; agreement within the network's own spread, and an end-to-end test of the whole calibration.</div>
+                        <p>Before that, the <strong>bandpass</strong> shape &mdash; the receiver is more sensitive at some frequencies than others &mdash; is measured on an empty field and divided out so a flat sky looks flat. With pointing, bandpass and gain all in hand, a spectrum becomes a real map of hydrogen temperature versus velocity.</p>
+                        <div class="callout tip"><span class="tag">An external check</span>A solar track reduced through this chain is captioned with its flux in solar flux units beside the professional stations' 1415&nbsp;MHz reading for that day. The stations disagree among themselves by 10&ndash;20&nbsp;SFU, so agreement within that spread is agreement. It tests bandpass, gain, <span class="var">T</span><sub>sys</sub>, beam and the antenna theorem together against a standard that owes nothing to the hydrogen model.</div>
                     </div>
 
                     <div class="guide-section" id="guide-adv-hyperfine">
@@ -1610,7 +1626,7 @@ with h5py.File('data/observations/20260828_060018_drift.h5', 'r') as f:
                             <tr style="border-bottom:1px solid #17203a;"><td style="padding:5px 8px;">Mid-latitude, |b|~30&deg;</td><td>5&ndash;15&nbsp;K</td><td>100&ndash;300</td><td>2&ndash;5&times;10<sup>20</sup></td></tr>
                             <tr><td style="padding:5px 8px;">Coldest high-latitude sky</td><td>1&ndash;3&nbsp;K</td><td>30&ndash;80</td><td>0.6&ndash;1.5&times;10<sup>20</sup></td></tr>
                         </table>
-                        <div class="callout note"><span class="tag">Beam averaging</span>The ~5&deg; beam never resolves individual clouds: it measures the column density averaged over a patch of Galaxy some 5&deg; across &mdash; hundreds of parsecs at the inner Galaxy. The profile it records is the superposition of everything along the sight line, separated only in velocity, which is exactly what the tangent-point method exploits.</div>
+                        <div class="callout note"><span class="tag">Beam averaging</span>The 4.3&deg; beam never resolves individual clouds: it measures the column density averaged over a patch of Galaxy some 4&deg; across &mdash; hundreds of parsecs at the inner Galaxy. The profile it records is the superposition of everything along the sight line, separated only in velocity, which is exactly what the tangent-point method exploits.</div>
                     </div>
 
                     <div class="guide-section" id="guide-adv-rotation">
@@ -1622,67 +1638,68 @@ with h5py.File('data/observations/20260828_060018_drift.h5', 'r') as f:
                         <p>In the first quadrant (0&deg; &lt; <span class="var">l</span> &lt; 90&deg;) the line of sight reaches a minimum radius &mdash; the <strong>tangent point</strong>, at <span class="var">R</span> = <span class="var">R</span><sub>0</sub> sin&nbsp;<span class="var">l</span> &mdash; where the whole circular velocity lies along the sight line. That gas gives the extreme (<em>terminal</em>) velocity in the profile, and the equation collapses to</p>
                         <div class="eqn"><span class="var">V</span>(<span class="var">R</span><sub>0</sub> sin&nbsp;<span class="var">l</span>) = <span class="var">v</span><sub>max</sub>(<span class="var">l</span>) + <span class="var">V</span><sub>0</sub> sin&nbsp;<span class="var">l</span></div>
                         <p>Measuring the terminal velocity as a function of longitude traces the <strong>rotation curve directly</strong> &mdash; no distance ladder, no assumption beyond circular rotation. This is the classic experiment for a telescope this size, and everything else in the system exists to make it possible: the pointing must be good to a fraction of the beam so <span class="var">l</span> means what it says, the clock must be right, and the velocity axis must be corrected to the LSR or the curve acquires an annual wobble of up to 30&nbsp;km/s.</p>
-                        <div class="callout note"><span class="tag">Why the channels are so fine</span>The 2.4&nbsp;MHz band spans &plusmn;253&nbsp;km/s, comfortably over the &plusmn;150&nbsp;km/s galactic rotation produces. The 586&nbsp;Hz channels are 0.124&nbsp;km/s &mdash; some 80&times; finer than a typical 10&nbsp;km/s line component. That is deliberate: channels can be averaged after the fact but never un-averaged, and smoothing to 10&nbsp;km/s buys a factor of nine in sensitivity.</div>
+                        <div class="callout note"><span class="tag">Why the channels are this fine</span>The receiver is tuned once for every observation: LO 1418.905752&nbsp;MHz, 8&nbsp;Msps, gain 20&nbsp;dB. The H&nbsp;I sub-band, 1419.0&ndash;1422.3&nbsp;MHz, spans topocentric &minus;400 to +300&nbsp;km/s, beyond anything galactic rotation produces. Its channels are 3.9&nbsp;kHz, 0.82&nbsp;km/s (1024 across the decimated band, 845 kept) &mdash; finer than the narrowest galactic H&nbsp;I, at 2&ndash;3&nbsp;km/s, and some twelve times finer than a typical 10&nbsp;km/s line component. Channels can be averaged after the fact but never un-averaged, and smoothing to 10&nbsp;km/s buys a factor of 3.5 in sensitivity.</div>
                     </div>
 
                     <div class="guide-section" id="guide-adv-antenna">
                         <h2>The antenna theorem &amp; sensitivity</h2>
                         <p>The dish's geometric area is <span class="var">A</span><sub>g</sub> = <span class="var">&pi;D</span>&sup2;/4 = 7.07&nbsp;m&sup2;. What it actually collects &mdash; the <strong>effective area</strong> &mdash; follows from the beam through the antenna theorem <span class="var">A</span><sub>e</sub><span class="var">&Omega;</span><sub>A</sub> = <span class="var">&lambda;</span>&sup2;:</p>
-                        <div class="eqn"><span class="var">A</span><sub>e</sub> = <span class="var">&lambda;</span>&sup2;<span class="var">&eta;</span><sub>MB</sub> / (1.133&nbsp;<span class="var">&theta;</span><sub>FWHM</sub>&sup2;) = 3.74&nbsp;m&sup2;</div>
-                        <span class="eqn-where">with main-beam efficiency <span class="var">&eta;</span><sub>MB</sub> &asymp; 0.7. That is an aperture efficiency <span class="var">&eta;</span><sub>A</sub> = <span class="var">A</span><sub>e</sub>/<span class="var">A</span><sub>g</sub> = 0.53, reasonable for a prime-focus dish with a simple feed.</span>
-                        <p>The sensitivity in kelvin per jansky, and its reciprocal the system-equivalent flux density, are then</p>
-                        <div class="eqn"><span class="var">&Gamma;</span> = <span class="var">A</span><sub>e</sub>/2<span class="var">k</span> = 1.35&nbsp;mK&nbsp;Jy<sup>&minus;1</sup>,&nbsp;&nbsp;&nbsp; SEFD = 2<span class="var">kT</span><sub>sys</sub>/<span class="var">A</span><sub>e</sub> &asymp; 5.2&times;10<sup>4</sup>&nbsp;Jy&nbsp;<small>(at T<sub>sys</sub>=70&nbsp;K)</small></div>
-                        <p>Fifty thousand janskys is a large number, and it says plainly that this is a small telescope: only a handful of the brightest radio sources are detectable in continuum at all.</p>
+                        <div class="eqn"><span class="var">A</span><sub>e</sub> = <span class="var">&lambda;</span>&sup2; / <span class="var">&Omega;</span><sub>main</sub> = (0.2111&nbsp;m)&sup2; / 6.39&times;10<sup>&minus;3</sup>&nbsp;sr = 6.98&nbsp;m&sup2;</div>
+                        <span class="eqn-where"><span class="var">&Omega;</span><sub>main</sub> is the measured main lobe, 21.0&nbsp;deg&sup2;. The result is the geometric area to within 1%, which does not mean an aperture efficiency near 1: the main lobe leaves out the sidelobes and the spillover past the rim, so this is an upper bound, and the true efficiency on the present feed has not been measured. It is still the right area for fluxes on this calibration, because the gain is fitted against the sky model seen through the same main lobe, and the two factors cancel.</span>
+                        <p>The sensitivity in kelvin per jansky (one polarisation), and the system-equivalent flux density, are then</p>
+                        <div class="eqn"><span class="var">&Gamma;</span> = <span class="var">A</span><sub>e</sub>/2<span class="var">k</span> = 2.53&nbsp;mK&nbsp;Jy<sup>&minus;1</sup>,&nbsp;&nbsp;&nbsp; SEFD = 2<span class="var">kT</span><sub>sys</sub>/<span class="var">A</span><sub>e</sub> = <span class="var">T</span><sub>sys</sub>/<span class="var">&Gamma;</span> &asymp; 7.4&times;10<sup>4</sup>&nbsp;Jy&nbsp;<small>(at T<sub>sys</sub>=188&nbsp;K)</small></div>
+                        <p>Seventy thousand janskys is a large number, and it says plainly that this is a small telescope: only a handful of the brightest radio sources are detectable in continuum at all.</p>
                         <h3>Beam dilution &amp; expected signals</h3>
-                        <p>An unresolved source of solid angle <span class="var">&Omega;</span><sub>s</sub> is diluted to <span class="var">T</span><sub>A</sub> &asymp; <span class="var">&eta;</span><sub>MB</sub> <span class="var">T</span><sub>B</sub> <span class="var">&Omega;</span><sub>s</sub>/<span class="var">&Omega;</span><sub>b</sub>. The Sun's 0.53&deg; disc fills only ~0.8% of the 27&nbsp;deg&sup2; beam, but its 21&nbsp;cm brightness is ~10<sup>5</sup>&nbsp;K, so it still arrives at ~10<sup>3</sup>&nbsp;K &mdash; far above everything else in the sky.</p>
+                        <p>An unresolved source of solid angle <span class="var">&Omega;</span><sub>s</sub> is diluted to <span class="var">T</span><sub>A</sub> &asymp; <span class="var">&eta;</span><sub>MB</sub> <span class="var">T</span><sub>B</sub> <span class="var">&Omega;</span><sub>s</sub>/<span class="var">&Omega;</span><sub>b</sub>. The Sun's 0.53&deg; disc fills only ~1% of the 21&nbsp;deg&sup2; beam, but its 21&nbsp;cm brightness is ~10<sup>5</sup>&nbsp;K, so it still arrives at nearly 2000&nbsp;K &mdash; far above everything else in the sky. The table uses <span class="var">&Gamma;</span> = 2.53&nbsp;mK/Jy for compact sources and <span class="var">T</span><sub>sys</sub> = 188&nbsp;K; extended H&nbsp;I fills the beam, so on this calibration its <span class="var">T</span><sub>A</sub> is its beam-averaged <span class="var">T</span><sub>B</sub>.</p>
                         <table style="width:100%; border-collapse:collapse; margin:10px 0; font-size:13.5px;">
                             <tr style="color:#7fdcff; text-align:left; border-bottom:1px solid #24304f;"><th style="padding:5px 8px;">Source</th><th>S or T<sub>B</sub></th><th>T<sub>A</sub></th><th>Y (vs blank sky)</th></tr>
-                            <tr style="border-bottom:1px solid #17203a;"><td style="padding:5px 8px;">Sun (quiet)</td><td>5&times;10<sup>5</sup>&nbsp;Jy</td><td>677&nbsp;K</td><td>10.7</td></tr>
-                            <tr style="border-bottom:1px solid #17203a;"><td style="padding:5px 8px;">Cassiopeia&nbsp;A</td><td>1660&nbsp;Jy</td><td>2.25&nbsp;K</td><td>1.032</td></tr>
-                            <tr style="border-bottom:1px solid #17203a;"><td style="padding:5px 8px;">Cygnus&nbsp;A</td><td>1590&nbsp;Jy</td><td>2.15&nbsp;K</td><td>1.031</td></tr>
-                            <tr style="border-bottom:1px solid #17203a;"><td style="padding:5px 8px;">Moon</td><td>890&nbsp;Jy</td><td>1.20&nbsp;K</td><td>1.017</td></tr>
-                            <tr style="border-bottom:1px solid #17203a;"><td style="padding:5px 8px;">H&nbsp;I, inner plane</td><td>80&ndash;120&nbsp;K</td><td>55&ndash;85&nbsp;K</td><td>1.8&ndash;2.2</td></tr>
-                            <tr><td style="padding:5px 8px;">H&nbsp;I, high latitude</td><td>1&ndash;3&nbsp;K</td><td>0.7&ndash;2.1&nbsp;K</td><td>1.01&ndash;1.03</td></tr>
+                            <tr style="border-bottom:1px solid #17203a;"><td style="padding:5px 8px;">Sun (quiet, ~70&nbsp;SFU)</td><td>7&times;10<sup>5</sup>&nbsp;Jy</td><td>1770&nbsp;K</td><td>10.4</td></tr>
+                            <tr style="border-bottom:1px solid #17203a;"><td style="padding:5px 8px;">Cassiopeia&nbsp;A</td><td>1660&nbsp;Jy</td><td>4.2&nbsp;K</td><td>1.022</td></tr>
+                            <tr style="border-bottom:1px solid #17203a;"><td style="padding:5px 8px;">Cygnus&nbsp;A</td><td>1590&nbsp;Jy</td><td>4.0&nbsp;K</td><td>1.021</td></tr>
+                            <tr style="border-bottom:1px solid #17203a;"><td style="padding:5px 8px;">Moon</td><td>890&nbsp;Jy</td><td>2.25&nbsp;K</td><td>1.012</td></tr>
+                            <tr style="border-bottom:1px solid #17203a;"><td style="padding:5px 8px;">H&nbsp;I, inner plane</td><td>80&ndash;120&nbsp;K</td><td>80&ndash;120&nbsp;K</td><td>1.4&ndash;1.6</td></tr>
+                            <tr><td style="padding:5px 8px;">H&nbsp;I, high latitude</td><td>1&ndash;3&nbsp;K</td><td>1&ndash;3&nbsp;K</td><td>1.005&ndash;1.016</td></tr>
                         </table>
-                        <p>Note the dynamic range: the Sun raises the total power tenfold; the next brightest object in the sky raises it by three per cent. That asymmetry is what makes calibration hard &mdash; see <span class="guide-jump" onclick="showGuide('adv-calibration')">The calibration chain</span>.</p>
+                        <p>The Sun drift of 25&nbsp;September 2026 peaked at <span class="var">T</span><sub>A</sub> = 1696&nbsp;K, 10.0 times the baseline. Note the dynamic range: the Sun raises the total power tenfold; the next brightest object in the sky raises it by two per cent. That asymmetry is what makes calibration hard &mdash; see <span class="guide-jump" onclick="showGuide('adv-calibration')">The calibration chain</span>.</p>
                     </div>
 
                     <div class="guide-section" id="guide-adv-radiometer">
                         <h2>System temperature &amp; radiometry</h2>
                         <h3>The noise budget</h3>
-                        <p>The telescope always measures the source signal on top of the receiver's own noise, the <strong>system temperature</strong>. The blank-sky budget is about 70&nbsp;K:</p>
+                        <p>The telescope always measures the source signal on top of the receiver's own noise, the <strong>system temperature</strong>. The gain fit of 30&nbsp;September 2026 measured 188&nbsp;K (the live value is on the <span class="guide-jump" onclick="guideGoto('rf')">RF calibration</span> tab). Where it comes from:</p>
                         <ul>
-                            <li><strong>Low-noise amplifier &mdash; 43&nbsp;K.</strong> From the SAWbird+&nbsp;H1 noise figure <span class="var">F</span>&asymp;0.6&nbsp;dB: <span class="var">T</span><sub>rx</sub> = <span class="var">T</span><sub>0</sub>(10<sup><span class="var">F</span>/10</sup>&minus;1) = 290(10<sup>0.06</sup>&minus;1) = 43&nbsp;K.</li>
-                            <li><strong>Sky &mdash; 10&nbsp;K</strong> (CMB, atmosphere, galactic background).</li>
-                            <li><strong>Spillover &amp; feed losses &mdash; 17&nbsp;K</strong> (ground pickup past the dish edge).</li>
+                            <li><strong>Low-noise amplifier &mdash; 59&nbsp;K.</strong> From the SAWbird+&nbsp;H1's typical noise figure <span class="var">F</span> = 0.8&nbsp;dB: <span class="var">T</span><sub>rx</sub> = <span class="var">T</span><sub>0</sub>(10<sup><span class="var">F</span>/10</sup>&minus;1) = 290(10<sup>0.08</sup>&minus;1) = 59&nbsp;K.</li>
+                            <li><strong>Sky &mdash; about 10&nbsp;K</strong> (CMB, atmosphere, galactic background).</li>
+                            <li><strong>Spillover</strong> &mdash; ground seen past the dish rim. Only its change with elevation has been measured, not its total.</li>
+                            <li><strong>Loss ahead of the amplifier.</strong> The rest. The gain fit implies about 1.4&nbsp;dB there, and the feed's measured mismatch (S11 about &minus;6&nbsp;dB, a quarter of the power reflected, 1.25&nbsp;dB) is most of it.</li>
                         </ul>
                         <h3>The radiometer equation</h3>
                         <p>The RMS fluctuation in one channel of width <span class="var">&Delta;&nu;</span> after integrating for <span class="var">&tau;</span> is</p>
                         <div class="eqn">&Delta;<span class="var">T</span> = ( <span class="var">T</span><sub>sys</sub> + <span class="var">T</span><sub>A</sub> ) / &radic;( <span class="var">n</span><sub>pol</sub> <span class="var">&Delta;&nu; &tau;</span> )</div>
                         <span class="eqn-where">The source appears in the numerator because it is itself noise: a channel on a bright line fluctuates more than one beside it. For this single-polarisation receiver <span class="var">n</span><sub>pol</sub>=1.</span>
-                        <p>Worked example, at 586&nbsp;Hz channels and <span class="var">T</span><sub>sys</sub>=200&nbsp;K: &Delta;<span class="var">T</span> = 200/&radic;(586&times;60) = <strong>1.1&nbsp;K per channel in one minute</strong>. Low-latitude H&nbsp;I reaches tens of kelvin, so it shows in a single minute; a few-kelvin high-latitude profile needs tens of minutes &mdash; and this equation is how you plan that.</p>
-                        <div class="callout note"><span class="tag">Total-power instability</span>The ideal above misses gain drift. The practical form is &Delta;<span class="var">T</span>/<span class="var">T</span><sub>sys</sub> = &radic;( 1/(<span class="var">&Delta;&nu;&tau;</span>) + (&Delta;<span class="var">G</span>/<span class="var">G</span>)&sup2; ), and the measured gain wobble here is &Delta;<span class="var">G</span>/<span class="var">G</span> = 2.3&times;10<sup>&minus;4</sup> (0.079&nbsp;K per 60&nbsp;s record). It bites only for <em>band-integrated</em> total power, where the thermal term divides by the channel count but the gain term does not &mdash; giving an Allan minimum for band power of about 5&nbsp;s. Per-channel line work stays thermal.</div>
+                        <p>Worked example, at the H&nbsp;I sub-band's 3.9&nbsp;kHz channels and <span class="var">T</span><sub>sys</sub>=188&nbsp;K: &Delta;<span class="var">T</span> = 188/&radic;(3906&times;60) = <strong>0.4&nbsp;K per channel in one minute</strong>. Low-latitude H&nbsp;I reaches tens of kelvin, so it shows in a single minute; a few-kelvin high-latitude profile needs tens of minutes &mdash; and this equation is how you plan that.</p>
+                        <div class="callout note"><span class="tag">Total-power instability</span>The ideal above misses gain drift. The practical form is &Delta;<span class="var">T</span>/<span class="var">T</span><sub>sys</sub> = &radic;( 1/(<span class="var">&Delta;&nu;&tau;</span>) + (&Delta;<span class="var">G</span>/<span class="var">G</span>)&sup2; ), and the measured gain wobble here is &Delta;<span class="var">G</span>/<span class="var">G</span> = 2.3&times;10<sup>&minus;4</sup> (0.079&nbsp;K per 60&nbsp;s record, measured on the previous feed's 350&nbsp;K system). It bites only for <em>band-integrated</em> total power, where the thermal term divides by the channel count but the gain term does not &mdash; giving an Allan minimum for band power of about 5&nbsp;s. Per-channel line work stays thermal.</div>
                         <h3>The noise diode &amp; Y-factor</h3>
-                        <p>A switchable noise diode of known excess temperature <span class="var">T</span><sub>cal</sub> gives the classic Y-factor calibration (recorded now, applied in a future upgrade):</p>
+                        <p>A switchable noise source of known excess temperature <span class="var">T</span><sub>cal</sub> gives the classic Y-factor calibration:</p>
                         <div class="eqn"><span class="var">Y</span> = <span class="var">P</span><sub>on</sub>/<span class="var">P</span><sub>off</sub>,&nbsp;&nbsp; <span class="var">T</span><sub>sys</sub> = <span class="var">T</span><sub>cal</sub>/(<span class="var">Y</span>&minus;1),&nbsp;&nbsp; <span class="var">T</span><sub>A</sub> = <span class="var">T</span><sub>sys</sub>(<span class="var">P</span><sub>source</sub>/<span class="var">P</span><sub>off</sub> &minus; 1)</div>
-                        <p>Because the diode fires ahead of the amplifier, this tracks gain drift through an observation, which a blank-sky calibration cannot.</p>
+                        <p>Injected ahead of the amplifier, it tracks gain drift through an observation, which a blank-sky calibration cannot. This telescope has none at present: the old SRT noise diode is gone, and nothing is recorded as a calibrator.</p>
                     </div>
 
                     <div class="guide-section" id="guide-adv-calibration">
                         <h2>The calibration chain</h2>
-                        <h3>Why only the Sun and Moon can calibrate a 5&deg; beam</h3>
-                        <p>A source list with Cassiopeia&nbsp;A, Cygnus&nbsp;A and Taurus&nbsp;A looks like several calibrators. It is not. The beam collects 27&nbsp;deg&sup2;, and all three lie near the galactic plane where the diffuse continuum is 0.6&ndash;0.8&times; the source itself. <strong>Pointing at them measures the background as much as the source</strong>, and the part that does not cancel (the spread over off-positions a beamwidth away) runs from 14% for Taurus&nbsp;A to 190% for Cygnus&nbsp;A. The distinguishing property is not brightness but whether the background can be removed:</p>
+                        <h3>Why only the Sun and Moon can calibrate a 4&deg; beam</h3>
+                        <p>A source list with Cassiopeia&nbsp;A, Cygnus&nbsp;A and Taurus&nbsp;A looks like several calibrators. It is not. The beam collects 21&nbsp;deg&sup2;, and all three lie near the galactic plane where the diffuse continuum is 0.6&ndash;0.8&times; the source itself. <strong>Pointing at them measures the background as much as the source</strong>, and the part that does not cancel (the spread over off-positions a beamwidth away) runs from 14% for Taurus&nbsp;A to 190% for Cygnus&nbsp;A. The distinguishing property is not brightness but whether the background can be removed:</p>
                         <ul>
-                            <li><strong>The Sun escapes by brightness:</strong> 677&nbsp;K against &lt;5&nbsp;K background anywhere on the ecliptic &mdash; contamination below a per cent, no subtraction needed.</li>
+                            <li><strong>The Sun escapes by brightness:</strong> about 1700&nbsp;K against &lt;5&nbsp;K background anywhere on the ecliptic &mdash; contamination below a per cent, no subtraction needed.</li>
                             <li><strong>The Moon escapes by motion:</strong> it moves ~13&deg;/day, so the <em>same</em> celestial coordinates can be observed with the Moon present and again once it has left, and the background cancels identically. It is also a black body of known size at ~225&nbsp;K, so its flux is predictable.</li>
                         </ul>
                         <h3>Bandpass, then gain</h3>
                         <p>The calibration in force is fitted in two steps. First a <strong>bandpass template</strong>: the dish points at the emptiest hydrogen field in the north (the Lockman Hole, <span class="var">l</span>=150, <span class="var">b</span>=+52), and a polynomial is fitted to the mean spectrum with the H&nbsp;I line masked &mdash; the instrument's spectral shape. Dividing a recording by it flattens the band without moving its level. Then the <strong>gain and system temperature</strong>, from a straight-line fit of a plane field against the survey model:</p>
                         <div class="eqn">counts(<span class="var">&nu;</span>) = <span class="var">G</span> ( <span class="var">T</span><sub>sys</sub> + <span class="var">T</span><sub>A</sub><sup>model</sup>(<span class="var">&nu;</span>) )</div>
-                        <span class="eqn-where"><span class="var">G</span> is the slope, <span class="var">T</span><sub>sys</sub> the intercept over slope. The last fit in force: <span class="var">G</span> = 1.197&times;10<sup>&minus;5</sup>&nbsp;counts&nbsp;K<sup>&minus;1</sup>, <span class="var">T</span><sub>sys</sub> = 347&nbsp;K, correlation 0.998.</span>
-                        <div class="callout warn"><span class="tag">Two honest caveats</span>This calibrates H&nbsp;I against an H&nbsp;I model, which is circular for line science and separates <span class="var">G</span> from <span class="var">T</span><sub>sys</sub> only through the line's contrast. And it assumes the beam width, which is the largest silent systematic in the temperature scale (moving the assumed beam from 4.0&deg; to 5.16&deg; shifts the fitted gain 6% and <span class="var">T</span><sub>sys</sub> 22&nbsp;K). A pseudo-random-comb scheme that needs no sky model is the planned way past both.</div>
+                        <span class="eqn-where"><span class="var">G</span> is the slope, <span class="var">T</span><sub>sys</sub> the intercept over slope. The fit in force is shown on the <span class="guide-jump" onclick="guideGoto('rf')">RF calibration</span> tab. On 30&nbsp;September 2026, on <span class="var">l</span>=72, <span class="var">b</span>=0: <span class="var">G</span> = 1.460&times;10<sup>&minus;7</sup>&nbsp;counts&nbsp;K<sup>&minus;1</sup>, <span class="var">T</span><sub>sys</sub> = 187.7&nbsp;K, correlation 0.999.</span>
+                        <div class="callout warn"><span class="tag">Two honest caveats</span>This calibrates H&nbsp;I against an H&nbsp;I model, which is circular for line science and separates <span class="var">G</span> from <span class="var">T</span><sub>sys</sub> only through the line's contrast. And the model is seen through the beam, so the temperature scale depends on the beam solid angle: a wrong beam is the largest silent systematic in it. That is why the beam is now measured, not assumed. A calibrator that needs no sky model exists in part: the B200's own transmitter can inject a comb and a carrier through the old calibration dipole at the vertex (the <em>pilot</em>). It is off by default, because switching the transmitter on lowers the receiver's sensitivity by 8.4% and the carrier's level steps at every host stall; issue #46 holds the work.</div>
                         <h3>Drift scans, and an external check</h3>
-                        <p>A drift scan is fitted differently &mdash; total power against the simulator's predicted curve, counts = <span class="var">G</span>(<span class="var">T</span><sub>sys</sub> + <span style="font-style:italic">T&#772;</span><sub>model</sub>(<span class="var">t</span>)) &mdash; over the continuum band only, needing no bandpass template. Put through the whole chain, the telescope measured the Sun at <strong>112 solar flux units</strong> against a reference network's 88&ndash;108 that day: agreement within the network's own spread, and the first end-to-end test of bandpass, gain, <span class="var">T</span><sub>sys</sub>, beam and the antenna theorem against an external standard.</p>
+                        <p>A drift scan is fitted differently &mdash; total power against the simulator's predicted curve, counts = <span class="var">G</span>(<span class="var">T</span><sub>sys</sub> + <span style="font-style:italic">T&#772;</span><sub>model</sub>(<span class="var">t</span>)) &mdash; over the continuum band only, needing no bandpass template. The external check is the Sun: a solar track reports its flux in solar flux units beside the RSTN stations' 1415&nbsp;MHz readings for that day, which disagree among themselves by 10&ndash;20&nbsp;SFU. Solar fluxes quoted before the beam was measured, or before the feed change of 22&nbsp;September 2026, are on older scales (the first, 112&nbsp;SFU on 25&nbsp;August, re-reduces to 88 on the beam of mid-September); compare only numbers reduced on the same calibration.</p>
                     </div>
 
                     <div class="guide-section" id="guide-adv-frames">
@@ -1690,17 +1707,17 @@ with h5py.File('data/observations/20260828_060018_drift.h5', 'r') as f:
                         <p class="lead">Everything the telescope does lives in one of two coordinate frames, and the boundary between them is where the pointing model and the velocity correction are applied.</p>
                         <h3>True vs drive</h3>
                         <p><strong>True alt/az</strong> is where the dish looks on the sky, computed with the real site position. <strong>Drive</strong> is what the mount mechanically is &mdash; encoder pulses quantised to 0.5&deg;. <code>trueToDrive()</code> converts one way and <code>driveToTrue()</code> inverts it. Every goto and track goes true&rarr;drive; every measured position (status RA/Dec, galactic <span class="var">l,b</span>, Stellarium) goes drive&rarr;true.</p>
-                        <h3>The seven pointing terms</h3>
-                        <p>The correction <strong>added to a true position to get the drive position</strong> (altitude <span class="var">h</span>, azimuth <span class="var">A</span>) is the standard alt-az model:</p>
+                        <h3>The eight pointing terms</h3>
+                        <p>The correction <strong>added to a true position to get the drive position</strong> (altitude <span class="var">h</span>, azimuth <span class="var">A</span>) is the standard alt-az model with one addition:</p>
                         <div class="eqn">&Delta;<span class="var">h</span> = IE + AN&nbsp;cos<span class="var">A</span> + AE&nbsp;sin<span class="var">A</span> &minus; TF&nbsp;cos<span class="var">h</span></div>
-                        <div class="eqn">&Delta;<span class="var">A</span> = IA + (AN&nbsp;sin<span class="var">A</span> &minus; AE&nbsp;cos<span class="var">A</span>)&nbsp;tan<span class="var">h</span> + CA&nbsp;sec<span class="var">h</span> + NPAE&nbsp;tan<span class="var">h</span></div>
-                        <span class="eqn-where"><strong>IE, IA</strong> encoder zero-point errors; <strong>AN, AE</strong> azimuth-axis tilt (north, east); <strong>CA</strong> collimation (beam not perpendicular to the altitude axis); <strong>NPAE</strong> axis non-perpendicularity; <strong>TF</strong> tube flexure. All seven slots always exist and default to zero; the four-term fit simply leaves CA, NPAE and TF at zero.</span>
+                        <div class="eqn">&Delta;<span class="var">A</span> = IA + (AN&nbsp;sin<span class="var">A</span> &minus; AE&nbsp;cos<span class="var">A</span>)&nbsp;tan<span class="var">h</span> + CA&nbsp;sec<span class="var">h</span> + NPAE&nbsp;tan<span class="var">h</span> + AZSCALE&nbsp;<span class="var">A</span></div>
+                        <span class="eqn-where"><strong>IE, IA</strong> encoder zero-point errors; <strong>AN, AE</strong> azimuth-axis tilt (north, east); <strong>CA</strong> collimation (beam not perpendicular to the altitude axis); <strong>NPAE</strong> axis non-perpendicularity; <strong>TF</strong> tube flexure; <strong>AZSCALE</strong> an azimuth scale error accumulating from the encoder zero. All eight slots always exist and default to zero. The model in force (fitted 23&nbsp;September 2026, after the feed change) fits IE and CA, which belong to the beam axis and move with the feed, and holds IA, AN, AE and AZSCALE at their values of 13&nbsp;September, which belong to the mount. NPAE and TF are zero.</span>
                         <p>Refraction is applied <em>first</em>, at the apparent position: <span class="var">h</span><sub>app</sub> = <span class="var">h</span><sub>true</sub> + <span class="var">R</span>(<span class="var">h</span><sub>true</sub>), then the model is evaluated there. The inverse is done by <strong>fixed-point iteration on the forward transform itself</strong> (three passes), so the two directions cannot drift apart &mdash; near the zenith a first-order inverse would be wrong by ~0.25&deg;, half the encoder quantum.</p>
                         <div class="callout note"><span class="tag">Judge a model by prediction</span>A pointing model is trustworthy if it predicts where a source will be on a day it was <em>not</em> fitted to &mdash; not because any single term looks reasonable. This mount's model predicts blind to about 0.03&deg;. Two clamps guard the mount: the altitude fed to tan/sec is limited to 89&deg;, and the total correction per axis to &plusmn;10&deg; (the whole real error is ~2&deg;).</div>
                         <h3>Velocity frames</h3>
                         <p>The recorded axis is <strong>topocentric</strong> &mdash; sky frequency exactly as observed, so a file re-reduces correctly whatever is later learned about the direction. The plots draw an <strong>LSR</strong> axis:</p>
                         <div class="eqn"><span class="var">v</span><sub>LSR</sub> = <span class="var">v</span><sub>topo</sub> + <span class="var">v</span><sub>bary</sub> + <strong>U</strong>&middot;<strong>n&#770;</strong></div>
-                        <span class="eqn-where"><span class="var">v</span><sub>bary</sub> is the observer's barycentric velocity toward the source; <strong>U</strong> is the solar motion (20.0&nbsp;km/s toward the LSR apex). The terms are: Earth rotation 0.46, Earth orbit 29.8, solar motion 20.0 &mdash; combined ~50&nbsp;km/s (&equiv;237&nbsp;kHz), so uncorrected spectra of the same source in different seasons do not superpose. Evaluated at the observation's own mid-time; the B200 clock adds a further &minus;2.36&nbsp;ppm (&plusmn;0.08&nbsp;km/s).</span>
+                        <span class="eqn-where"><span class="var">v</span><sub>bary</sub> is the observer's barycentric velocity toward the source; <strong>U</strong> is the solar motion (20.0&nbsp;km/s toward the LSR apex). The terms are: Earth rotation 0.46, Earth orbit 29.8, solar motion 20.0 &mdash; combined ~50&nbsp;km/s (&equiv;237&nbsp;kHz), so uncorrected spectra of the same source in different seasons do not superpose. Evaluated at the observation's own mid-time. The radio's clock is locked to the Thunderbolt's 10&nbsp;MHz, so a recording made on the locked reference gets no clock correction; on its internal oscillator, before the external reference was fitted, the radio ran about &minus;2&nbsp;ppm (&minus;0.6&nbsp;km/s).</span>
                     </div>
 
                     <div class="guide-section" id="guide-adv-article">
@@ -1724,7 +1741,7 @@ with h5py.File('data/observations/20260828_060018_drift.h5', 'r') as f:
                             <dt>Alt&ndash;azimuth mount</dt><dd>A mount that points by altitude (angle above the horizon) and azimuth (compass bearing), rather than by celestial axes.</dd>
                             <dt>Antenna temperature (<span class="var">T</span><sub>A</sub>)</dt><dd>The power a source contributes, expressed as the temperature of a resistor that would deliver the same power. The radio unit of signal strength.</dd>
                             <dt>Bandpass</dt><dd>The receiver's built-in sensitivity-versus-frequency shape, measured and divided out so a flat sky reads flat.</dd>
-                            <dt>Beam / FWHM</dt><dd>The cone of sky the dish is sensitive to. Its full width at half maximum (~5&deg; here) sets the angular resolution.</dd>
+                            <dt>Beam / FWHM</dt><dd>The cone of sky the dish is sensitive to. Its full width at half maximum (4.30&deg; here, the Gaussian equivalent of the measured 21.0&nbsp;deg&sup2; main lobe) sets the angular resolution.</dd>
                             <dt>Column density (<span class="var">N</span><sub>H</sub>)</dt><dd>The number of hydrogen atoms in a column of one cm&sup2; cross-section along the line of sight; proportional to the line's strength when optically thin.</dd>
                             <dt>Drift scan</dt><dd>An observation with the mount parked, letting the sky drift through the beam. Successive spectra look at different sky.</dd>
                             <dt>Gain (<span class="var">G</span>)</dt><dd>The conversion factor from raw receiver counts to kelvin, found by calibration.</dd>

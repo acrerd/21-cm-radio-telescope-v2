@@ -403,6 +403,7 @@ def srt_api_call(endpoint: str, params: Optional[dict] = None,
         if params:
             url += "?" + urllib.parse.urlencode(params)
 
+        t_start = time.monotonic()
         try:
             request = urllib.request.Request(url, data=data, headers=headers)
             with urllib.request.urlopen(request, timeout=timeout) as response:
@@ -433,7 +434,11 @@ def srt_api_call(endpoint: str, params: Optional[dict] = None,
             # the next one (the controller stalls briefly under concurrent load,
             # issue #1). Only the total failure below is worth a warning; the
             # per-candidate misses are debug, or the log fills with transients.
-            log.debug("SRT API error via %s: %s", base_url, e)
+            # The endpoint and the wait say which request stalls and for how
+            # long (from 15:00 on 2026-09-30, 10-20 an hour against 1-8 before,
+            # with the controller's loop never over 0.6 s).
+            log.debug("SRT API error via %s%s after %.1f s: %s", base_url, endpoint,
+                      time.monotonic() - t_start, e)
 
     log.warning("SRT connection error after trying %s: %s", ", ".join(candidates), last_error)
     return None

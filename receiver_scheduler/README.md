@@ -18,11 +18,20 @@ This receiver is designed for radio astronomy observations of neutral hydrogen (
 | File | Description |
 |------|-------------|
 | `h1_web_scheduler.py` | The Flask scheduler: routes, the schedule, and the observing state machine |
-| `web/` | The operator page as static files — `index.html`, `app.css`, and twelve scripts under `js/`, one per tab. Read per request, so editing them needs a browser refresh and not a scheduler restart |
-| `b210_h1_receiver.py` | The receiver. `--headless` for observing, a Qt window for warm-up at the console |
+| `web/` | The operator page as static files — `index.html`, `app.css`, and fifteen scripts under `js/`: one per tab (ten), plus `state.js` (first), `shared.js`, `help.js`, `clock.js` and `boot.js` (last). Read per request, so editing them needs a browser refresh and not a scheduler restart |
+| `b210_h1_receiver.py` | The receiver. `--headless` for observing, a Qt window for warm-up at the console; `H1_MODE=pulsar` records the pulsar band instead of spectra |
 | `sun_scan.py` | Sun raster, pointing-model fit, calibration day |
 | `horizon_scan.py` | Radiometric horizon measurement, and the Stellarium landscape export |
-| `rf_calibration.py` | Counts to kelvin: gain, system temperature, and the fitted clock offset |
+| `rf_calibration.py` | Counts to kelvin: gain, system temperature, and the velocity shift (held at zero on the locked Thunderbolt reference) |
+| `beam_scan.py` | The beam from a two-hour Sun drift: main-lobe solid angle integrated directly, adopted into `beam_calibration.json` only if the scan passes |
+| `scallop.py` | The tracking scallop, fitted from a tracked Sun/Moon/Jupiter run (or carried from the last quiet one) and taken out of the source term |
+| `pulsar_fold.py` | B0329+54: the streaming fold at the absolute phase, the matched S/N, the flux scale, and the PRESTO fold |
+| `pulsar_toa.py` | Times of arrival from the fold against the EPN template; writes `pulsar_timing/b0329.tim` (nights) and `b0329_segments.tim` (4 h checks) |
+| `pint_tools.py` | The PINT side of timing, run by subprocess in the `pint` environment, never radioconda |
+| `sigproc_export.py` | A pulsar recording as a SIGPROC `.fil` for PRESTO, overflow gaps filled so every row sits on the time grid |
+| `clocks.py` | The three clocks (Thunderbolt, this computer's NTP, the controller's) judged in one place; the modified Allan deviation and its transition |
+| `thunderbolt.py` | Reads the Thunderbolt's TSIP status in a thread; the one reader of its serial port, and the queue for commands to it |
+| `plot_backend.py` | `use_headless()`: Agg for scripts and the scheduler, left alone in a Jupyter kernel |
 | `bandpass.py` | The measured instrument response: one template per product, and whether it applies to a given tuning |
 | `tuning.py` | The **fixed instrument** — LO, sample rate, gain and the two product bands — shared by the receiver and the scheduler; the older LO-offset planner is kept for the console window |
 | `drift_park.py` | Parks a drift scan on the drive grid: the controller's transform in Python, validated against its own reports |
@@ -37,7 +46,7 @@ This receiver is designed for radio astronomy observations of neutral hydrogen (
 | `tests/page_sources.py`, `tests/conftest.py` | Test plumbing: collects the operator page and every script it loads; keeps the suite out of the observatory's records |
 | `../tools/` | Hardware-side scripts, none of them part of the observing path: `due_emulator.py` (bench emulator of the Due's serial protocol for ESP32 work), `az_switch_probe_capture.py` (drives the Due's `PROBE` command and records the azimuth limit switch's reed/current trace, issue #32), `homing_scan_experiment.py` (home from the Sun's position then Sun scan, repeated, for homing-repeatability tests) |
 
-`h1_schedule.json`, `pointing_model.json`, `pointing_data.json`, `gain_calibration.json`, `bandpass_template*.json` and `last_observation.json` are the scheduler's state, not code; `data/` holds recordings, plots and diagnostic archives; `horizon_profiles/` and `pointing_models/` are the dated archives of measurements. None of these are tracked by git.
+The JSON files beside the code are the scheduler's state, not code; `data/` holds recordings, plots and diagnostic archives; `horizon_profiles/`, `pointing_models/` and `beam_calibrations/` are the dated archives of measurements. The calibrations (`gain_calibration.json`, `bandpass_template*.json`, `beam_calibration.json`), `pointing_data.json`, the horizon and pointing archives and `pulsar_timing/` are tracked by git; `h1_schedule.json`, `scheduler_config.json`, `pointing_model.json`, `last_observation.json`, `scallop_reference.json` and `data/` are not (`docs/HOST_REBUILD.md` lists what to save).
 
 ### State the scheduler keeps
 
@@ -46,8 +55,11 @@ This receiver is designed for radio astronomy observations of neutral hydrogen (
 | `h1_schedule.json` | The observation schedule |
 | `scheduler_config.json` | Local configuration (auto-generated, gitignored) |
 | `scheduler.log` | Rotating log — the operational record of what the telescope did |
-| `bandpass_template.json` | The measured bandpass in force |
-| `gain_calibration.json` | The gain, system temperature and clock offset in force |
+| `bandpass_template.json`, `bandpass_template_wide.json` | The measured bandpass in force, one per product |
+| `gain_calibration.json` | The gain and system temperature in force, and the velocity shift (zero, and never carried, when fitted on the locked reference) |
+| `beam_calibration.json` | The measured beam in force (21.0 sq deg, 4.30° FWHM-equivalent since 2026-09-25) |
+| `scallop_reference.json` | The scallop parameters carried from the last quiet solar track |
+| `pulsar_timing/` | `b0329.tim`, `b0329_segments.tim` and the stored fold of every pulsar recording (`profiles/`) |
 | `pointing_data.json` | Every Sun scan on file, which the pointing model is fitted from |
 | `horizon_profiles/` | Every horizon scan, kept by date, with `active.json` naming the one in force |
 | `horizon_profile.json` | A mirror of whichever horizon profile is active, for older readers |
@@ -81,6 +93,10 @@ This receiver is designed for radio astronomy observations of neutral hydrogen (
 | `test_solar_recording_plot.py` | A solar track's recording drawn as flux against the clock, the way its live view was |
 | `test_solar_reference.py` | The RSTN reference flux: parsing NOAA's file, the history, never waiting on the network |
 | `test_pilot.py` | The pilot: the flat rectangular reference (and why the windowed one fails at the band edges), detection and non-detection (the TX unplugged), the framing offset, level and tilt as power quantities, the ripple recovered by averaging bursts and refused from too few, the kelvin write and its exact reversal with the burst records dropped, the per-entry switch and the endpoints; a demo-source flowgraph run that gates a switched burst |
+| `test_sun_monitor.py`, `test_pulsar_monitor.py` | The two standing orders: when they run, what they yield to, and every manual start path that must stop them |
+| `test_pulsar.py`, `test_pulsar_toa.py`, `test_pulsar_timing_update.py` | The fold, the TOAs and the `.tim` files, and the automatic timing update after a pulsar run |
+| `test_beam_scan.py`, `test_scallop.py` | The beam from a Sun drift (including the drift angle's sign), and the scallop fit and its carried reference |
+| `test_thunderbolt.py`, `test_clock_stability.py` | TSIP decoding, and the stability plot's deviation and transition |
 | `test_page_structure.py`, `test_page_javascript.py` | That the operator page has not lost an element, a handler, or a route |
 
 ## Hardware Requirements
@@ -179,18 +195,24 @@ python b210_h1_receiver.py --sdr demo
 
 ```
 usage: b210_h1_receiver.py [-h] [--sdr {b210,rtlsdr,demo}] [--gain GAIN]
-                           [--sample-rate SAMPLE_RATE]
+                           [--sample-rate SAMPLE_RATE] [--headless]
 
 Hydrogen Line (21cm) Receiver
 
 optional arguments:
   -h, --help            show this help message and exit
   --sdr, -s {b210,rtlsdr,demo}
-                        SDR type (default: b210)
-  --gain, -g GAIN       RF gain in dB (default: 40)
+                        SDR type (default: b210, which is the B200)
+  --gain, -g GAIN       RF gain in dB (default: 30 for both SDRs)
   --sample-rate, -r SAMPLE_RATE
                         Sample rate in Hz (default: 2.4e6 for B200, 2.048e6 for RTL-SDR)
+  --headless            Record without any GUI: no Qt, no display needed. This is
+                        how scheduled and Observe-tab observations run.
 ```
+
+`--gain` and `--sample-rate` set the console window only. A headless run records with
+the fixed instrument (from `H1_INSTRUMENT` when the scheduler starts it) and
+ignores both.
 
 ### Examples
 
@@ -238,7 +260,7 @@ The scheduler points at the current controller web UI by default: `http://192.16
 
 ### Web Interface Tabs
 
-Nine tabs. Everything that produces data you keep is headless; the one
+Ten tabs. Everything that produces data you keep is headless; the one
 deliberately graphical path is the **Start receiver GUI (console only)** button
 in the status bar, which opens the receiver's Qt window on the observatory
 machine for warm-up and checking the band. It will fail over ssh, and that is
@@ -247,14 +269,15 @@ correct rather than broken.
 | Tab | For |
 |-----|-----|
 | **Scheduler** | Booking observations, and what is running now |
-| **Sun Scan** | Pointing calibration: a raster on the Sun, the model fit, and the calibration day that repeats it |
+| **Sun Scan** | Pointing calibration: a raster on the Sun, the model fit, and the calibration day that repeats it; *Start beam drift* runs the two-hour Sun drift that measures the beam |
 | **Horizon** | Measuring the obstructed horizon, choosing which measured profile is in force, and exporting it to Stellarium |
-| **RF calibration** | The two bandpass templates and the counts-to-kelvin gain, with suggested targets screened against the measured horizon, and a *Go to Lockman Hole* button |
-| **Camera** | The safety camera watching the dish |
+| **RF calibration** | A **Progress** panel at the top for the job running; the two bandpass templates (measured live, with a *Go to Lockman Hole* button, or fitted from a recording on disk); the counts-to-kelvin gain, with suggested targets screened against the measured horizon; the pilot's status; and the **Clocks** card — the Thunderbolt (lock, disciplining, satellites and their signal levels, antenna position and cable delay), this computer's NTP, the controller's clock and its offset from this one, active warnings only, and an on-demand stability plot of the Thunderbolt's PPS record with the transition read off it |
+| **Camera** | The safety camera watching the dish: snapshots, and live video at a chosen frame rate |
 | **Simulator** | The sky simulator, served from the scheduler so the two share an origin; its *Schedule* button books (or starts) an observation |
-| **Observe** | Running an observation now, and looking at any recording: a dropdown of everything recorded, the plot with a details table beside it, *Fit model*, *Download file*, *View live recording*, and a live band-power trace while a drift scan or solar track runs |
-| **Configuration** | Site, controller, receiver and camera settings — and the fixed instrument, editable here only, with a warning |
+| **Observe** | Running an observation now, and looking at any recording (see below) |
+| **Configuration** | Site, controller, horizon, camera and receiver settings; the fixed instrument and the pilot, editable here only, with a warning; the Sun monitor and the pulsar monitor |
 | **Log** | The operational record |
+| **Guide** | How to operate the telescope, and the astronomy behind it |
 
 Only one of the Sun scan, calibration day, horizon scan, RF calibration, a
 scheduled observation, or a hand-started receiver may hold the B200 and the
@@ -262,14 +285,18 @@ mount at once; whichever is asked for second is refused with the reason.
 
 #### Observe Tab
 
-Runs an observation immediately, or hands one to the scheduler. Three modes:
+Runs an observation immediately (*Start Now*), or hands one to the schedule
+form (*Send to Scheduler*). Four types:
 
 - **Spectrum (tracked)** — the dish follows a galactic direction
 - **Drift scan** — the dish is parked and the source crosses the beam, transiting at the mid-point
 - **Solar track (flux monitor)** — the dish follows the Sun, plotting flux in
   solar flux units live while the spectra record as usual. The plot bins the
-  whole run rather than its tail, updates at the rate records appear, and stays
-  on screen until the next observation replaces it.
+  whole run rather than its tail and updates at the rate records appear. When
+  the run ends the live trace comes down and the finished recording is plotted
+  in its place.
+- **Solar drift** — the dish parks where the Sun will be at the mid-point and
+  the Sun drifts through the beam (a drift entry in the `object` frame)
 
 Drift scans get the same live plot, in antenna temperature: the time axis is
 the observation's own start-to-stop window, fixed from the moment it begins,
@@ -293,6 +320,28 @@ Finished observations are plotted in kelvin when a gain calibration applies to
 the tuning, and on an **LSR** velocity axis when the direction and epoch can be
 worked out — H I is quoted in LSR everywhere, and the correction reaches
 ~30 km/s. Where the direction is unknown the axis stays topocentric and says so.
+A solar track's recording is drawn as flux against UTC with the RSTN reference
+in the subtitle, a drift scan as band power against time, and a pulsar
+recording as its fold (profile at the predicted period, sub-integrations, the
+stack of every night, PINT residuals).
+
+Below the plot sit the recordings and the buttons that act on one:
+
+- **Filter** — by category: spectra, drift scans, booked Sun, Sun monitor,
+  pulsar, console. The default is everything but the Sun monitor; the choice is
+  remembered in the browser. The newest 25 are listed, with *show all*; a live
+  run is always listed.
+- **Plot Result**, **Download file**, **View live recording** (re-plots the file
+  being written every 30 s until the run ends).
+- **Fit model** — the per-channel gain fit for a tracked spectrum, the
+  total-power fit for a drift scan; not for a pulsar. *Apply as calibration*
+  appears only for a fit that can be applied.
+- **PRESTO fold** — pulsar recordings only: exports a `.fil` and folds it with
+  prepfold at the topocentric period, as an independent check.
+- **dB scale** — solar and drift plots only: 10 log10 of value over peak,
+  floored at −30 dB, for sidelobes a percent of the peak.
+
+Buttons that do not apply to the selected recording are greyed out.
 
 #### Scheduler Tab
 The main view for managing observations.
@@ -318,19 +367,41 @@ Persistent settings saved to `scheduler_config.json`:
 
 | Setting | Description |
 |---------|-------------|
-| Banner Name / Subtitle | Customise the page title and heading |
+| Banner Name / Subtitle | Customise the page title and heading; a blank subtitle shows the beam and T_sys in force. *Help tips* (hover explanations) is per browser, not saved here |
 | Controller URL | SRT telescope controller address, normally `http://192.168.50.120` (empty to disable) |
-| Controller Fallback URLs | Additional controller addresses tried after the primary URL |
 | Slew Timeout | Max seconds to wait for telescope to reach target (default: 300) |
 | Position Tolerance | Degrees within which the telescope is considered on-target (default: 0.5) |
 | Observer Latitude | Observer latitude in degrees (+N), synced from controller on startup |
 | Observer Longitude | Observer longitude in degrees (+E), synced from controller on startup |
 | Observer Elevation | Observer elevation in metres |
 | Min Elevation | Minimum elevation for satellite pass filtering (default: 10°) |
+| Safety Camera | Video device and capture resolution |
 | Receiver Python Executable | Path to radioconda Python used for the scheduler-managed receiver |
+| SDR | The radio an Observe-tab run uses (a schedule entry names its own) |
+| Instrument | The fixed instrument — LO, sample rate, gain, H I band edges, H I and continuum channel counts — and the pilot (on/off, burst interval, duty cap, burst amplitude, TX gain). Empty means the default in `tuning.py` / `pilot.py`; the pilot is off by default. A warning above the boxes: a change leaves every later recording uncalibrated until the bandpass and gain are re-measured |
 | Data Output Folder | Where observation HDF5 files are saved |
 | Log Lines to Display | Number of log lines shown in the Log tab |
+| Sun monitor | `sun_monitor`: track the Sun with 3 s records whenever nothing holds the hardware, no booking is near and the Sun clears the measured horizon (off by default) |
+| Pulsar monitor | `pulsar_monitor`: record B0329+54 in pulsar mode daily, ahead of the Sun monitor (off by default). `pulsar_monitor_window` is `follow` (open when the pulsar comes out from behind the measured horizon; the default) or `clock` (open at `pulsar_monitor_start`, default 20:00 local); `pulsar_monitor_hours` is the window length (default 16) |
 | Sound on Start/Stop | Enable/disable audio notifications |
+
+Both monitors rank below bookings and hand starts, the pulsar monitor above
+the Sun monitor (no Sun run is started into the pulsar window, and one still
+going when the window opens is stopped). Bookings win: a run ends short of the
+next one, and the pulsar monitor resumes afterwards if 30 min of its window are
+left; the pieces of one window share a `pulsar_session` and are timed as one
+TOA. Anything started by hand, or *Stop*, stops a monitor run and holds both
+monitors off for 30 min. A goto from the controller's own page is not seen by
+the scheduler. `/api/status` reports both.
+
+Some settings are not on the tab and are set in `scheduler_config.json` (every
+key must be one of `_DEFAULT_CONFIG`'s), among them
+`srt_controller_fallback_urls` (mDNS and the WiFi AP, tried after the primary
+URL), `thunderbolt_device` / `thunderbolt_baud`, and
+the **pulsar band** — `pulsar_sample_rate_hz` (default 32 Msps) and
+`pulsar_lo_hz` (default 1413 MHz), passed to the receiver as `H1_PULSAR_RATE` /
+`H1_PULSAR_LO`. Pulsar mode needs no H I line and is not held to the fixed
+instrument.
 
 If the scheduler is launched under a different Python, it re-execs itself under the configured receiver Python when that interpreter exists. This keeps scheduled observations, manual receiver starts, Sun scans, and SDR imports on the same radioconda environment. A manually started receiver is stopped before a scheduled observation starts so the SDR is not shared by two processes.
 
@@ -349,15 +420,16 @@ Displays the last N lines of `scheduler.log` with auto-refresh (5 second interva
 | Coordinates | Target position — see Coordinate Systems below |
 | Comment | Free text, stored as the recording's `comment` attribute |
 | Instrument | **Shown, not set** — the fixed instrument (see below) |
-| Integration Time | Seconds per record |
+| Integration Time | Seconds per record (does not apply to a pulsar entry) |
 | SDR Type | B200, RTL-SDR, or Demo |
 | Respect local horizon | Advisory check against the measured horizon; trims a scheduled entry |
 | Home the mount first | Run the physical homing before pointing, recording the count error |
+| Pilot off for this entry | Leave the pilot transmitter off for this run (the pilot is off by default in any case) |
 | When Done | Action after observation ends: Stay, Go Home (Alt 0°, Az 0°), or Stow (Alt 90°, Az 180°) |
 | Filename | Output file (auto-generated if empty) |
 
 **The tuning is not an observation parameter.** Since issue #27 the B200 records
-with a **fixed instrument** — LO 1418.905752 MHz, 8 Msps, gain 30 dB — set once
+with a **fixed instrument** — LO 1418.905752 MHz, 8 Msps, gain 20 dB — set once
 in `tuning.py`, overridable only on the Configuration tab (with a warning). The
 centre-frequency, bandwidth, gain and channels boxes are gone from the form.
 Every recording carries **two products**: an H I sub-band (1419.006–1422.306 MHz,
@@ -367,14 +439,20 @@ the H I band.
 
 ### Coordinate Systems
 
+The form's *Observation* dropdown groups them by what the dish does:
+
 | System | Description | Tracking |
 |--------|-------------|----------|
-| Alt/Az (Horizontal) | Direct altitude/azimuth pointing | Fixed position |
 | RA/Dec (Equatorial J2000) | Right Ascension / Declination | Tracks as Earth rotates |
 | Galactic (l, b) | Galactic longitude / latitude | Tracks as Earth rotates |
-| Drift Scan | RA/Dec or Galactic source + beam-crossing time | Fixed position |
-| Solar System Object | Select Sun or Moon by name | Automatic ephemeris tracking |
+| Famous targets | The simulator's target list (galactic fields, M31, M33, HVCs, Lockman Hole, Cas A, Cyg A, Tau A, Sun, Moon), in track or drift mode. Saved as an ordinary galactic, drift or object entry | As saved |
+| Sun or Moon (`object`) | Select Sun or Moon by name | Automatic ephemeris tracking |
 | Satellite (TLE) | Two-Line Element set | SGP4 propagation at 1 Hz |
+| Fixed alt/az (`altaz`) | Direct altitude/azimuth pointing — a drift scan | Fixed position |
+| Drift Scan | RA/Dec, Galactic or Sun/Moon source + beam-crossing time | Fixed position |
+| PSR B0329+54 (`pulsar`) | The one pulsar this dish can fold; records the pulsar band, not spectra. Plan on 6 h or more, homing first | Tracks the catalogue J2000 position |
+| Calibration day (`calibration`) | Repeated Sun rasters from sunrise to sunset (grid, spacing, interval; optionally archive old scans and clear the controller's model first) | Per raster |
+| Horizon scan (`horizon`) | The radiometric horizon strip scan (azimuth and altitude steps, azimuth range); about two hours, for a dark dry night | Per strip |
 
 The ESP32 controller treats sky targets below 10° altitude as below the local observing horizon. The Galactic Plane shortcut uses a separate, higher acquisition floor (45° by default): it picks the point on the plane nearest the galactic centre that is currently that high, then follows it down to the 10° horizon.
 
@@ -382,11 +460,11 @@ The ESP32 controller treats sky targets below 10° altitude as below the local o
 
 A drift scan parks the dish at a fixed alt/az and lets Earth's rotation carry the source through the beam. Select "Drift Scan" in the coordinate system dropdown and enter:
 
-1. The source coordinates, in RA/Dec (J2000) or Galactic (l, b)
+1. The source, in RA/Dec (J2000), Galactic (l, b), or a solar-system object (Sun or Moon)
 2. The **beam-crossing time T** (local) — when the source should be at beam centre
 3. A **symmetric window ±W minutes** — recording runs from T−W to T+W
 
-The start time and duration are derived automatically (start = T−W, duration = 2W). At start time the scheduler computes the source's alt/az *at T* with PyEphem, commands `/direct` to that fixed pointing, and starts the receiver with tracking off. The form previews the computed pointing live and warns if the source is below the horizon or in the azimuth dead zone (355–360°) at T; "Use Next Transit" fills T with the source's next meridian transit, the classical drift-scan geometry.
+The start time and duration are derived automatically (start = T−W, duration = 2W). At start time the scheduler computes the source's track around T, parks on the drive-grid point (0.5° encoder steps) the track passes closest to (`drift_park.py`, which reproduces the controller's pointing transform), sends that point to `/direct`, and starts the receiver with tracking off. The crossing time and the cross-drift miss are then known exactly and recorded. With `/pointing` unreadable it falls back to the source's alt/az at T and says so. The form previews the computed pointing live and warns if the source is below the horizon or in the azimuth dead zone (355–360°) at T; "Use Next Transit" fills T with the source's next meridian transit, the classical drift-scan geometry.
 
 Because the pointing is recomputed for each day's beam-crossing time, an entry that repeats daily stays centred on the source with no sidereal bookkeeping. On a late start the geometry is preserved (T comes from the scheduled slot, not the actual start); only the front of the window is lost, along with the initial slew time as usual. The computed pointing, beam time, frame, and window are recorded in the HDF5 observation metadata (`drift_alt`, `drift_az`, `drift_beam_time`, `drift_frame`, `drift_window_min`).
 
@@ -409,12 +487,15 @@ Observer location (latitude, longitude, elevation) and minimum pass elevation ar
 ### Telescope Integration
 
 When an SRT controller is configured, the scheduler:
-1. Sends the pointing/tracking command to the telescope
-2. Waits for slewing to complete (polls `is_slewing` status)
-3. Sets the calibrator state (on/off)
+1. Runs the physical homing first, if the entry asks for it, recording the counters at the stops
+2. Sends the pointing/tracking command to the telescope
+3. Waits for slewing to complete (polls `is_slewing` status)
 4. For satellite observations, starts a background thread sending position updates at 1 Hz
 5. Starts the SDR receiver
-6. On completion: stops satellite tracking, turns off calibrator (if it was on), sends home/stow command (if configured)
+6. On completion: stops satellite tracking, sends home/stow command (if configured); a pulsar run is handed to `pulsar_toa.py` for its TOAs
+
+There is no calibrator step: the old noise diode is gone (issue #39), and the
+receiver's in-band reference is now the pilot (`pilot.py`, off by default).
 
 The Configuration tab also exposes firmware update settings. The controller UI's **Update firmware** button asks the local scheduler to run PlatformIO in the configured environment (`wt32-eth01-ota` by default), which uploads to the controller over Ethernet OTA.
 
@@ -442,7 +523,7 @@ The Sun Scan tab runs `sun_scan.py` as a scheduler-owned pointing calibration wo
 - Gaussian peaks must lie inside the measured grid and pass beam-width, uncertainty, and goodness-of-fit checks before a scan can enter calibration-day data.
 - Cancelling a scan stops before fitting partial data.
 
-Calibration Day repeatedly performs a complete N×N Sun scan on a start-to-start interval, saves each successful fit, and continues until sunset, cancellation, or three consecutive failures. Its four-parameter offset/tilt model uses only successful finite scans. It requires at least four scans and at least 30 degrees of Sun azimuth coverage, uses individual scan-fit uncertainties as weights, and reports parameter uncertainty, RMS residuals, coverage, and matrix conditioning in the web interface. A large difference between the displayed and physical mount position indicates lost encoder reference, mechanical slip, or a drive/power fault; run physical homing and correct the hardware problem rather than accepting a poor fit. **Apply to Telescope** sends the effective latitude/longitude and the constant altitude/azimuth offsets to the controller; partial controller/configuration failures are reported explicitly.
+Calibration Day repeatedly performs a complete N×N Sun scan on a start-to-start interval, saves each successful fit, and continues until sunset, cancellation, or three consecutive failures. The pointing model fits four terms — IE and IA (elevation and azimuth index), AN and AE (the two tilts) — plus CA (collimation) when the scans span enough altitude and AZSCALE when they span 90° of azimuth; any term can be held at a stored value, which is how a feed change is refitted (IE and CA only). It needs at least four scans; applying it needs 30° of Sun azimuth coverage, a condition number under 10⁴ and significant tilt terms. It uses only successful finite scans, weights them by their fit uncertainties, leaves out scans from behind the measured horizon, and reports parameter uncertainty, RMS residuals, coverage, and matrix conditioning in the web interface. A large difference between the displayed and physical mount position indicates lost encoder reference, mechanical slip, or a drive/power fault; run physical homing and correct the hardware problem rather than accepting a poor fit. **Apply to Telescope** POSTs the fitted terms as a document to the controller's `/pointing/apply` (`sun_scan.pointing_model_document`), which keeps it in its own NVS namespace; the observer position stays the true site and the operator's offset boxes are not touched. A controller rejection is reported.
 
 ## Configuration
 
@@ -463,9 +544,10 @@ what the mount was doing:
 20260825_192937_drift.h5        the dish was parked; the sky drifted through the beam
 20260825_201455_track.h5        the mount followed the source
 20260825_143012_manual.h5       started at the console, nobody commanded the mount
+20260926_203116_pulsar.h5       a pulsar entry: the fast total-power record, not spectra
 ```
 
-and nothing else. The target name, the calibrator flag, the coordinates, the
+and nothing else. The target name, the coordinates, the
 tuning and the calibration in force are all attributes *inside* the file, so
 repeating any of them in the name would only make a second copy free to
 disagree with the first after a rename or an edit to the schedule entry.
@@ -486,6 +568,8 @@ environment:
 - `H1_INTEGRATION_TIME`
 - `H1_OUTPUT_FILE`
 - `H1_OBS_METADATA` — the observation metadata above
+- `H1_MODE=pulsar`, with `H1_PULSAR_RATE` / `H1_PULSAR_LO` from the pulsar
+  band settings, for a pulsar entry
 
 ### Frequency Resolution
 
@@ -523,9 +607,9 @@ timestamped file.
 | `frequency_hz_wide` | (N_wide,) | float64 | Continuum product axis (1024 channels over 8 MHz) |
 | `spectra_wide_kelvin` **or** `spectra_wide_linear` | (N_rec, N_wide) | float32 | Continuum product |
 | `bandpass_correction`, `bandpass_valid` (and `_wide`) | (N,) | float32 / bool | Per-channel correction applied at write time, and where the template speaks |
-| `timestamps` | (N_rec,) | float64 | Unix time at the end of each record |
+| `timestamps` | (N_rec,) | float64 | Unix time at the centre of each record (since 2026-08-27; the end before that) |
 | `integration_times` | (N_rec,) | float32 | Actual integration per record |
-| `overflows` | (N_rec,) | int32 | UHD overflows during the record |
+| `overflows`, `underflows` | (N_rec,) | int32 | UHD overflows, and pilot TX underflows, during the record |
 
 **The units are in the dataset name.** `spectra_kelvin` means the bandpass template
 and gain in force applied to this tuning; `spectra_linear` means they did not and
@@ -545,6 +629,7 @@ is exactly reversible — the correction, gain and T_sys travel in the file — 
 | `applied_gain_counts_per_k`, `applied_t_sys_k` | The calibration applied when in kelvin |
 | `bandpass_template`, `bandpass_template_wide`, `gain_calibration` | The calibration in force, as JSON, so a file is reducible off-machine |
 | `beam_fwhm_deg`, `effective_area_m2`, `site_lat_deg/lon_deg/height_m` | Measured beam and surveyed site |
+| `clock_source`, `clock_ref_locked` | Which 10 MHz the radio ran from, and whether it reported lock |
 | `nominal_integration_time`, `created` | Target integration; ISO 8601 creation time |
 
 When launched from the scheduler, additional observation metadata is included:
@@ -552,17 +637,44 @@ When launched from the scheduler, additional observation metadata is included:
 | Attribute | Description |
 |-----------|-------------|
 | `obs_name`, `comment` | Name, and the free text from the schedule form |
-| `observation_mode` | `track`, `drift` or `manual` — the word in the filename |
-| `coord_system` | altaz, radec, galactic, object, drift, satellite |
+| `observation_mode` | `track`, `drift`, `pulsar` or `manual` — the word in the filename |
+| `coord_system` | altaz, radec, galactic, object, drift, satellite, pulsar |
 | `object_name` | Solar system object (sun, moon, jupiter) if applicable |
 | `coord1_deg/min/sec`, `coord2_deg/min/sec` | Target coordinates |
-| `calibrator` | 1 if the noise source was on |
+| `sun_monitor`, `pulsar_monitor`, `pulsar_session` | Whether a monitor started the run, and the pulsar window it belongs to |
+| `pointing_terms` | The pointing model in force (JSON), for reconstructing the commanded drive position |
+| `reference_*` | The Thunderbolt's state at the start (`reference_state` `absent` when none is read) |
 | `duration_minutes`, `start_date`, `start_time` | The scheduled slot |
 | `drift_frame`, `drift_window_min`, `drift_beam_time` | Drift scans: frame, half-window W, planned crossing T |
 | `drift_alt` / `drift_az` | The true alt/az commanded |
 | `drift_drive_alt` / `drift_drive_az` | The drive-grid point parked on |
 | `drift_crossing_time`, `drift_crossing_offset_deg` | When the source crosses the parked beam, and how far off centre |
 | `homed_first`, `homing_count_error_alt_deg`, `homing_count_error_az_deg` | Homing before the run, and the count error at the stops |
+
+### Pulsar recordings
+
+A pulsar entry (`H1_MODE=pulsar`) records no spectra: the band power summed per
+millisecond, by default one channel over 32 MHz at 1413 MHz (~14 MB an hour),
+SWMR from creation. `H1_PULSAR_NCHAN=16` gives a 16-channel filterbank instead.
+
+| Dataset | Shape | Description |
+|---------|-------|-------------|
+| `power` | (N, nchan) float32 | Band power per row, `dt_s` apart from `t0_unix` |
+| `frequency_hz` | (nchan,) | Channel centres |
+| `time_marks` | (M, 2) float64 | (row, radio time) at the first sample and after every overflow, from the `rx_time` tags; rows are fractional (`time_marks_exact = 1`) |
+| `overflow_marks`, `underflow_marks` | (K, 2) int64 | (row, count) for each batch of overflows or TX underflows |
+
+Attributes beside the usual radio, instrument, site and scheduler metadata:
+`mode` = `pulsar`, `dt_s`, `nchan`, `channel_width_hz`, `t0_unix`,
+`created_utc`; the catalogue numbers (`pulsar_name`, `pulsar_period_s`,
+`pulsar_pdot`, `pulsar_pepoch_mjd`, `pulsar_dm`, ...); the time source
+(`time_source` `pps` or `host`, `time_pps_verified`,
+`time_device_minus_host_s`, `time_last_pps`); and the calibration in force at
+the start (`cal_t_sys_k`, `cal_effective_area_m2`, `cal_t_sys_utc`,
+`cal_beam_utc`, from 2026-09-30), so the fold's mK and mJy scales stay the
+recording's own. The fold, the TOAs and the PRESTO export are in
+`pulsar_fold.py`, `pulsar_toa.py` and `sigproc_export.py`; see
+`../docs/PULSAR_PROCESSING.tex`.
 
 ### Reading Data in Python
 

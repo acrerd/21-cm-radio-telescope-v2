@@ -172,9 +172,9 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
                             <button class="fault-dependent" onclick="applyFixedAxis()" data-help="Apply this fixed coordinate while continuing one-axis tracking.">Apply</button>
                         </div>
                         <div class="action-row">
-                            <button class="fault-dependent" onclick="goHome()" data-help="Slew directly to the stow position saved in Settings.">Go to stow</button>
-                            <button class="secondary" id="reset_btn" onclick="resetFault()" disabled data-help="Clear a mount fault after checking that the telescope is safe to move again.">Reset</button>
-                            <button class="fault-dependent" onclick="runHoming()" data-help="Run the mount homing sequence on the Arduino Due controller.">Homing Sequence</button>
+                            <button class="fault-dependent" onclick="goHome()" data-help="Cancel tracking and slew to the stow position saved in Settings. Stow is a drive position; the pointing model is not applied.">Go to stow</button>
+                            <button class="secondary" id="reset_btn" onclick="resetFault()" disabled data-help="Clear a mount fault after checking that the telescope is safe to move again. After an aborted homing the position is unknown: run the homing sequence as well.">Reset</button>
+                            <button class="fault-dependent" onclick="runHoming()" data-help="Cancel tracking and run the Due's homing: both axes drive to their lower limit switches and zero there. A STOP during it aborts into a fault that needs Reset, then another homing.">Homing Sequence</button>
                         </div>
                     </div>
                 </div>
@@ -187,7 +187,7 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
                             <label>Az: <input class="fault-dependent" type="number" id="direct_az" step="0.5" min="0" max="355" value="180"></label>
                         </div>
                         <div class="btn-row">
-                            <button class="fault-dependent" onclick="goDirect()" data-help="Slew once to the Alt/Az coordinates above.">Go To</button>
+                            <button class="fault-dependent" onclick="goDirect()" data-help="Cancel tracking and slew once to this sky Alt/Az. The pointing model is applied; refused if the drive position is outside the mount limits.">Go To</button>
                         </div>
                         <h4>Equatorial (RA/Dec) - J2000</h4>
                         <div class="coord-row">
@@ -225,8 +225,8 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
                         <h3>Quick Calibrations</h3>
                         <div class="quick-cal-row single">
                             <div class="axis-switch cal-switch" id="cal_switch">
-                                <button class="axis-option active fault-dependent" id="cal_off" onclick="setCalibrator(false)" data-help="Turn the calibrator noise source off.">Cal Off</button>
-                                <button class="axis-option fault-dependent" id="cal_on" onclick="setCalibrator(true)" data-help="Turn the calibrator noise source on for receiver calibration.">Cal On</button>
+                                <button class="axis-option active fault-dependent" id="cal_off" onclick="setCalibrator(false)" data-help="Set the Due's CAL output low. Nothing is connected to it: the noise diode was removed (issue #39).">Cal Off</button>
+                                <button class="axis-option fault-dependent" id="cal_on" onclick="setCalibrator(true)" data-help="Set the Due's CAL output high. Nothing is connected to it: the noise diode was removed (issue #39), so this changes no signal.">Cal On</button>
                             </div>
                         </div>
                         <div class="quick-cal-row">
@@ -259,7 +259,7 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
                                 <div class="coord-row"><label>DNS: <input type="text" id="eth_dns" placeholder="192.168.50.1"></label></div>
                             </div>
                             <div class="btn-row">
-                                <button onclick="saveEthSettings()" data-help="Save the Ethernet DHCP or static IP settings. Reboot the controller to apply them.">Save Ethernet</button>
+                                <button onclick="saveEthSettings()" data-help="Save the Ethernet DHCP or static IP settings. Reboot the controller to apply them. Leave on DHCP: the observatory computer's DHCP reservation gives this controller 192.168.50.120 on the private link.">Save Ethernet</button>
                             </div>
                             <p id="eth-save-status" class="target-info"></p>
                         </div>
@@ -267,7 +267,7 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
                     <div class="box" id="wifi-power-section" style="display:none;">
                         <h3>WiFi Power</h3>
                         <p style="color:#888;font-size:0.9em;margin:5px 0;">Disable WiFi to save ~100mA when using Ethernet</p>
-                        <button id="wifi_power_btn" onclick="toggleWifiPower()" data-help="Turn WiFi on or off. WiFi cannot be disabled unless Ethernet is connected.">Disable WiFi</button>
+                        <button id="wifi_power_btn" onclick="toggleWifiPower()" data-help="Turn WiFi on or off. WiFi cannot be disabled unless Ethernet is connected. Off also removes the 192.168.4.1 access point, the way in if the Ethernet link fails.">Disable WiFi</button>
                     </div>
                     <div class="box">
                         <h3>WiFi</h3>
@@ -328,7 +328,7 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
                 <div>
                     <div class="box">
                         <h3>Load a Model</h3>
-                        <p class="target-info">Upload a <code>pointing_model.json</code> fitted by the scheduler&#39;s Calibration Day. The scheduler can also push it here itself after a successful fit; both routes write the same stored model.</p>
+                        <p class="target-info">Upload a model document: JSON with <code>version</code> and <code>terms</code>, under 1536 bytes &mdash; what the scheduler builds and sends to <code>/pointing/apply</code> when it applies a fit. The scheduler&#39;s own <code>pointing_model.json</code> is the full fit record and is refused (no <code>version</code>, too large). Both routes write the same stored model.</p>
                         <div class="coord-row">
                             <input type="file" id="pm_file" accept=".json,application/json">
                         </div>
@@ -338,8 +338,8 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
                     </div>
                     <div class="box">
                         <h3>What This Is</h3>
-                        <p style="font-size:0.85em;">The model converts a <strong>true sky</strong> position into the <strong>drive</strong> position that puts the beam on it, and back again for display. It is stored in the controller&#39;s flash and survives a power cycle.</p>
-                        <p style="font-size:0.85em;">It is applied to every goto, track and stow command. The dAlt/dAz boxes on the Control tab are a separate, deliberate offset on the sky, layered on top of this - they should read 0/0 in normal observing.</p>
+                        <p style="font-size:0.85em;">The model converts a <strong>true sky</strong> position into the <strong>drive</strong> position that puts the beam on it, and back again for display. It is stored in the controller&#39;s flash, in its own namespace, and survives a power cycle and Reset to Defaults.</p>
+                        <p style="font-size:0.85em;">It is applied to every goto, track and direct Alt/Az move. The stow is not passed through it: stow is a drive position. The dAlt/dAz boxes on the Control tab are a separate, deliberate offset on the sky, layered on top of this - they should read 0/0 in normal observing.</p>
                         <p style="font-size:0.85em;">Refraction is applied whether or not a model is stored; it is physics, not calibration.</p>
                     </div>
                 </div>
@@ -385,7 +385,7 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
                         <div class="coord-row">
                             <label>Min sky Alt: <input type="number" id="set_horizon_alt" step="0.5" min="0" max="90"></label>
                         </div>
-                        <p class="target-info">Lowest true sky altitude worth observing - trees and buildings. Checked before the pointing model. The Alt Min above is the mechanical stop and is checked after it.</p>
+                        <p class="target-info">Lowest true sky altitude worth observing - trees and buildings. Checked before the pointing model: a Go To or Track below it is refused, and a tracked target that sets below it parks the dish at the stow. The Alt Min above is a drive-frame mount limit, checked after the model.</p>
                         <div class="coord-row">
                             <label>Galactic plane acquire above: <input type="number" id="set_galactic_min_alt" step="0.5" min="0" max="90"></label>
                         </div>
@@ -397,7 +397,7 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
                             <label>Stow Alt: <input type="number" id="set_stow_alt" step="0.5" min="0" max="90"></label>
                             <label>Stow Az: <input type="number" id="set_stow_az" step="0.5" min="0" max="360"></label>
                         </div>
-                        <p class="target-info">Where the dish parks when idle or when its target sets. <strong>Mount coordinates</strong> &mdash; the pointing calibration is not applied, so the mount rests exactly here. Parking is mechanical, not an observation, and at the zenith azimuth points at no particular sky. Not the Due&#39;s HOMEALT/HOMEAZ, which define the encoder origin.</p>
+                        <p class="target-info">Where the dish parks when a tracked target sets below the observing horizon, and where Go to stow sends it. <strong>Mount coordinates</strong> &mdash; the pointing calibration is not applied, so the mount rests exactly here (clamped to the limits). Parking is mechanical, not an observation, and at the zenith azimuth points at no particular sky. Not the Due&#39;s HOMEALT/HOMEAZ: the limit switches are always counter zero, and those only say how far past the switches a homing drives before it stops and sets the counter to them. Both are 0, so a homing ends at the switches.</p>
                     </div>
                 </div>
                 <div>
@@ -430,7 +430,7 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
                         <div class="btn-row">
                             <button onclick="saveSettings()" data-help="Save observer location, limits, observing horizon, stow position, display, and access point settings.">Save Settings</button>
                             <button class="secondary" onclick="loadSettings()" data-help="Reload settings from the controller and discard unsaved edits.">Reload</button>
-                            <button class="stop" onclick="resetSettings()" data-help="Restore controller settings to their firmware defaults.">Reset to Defaults</button>
+                            <button class="stop" onclick="resetSettings()" data-help="Restore controller settings to their firmware defaults. The pointing model is kept.">Reset to Defaults</button>
                         </div>
                         <p id="settings-status" class="target-info"></p>
                     </div>
@@ -459,19 +459,19 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
                     </div>
                     <div class="box">
                         <h3>Pointing Offset</h3>
-                        <p style="font-size:0.9em;">Add Alt/Az offset for scanning or mapping. Offset is applied to all tracking commands until cleared.</p>
+                        <p style="font-size:0.9em;">Add Alt/Az offset for scanning or mapping. Added to the tracked target&#39;s sky alt and az before the pointing model, until cleared; dAz is degrees of azimuth, not cross-elevation. Not applied to Go To or the stow. Should read 0/0 in normal observing.</p>
                     </div>
                     <div class="box">
                         <h3>Calibrator</h3>
-                        <p style="font-size:0.9em;">Noise source for receiver calibration. Toggle via button or API. State shown in status bar.</p>
+                        <p style="font-size:0.9em;">Switches the Due&#39;s CAL output (pin 26). The noise diode it drove was removed (issue #39) and nothing is connected, so it changes no signal. The vertex dipole carries the scheduler&#39;s pilot from the B200, which this pin does not drive.</p>
                     </div>
                 </div>
                 <div>
                     <div class="box">
                         <h3>Mount Limits</h3>
-                        <p style="font-size:0.9em;"><strong>Altitude:</strong> 0 to 90 degrees</p>
-                        <p style="font-size:0.9em;"><strong>Azimuth:</strong> 2 to 353 degrees (configurable)</p>
-                        <p style="font-size:0.9em;">Targets outside limits go to home position.</p>
+                        <p style="font-size:0.9em;"><strong>Altitude:</strong> 0 to 90 degrees (default)</p>
+                        <p style="font-size:0.9em;"><strong>Azimuth:</strong> 2 to 353 degrees (default)</p>
+                        <p style="font-size:0.9em;">Drive-frame limits, set under Software Limits and applied after the pointing model. A Go To outside them is refused. While tracking, a target outside the azimuth range or above Alt Max is held where it is until it comes back; below Alt Min it is clamped. A target below the observing horizon parks the dish at the stow.</p>
                     </div>
                     <div class="box">
                         <h3>Stellarium Setup</h3>
@@ -484,22 +484,23 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
                     </div>
                     <div class="box">
                         <h3>API Endpoints</h3>
-                        <p style="font-size:0.85em;"><code>/status</code> - Mount position &amp; state</p>
+                        <p style="font-size:0.85em;"><code>/status</code> - Drive alt/az, sky true_alt/true_az, RA/Dec and l/b from the sky position, state</p>
                         <p style="font-size:0.85em;"><code>/track/radec?ra=X&amp;dec=Y</code> - Track J2000</p>
                         <p style="font-size:0.85em;"><code>/track/galactic?l=X&amp;b=Y</code> - Track galactic</p>
                         <p style="font-size:0.85em;"><code>/tracking/axis?mode=az&amp;alt=X</code> - Track azimuth only</p>
                         <p style="font-size:0.85em;"><code>/tracking/axis?mode=alt&amp;az=X</code> - Track altitude only</p>
                         <p style="font-size:0.85em;"><code>/offset?alt=X&amp;az=Y</code> - Set pointing offset</p>
                         <p style="font-size:0.85em;"><code>/pointing</code> - Stored pointing model</p>
+                        <p style="font-size:0.85em;"><code>/pointing/apply</code> (POST) - Store a model document</p>
                         <p style="font-size:0.85em;"><code>/pointing/clear</code> - Erase the pointing model</p>
-                        <p style="font-size:0.85em;"><code>/calibrator?on=1</code> - Control noise source</p>
+                        <p style="font-size:0.85em;"><code>/calibrator?on=1</code> - Due CAL output (nothing connected)</p>
                     </div>
                     <div class="box">
                         <h3>Due Serial Commands</h3>
                         <p style="font-size:0.85em;"><code>HOME</code> - Run homing sequence</p>
-                        <p style="font-size:0.85em;"><code>STOP</code> - Emergency stop</p>
-                        <p style="font-size:0.85em;"><code>STATUS</code> - Show position</p>
-                        <p style="font-size:0.85em;"><code>CAL ON/OFF</code> - Calibrator control</p>
+                        <p style="font-size:0.85em;"><code>STOP</code> - Stop both axes. During a homing it aborts into a fault: RESET, then HOME</p>
+                        <p style="font-size:0.85em;"><code>STATUS</code> - Drive position and state; answered during a homing too</p>
+                        <p style="font-size:0.85em;"><code>CAL ON/OFF</code> - CAL output (nothing connected)</p>
                     </div>
                     <div class="box">
                         <h3>About</h3>

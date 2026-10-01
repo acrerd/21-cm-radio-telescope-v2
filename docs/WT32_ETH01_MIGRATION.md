@@ -1,13 +1,25 @@
 # WT32-ETH01 Setup Guide
 
-**Status:** Implemented
-**Purpose:** Replace ESP32-S3 with WT32-ETH01 for native Ethernet support
+**Status:** Done. The WT32-ETH01 is the deployed controller and the default
+build (`default_envs = wt32-eth01`). The `esp32s3` environment is legacy; that
+board is no longer used.
+**Purpose:** Record of the move from ESP32-S3 to WT32-ETH01 for native Ethernet, and the flashing and wiring procedure that still applies.
+
+**Current state:** the controller is on a private point-to-point link to the
+observatory computer, on **DHCP** with its address pinned by MAC on the host
+(`192.168.50.120`, host `192.168.50.1`); see CLAUDE.md "Controller network" and
+`docs/OBSERVATORY_HOST_SETUP.md`. The static-IP defaults name the same link.
+WiFi AP fallback `192.168.4.1`. Firmware updates go over Ethernet OTA. The
+controller's HTTP API and internals are in `docs/ESP32_CONTROLLER.md`.
+
+`pio` below means `~/.platformio/penv/bin/pio` on the observatory Linux host
+(`~/.platformio/penv/Scripts/pio.exe` on Windows); it is not on PATH.
 
 ---
 
 ## 1. Overview
 
-The WT32-ETH01 is a compact ESP32 module with built-in LAN8720 Ethernet PHY. Unlike the current ESP32-S3 + W5500 SPI approach, this uses the ESP32's native RMII Ethernet MAC for reliable, high-performance networking.
+The WT32-ETH01 is a compact ESP32 module with built-in LAN8720 Ethernet PHY. Unlike the earlier ESP32-S3 + W5500 SPI arrangement, it uses the ESP32's native RMII Ethernet MAC.
 
 ### Why WT32-ETH01?
 
@@ -176,10 +188,12 @@ cd esp32_controller_arduino
 pio run -e wt32-eth01-ota -t upload
 ```
 
-The OTA target defaults to `192.168.50.120` and port `3232`. If DHCP gives the
-controller a different address, update `upload_port` in
-`esp32_controller_arduino/platformio.ini`. The OTA password is configured in
-`src/config.h`.
+The OTA target defaults to `192.168.50.120` and port `3232`. The address comes
+from the host's DHCP reservation; if the controller is ever moved to another
+network, update `upload_port` in `esp32_controller_arduino/platformio.ini`. The
+OTA password is set in `src/config.h` (`OTA_PASSWORD`) and repeated in the
+`--auth` upload flag. The loop watchdog (30 s) is fed from the OTA progress
+callback, so an upload does not trip it.
 
 **First flash or recovery via temporary FT232 programmer:**
 ```bash
@@ -203,23 +217,29 @@ Disconnect the programmer after the flash succeeds.
 
 ## 4. ESP32 Code (Implemented)
 
-The ESP32 firmware supports both ESP32-S3 and WT32-ETH01 from the same codebase using conditional compilation.
+The ESP32 firmware supports both boards from the same codebase using
+conditional compilation. WT32-ETH01 is the default and canonical target; the
+ESP32-S3 environment is legacy.
 
 ### 4.1 platformio.ini
 
-Both board environments are configured (use `pio run -e wt32-eth01` or `pio run -e esp32s3`):
+As in `esp32_controller_arduino/platformio.ini` (the `esp32s3` and `native`
+environments omitted):
 
 ```ini
-; PlatformIO Configuration for WT32-ETH01
+[platformio]
+default_envs = wt32-eth01
 
 [env:wt32-eth01]
 platform = espressif32
 board = wt32-eth01
 framework = arduino
 monitor_speed = 115200
+board_build.partitions = partitions_wt32_ota.csv
 
 ; No USB CDC - uses standard UART
 build_flags =
+    -DBOARD_WT32_ETH01
     -DCORE_DEBUG_LEVEL=0
 
 upload_speed = 460800
@@ -228,52 +248,90 @@ upload_protocol = esptool
 lib_deps =
     https://github.com/me-no-dev/AsyncTCP.git
     https://github.com/me-no-dev/ESPAsyncWebServer.git
+
+[env:wt32-eth01-ota]
+extends = env:wt32-eth01
+upload_protocol = espota
+upload_port = 192.168.50.120
+upload_flags =
+    --auth=srt-ota-1420
+    --port=3232
+```
+
+`-DBOARD_WT32_ETH01` selects the WT32 pins and `ETHERNET_ENABLED` in
+`config.h`. `partitions_wt32_ota.csv` gives two 1.6 MB app slots (`ota_0`,
+`ota_1`) so an OTA image is written beside the running one:
+
+```
+# Name,   Type, SubType, Offset,  Size, Flags
+nvs,      data, nvs,     0x9000,  0x5000,
+otadata,  data, ota,     0xe000,  0x2000,
+app0,     app,  ota_0,   0x10000, 0x190000,
+app1,     app,  ota_1,   0x1A0000,0x190000,
+spiffs,   data, spiffs,  0x330000,0xD0000,
 ```
 
 ### 4.2 config.h Changes
 
 ```cpp
-// Serial connection to Arduino Due
-// WT32-ETH01: IO4/IO14 for runtime (TX0/RX0 reserved for programming)
-// Note: Avoid IO32/IO33 - labelled CFG/485_EN on RS-485 variants
-#define DUE_UART_TX 4    // WT32 IO4 -> Due RX (pin 19)
-#define DUE_UART_RX 14   // WT32 IO14 <- Due TX (pin 18)
+#ifdef BOARD_WT32_ETH01
+    // WT32-ETH01: Serial to Due via GPIO4/14
+    // Note: GPIO32/33 labelled CFG/485_EN on RS-485 variants - avoid those
+    // TX0/RX0 (GPIO1/3) reserved for programming - no need to disconnect Due
+    #define DUE_UART_TX 4    // WT32 IO4 -> Due RX (pin 19)
+    #define DUE_UART_RX 14   // WT32 IO14 <- Due TX (pin 18)
 
-// Ethernet PHY configuration (LAN8720)
-#define ETH_PHY_TYPE  ETH_PHY_LAN8720
-#define ETH_PHY_ADDR  1
-#define ETH_PHY_MDC   23
-#define ETH_PHY_MDIO  18
-#define ETH_PHY_POWER 16
-#define ETH_CLK_MODE  ETH_CLOCK_GPIO0_IN
+    // Ethernet PHY configuration (LAN8720) - pin numbers only
+    // The actual PHY type constants are defined by ETH.h
+    #define ETH_PHY_ADDR_CFG    1
+    #define ETH_PHY_MDC_PIN     23
+    #define ETH_PHY_MDIO_PIN    18
+    #define ETH_PHY_POWER_PIN   16
+
+    // Enable Ethernet support
+    #define ETHERNET_ENABLED 1
+#endif
+
+// Ethernet static-IP fallback, used only if DHCP is turned off in the web UI
+#define DEFAULT_ETH_STATIC_IP "192.168.50.120"
+#define DEFAULT_ETH_GATEWAY   "192.168.50.1"
+#define DEFAULT_ETH_SUBNET    "255.255.255.0"
+#define DEFAULT_ETH_DNS       "192.168.50.1"
 ```
+
+The names carry `_CFG`/`_PIN` suffixes to stay clear of the `ETH_PHY_*`
+names the core's `ETH.h` uses. The PHY type (`ETH_PHY_LAN8720`) and clock
+mode (`ETH_CLOCK_GPIO0_IN`) are passed directly in `ETH.begin()`.
 
 ### 4.3 New Ethernet Initialization (main.cpp)
 
 Add Ethernet support alongside WiFi:
 
+Abridged from `esp32_controller_arduino/src/main.cpp`:
+
 ```cpp
 #include <ETH.h>
 
-// Ethernet state
 bool ethConnected = false;
+bool ethNeedNtpSync = false;  // serviced from loop()
+String ethIP = "";
 
-void onEthEvent(WiFiEvent_t event) {
+void onEthEvent(arduino_event_id_t event) {
     switch (event) {
         case ARDUINO_EVENT_ETH_START:
-            Serial.println("ETH Started");
-            ETH.setHostname("srt-controller");
-            break;
-        case ARDUINO_EVENT_ETH_CONNECTED:
-            Serial.println("ETH Connected");
+            ETH.setHostname(CONTROLLER_HOSTNAME);
             break;
         case ARDUINO_EVENT_ETH_GOT_IP:
-            Serial.printf("ETH IP: %s\n", ETH.localIP().toString().c_str());
             ethConnected = true;
+            ethIP = ETH.localIP().toString();
+            ethNeedNtpSync = true;     // re-armed on every lease, so a reconnect re-syncs
+            startDiscoveryServices();  // mDNS
+            startOTAService();         // ArduinoOTA on port 3232
             break;
         case ARDUINO_EVENT_ETH_DISCONNECTED:
-            Serial.println("ETH Disconnected");
+        case ARDUINO_EVENT_ETH_STOP:
             ethConnected = false;
+            ethIP = "";
             break;
         default:
             break;
@@ -281,19 +339,18 @@ void onEthEvent(WiFiEvent_t event) {
 }
 
 void setup() {
-    Serial.begin(115200);
-
-    // Register Ethernet event handler
+    // ...
     WiFi.onEvent(onEthEvent);
+    ETH.begin(ETH_PHY_ADDR_CFG, ETH_PHY_POWER_PIN, ETH_PHY_MDC_PIN,
+              ETH_PHY_MDIO_PIN, ETH_PHY_LAN8720, ETH_CLOCK_GPIO0_IN);
+    if (!settings.ethUseDHCP) {
+        ETH.config(ip, gateway, subnet, dns);   // from settings, if all four parse
+    }
+    // wait up to 5 s for a lease, then start SNTP
 
-    // Initialize Ethernet
-    ETH.begin(ETH_PHY_ADDR, ETH_PHY_POWER, ETH_PHY_MDC,
-              ETH_PHY_MDIO, ETH_PHY_TYPE, ETH_CLK_MODE);
-
-    // Start WiFi AP (runs alongside Ethernet)
-    WiFi.softAP(settings.apSSID.c_str(), settings.apPassword.c_str());
-
-    // ... rest of setup
+    // WiFi AP always starts, alongside Ethernet
+    wifiManager.startup();
+    // ...
 }
 ```
 
@@ -302,16 +359,21 @@ void setup() {
 Add Ethernet status to `/wifi/status` endpoint:
 
 ```cpp
+json += "\"eth_available\":true,";
 json += "\"eth_connected\":" + String(ethConnected ? "true" : "false") + ",";
-json += "\"eth_ip\":\"" + (ethConnected ? ETH.localIP().toString() : String("")) + "\",";
+json += "\"eth_ip\":\"" + ethIP + "\",";
+json += "\"eth_mac\":\"" + ETH.macAddress() + "\",";
+json += "\"eth_dhcp\":" + String(settings.ethUseDHCP ? "true" : "false") + ",";
+// ... eth_static_ip, eth_gateway, eth_subnet, eth_dns
 ```
 
 ### 4.5 Remove USB CDC Workarounds
 
-The WT32-ETH01 uses standard UART, not USB CDC. The `DBG()` macro can be simplified but keeping it doesn't hurt:
+The WT32-ETH01 uses standard UART, not USB CDC. The `DBG()` macro was kept;
+on this board its guard is always true. The ESP32-S3-only `setTxTimeoutMs(0)`
+and 3 s enumeration delay are under `#ifdef BOARD_ESP32S3`.
 
 ```cpp
-// Standard serial - always works, DBG macro optional
 #define DBG(x) if (Serial) { x; }
 ```
 
@@ -339,7 +401,9 @@ The Network tab includes:
 | `/wifi/forget` | GET | Clear saved WiFi credentials |
 | `/offset` | GET | Set pointing offset (alt, az in degrees) |
 | `/offset/clear` | GET | Clear pointing offset |
-| `/calibrator` | GET | Control calibrator (state=on/off/toggle) |
+| `/calibrator` | GET | `on=1\|true` or `on=0`; sends `CAL ON`/`CAL OFF` to the Due. Nothing is connected to it since the noise diode was removed (issue #39) |
+
+The full endpoint list is in `docs/ESP32_CONTROLLER.md` section 5.
 
 ---
 
@@ -355,9 +419,9 @@ The Arduino Due has two USB ports. The Native USB provides serial monitoring for
 PC USB #1 ─────────►│ Programming USB │◄──── Due debug, commands, status
                     │    (Serial)     │
                     │                 │
-PC USB #2 ─────────►│  Native USB     │◄──── ESP32 serial monitoring
+PC USB #2 ─────────►│  Native USB     │◄──── mirror of ESP32→Due commands
                     │  (SerialUSB)    │
-                    │       ↕         │
+                    │       ↑         │
                     │    Serial1      │────► WT32-ETH01 (IO4/IO14)
                     └─────────────────┘
 
@@ -366,7 +430,7 @@ PC USB #2 ─────────►│  Native USB     │◄──── E
 
 **Programming USB (Serial):** Due programming, commands (HOME, STOP, etc.), status output
 
-**Native USB (SerialUSB):** Bidirectional serial bridge to ESP32 for monitoring
+**Native USB (SerialUSB):** Mirror of the ESP32-to-Due command stream, plus a path for typing to the ESP32
 
 **Temporary FT232:** ESP32 first flash/recovery via TX0/RX0 (no need to disconnect Due)
 
@@ -383,42 +447,64 @@ PC USB #2 ─────────►│  Native USB     │◄──── E
 
 ### Due Firmware (Already Implemented)
 
-The bridge code in `src/main.cpp`:
+The bridge code in `src/main.cpp` is in two places. `handleESPBridge()`, called
+at the top of `loop()`, forwards only one way:
 
 ```cpp
 #define ESP_BRIDGE_ENABLED  1       // Set to 0 to disable bridge functionality
-#define ESP_BRIDGE_BAUD     115200  // Baud rate for ESP32 serial monitoring
+#define ESP_BRIDGE_BAUD     115200  // Serial1 baud rate (ESP32 link)
 
 #if ESP_BRIDGE_ENABLED
 
 void setupESPBridge() {
-    // Initialize Native USB for ESP32 serial monitoring
-    SerialUSB.begin(ESP_BRIDGE_BAUD);
+    // SerialUSB on Due is native USB CDC - baud rate parameter is ignored
+    // but begin() is required to initialize the USB stack
+    SerialUSB.begin(0);
 }
 
-// Handle ESP32 serial bridge - bidirectional passthrough for monitoring
+// Note: Serial1->SerialUSB forwarding is now done in processSerialInput()
+// where we also process commands from ESP32
 void handleESPBridge() {
     // Forward Native USB -> Serial1 (PC to ESP32)
     while (SerialUSB.available()) {
         Serial1.write(SerialUSB.read());
-    }
-
-    // Forward Serial1 -> Native USB (ESP32 to PC)
-    while (Serial1.available()) {
-        SerialUSB.write(Serial1.read());
     }
 }
 
 #endif // ESP_BRIDGE_ENABLED
 ```
 
+The other direction is inside `processSerialInput()`, which is the Due's reader
+of the controller's commands. Each byte read from Serial1 is copied to the
+Native USB port and then parsed:
+
+```cpp
+while (Serial1.available() > 0) {
+    char c = Serial1.read();
+    #if ESP_BRIDGE_ENABLED
+    SerialUSB.write(c);          // mirror for monitoring
+    #endif
+    // ... line assembly, then processCommand() with cmdFromSerial1 = true
+}
+```
+
+Do not restore the earlier version of `handleESPBridge()` that also drained
+`Serial1` into `SerialUSB`. Serial1 has one reader. A second loop that empties
+it first takes the controller's `STATUS` polls and drive targets away from
+`processSerialInput()`, so the Due never executes them.
+
 ### How the Bridge Works
 
-The Due's Native USB port acts as a **transparent USB-to-serial adapter** for runtime monitoring:
-
-- **Always active** - no mode switching or special commands
-- **Bidirectional** - ESP32 output appears on PC, PC input goes to ESP32
-- **Independent** - works alongside normal Due operation
+- **Always active** in the main loop - no mode switching or special commands
+- **ESP32 to Due only**: bytes the ESP32 sends (drive targets, `STATUS`, `HOME`,
+  `STOP`, `CAL ON/OFF`) are mirrored to Native USB. The Due's replies on
+  Serial1 (status lines, `ACK DRIVE`, `ERR ...`) are **not** mirrored; watch
+  those on the Programming USB port or in the controller's `/serial/log`
+- **Native USB input goes to the ESP32**, which reads it as if it came from the
+  Due
+- Not serviced during a homing: `performHoming()` reads Serial1 itself
+  (`homingServiceSerial()`) and does not mirror it
+- The ESP32's own console (UART0, TX0/RX0) is not on this bridge
 
 ### Programming the ESP32
 
@@ -449,9 +535,10 @@ Ethernet operation. Routine updates after the first serial flash should use the
 
 ### Daily Usage
 
-**Monitor Due/ESP32 control traffic:**
-- Connect any serial terminal to Due Native USB port at 115200 baud
-- ESP32-to-Due commands and Due status traffic appear continuously
+**Monitor ESP32-to-Due commands:**
+- Connect any serial terminal to Due Native USB port (CDC; the baud setting is ignored)
+- The ESP32's commands appear: a `STATUS` poll a second and each drive target.
+  The Due's replies do not
 - Use the temporary FT232 programmer on TX0/RX0 only when you need WT32
   boot/Ethernet logs
 - No special commands needed
@@ -466,7 +553,8 @@ Ethernet operation. Routine updates after the first serial flash should use the
 **No output on Native USB:**
 - Check Serial1 wiring (TX1→IO14, RX1→IO4 - they cross!)
 - Verify ESP32 is powered and running
-- Check baud rate matches (115200)
+- Check Serial1 baud rate matches on both ends (115200)
+- Nothing is mirrored while the Due is homing
 
 **Upload fails:**
 - Start upload first, then hold BOOT/IO0/FLASH, tap EN/RST, and release BOOT
@@ -527,11 +615,11 @@ The repository OTA upload target is the current controller address,
 
 ### Monitoring via Due Bridge
 
-Once programmed, the Due Native USB port can monitor Serial1 control traffic
-between the Due and ESP32:
+Once programmed, the Due Native USB port shows the ESP32-to-Due half of the
+Serial1 traffic:
 
-- Connect terminal to Due Native USB port at 115200 baud
-- ESP32-to-Due commands and Due status traffic appear continuously
+- Connect terminal to Due Native USB port
+- ESP32-to-Due commands appear; the Due's replies do not (see section 6)
 - WT32 boot/Ethernet logs on TX0/RX0 require the temporary programmer or another
   serial adapter
 - Disconnect the temporary programmer again after debugging normal operation
@@ -581,14 +669,19 @@ between the Due and ESP32:
 
 ## 9. Dual-Board Support (Implemented)
 
-Both ESP32-S3 and WT32-ETH01 are supported from the same codebase:
+Both ESP32-S3 and WT32-ETH01 build from the same codebase. WT32-ETH01 is the
+deployed board, the default environment, and must always build clean; the
+ESP32-S3 is no longer used and is kept compiling when convenient.
 
 ```bash
-# Build for WT32-ETH01 (Ethernet)
+# Build for WT32-ETH01 (Ethernet, default)
 pio run -e wt32-eth01
 
-# Build for ESP32-S3 (USB CDC)
+# Build for ESP32-S3 (legacy, USB CDC)
 pio run -e esp32s3
+
+# Host unit tests (no board)
+pio test -e native
 ```
 
 The code uses `#ifdef BOARD_WT32_ETH01` / `#ifdef BOARD_ESP32S3` for board-specific features.
@@ -618,7 +711,7 @@ The code uses `#ifdef BOARD_WT32_ETH01` / `#ifdef BOARD_ESP32S3` for board-speci
 | Port                 | Purpose                                     |
 |----------------------|---------------------------------------------|
 | Due Programming USB  | Due commands (HOME, STOP, STATUS, etc.)     |
-| Due Native USB       | ESP32 serial monitoring (115200 baud)       |
+| Due Native USB       | Mirror of ESP32→Due commands (not replies)  |
 | Temporary FT232      | First ESP32 flash or recovery only          |
 
 ### Wiring Summary
@@ -643,8 +736,10 @@ The code uses `#ifdef BOARD_WT32_ETH01` / `#ifdef BOARD_ESP32S3` for board-speci
 
 Ethernet IP can be configured via the web interface (Network tab):
 
-- **DHCP** (default): Automatically obtain IP from network
-- **Static IP**: Manually configure IP, gateway, subnet, and DNS
+- **DHCP** (default, and the normal mode): the observatory computer's
+  reservation for the controller's MAC gives `192.168.50.120`
+- **Static IP**: Manually configure IP, gateway, subnet, and DNS; pre-filled
+  with `192.168.50.120`, gateway/DNS `192.168.50.1`, `255.255.255.0`
 
 Settings are stored in non-volatile memory and persist across reboots.
 Changes require a reboot to take effect.

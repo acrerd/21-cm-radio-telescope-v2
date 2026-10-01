@@ -29,10 +29,10 @@ counts(f, t)  =  G(t) · B(f, t) · [ T_sys(t) + g(t) · T_A(f, t) ]
 | term | is | measured |
 |---|---|---|
 | `T_A` | the sky — the thing we want | — |
-| `T_sys` | everything the instrument and its surroundings add: the SAWbird's 59 K, spillover onto the ground, the atmosphere, the cable | 340–372 K |
+| `T_sys` | everything the instrument and its surroundings add: the SAWbird's 59 K, spillover onto the ground, the atmosphere, the cable | 187.7 K (l=72 b=0, 2026-09-30); 340–372 K on the old feed, before 2026-09-22 |
 | `B(f, t)` | the **shape** of the response across the band, normalised to unit median: the SAW filter's passband, and that filter's multi-transit echo ripple | — |
-| `G(t)` | the **level**, counts per kelvin | ~8–9×10⁻⁷ |
-| `g(t)` | the **beam's gain on the source**, where the source is small against the beam: 1 when the beam is centred, less when the mount is pointed off | 0.984–1.000 |
+| `G(t)` | the **level**, counts per kelvin | 1.460×10⁻⁷ (same fit); ~8–9×10⁻⁷ on 2026-09-15/16, not comparable: those fits were at 30 dB receiver gain (20 dB from 2026-09-17) and through the old feed (replaced 2026-09-22) |
+| `g(t)` | the **beam's gain on the source**, where the source is small against the beam: 1 when the beam is centred, less when the mount is pointed off | 0.98–1.00 |
 
 Note where `g` sits in that line. It multiplies `T_A` and **not** `T_sys`,
 because the system temperature does not care where the dish is looking. Every
@@ -54,7 +54,8 @@ converts kelvin to flux.
 
 The first two are **measured beforehand, on separate jobs, and stored on
 disk**. The two pilot calibrations are **measured inside the observation
-itself**, at write time. The scallop is measured inside the observation too,
+itself**, at write time — when the pilot is enabled, which it has not been by
+default since 2026-09-22 (§3). The scallop is measured inside the observation too,
 but **afterwards, in the reduction** — everything it needs is derivable from
 the file, so it is never written and an old recording improves the day the
 pointing model or the measured beam does. The beam solid angle is measured
@@ -71,11 +72,17 @@ the detail.
 
 1. A **bandpass job** tracks the Lockman Hole, records a few minutes, fits a
    polynomial to the mean spectrum with the line masked, and stores
-   `bandpass_template.json` and `bandpass_template_wide.json`. (§5)
+   `bandpass_template.json` and `bandpass_template_wide.json`. Since
+   2026-09-25 the same fit can be made from a recording already on disk
+   (`/api/rf/bandpass/from-recording`). A new template stales the gain. (§5)
 2. A **gain job** tracks a plane field, records, and fits `counts = G·(T_sys +
    T_model)` against the simulator's sky. Stores `gain_calibration.json`. (§5)
 
 **At start-up of the observation**
+
+Steps 3, 4 and 6–9 run only with the pilot enabled. It is off by default
+since 2026-09-22 (§3); with it off, steps 5 and 10 are the whole write-time
+chain.
 
 3. The receiver builds the **pilot plan** from the tuning: which wide bins
    carry comb tones, the two transmit frames, and the reference spectrum the
@@ -139,6 +146,28 @@ into the feed so that **everything downstream of the feed is inside the
 measurement** — the probe, the horn, the SAWbird, the cable down the mount,
 the converter. Detail in `receiver_scheduler/pilot.py`; the design record is
 issue #30.
+
+**Status: off by default since the evening of 2026-09-22**
+(`PILOT_DEFAULTS["enabled"] = False`; `receiver_pilot_enabled: false` in the
+live config). The dipole was wired that afternoon — a 30 dB pad, an axial
+stub, `receiver_pilot_tx_gain_db` 70 in the live config against the
+`tx_gain_db` default of 10 — and the first sky runs showed the carrier's
+received level stepping by up to 1.6% at every host stall (a TX underflow with
+an RX overflow, counted per record in `underflows`) and staying there, and
+drifting three times as far as the receiver between stalls (r = 0.97 in
+shape). Dividing by it makes a series worse. The bursts are unproven. What
+follows is the design as built; it is parked in issue #46.
+
+**Enabling the TX chain costs 8.4% of receiver sensitivity**, instantly, in
+both products, whatever the TX gain: an A-B-A on l=84 b=4 on 2026-09-22 read
+8.41 ± 0.01% (continuum) and 8.53 ± 0.02% (H I) higher with the TX off than
+on, the two on-legs agreeing to 0.3%, and a leg
+with the TX enabled at 0 dB sat at the 70 dB level to 0.02%. It is the
+AD9364's state with its transmitter on, not the radiated carrier. A further
+~1.5% start-up transient with a few-minute time constant rides on top when the
+TX is on. So a gain belongs to one TX state, and **the pilot is never toggled
+per observation**: a recording made in the other state reads 8.4% off the gain
+in force, and its kelvin are wrong by that much though nothing flags it.
 
 Two things are transmitted, and they are transmitted from **separate sources**
 that are added together, so switching one never disturbs the other.
@@ -212,8 +241,8 @@ side of the anchor, so a tilt changing by 0.1%/MHz between bursts moves the
 band mean by 0.17%.
 
 **A pilot that is never detected is given up on** after `give_up_after_bursts`
-(5), since it otherwise costs one record an interval for nothing — which is
-the state until the vertex dipole is wired. The carrier keeps running, costing
+(5), since it otherwise costs one record an interval for nothing — the state
+of every run before the vertex dipole was wired. The carrier keeps running, costing
 no records. A pilot seen even once is never given up on: an intermittent one
 is a fault to record, not a reason to stop measuring.
 
@@ -310,8 +339,26 @@ the template is normalised to unit median, so it carries shape alone, and an
 amplifier's compression responds to the *total* power through it and takes the
 whole band down together, which divides out of a normalised shape. It is not
 proven, though, and the second-order term has never been measured. Re-measure
-the template after a receiver-gain change anyway; nothing stops you, and the
-09-16 30 dB template will otherwise be applied silently to 20 dB recordings.
+the template after a receiver-gain change anyway: nothing refuses a template
+fitted at another gain, and it would be applied silently.
+
+**In force:** order 9, fitted 2026-09-30 by a live job on l=150 b=+52
+(38 records, 20 dB, TX off), residual 0.18% (H I) and 0.14% (wide).
+
+**From a recording on disk.** Since 2026-09-25 the RF tab can fit both
+templates from a finished recording (`/api/rf/bandpass/from-recording`): a
+tracked spectrum at the instrument in force (LO, rate and receiver gain all
+checked), Sun runs refused. A template wants a long, high-latitude, TX-off
+run chosen after the fact, which a few minutes of live job on whatever sky is
+up cannot always give. The template in force from 09-22 to 09-25 was a
+37-record live job with the TX on; its 0.5 K error was the S-shaped residual
+on every spectrum in between, correlated 0.84–0.97 across plane fields, and
+gone when a 601-record TX-off run at l=71.7 b=+44 replaced it.
+
+`bandpass.fit_from_observation` **writes the template in force** unless called
+with `save=False`; an experiment overwrote it on 09-25. And **the template and
+the gain are a pair**: the gain was fitted through the template, so replacing
+the template stales the gain, and the gain must be refitted after it.
 
 **What it cannot do, and the reason the pilot exists:** the SAW filter is
 outdoors on the dish, its substrate drifts tens of parts per million per
@@ -333,13 +380,36 @@ intercept absorbs it.** So ground spillover — broadband — lands wholly in
 derived as intercept/slope and is *not* an independent quantity; do not read a
 trend in it without checking the intercept itself.
 
+**In force:** 1.460×10⁻⁷ counts/K, `T_sys` 187.7 K, fitted on l=72 b=0 on
+2026-09-30, correlation 0.9992, 20 dB, TX off. The feed was replaced on
+2026-09-22 (`T_sys` 349 → ~187–209 K); every gain and `T_sys` from before that
+date belongs to the old feed.
+
 **Anchored on the H I line.** The line is the only part of the sky whose
-brightness is known independently, from HI4PI through the measured beam. The
-velocity shift of the B200's clock is fitted alongside, and **carried between
-observations only from a fit whose correlation says a line held it** (≥0.99):
-a shift with no line to hold it slides onto whatever is nearby and reports a
-confident number. Constrained fits give −2.4 to −3.0 ppm over three weeks,
-inside the part's ±2 ppm specification.
+brightness is known independently, from HI4PI through the measured beam.
+
+**No velocity shift is fitted or carried on the locked reference**
+(2026-09-30). A recording is on it when its `clock_source` is `external`,
+`clock_ref_locked` is 1, and the Thunderbolt's `reference_state` is not `bad`
+or `stale` (`rf_calibration.reference_locked`). Then the frequency axis is
+good to well under 10⁻⁹: a calibration fitted on such a recording holds the
+shift at zero (`fit_shift=False`, marked `shift_fixed` and `reference_locked`),
+and `trustworthy_velocity_shift` returns nothing for a locked recording or a
+locked calibration, so no clock correction is applied either way. The
+calibration in force carries `velocity_shift_km_s` 0, `shift_fixed` and
+`reference_locked` true. Until 2026-09-30 the 09-25 calibration's −0.225 km/s
+(−0.75 ppm, fitted on the plane field l=138 b=−1) was applied to every
+spectrum as a "receiver clock" correction.
+
+On the TCXO (before the Thunderbolt, 2026-09-22) the shift was fitted
+alongside the gain and carried only from a fit whose correlation said a line
+held it (≥0.99), since a shift with no line to hold it slides onto whatever is
+nearby. It is a clock term only on a field where pointing cannot move it:
+l=148 b=8 read −0.60 to −0.63 km/s on the TCXO over four weeks (−2 ppm, in
+spec) and −0.075 km/s (−0.25 ppm) on the Thunderbolt. A plane field moves
+0.5–0.7 km/s per 0.5° of longitude pointing, so its fitted shift reads the
+pointing and the model, not the clock. Never quote a ppm from a plane-field
+fit.
 
 **It goes stale with temperature.** The fitted gain fell 2.1% and `T_sys`
 4.3 K between midday and evening on 2026-08-25, about 0.3% an hour through the
@@ -352,7 +422,8 @@ b=+12) and 9.23e-7 counts/K (l=184 b=0) with the total power constant to 5%:
 what differs is the measured line against the model, and the fit moves `G` and
 `T_sys` against each other to absorb it. This was read as a *field* effect
 until 2026-09-17, when the A/B test below showed the same field, l=108 b=+12,
-spanning the same 8.14–9.38e-7 across time on its own. Treat the kelvin scale
+spanning the same 8.14–9.38e-7 across time on its own. All of these are on
+the old feed and at 30 dB receiver gain, so their level is not comparable with today's; the spread has not been re-measured on the new feed. Treat the kelvin scale
 as good to about ±8% depending on where it was anchored, and **anchor
 consistently**.
 
@@ -369,11 +440,12 @@ Two candidate causes are open, and they are separable by the rule above:
   with its slope unchanged, the pair that swung open lost ~5 K. About 0.3 K
   per degree of horizon floor, 10–15 K across this site's 5–45° range.
 
-A third caveat sits under both: total power stepped **−7.9%** between
-2026-09-16 10:39 and 21:00, the window the pilot's transmitter went live in,
-and has been stable since. The bandpass template (<1%) and the master clock
-rate are ruled out. Until the pilot-on/pilot-off test settles it, do not
-compare a gain fitted before that date with one fitted after.
+A third caveat, now settled: total power stepped **−7.9%** between
+2026-09-16 10:39 and 21:00, the window the pilot's transmitter went live in.
+The A-B-A of 2026-09-22 (§3) explained it: enabling the TX chain costs 8.4% of
+the receiver's sensitivity whatever the TX gain. A gain belongs to the TX
+state it was fitted in, and a gain fitted with the TX on does not apply to a
+TX-off recording, or the reverse.
 
 ### The tracking scallop
 
@@ -395,16 +467,40 @@ neither is slow enough to be absorbed by a baseline. Measured on the
 | azimuth | 1.64 min | 0.58% | 2.27% |
 
 The correction is fitted from the observation's own records, not taken from
-the beam, and two measured facts are why. The amplitude comes out 10–40% above
-what a 4.57° Gaussian predicts, because the beam is flat-topped and the
-scallop only ever probes the middle quarter-degree of it. And the phase of the
-dip sits 0.04–0.07° from where the pointing model puts it, which is the
-model's own residual at that part of the sky — **a correction applied at the
-wrong phase adds modulation rather than removing it**, so the fit carries a
-phase offset per axis and searches it. Each axis is judged separately against
-`MIN_SIGMA` (4) and against the beam's predicted curvature; an axis that fails
+the beam, and two measured facts are why. On the old feed the amplitude came
+out 10–40% above what the 4.57° Gaussian of the time predicted, because the
+beam is flat-topped and the scallop only ever probes the middle quarter-degree
+of it. And the phase of the dip sits 0.04–0.07° from where the pointing model
+puts it, which is the model's own residual at that part of the sky — **a
+correction applied at the wrong phase adds modulation rather than removing
+it**, so the fit carries a phase offset per axis and searches it. Each axis is
+judged separately against `MIN_SIGMA` (4) and against the beam's predicted
+curvature, within `AMPLITUDE_RANGE` (0.4–2× the beam); an axis that fails
 either is left in rather than carried, because a negative fitted amplitude
-applied would amplify that axis instead of flattening it.
+applied would amplify that axis instead of flattening it. The beam judged
+against is the one in force (`beam_calibration.json`), which outranks the
+width in the recording's header. Records beyond `OUTLIER_SIGMA` (5) of the
+run's robust scatter — the stow at the end of a run, a record off the source —
+are dropped and the fit repeated, judged each time against the original set.
+
+**Two solutions, judged by what is left** (2026-09-24). A least-squares fit
+over a whole run has no defence against records that are not the quiet Sun:
+ten stow records at −85% among 1200 pulled the fit to 3.5× the beam at a phase
+of 0.2°, and a simulated ×6 radio burst 3 min wide fitted 3.75×. So
+`scallop.correct` tries both this run's fit and the parameters **carried from
+the last quiet run** in `scallop_reference.json` (amplitudes stored relative
+to the beam's curvature, so a re-measured beam rescales them), and applies
+whichever leaves less modulation folded at the pulse phase on the run's
+**quiet** records — those within 5% of a 20-minute running median. Never by
+chi-squared, which the free fit wins on its own residual whether or not it
+fitted the burst. If neither beats no correction, nothing is applied. A fresh
+fit that wins replaces the carried parameters. The carrying is justified by
+the archive: twenty Sun tracks (2026-09-08 to 09-24) put the phases at alt
++0.05 ± 0.02° and az −0.04 ± 0.02° under one model, and the amplitudes at
+0.6–1.2× the beam. The parameters carried now are from 2026-09-30: alt 0.67×,
+az 1.07× the 4.30° beam, phases +0.060/−0.060°. A fit well outside the range —
+3.85× on the count-error run of 09-24 — is refused, and is a pointing problem,
+not a beam.
 
 Reconstructing where the mount was *commanded* to point needs the pointing
 model that was in force. The scheduler now writes it into every recording as
@@ -463,16 +559,21 @@ angle is its Gaussian equivalent, √(Ω/1.133), for the simulators' Gaussian
 convolution; a Gaussian *fitted* to the crossing is reported for comparison
 only, because on a flat-topped lobe it depends on the window.
 
-In force: 20.8 sq deg, FWHM-equivalent 4.29°, from the 09-24 drift on the new
-feed (provisional — adopted by force with one side's baseline 0.2° short of
-the rule, to be replaced by the two-hour scan). By this method the old feed's
+In force since 2026-09-25: **20.96 sq deg, FWHM-equivalent 4.30°**, from the
+first two-hour drift on the new feed (`20260925_120824_drift.h5`, ±14–15° of
+drift, adopted on its own merits; the two sides 22.05 and 19.87 sq deg). First
+sidelobes 0.44% of peak leading, 0.84% trailing (−23.6 / −20.8 dB, baseline
+subtracted), nulls at 5.27° and 4.89°. The 09-24 hour-long drift before it
+gave 20.8 sq deg / 4.29°, adopted by force with its trailing side 0.2° short
+of the baseline rule. The drift angle's sign was inverted until 2026-09-25,
+so every beam report before that date has `before` and `after` swapped,
+the archived 09-15 and 09-24 analyses included. By this method the old feed's
 09-15 drift gives 21.6 sq deg, not the 23.7 recorded then, so the earlier
 number carried ~9% of method that cannot be reconstructed. `λ²/Ω_main` is an
 **upper bound** on the effective area — on the new feed it is the physical
 7.07 m² to within 1%, which says only that the main lobe holds most of the
 power; the sidelobes and spillover lie outside it, and the true effective
-area is smaller by the main-beam efficiency. The two-hour scan is where the
-first sidelobes start to be measured.
+area is smaller by the main-beam efficiency.
 
 Solar work is corrected to above the atmosphere with the same zenith opacity
 the drift fits use, and the professional measurement for the same day — the
@@ -572,7 +673,8 @@ which is the point of recording the series whether or not it is used.
 
 ### With the transmitter unconnected
 
-Which is the state until the vertex dipole is wired. Nothing is detected,
+The state of every run before 2026-09-22, recorded here because it is also
+the proof of no leakage. Nothing is detected,
 nothing is applied, unit factors are written, and the file reduces identically
 to one made with the pilot off — less the burst records, which are still
 flagged and dropped. Verified on the hardware: bursts on exactly every N-th
@@ -633,6 +735,7 @@ Everything in the divisor travels in the file. Nothing is left implicit.
 | `spectra_wide_kelvin` / `spectra_wide_linear` | the continuum product |
 | `timestamps` | the record's **midpoint**, not its end |
 | `integration_times`, `overflows` | length, and UHD's dropped-sample count |
+| `underflows` | the pilot transmitter's underflow count this record, beside `overflows` in a file with a wide product; a host stall shows in both, and the carrier level steps at it |
 | `pilot_burst` | 1 = this record held a burst or its tail → dropped by `read_observation` |
 | `pilot_ok` | 1 = a pilot correction was applied to this record |
 | `pilot_level`, `pilot_slope` | what was applied; 1.0 and 0.0 when nothing was |
@@ -641,6 +744,11 @@ Everything in the divisor travels in the file. Nothing is left implicit.
 | `pilot_tone_power` | the carrier's excess power this record, always recorded |
 | `pilot_tone_level` | the carrier factor **applied**; 1.0 when it was not |
 | `pilot_tone_ok` | 1 = carrier detected |
+
+The `pilot_*` datasets and the `pilot_*` attributes other than `pilot` itself
+exist only in a file recorded with the pilot enabled. With it off (the
+default since 2026-09-22) the file carries the `pilot` configuration and
+nothing else of it.
 
 **Per burst, and per change of correction**
 
@@ -661,6 +769,8 @@ Everything in the divisor travels in the file. Nothing is left implicit.
 | `pilot_applied`, `pilot_tone_applied` | whether each was applied at write time |
 | `pilot_centre_hz`, `pilot_tone_hz`, `pilot_burst_every_records` | what `factor()` needs to be reversed, and the cadence actually used |
 | `instrument`, `h1_band_hz`, `continuum_band_hz` | the fixed instrument (issue #27) |
+| `clock_source`, `clock_ref_locked` | which reference the sample clock ran from (`internal` or `external`) and whether the B200 reported the external one locked (1, 0, or −1 unknown) |
+| `reference_state`, `reference_status`, `reference_locked`, `reference_*` | the Thunderbolt's own account at the start: state (`absent` when no unit is read), disciplining mode, holdover, alarms, oscillator and PPS offsets, DAC volts, temperature, satellites. With the two above, these decide whether the recording is on the locked reference and so whether any clock shift applies (§5) |
 | `beam_fwhm_deg`, `effective_area_m2` | the beam in force, for flux |
 | `pointing_terms` | the pointing model in force, as JSON — what the scallop needs to reconstruct the drive demand. Written from 2026-09-17; absent on an earlier file, and empty if the controller could not be read |
 | `site_lat_deg`, `site_lon_deg`, `site_height_m`, `object_name`, `observation_mode` | enough to recompute where the source was, and whether the mount was tracking it |
@@ -695,8 +805,10 @@ tab, and it changes the receiver's sensitivity by 8.4 % (the TX chain being
 on, not the radiated carrier), so the gain in force belongs to one state and
 must be re-fitted after a change.
 
-The pilot's five knobs — `receiver_pilot_enabled`, `_burst_interval_s`,
-`_max_duty_cycle`, `_burst_amplitude`, `_tx_gain_db`, `_tone_amplitude`. The
+The pilot's switch and five knobs — `receiver_pilot_enabled`,
+`_burst_interval_s`, `_max_duty_cycle`, `_burst_amplitude`, `_tx_gain_db`,
+`_tone_amplitude`. The live config holds `enabled` false and `tx_gain_db` 70
+(set when the dipole was wired). The
 last two belong together: raising the transmit gain raises the carrier as well
 as the comb, so a change to one is almost always a change to both. Blank means
 the default
@@ -737,14 +849,18 @@ Three cards, from `/api/rf/status` and `/api/pilot/status`:
 - **Fit model** (`/api/observe/fit`) refits gain and `T_sys` on the chosen
   recording and reports it **against the calibration in force as a
   percentage**, with the correlation, the residual and whether the clock shift
-  is trustworthy. It is a *proposal* until "Apply as calibration" is pressed.
+  is trustworthy; on a recording on the locked reference the shift is held
+  at zero, not fitted (§5). It is a *proposal* until "Apply as calibration"
+  is pressed.
   For a drift scan it is a different fit — total power against the simulator's
   predicted drift curve — and comes back `applicable: false`, drawn and
   reported but never applied as the per-channel calibration.
 - **The tracking scallop gets a line of its own** on a solar track's plot,
-  from `scallop.plot_caption`. Either *"tracking scallop removed: 1.60% p-p,
-  alt 1.20x; az 1.04x the 4.57 deg beam, phase +0.060/-0.036 deg [terms last
-  fitted model]"*, or *"tracking scallop left in: …"* with the reason. It
+  from `scallop.plot_caption`. Either *"scallop removed (fitted): alt 0.67x;
+  az 1.07x the 4.30 deg beam, phase +0.060/-0.060, x->y% [from the
+  file]"* — `(carried 2026-09-30)` in place of `(fitted)` when the carried
+  parameters won, and the modulation folded at the pulse phase before and
+  after — or *"tracking scallop left in: …"* with the reason. It
   names the **pointing model** it used, because a recording made before
   `pointing_terms` was stored is reduced against a later model and that is an
   assumption, not a measurement. The line is never omitted on a run where the
@@ -753,11 +869,9 @@ Three cards, from `/api/rf/status` and `/api/pilot/status`:
 - **The live view** (`/api/observe/live`) captions the running trace with
   *"pilot: gain x%, tilt y%/MHz applied; N of M bursts seen, K records
   corrected"*, and drops burst records from the trace. It does **not** apply
-  the scallop: the fit needs roughly twenty minutes of records before it will
-  commit, so a live trace would sit uncorrected for the first third of a run
-  and then visibly step. The 30 s re-plot of the file beside it does apply it,
-  so the two disagree by up to 1.6% mid-run, deliberately. Revisit once the
-  amplitudes prove stable enough to be constants rather than fitted per run.
+  the scallop. The 30 s re-plot of the file beside it does, so the two
+  disagree by up to 1.6% mid-run. The carried parameters (§5) would let the
+  live trace be corrected from its first record; that is not done.
 
 **Known gap:** the static recording plot's pilot line reports only how many
 records the pilot reached, not the size of what it applied — the level and
@@ -787,10 +901,11 @@ must still see raw counts, so the default reverses it and `bandpass.py`,
 `drift_fit.py` and `rf_calibration.py` take that default. A *plot* asks for
 `keep_pilot=True`, and `plot_observation` does. The header carries
 `pilot_kept` so a caption cannot claim a correction that was thrown away, and
-the subtitle names the number of records it reached. Until the vertex dipole
-is wired every factor is unity and the two paths agree exactly, which is
-precisely why this had to be caught by reading rather than by looking at a
-plot.
+the subtitle names the number of records it reached. With the transmitter
+unwired, as it was when this was found (2026-09-17), every factor is unity and
+the two paths agree exactly, which is why it had to be caught by reading
+rather than by looking at a plot. With the pilot off, as it is by default
+now, there is nothing to keep.
 
 The **tracking scallop** needs no undoing: it is applied in the reduction and
 never written, so it is absent from the file by construction. The same is true
@@ -811,9 +926,9 @@ beam does.
   receiver.** §5 has the state of it. The next step is several fields at
   *matched altitude* across open and blocked azimuths for the slope, and a
   horizon strip scan at alt 45–60 for the intercept.
-- **Whether the pilot's transmitter changed the receiver's gain.** One field,
-  pilot on then pilot off, back to back; an hour-long fixed-field run would
-  also say whether the drift that appeared with it settles.
+- **Whether the pilot can be used at all.** The TX chain's 8.4% sensitivity
+  cost is measured (§3); the carrier's steps at host stalls and its drift
+  between them are not understood, and the bursts are unproven. Issue #46.
 - **Main-beam efficiency**, which turns the effective-area upper bound into a
   number. A clean Moon drift is the best route: a known disc temperature at a
   known size.
@@ -852,10 +967,18 @@ beam does.
   every 10 dB off multiplies the power the chain will take by ten — which is
   what pays for the comb. It costs ~4 K of `T_sys` and nothing in
   quantisation.
-- A recording made before 2026-09-15 carries the old beam, and its fluxes
-  re-reduce 22% lower on the corrected solid angle.
-- A gain fitted before 2026-09-16 evening is not comparable with one fitted
-  after, until the pilot's total-power step is explained.
+- Fluxes are always computed on the beam in force (`beam_calibration.json`),
+  whatever a recording's header says. A recording made before 2026-09-15
+  re-reduced 22% lower on the solid angle adopted that day.
+- A gain belongs to one TX state: enabling the TX chain costs 8.4% of receiver
+  sensitivity (§3). **The pilot is never toggled per observation**; the gain in
+  force was fitted with it off, and turning it on means refitting the gain.
+- A gain or beam measured before 2026-09-22 belongs to the old feed.
+- Replacing the bandpass template stales the gain; refit the gain after it.
+  Experiments with `bandpass.fit_from_observation` pass `save=False`.
+- On the locked Thunderbolt reference no velocity shift is fitted or applied.
+  A recording on the TCXO gets a carried shift only from an unlocked
+  calibration whose correlation is ≥0.99.
 - **The scallop correction is only as good as the pointing model.** It removes
   the drive's 0.5° quantisation and nothing else, so a stale model leaves its
   own residual behind — and if the model is wrong enough the fit loses the
@@ -864,8 +987,9 @@ beam does.
   `pointing_model.json` holds now, so re-check the caption before quoting a
   number off an old file.
 - **Photometry of a tracked compact source needs short records.** The scallop
-  is fitted, and a run under about twenty minutes is refused rather than
-  extrapolated. It also does not apply to a drift scan, where the mount is
+  fit needs at least 50 records (2.5 min at 3 s); a run with fewer, or one
+  whose fit is refused, can still take the carried parameters if they leave
+  less modulation than none. It also does not apply to a drift scan, where the mount is
   parked and never crosses a pulse boundary, nor to a field observed for its
   diffuse emission, where the beam stays full however far it is offset.
 
@@ -880,7 +1004,7 @@ is second-hand. It **deadlocks** the first time the received power steps up and
 stays up — a slew onto the Sun, or the carrier starting a moment after the
 baseline formed — because every block then reads "on", the baseline never
 updates again, and every science record is flagged as contaminated and
-dropped. Invisible until the transmitter is wired; found by review 2026-09-16.
+dropped. Invisible with the transmitter unwired; found by review 2026-09-16.
 Its margin also had to beat the per-block scatter while still catching a comb
 that raises total power by only 30% with the Sun in the beam — true of the 5×
 comb of the time, and the reason the margin had nowhere to sit.

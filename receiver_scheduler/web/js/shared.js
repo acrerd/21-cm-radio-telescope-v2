@@ -23,20 +23,20 @@
             document.getElementById('utcTime').textContent = utcTime;
         }
 
-        document.addEventListener('DOMContentLoaded', () => {
+        // Redraw just after each second begins. A setInterval(…, 1000) ticks
+        // at whatever phase the page loaded with, so the display changed up to
+        // a second after the real second and read ~0.5 s slow on average
+        // (2026-09-30). setTimeout to the next boundary also stops timer drift
+        // accumulating.
+        function tickClock() {
             updateClock();
-            setInterval(updateClock, 1000);
-            loadSchedule();
-            updateStatus();
-            updateTelescope();
-            updateReceiver();
-            setInterval(updateStatus, 2000);
-            setInterval(updateTelescope, 5000);
-            setInterval(updateReceiver, 3000);
-            fetch('/api/config').then(r => r.json()).then(cfg => {
-                soundEnabled = cfg.sound_enabled !== false;
-            });
-        });
+            setTimeout(tickClock, 1000 - (Date.now() % 1000) + 5);
+        }
+
+        // Start-up is boot.js's alone. A second DOMContentLoaded block here,
+        // left over from the split into one file per tab (2026-08-25), started
+        // every poll twice - status, receiver, and the telescope poll that
+        // costs the controller three requests - for every open copy of the page.
 
         // The form's submit listener lives in boot.js; a second copy here made
         // every Save run twice (idempotent, so harmless, but pointless).
@@ -283,7 +283,7 @@
                 text.textContent = `Receiver: ${label}${obs}${data.pid ? ' #' + data.pid : ''}`;
                 btn.disabled = true;
                 btn.title = data.source === 'observation'
-                    ? 'A scheduled observation is using the B200.'
+                    ? 'An observation is using the B200.'
                     : 'The receiver GUI is already running on the console.';
             } else {
                 dot.classList.remove('running');

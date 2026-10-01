@@ -60,12 +60,12 @@ The system consists of four integrated components:
 
 ### Data Flow
 
-1. **Scheduling**: User creates observation schedule via web UI (target coordinates, time, duration, SDR settings)
+1. **Scheduling**: User creates observation schedule via web UI (target, time, duration, integration time); the receiver's tuning is fixed, not set per observation
 2. **Telescope Control**: At scheduled time, scheduler sends HTTP request to ESP32 to point telescope
 3. **Coordinate Conversion**: ESP32 converts RA/Dec or Galactic coordinates to Alt/Az
 4. **Motor Control**: ESP32 sends target to Arduino Due, which drives motors to position
 5. **Data Acquisition**: Scheduler launches GNU Radio receiver to capture 21cm spectrum data
-6. **Storage**: Integrated spectra saved to HDF5 files with timestamps and metadata
+6. **Storage**: Integrated spectra (or, for the pulsar, millisecond band power) saved to HDF5 files with timestamps and metadata
 
 ## Hardware
 
@@ -237,7 +237,7 @@ the WSL2 client requirements, are in
 |---------|----------|
 | **Current Status** | Shows Alt, Az, RA/Dec, Galactic coordinates, motor currents, fault state, and tracking target |
 | **Quick Targets** | Track Sun or Moon |
-| **Actions** | Stop all, pause slewing for 10 seconds, home, homing, reset active faults, set calibrator |
+| **Actions** | Stop all, pause slewing for 10 seconds, home, homing, reset active faults, Cal On/Off (drives nothing: the noise diode is gone, issue #39) |
 | **Axis Mode** | Track both axes, azimuth only at fixed altitude, or altitude only at fixed azimuth |
 | **Coordinates** | Direct Alt/Az, RA/Dec (J2000), and Galactic Go To / Track commands |
 
@@ -284,10 +284,13 @@ Connect via USB at 115200 baud.
 #### Motion
 | Command | Description |
 |---------|-------------|
-| `45 180` | Slew to Alt=45°, Az=180° |
-| `HOME` | Run homing sequence |
-| `STOP` | Emergency stop |
-| `RESET` | Clear fault and re-home |
+| `45 180` or `DRIVE 45 180` | Slew to Alt=45°, Az=180° (rounded to the 0.5° pulse grid) |
+| `HOME` | Run homing sequence (also run at power-on) |
+| `STOP` | Emergency stop. During a homing it aborts the homing into `FAULT_HOMING_ABORTED`: the position is unknown until `RESET` then `HOME` |
+| `RESET` | Clear fault; `HOME` afterwards to re-home |
+
+During a homing the Due answers `STATUS` with the live line and refuses every
+other command except `STOP` with `Homing: busy - ignored`.
 
 #### Status
 | Command | Description |
@@ -299,9 +302,7 @@ Connect via USB at 115200 baud.
 #### Calibrator
 | Command | Description |
 |---------|-------------|
-| `CAL ON` | Turn calibrator noise source on |
-| `CAL OFF` | Turn calibrator noise source off |
-| `CAL` | Toggle calibrator state |
+| `CAL ON` / `CAL OFF` / `CAL` | Set or toggle the calibrator pin and the `Cal:` field. Nothing is driven: the noise diode is gone (issue #39) |
 
 #### Configuration
 | Command | Description |
@@ -311,14 +312,30 @@ Connect via USB at 115200 baud.
 | `SET CURRENT 4.5` | Current limit (Amps) |
 | `SET RAMPUP 1000` | Acceleration time (ms) |
 | `SAVE` | Save to flash |
+| `LOAD` | Load from flash |
 | `DEFAULTS` | Reset to defaults |
 
+`HELP` lists the rest of the `SET` parameters (hardware limits, home position,
+ramps, stall timeout, encoder debounce per axis, azimuth backlash).
+
+#### Replies to the controller
+
+Commands arriving on Serial1 (from the ESP32) are answered there. A drive
+target gets `ACK DRIVE <alt> <az>` (the target as rounded to the pulse grid) or
+`ERR DRIVE fault|homing|limits`; an unparseable line gets `ERR UNKNOWN <line>`.
+The ESP32 re-sends a target left unanswered for 2 s once and reports the counts
+as `drive_ack` in `/status`.
+
 #### Status Output Format
+
+The ESP32 parses this positionally; currents are printed to one decimal place.
 ```
-Alt:45.0 Az:180.0 Ialt:0.15A Iaz:0.20A Status:Ready Cal:OFF
-Alt:45.0 Az:180.0 Ialt:0.25A Iaz:0.30A Status:Slewing -> Alt:60.0 Az:200.0 Cal:OFF
-Alt:45.0 Az:180.0 Ialt:0.00A Iaz:0.00A Status:FAULT [Motor stalled] Cal:OFF
+Alt:45.0 Az:180.0 Ialt:0.2A Iaz:0.2A Status:Ready Cal:OFF
+Alt:45.0 Az:180.0 Ialt:1.0A Iaz:1.1A Status:Slewing -> Alt:60.0 Az:200.0 Cal:OFF
+Alt:45.0 Az:180.0 Ialt:0.0A Iaz:0.0A Status:FAULT [Azimuth motor stalled] Cal:OFF
 ```
+
+Encoder pulses are counted on the reed switches' rising edge.
 
 ---
 
@@ -355,7 +372,7 @@ When **Track** is enabled:
 
 ## H1 Receiver & Observation Scheduler
 
-The `receiver_scheduler/` folder contains the data acquisition system for 21 cm hydrogen line observations: the receiver itself, a Flask scheduler with a nine-tab operator page, pointing calibration against the Sun, a radiometric measurement of the obstructed horizon, and the bandpass and gain calibration that turns counts into kelvin. See [its README](receiver_scheduler/README.md) for the tabs and the files.
+The `receiver_scheduler/` folder contains the data acquisition system for 21 cm hydrogen line observations: the receiver itself, a Flask scheduler with a ten-tab operator page, pointing calibration against the Sun, the beam measured from a Sun drift, a radiometric measurement of the obstructed horizon, the bandpass and gain calibration that turns counts into kelvin, the clocks (Thunderbolt 10 MHz/PPS, NTP), and pulsar mode for PSR B0329+54 with its fold and timing. See [its README](receiver_scheduler/README.md) for the tabs and the files.
 
 Everything in the observing path is **headless** — the observatory is worked over ssh — with one deliberate exception, the console-only receiver GUI button.
 
@@ -403,10 +420,12 @@ Tabbed web interface that coordinates telescope pointing and data recording:
 
 - **Scheduler Tab:** Add/edit/clone/delete observations with clash prevention, late-start recovery, preemption, and audio notifications
 - **Sun Scan Tab:** Pointing calibration via raster scan of the sun (see below)
-- **Configuration Tab:** Persistent settings (controller URL, observer location, data folder, receiver Python path, sound)
+- **Horizon, RF calibration, Camera, Simulator, Observe, Guide Tabs:** the horizon archive, bandpass/gain and the Clocks card, the safety camera, the sky simulator, running and plotting observations (including pulsar folds and the PRESTO fold)
+- **Configuration Tab:** Persistent settings (controller URL, observer location, the fixed instrument, data folder, receiver Python path, the Sun and pulsar monitors, sound)
 - **Log Tab:** Live view of rotating scheduler log
 - **Start Receiver:** Starts the B200 receiver manually for warm-up/testing and reports whether the receiver is idle, manually started, or owned by a scheduled observation
-- **Coordinate Systems:** Alt/Az, RA/Dec (J2000), Galactic, Drift Scan (fixed pointing computed from a source and beam-crossing time), Solar System objects (Sun/Moon), and Satellite (TLE)
+- **Coordinate Systems:** Alt/Az, RA/Dec (J2000), Galactic, famous targets, Drift Scan (fixed pointing computed from a source and beam-crossing time), Solar System objects (Sun/Moon), Satellite (TLE), PSR B0329+54 (`pulsar`), Calibration day (`calibration`) and Horizon scan (`horizon`)
+- **Standing orders:** the Sun monitor tracks the Sun whenever the telescope is idle, and the pulsar monitor records B0329+54 daily; both off by default, both give way to bookings and to anything started by hand
 - **Satellite Tracking:** Fetch TLEs from CelesTrak, compute next pass, track via 1 Hz position updates
 - **End Actions:** Stay, Go Home, or Stow telescope after observation
 - **Firmware Update:** Requests the local scheduler service to build and upload WT32 firmware over Ethernet OTA
@@ -445,8 +464,11 @@ Settings are managed via the Configuration tab in the web interface and persiste
 - **Controller Fallback URLs** — Additional controller addresses such as `http://srt-controller.local` and `http://192.168.4.1`
 - **Observer Location** — Latitude, longitude, elevation (used for satellite pass prediction)
 - **Min Elevation** — Minimum elevation for satellite passes (default 10°)
+- **Instrument** — The fixed tuning and the pilot, editable here only, with a warning that a change leaves later recordings uncalibrated
 - **Data Output Folder** — Where HDF5 files are saved
 - **Receiver Python Path** — Path to the radioconda Python executable used by the scheduler and receiver
+- **Sun monitor / Pulsar monitor** — `sun_monitor`; `pulsar_monitor`, `pulsar_monitor_window` (`follow` or `clock`), `pulsar_monitor_start`, `pulsar_monitor_hours`
+- **Pulsar band** — `pulsar_sample_rate_hz` (32 Msps) and `pulsar_lo_hz` (1413 MHz), in `scheduler_config.json` only
 - **Firmware Update Environment** — PlatformIO environment used for WT32 Ethernet OTA uploads
 
 ### Observation Workflow
@@ -455,23 +477,24 @@ Settings are managed via the Configuration tab in the web interface and persiste
 2. **Add Observation:** Click "+ Add Observation"
    - Select coordinate system and enter target (or fetch satellite TLE from CelesTrak)
    - Set start date/time and duration (end time calculated automatically)
-   - Configure SDR settings, calibrator, and end action (stay/home/stow)
+   - Set integration time, SDR type, homing first, the horizon check, and end action (stay/home/stow); the instrument is shown, not set
 3. **Save Schedule:** Auto-saved with clash prevention; running items are locked
 4. **Automatic Execution:** At scheduled time:
+   - Homes the mount first if the entry asks
    - Scheduler sends pointing command to ESP32
    - Waits for slew to complete (polls `is_slewing` status)
-   - Sets calibrator state, starts satellite tracking thread if applicable
+   - Starts satellite tracking thread if applicable
    - Launches GNU Radio receiver
-   - Data saved to HDF5 in linear power with observation metadata
-   - On completion: calibrator off, telescope home/stow if configured
+   - Data saved to HDF5 with observation metadata: `spectra_kelvin` when the bandpass template and gain in force apply, `spectra_linear` (raw counts) when they do not
+   - On completion: telescope home/stow if configured
 5. **Monitor:** Status bar shows running observation with countdown, or time to next observation when idle
 
 ### Sun Scan — Pointing Calibration (`sun_scan.py`)
 
-Determines telescope pointing errors by performing an n×n raster scan centred on the sun. The antenna beam (~3° FWHM) is sampled at each grid point by measuring broadband power, then a 2-D Gaussian is fitted to locate the true peak. The difference between the fitted peak and the assumed sun position gives the pointing correction.
+Determines telescope pointing errors by performing an n×n raster scan centred on the sun. The antenna beam (4.30° FWHM-equivalent, from the main-lobe solid angle of 21.0 sq deg in `beam_calibration.json`) is sampled at each grid point by measuring broadband power, then a 2-D Gaussian is fitted to locate the true peak. The difference between the fitted peak and the assumed sun position gives the pointing correction.
 
 - **Integrated via the Sun Scan tab** in the web scheduler — uses the same observer location, SRT controller URL, and SDR settings as the scheduler
-- **Grid:** configurable n×n (default 5×5) with adjustable spacing (default 1.5° = half-beam for Nyquist sampling)
+- **Grid:** configurable n×n (default 5×5) with adjustable spacing (default 1.5°, about a third of the beam)
 - **Scan pattern:** all rows scan east-to-west with backlash overshoot at each row start
 - **Azimuth correction:** grid offsets are treated as cross-elevation sky offsets and mount azimuth commands are expanded by cos(altitude); scans stop with a clear error if any requested grid point would be clipped by mount limits
 - **Moving Sun:** Sun position is recomputed before each measurement slew, checked again after hardware motion, and refined when necessary; the saved comparison point is the mid-scan ephemeris
@@ -487,17 +510,19 @@ Determines telescope pointing errors by performing an n×n raster scan centred o
   python sun_scan.py --n 5 --spacing 1.5 --integration 3.0 --sdr demo
   ```
 
-#### Calibration Day — 4-Parameter Pointing Model
+#### Calibration Day — Pointing Model
 
-Running repeated sun scans over a day determines the telescope's effective observer position (correcting for mount tilt) and constant pointing offsets. The model fits four parameters:
+Running repeated sun scans over a day fits the mount's pointing model. The base model has four terms:
 
-- **ΔAlt₀, ΔAz₀** — constant zero-point offsets in altitude and azimuth
-- **AN** (north-south tilt) — equivalent to a latitude error
-- **AE** (east-west tilt) — equivalent to a longitude error × cos(lat)
+- **IE, IA** — elevation and azimuth index (constant zero-point offsets)
+- **AN** — north-south tilt of the azimuth axis
+- **AE** — east-west tilt of the azimuth axis
 
-The effective lat/lon where the tilted mount would be vertical is computed from AN and AE. This can be applied to the ESP32 controller so all coordinate transforms (RA/Dec, galactic, sun/moon tracking) automatically account for the tilt.
+and two more when the scans can constrain them: **CA** (collimation, the beam not perpendicular to the elevation axis; needs a spread of altitude) and **AZSCALE** (an azimuth scale error; needs 90° of azimuth). Any term can be held at a stored value: after a feed change only IE and CA are refitted.
 
-Calibration Day performs one complete N×N Sun scan per start-to-start interval and saves each successful scan before waiting for the next. The model fit requires at least four successful scans and 30 degrees of Sun azimuth coverage. It weights scans by their fitted uncertainties, checks matrix rank/conditioning, and reports parameter uncertainty and residual RMS. Applying the result updates both effective observer coordinates and the constant altitude/azimuth pointing offsets on the controller. Hardware, scan, fit, and partial-apply errors appear in the receiver website; three consecutive scan failures stop a calibration day.
+**Apply to Telescope** POSTs the fitted terms as a document to the controller's `/pointing/apply`. The controller keeps it in its own NVS namespace and applies it in `pointing.cpp` (`trueToDrive`, which also takes NPAE and TF) to every goto, track and manual move, and inverts it for every reported position. The observer position stays the true site; the model is never folded into an effective latitude/longitude, and the operator's offset boxes are not touched.
+
+Calibration Day performs one complete N×N Sun scan per start-to-start interval and saves each successful scan before waiting for the next. The fit needs at least four successful scans; applying it needs 30 degrees of Sun azimuth coverage, a condition number under 10⁴ and significant tilt terms. It weights scans by their fitted uncertainties, leaves out scans taken with the Sun behind the measured horizon, and reports parameter uncertainty and residual RMS. Hardware, scan, fit, and apply errors appear in the receiver website; three consecutive scan failures stop a calibration day.
 
 To run a calibration day:
 - **From the scheduler:** add a "Calibration Day (Sun Scan)" observation with a start time before sunrise and a long duration (e.g. 12 hours). The scheduler waits for sunrise, runs scans at the configured interval, and stops at sunset.
@@ -512,12 +537,15 @@ Every recording goes in `receiver_scheduler/data/observations/`, named for when 
 20260825_192937_drift.h5     the dish was parked; the sky drifted through the beam
 20260825_201455_track.h5     the mount followed the source
 20260825_143012_manual.h5    started at the console; nobody commanded the mount
+20260926_203116_pulsar.h5    a PSR B0329+54 entry: millisecond band power, not spectra
 ```
 
-`track` and `drift` describe the mount rather than the box the entry was typed into: an alt/az observation is a **drift** scan, because the scheduler parks the dish and leaves tracking off.
+`track` and `drift` describe the mount rather than the box the entry was typed into: an alt/az observation is a **drift** scan, because the scheduler parks the dish and leaves tracking off. Calibration days and horizon scans write their own products (`pointing_data.json`, `horizon_profiles/`), not recordings.
+
+A pulsar recording holds `power` (N × 1 float32: by default one 32 MHz channel at 1413 MHz, summed per millisecond), `frequency_hz`, `time_marks` and `overflow_marks`, with the time source (`time_source` pps/host) and the calibration in force (`cal_*`) as attributes; see [the receiver README](receiver_scheduler/README.md#pulsar-recordings) and `docs/PULSAR_PROCESSING.tex`.
 
 Since issue #27 the B200 records with a **fixed instrument** (LO 1418.905752 MHz,
-8 Msps, gain 30 dB, set in `tuning.py`) and every file carries **two products** —
+8 Msps, gain 20 dB, set in `tuning.py`) and every file carries **two products** —
 an H I sub-band and a whole-band continuum product — readable while it is still
 being written (HDF5 SWMR):
 
@@ -530,7 +558,7 @@ being written (HDF5 SWMR):
 ├── spectra_wide_kelvin     # Continuum product (K or counts)
 │   or spectra_wide_linear
 ├── bandpass_correction(_wide), bandpass_valid(_wide)  # per-channel correction applied
-├── timestamps              # Unix time at the end of each record
+├── timestamps              # Unix time at the centre of each record
 ├── integration_times       # Actual integration per record
 ├── overflows               # UHD overflows during the record
 └── attrs:
@@ -544,7 +572,9 @@ being written (HDF5 SWMR):
     ├── coord_system        # altaz, radec, galactic, object, drift, or satellite
     ├── drift_crossing_time, drift_crossing_offset_deg   # drift scans: parked-beam crossing
     ├── homed_first, homing_count_error_*_deg        # if homed first, the count error
-    └── ...                 # calibrator, target coordinates, TLE, schedule times
+    ├── clock_source, clock_ref_locked, reference_*  # the 10 MHz in use; the Thunderbolt's state
+    ├── pointing_terms                               # the pointing model in force
+    └── ...                 # target coordinates, TLE, schedule times
 ```
 
 **The dataset name is the units.** If the bandpass template and gain in force applied to the tuning, the spectra were converted at write time and live under `spectra_kelvin`; otherwise they are raw counts under `spectra_linear`. Asking for the wrong name raises `KeyError` instead of quietly handing back the other scale. Nothing is lost by calibrating on write — the correction, the gain and the system temperature all travel in the file, so the raw counts are one line away:
@@ -588,6 +618,7 @@ See `notebooks/read_h1_data.ipynb` for a complete analysis example, and
 │
 ├── esp32_controller_arduino/   # WT32-ETH01 Arduino/PlatformIO
 │   ├── platformio.ini          # ESP32 build config
+│   ├── test/                   # Host unit tests: coordinates, pointing (pio test -e native)
 │   └── src/
 │       ├── main.cpp            # Main application, tracking loop
 │       ├── config.h            # Default settings
@@ -596,6 +627,9 @@ See `notebooks/read_h1_data.ipynb` for a complete analysis example, and
 │       ├── web_server.cpp/h    # HTTP server & web UI
 │       ├── srt_serial.cpp/h    # Serial protocol to Due
 │       ├── coordinates.cpp/h   # RA/Dec/Galactic <-> Alt/Az
+│       ├── pointing.cpp/h      # True <-> drive frame: refraction and the pointing model
+│       ├── diag.cpp/h          # Reset-surviving diagnostics record, loop watchdog, /diag
+│       ├── sync.cpp/h          # Cross-task locking between loopTask and async_tcp
 │       ├── stellarium.cpp/h    # Stellarium telescope protocol
 │       ├── state.h             # Global state structure
 │       └── index_html.h        # Embedded web interface
@@ -603,20 +637,32 @@ See `notebooks/read_h1_data.ipynb` for a complete analysis example, and
 ├── receiver_scheduler/     # Observation scheduling & data acquisition
 │   ├── h1_web_scheduler.py # Flask scheduler: routes, schedule, observing state
 │   ├── web/                # The operator page as static files (index.html,
-│   │                       #   app.css, js/ - one script per tab)
-│   ├── b210_h1_receiver.py # GNU Radio 21cm receiver (B200/RTL-SDR)
+│   │                       #   app.css, js/ - fifteen scripts, one per tab plus five shared)
+│   ├── b210_h1_receiver.py # GNU Radio receiver (B200/RTL-SDR); spectra or pulsar mode
 │   ├── sun_scan.py         # Sun raster, pointing model, calibration day
+│   ├── beam_scan.py        # The beam's solid angle from a two-hour Sun drift
 │   ├── horizon_scan.py     # Radiometric horizon measurement
-│   ├── rf_calibration.py   # Counts to kelvin: gain, T_sys, clock offset
+│   ├── rf_calibration.py   # Counts to kelvin: gain, T_sys, velocity shift
 │   ├── bandpass.py         # The measured instrument response
+│   ├── pilot.py            # The B200's TX as gain/passband reference (off by default)
 │   ├── tuning.py           # The fixed instrument: LO, rate, gain, the two bands
 │   ├── drift_park.py       # Park a drift scan on the drive grid
 │   ├── drift_fit.py        # Total-power fit of a drift scan vs the model curve
+│   ├── scallop.py          # Tracking scallop removed from a tracked compact source
 │   ├── observation_plot.py # Finished observations, in kelvin and LSR velocity
 │   ├── observatory.py      # Site and beam - plumbing; numbers in instrument.py
 │   ├── observation_files.py # Where a recording goes and what it is called
-│   ├── data/observations/  # Every recording: <date>_<time>_<track|drift>.h5
+│   ├── solar_reference.py  # RSTN/F10.7 reference fluxes from NOAA SWPC
+│   ├── pulsar_fold.py      # B0329+54: fold at the absolute phase, S/N, flux, PRESTO
+│   ├── pulsar_toa.py       # TOAs against the EPN template; the .tim files
+│   ├── pint_tools.py       # PINT residuals and fits (run in the pint env)
+│   ├── sigproc_export.py   # Pulsar recording -> SIGPROC .fil for PRESTO
+│   ├── clocks.py           # Thunderbolt, host NTP and controller clock; stability
+│   ├── thunderbolt.py      # The Thunderbolt's TSIP status monitor
+│   ├── plot_backend.py     # Agg unless in a Jupyter kernel
+│   ├── data/observations/  # Every recording: <date>_<time>_<track|drift|pulsar|manual>.h5
 │   ├── horizon_profiles/   # Every horizon scan, by date, one chosen
+│   ├── pulsar_timing/      # b0329.tim, b0329_segments.tim, stored profiles
 │   └── README.md           # Receiver/scheduler documentation
 │
 ├── notebooks/              # Worked data-reduction examples, run from anywhere
@@ -632,7 +678,10 @@ See `notebooks/read_h1_data.ipynb` for a complete analysis example, and
     ├── SRT_DRIVE_MANUAL.md         # Arduino Due firmware manual
     ├── ESP32_CONTROLLER.md         # ESP32 controller manual
     ├── WT32_ETH01_MIGRATION.md     # WT32-ETH01 setup guide
-    └── OBSERVATORY_HOST_SETUP.md   # building the host and its private controller link
+    ├── OBSERVATORY_HOST_SETUP.md   # building the host and its private controller link
+    ├── HOST_REBUILD.md             # rebuilding the observatory computer; host/ snapshots
+    ├── CALIBRATION.md              # how the telescope is calibrated
+    └── PULSAR_PROCESSING.tex       # pulsar mode: recording, fold, TOAs, timing
 ```
 
 ---
@@ -643,6 +692,9 @@ See `notebooks/read_h1_data.ipynb` for a complete analysis example, and
 - [ESP32 Controller Manual](docs/ESP32_CONTROLLER.md) - WT32-ETH01 controller and API reference
 - [WT32-ETH01 Setup Guide](docs/WT32_ETH01_MIGRATION.md) - Hardware setup and wiring
 - [Observatory Host Setup](docs/OBSERVATORY_HOST_SETUP.md) - Building a new observatory computer: second Ethernet card, private link to the controller, firewall and scheduler
+- [Host Rebuild](docs/HOST_REBUILD.md) - Everything needed to replace the observatory computer, including the files git does not hold; environment snapshots in `docs/host/`
+- [Calibration](docs/CALIBRATION.md) - What the bandpass template, gain fit, pilot and beam each measure, the order they are applied in, and what is still uncalibrated
+- [Pulsar Processing](docs/PULSAR_PROCESSING.tex) - Pulsar mode for B0329+54: recording, fold, TOAs and timing
 - [Receiver & Scheduler](receiver_scheduler/README.md) - H1 receiver and observation scheduler
 
 ## License

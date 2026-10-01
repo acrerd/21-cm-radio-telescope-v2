@@ -492,7 +492,7 @@
                         <div class="field"><div class="field-label">Integration</div><div class="field-value">${obs.integration_time_s}s</div></div>
                     </div>
                     <div class="schedule-actions">
-                        <button class="btn btn-success btn-icon" onclick="runNow(${i})" title="Start this entry now, regardless of its booked time. Refused if something is already recording.">▶</button>
+                        <button class="btn btn-success btn-icon" onclick="runNow(${i})" title="Start this entry now, regardless of its booked time. Refused if something is already recording; a Sun or pulsar monitor run gives way.">▶</button>
                         <button class="btn btn-secondary btn-icon" onclick="cloneObs(${i})" title="Open a copy of this entry with the times cleared, to book it again.">⧉</button>
                         <button class="btn btn-secondary btn-icon" onclick="editObs(${i})" title="Edit this entry. Not while it is running.">✎</button>
                         <button class="btn btn-danger btn-icon" onclick="deleteObs(${i})" title="Remove this entry from the schedule. Not while it is running.">✕</button>

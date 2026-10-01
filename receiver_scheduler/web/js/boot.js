@@ -1,8 +1,7 @@
 // What runs when the page loads. Last, so everything it calls exists.
 
         document.addEventListener('DOMContentLoaded', () => {
-            updateClock();
-            setInterval(updateClock, 1000);
+            tickClock();
             loadSchedule();
             updateStatus();
             updateTelescope();

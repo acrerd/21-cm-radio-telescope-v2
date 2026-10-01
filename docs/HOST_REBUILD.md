@@ -2,7 +2,7 @@
 
 This document takes a blank replacement machine to a working Acre Road SRT workstation. It is written for whoever does it, very likely an agent such as Claude, and so it gives exact paths, versions and commands. Where something is already documented elsewhere, this document points to it instead of repeating it.
 
-**Last checked against the running machine: 2026-09-27** (host `ettus3`).
+**Last checked against the running machine: 2026-09-30** (host `ettus3`).
 
 **Keep it current.** Any change to the host goes in here in the same commit: a package, a udev rule, a service, a path, a group, a cron job, a file outside git that the telescope depends on. The environment snapshots in `docs/host/` are regenerated with the commands in §11. A rebuild that fails because this document is stale is this document's fault.
 
@@ -64,7 +64,12 @@ This document takes a blank replacement machine to a working Acre Road SRT works
 ```
 # Ubuntu 24.04 LTS desktop, user astro (uid 1000)
 sudo apt update && sudo apt install -y git gh curl wmctrl openssh-server network-manager \
-     pipewire wireplumber gstreamer1.0-tools gstreamer1.0-plugins-good   # v4l2src, jpegenc: the camera stream
+     pipewire wireplumber gstreamer1.0-tools gstreamer1.0-plugins-good \
+     avahi-daemon waypipe gjs
+# gstreamer1.0-*: v4l2src, jpegenc - the camera stream
+# avahi-daemon: srt-controller.local, the scheduler's fallback name for the controller
+# waypipe: the one graphical path (the manual receiver GUI) over ssh, OBSERVATORY_HOST_SETUP §10
+# gjs: runs the operator page's JavaScript headless - the check before calling a page change done (CLAUDE.md)
 sudo usermod -aG video,dialout,plugdev astro      # camera, serial, USB
 # log out and back in: a new group reaches only processes started from a new login
 ```
@@ -119,7 +124,7 @@ ls -l /dev/thunderbolt                                        # -> ttyUSBn
 /home/astro/radioconda/bin/python receiver_scheduler/thunderbolt.py /dev/thunderbolt --seconds 5
 ```
 
-The last line should print an `AB` and an `AC` line each second. `astro` needs the `dialout` group (§4). No scheduler restart is needed: it looks for the device every 30 s.
+The last line should print an `AB` and an `AC` line each second. Run it **only with the scheduler stopped**: the scheduler's monitor is the port's one reader, and a second process on the port splits the TSIP replies between them (it did on 2026-09-30, and the monitor decoded a garbled reply as "loop 0 s"). With the scheduler running, read the unit through `/api/clock` instead. `astro` needs the `dialout` group (§4). No scheduler restart is needed: it looks for the device every 30 s. Until this rule is installed, `thunderbolt_device` in `scheduler_config.json` names the adapter by its `/dev/serial/by-id/usb-FTDI_FT232R_USB_UART_A9DZ2ZSW-if00-port0` path; change it to `/dev/thunderbolt` afterwards (a changed value reaches the running monitor without a restart).
 
 **Camera.** The camera needs the scheduler process itself to hold the `video` group. A scheduler started from a shell that predates `usermod` lacks it until the next login. The launch line used from such a shell is `setsid nohup sg video -c "bash start_scheduler.sh"`, and after a fresh login a plain start is enough. Check with `grep Groups /proc/<scheduler pid>/status`, which must list 44.
 
@@ -133,13 +138,13 @@ gh auth login          # GitHub, HTTPS, "Login with a web browser" or a token
 gh auth setup-git      # git then uses gh's token over HTTPS
 ```
 
-In git already: the code, the calibrations in force (`gain_calibration.json`, `bandpass_template*.json`, `beam_calibration.json` and `beam_calibrations/`, `horizon_profiles/`, `pointing_data*.json`, `scallop_reference.json`), the pulsar timing products (`receiver_scheduler/pulsar_timing/`) and templates.
+In git already: the code, the calibrations in force (`gain_calibration.json`, `bandpass_template*.json`, `beam_calibration.json` and `beam_calibrations/`, `horizon_profiles/`, `pointing_data*.json`, `scallop_reference.json`), the pulsar timing products (`receiver_scheduler/pulsar_timing/`) and templates, and the Thunderbolt's long-term log (`receiver_scheduler/reference_log/`, one row of statistics every 10 min, committed with the rest).
 
 **Not in git: copy these from the old machine or its backup.** `receiver_scheduler/` is abbreviated `rs/` below.
 
 | File | What it is | If lost |
 |---|---|---|
-| `rs/scheduler_config.json` | the live configuration: controller URL, `pulsar_*` band, `receiver_pilot_enabled: false`, `sun_monitor`, banner, any `receiver_*` instrument overrides | the scheduler starts on code defaults. **Check the pilot and instrument keys** before observing. |
+| `rs/scheduler_config.json` | the live configuration: controller URL; the pulsar band (`pulsar_sample_rate_hz` 32e6, `pulsar_lo_hz` 1413e6); the two monitors (`sun_monitor` on; `pulsar_monitor` on, `pulsar_monitor_window` follow, `_start` 20:00, `_hours` 16); `thunderbolt_device` and `thunderbolt_baud` (9600); `receiver_pilot_enabled: false` (with `receiver_pilot_tx_gain_db: 70` left set from the wired test of 09-22); banner; any `receiver_*` instrument overrides (none set) | the scheduler starts on code defaults: both monitors off, no Thunderbolt read. **Check the pilot and instrument keys** before observing. |
 | `rs/h1_schedule.json` | the bookings | future bookings are gone |
 | `rs/pointing_model.json` | the scheduler's copy of the model in force, used by the scallop reduction and drift parking | the controller still holds the model and `/pointing` serves it; files fall back to the model embedded in each recording |
 | `rs/last_observation.json` | pointer to the last run | cosmetic |
