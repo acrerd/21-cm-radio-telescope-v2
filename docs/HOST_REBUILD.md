@@ -69,7 +69,7 @@ sudo usermod -aG video,dialout,plugdev astro      # camera, serial, USB
 # log out and back in: a new group reaches only processes started from a new login
 ```
 
-- **Desktop applications the launcher opens:** VS Code (`code`), Firefox (the snap), Stellarium (optional).
+- **Desktop applications the launcher opens:** Firefox (the snap). Stellarium is installed but started by hand (§10).
 - **ssh:** the observatory is normally worked over ssh. Copy `~/.ssh/authorized_keys` from the old machine, or add keys afresh; see `docs/SSH_ACCESS.txt`.
 
 ---
@@ -182,7 +182,7 @@ cp build-acre/src/prepfold build-acre/src/libpresto.so /home/astro/opt/presto-ac
 
 ## 10. Launchers, firmware tools, remote access, Claude
 
-- **Desktop launcher:** `~/Desktop/Start SRT Sofware.desktop` (the spelling is as found) runs `receiver_scheduler/start_srt_software.sh`. That opens the VS Code workspace `receiver_scheduler/SRT Software.code-workspace`, Firefox on the scheduler and the controller, and Stellarium, and tiles them with `wmctrl`.
+- **Desktop launcher:** `~/Desktop/Start SRT Sofware.desktop` (the spelling is as found) runs `receiver_scheduler/start_srt_software.sh`. That starts the scheduler (below) and opens Firefox on the controller. VS Code and Stellarium were taken out of it on 2026-10-01 at the operator's request.
   ```
   [Desktop Entry]
   Type=Application
@@ -192,7 +192,8 @@ cp build-acre/src/prepfold build-acre/src/libpresto.so /home/astro/opt/presto-ac
   Terminal=false
   Icon=applications-science
   ```
-- **The scheduler:** the workspace's folder-open task runs `receiver_scheduler/start_scheduler.sh`. It starts `h1_web_scheduler.py` on 127.0.0.1:5000 only if one is not already running.
+- **The scheduler:** the launcher runs `receiver_scheduler/start_scheduler.sh` detached (`setsid`, console output in `/tmp/srt-scheduler-console.log`); the VS Code workspace `receiver_scheduler/SRT Software.code-workspace` still runs the same script on folder-open if it is opened by hand. It starts `h1_web_scheduler.py` on 127.0.0.1:5000 only if one is not already running. To restart it over ssh: check `/api/status` is idle, `kill` the scheduler's PID, then `setsid nohup receiver_scheduler/start_scheduler.sh > /tmp/srt-scheduler-console.log 2>&1 < /dev/null &`. A restart clears the monitors' hold-off and the Thunderbolt's in-memory history.
+- **Stellarium** (by hand, not from the launcher): `~/.stellarium/modules/TelescopeControl/telescopes.json` holds the telescope, `"host_name": "192.168.50.120"`, `"tcp_port": 10001`, `"connection": "remote"`, `"equinox": "J2000"`, `"connect_at_startup": true`. Until 2026-10-01 it still named the pre-link address 192.168.106.120 and tried to connect there over the campus network. A goto from Stellarium reaches the controller without the scheduler seeing it.
   - It is **deliberately not a systemd service**, and must not come up unattended.
   - It binds to loopback on purpose: it has no authentication.
 - **PlatformIO** (only for ESP32 or Due firmware): `python3 -m venv ~/.platformio/penv && ~/.platformio/penv/bin/pip install platformio`. Builds per CLAUDE.md, using `~/.platformio/penv/bin/pio`.

@@ -254,10 +254,11 @@ running on this host, and remote use is over waypipe, which forwards the display
 rather than the connection.
 
 **The scheduler is deliberately not a service.** It starts from the desktop
-**Start SRT Software** launcher, via the VS Code workspace's `folderOpen` task,
-which runs `receiver_scheduler/start_scheduler.sh`. That wrapper reuses an
+**Start SRT Software** launcher, which runs `receiver_scheduler/start_scheduler.sh`
+(until 2026-10-01 it did so through the VS Code workspace's `folderOpen` task,
+which still runs it when the workspace is opened by hand). That wrapper reuses an
 already-serving scheduler instead of starting a second one that would die on the
-bound port. Do not add a systemd unit: it would contend with the task for port
+bound port. Do not add a systemd unit: it would contend with the launcher for port
 5000, and the scheduler should not come up unattended.
 
 **Firmware defaults** — if you changed the subnet, update `DEFAULT_ETH_STATIC_IP`,

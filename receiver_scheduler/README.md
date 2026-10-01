@@ -53,7 +53,7 @@ This receiver is designed for radio astronomy observations of neutral hydrogen (
 | `horizon_profile.json` | A mirror of whichever horizon profile is active, for older readers |
 | `last_observation.json` | Points at the last run, so the Observe tab survives a restart |
 | `requirements.txt` | Python package dependencies |
-| `start_srt_software.sh` | Starts VS Code, Firefox, Stellarium, and optional window layout |
+| `start_srt_software.sh` | The desktop launcher: starts the scheduler and opens the controller in Firefox |
 | `start_platformio_monitor.sh` | Single-instance serial monitor with device wait and lock retry handling |
 | `SRT Software.code-workspace` | VS Code workspace with automatic scheduler and serial-monitor tasks |
 
@@ -213,15 +213,12 @@ The web scheduler provides a browser-based interface for managing and automating
 
 On the observatory Linux host, double-click **Start SRT Sofware**. The launcher:
 
-1. Opens the repository in Visual Studio Code.
-2. Starts `h1_web_scheduler.py` under radioconda in a hidden VS Code task terminal on port 5000.
-3. Starts and reveals the PlatformIO Serial Monitor for the `due` environment. The monitor waits for `/dev/ttyACM0`, prevents duplicate launcher-owned monitors, and retries temporary exclusive-lock failures.
-4. Opens the live controller at `http://192.168.50.120/` in Firefox.
-5. Starts Stellarium.
+1. Starts `h1_web_scheduler.py` under radioconda on port 5000 through `start_scheduler.sh`, detached, unless one is already serving. Its console output goes to `/tmp/srt-scheduler-console.log`; the operational record is `scheduler.log` as always.
+2. Opens the live controller at `http://192.168.50.120/` in Firefox.
 
-If `wmctrl` is installed, it waits for the application windows and then places VS Code across the bottom half, Stellarium at top left, and Firefox at top right when the window manager exposes them. Stellarium is started through XWayland for reliable placement. The confined Ubuntu Firefox snap uses its native session backend so it opens reliably; GNOME Wayland may prevent `wmctrl` from positioning that one window. Without `wmctrl`, all programs still start and the desktop chooses their positions. Launcher diagnostics are written to `/tmp/srt-software-launcher.log`.
+VS Code and Stellarium were taken out of the launcher on 2026-10-01. Opening the VS Code workspace by hand still runs the scheduler and PlatformIO Serial Monitor tasks (the monitor waits for `/dev/ttyACM0`, prevents duplicate monitors, and retries temporary exclusive-lock failures); Stellarium is started by hand and its telescope is configured at `192.168.50.120:10001`. Launcher diagnostics are written to `/tmp/srt-software-launcher.log`.
 
-The VS Code scheduler task runs:
+The scheduler start runs:
 
 ```bash
 /home/astro/21-cm-radio-telescope-v2/receiver_scheduler/start_scheduler.sh

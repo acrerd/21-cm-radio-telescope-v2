@@ -419,7 +419,7 @@ python h1_web_scheduler.py --port 5000    # binds 127.0.0.1 by default
 # Open browser to http://localhost:5000
 ```
 
-On the observatory Linux host, use the desktop launcher **Start SRT Sofware**. It reuses the current VS Code window, runs the scheduler in a hidden task terminal, reveals a lock-safe PlatformIO Serial Monitor, opens `http://192.168.50.120/` in Firefox, and starts Stellarium. The monitor prevents duplicate launcher instances, waits for `/dev/ttyACM0`, and retries temporary serial-port locks. The scheduler is guarded the same way: `start_scheduler.sh` reuses an already-serving scheduler rather than starting a second one that would die on the bound port. When `wmctrl` is available, the launcher waits for visible application windows before tiling VS Code across the bottom half with Stellarium and Firefox at the top left/right where GNOME exposes their geometry. The scheduler task runs:
+On the observatory Linux host, use the desktop launcher **Start SRT Sofware**. It starts the scheduler, detached, and opens `http://192.168.50.120/` in Firefox. VS Code and Stellarium were taken out of it on 2026-10-01; both are started by hand when wanted, and opening the VS Code workspace still runs its scheduler and PlatformIO Serial Monitor tasks. `start_scheduler.sh` reuses an already-serving scheduler rather than starting a second one that would die on the bound port. The launcher runs:
 
 ```bash
 /home/astro/21-cm-radio-telescope-v2/receiver_scheduler/start_scheduler.sh
