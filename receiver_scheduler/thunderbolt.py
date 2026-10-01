@@ -502,8 +502,18 @@ class Monitor:
             self._log(kind, fields, wall, loop[2] if loop else None)
         with self.lock:
             if kind == "supplemental":
+                # The unit's own second, from the 0x8F-AB sent just before
+                # this packet for the same PPS: what the stability plot
+                # judges continuity by, since the host's receipt time breaks
+                # at any stall (07:50 on 2026-10-01 cut 5.6 h for one late
+                # packet). None when that packet is missing or not this
+                # second's.
+                pri = self.latest.get("primary")
+                gps_s = (pri[2]["week"] * 604800 + pri[2]["tow_s"]
+                         if pri and 0.0 <= now - pri[0] < 0.5 else None)
                 self.history.append((wall, fields["osc_offset_ppb"], fields["pps_offset_ns"],
-                                     fields["dac_v"], fields["temperature_c"], fields["disciplining_mode"]))
+                                     fields["dac_v"], fields["temperature_c"], fields["disciplining_mode"],
+                                     gps_s))
                 while self.history and self.history[0][0] < wall - HISTORY_S:
                     self.history.popleft()
         if kind == "supplemental":
@@ -571,7 +581,7 @@ class Monitor:
 
     def rows(self):
         """The whole kept history at full resolution, one row a second:
-        (wall, osc_ppb, pps_ns, dac_v, temp_c, mode). For the stability plot."""
+        (wall, osc_ppb, pps_ns, dac_v, temp_c, mode, gps_s). For the stability plot."""
         with self.lock:
             return list(self.history)
 

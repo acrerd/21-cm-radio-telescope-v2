@@ -195,13 +195,22 @@ def transition(taus, devs, errs):
     return out
 
 
-def contiguous_tail(times, tol=0.5):
-    """Index where the last unbroken run of one-second samples starts."""
+def contiguous_tail(times, tol=0.5, unit_s=None):
+    """Index where the last unbroken run of one-second samples starts.
+
+    Judged by the unit's own seconds (`unit_s`, None where a row has none)
+    wherever both rows of a step have them: a missing second is a break, a
+    packet the host handled late is not. Elsewhere by the host's receipt
+    times, where any stall longer than `tol` reads as a break."""
     import numpy as np
     t = np.asarray(times, float)
     if len(t) < 2:
         return 0
-    bad = np.nonzero(np.abs(np.diff(t) - 1.0) > tol)[0]
+    bad = np.abs(np.diff(t) - 1.0) > tol
+    if unit_s is not None:
+        du = np.diff(np.array([np.nan if u is None else u for u in unit_s], float))
+        bad = np.where(np.isfinite(du), du != 1.0, bad)
+    bad = np.nonzero(bad)[0]
     return int(bad[-1] + 1) if len(bad) else 0
 
 
@@ -212,7 +221,7 @@ def stability(rows, n_tau=25):
     if len(rows) < 30:
         return {"ok": False, "error": "only %d s of Thunderbolt record; need at least 30" % len(rows)}
     wall = [r[0] for r in rows]
-    i0 = contiguous_tail(wall)
+    i0 = contiguous_tail(wall, unit_s=[r[6] if len(r) > 6 else None for r in rows])
     x = np.array([r[2] for r in rows[i0:]], float) * 1e-9            # PPS offset, ns -> s
     n = len(x)
     if n < 30:

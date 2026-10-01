@@ -7,6 +7,7 @@ import struct
 import time
 from unittest.mock import patch
 
+import numpy as np
 import pytest
 
 import clocks
@@ -21,9 +22,9 @@ def client():
         yield c
 
 
-def primary(time_set=True, utc=True):
+def primary(time_set=True, utc=True, tow=216000):
     flags = (0x01 if utc else 0) | (0x02 if utc else 0) | (0 if time_set else 0x04)
-    return tb.encode(0x8F, bytes([0xAB]) + struct.pack(">IHhBBBBBBH", 216000, 2386, 18, flags,
+    return tb.encode(0x8F, bytes([0xAB]) + struct.pack(">IHhBBBBBBH", tow, 2386, 18, flags,
                                                          5, 4, 3, 29, 9, 2026))
 
 
@@ -148,6 +149,37 @@ def test_the_monitor_reports_and_notes_changes():
     assert m.status(now=4.5)["assessment"][0] == "ok"
     assert m.status(now=4 + tb.STALE_S + 1)["assessment"][0] == "stale"
     assert len(m.history_points()) == 4
+
+
+def test_each_row_carries_the_units_own_second():
+    """The 0x8F-AB just before a status packet gives that row the unit's
+    second; a status packet with no AB of its own second gets None, never
+    the previous second's."""
+    m = tb.Monitor("/dev/null")
+    for t, wires in ((1.0, (primary(tow=100), supplemental())),
+                     (2.0, (supplemental(),)),
+                     (3.0, (primary(tow=102), supplemental()))):
+        for w in wires:
+            for pid, payload in tb.Framer().feed(w):
+                m.handle(pid, payload, now=t, wall=1.79e9 + t)
+    assert [r[6] for r in m.rows()] == [2386 * 604800 + 100, None, 2386 * 604800 + 102]
+
+
+def test_a_late_packet_does_not_break_the_stability_record():
+    """2026-10-01 07:50: one packet handled 0.8 s late cut 5.6 h from the
+    stability plot. The unit's seconds say nothing was missing; a second
+    really missing is still a break."""
+    wall = [1.79e9 + i for i in range(3000)]
+    wall[1000] += 0.8
+    unit = [5e5 + i for i in range(3000)]
+    pps = np.random.default_rng(1).normal(0.0, 2.0, 3000)
+    rows = [(w, 0.0, float(p), 2.11, 43.5, 0, u) for w, p, u in zip(wall, pps, unit)]
+    assert clocks.contiguous_tail(wall) == 1001                       # by receipt time: a break
+    assert clocks.stability(rows)["gap_trimmed"] == 0
+    lost = rows[:2000] + [(r[0] + 1, *r[1:6], r[6] + 1) for r in rows[2000:]]   # one second never sent
+    assert clocks.stability(lost)["gap_trimmed"] == 2000
+    no_unit = [r[:6] for r in rows]                                   # rows from before the unit's second
+    assert clocks.stability(no_unit)["gap_trimmed"] == 1001
 
 
 def test_a_recording_carries_the_reference_state():
