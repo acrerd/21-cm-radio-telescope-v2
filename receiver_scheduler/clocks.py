@@ -142,6 +142,22 @@ def thunderbolt_clock(monitor):
 # time mended that record and failed on simulated first-order smoothing.
 
 
+# Expectation, not measurement: a Thunderbolt's own MDEV, separated from an
+# HP 5071A caesium standard and a third GPSDO by three-cornered hat over a
+# 3-day run (John Miles, KE5FX, March 2015, ke5fx.com/gpscomp.htm, plot
+# mhat.png). Read off the plot by eye, good to ~15%; 1.26e-12 at 100 s is
+# the value printed on it. Stops at 5000 s, beyond which the hat goes
+# negative. That unit was modified - an HP 10811 oscillator, "10811 TBolt" -
+# so ours, on the stock oscillator, should do no better. It is the 10 MHz
+# against caesium, where our points are the unit's PPS against GPS.
+REFERENCE_TBOLT_VS_CAESIUM = {
+    "label": "Thunderbolt vs caesium (KE5FX 2015, 10811 OCXO)",
+    "source": "http://www.ke5fx.com/gpscomp.htm",
+    "tau_s": [0.1, 0.2, 1.0, 3.0, 10.0, 27.0, 100.0, 1000.0, 3000.0, 5000.0],
+    "mdev": [4.2e-13, 2.9e-13, 4.5e-13, 5.6e-13, 7.9e-13, 1.08e-12, 1.26e-12, 1.2e-12, 1.6e-12, 1.7e-12],
+}
+
+
 def mdev(x, tau0, ms):
     """Modified Allan deviation of phase data `x` (seconds, one sample every
     `tau0` s) at averaging factors `ms`: (taus, mdevs, n_terms). The standard
@@ -231,5 +247,12 @@ def stability(rows, n_tau=25):
     ms = np.unique(np.round(np.logspace(0, np.log10(max(1, n // 4)), n_tau)).astype(int))
     taus, devs, counts = mdev(x, 1.0, ms)
     errs = [d / np.sqrt(max(k / (t / taus[0]), 1.0)) for d, k, t in zip(devs, counts, taus)]
+    # The white-phase-noise expectation, MDEV = sqrt(3) sigma_x tau^-3/2 for
+    # one-second samples, at the record's own scatter about a straight line:
+    # measured, not fitted. The unit smooths what it reports, so the small-tau
+    # points sit far below it; it describes them only once tau is past that.
+    t = np.arange(n, dtype=float)
+    sigma_x = float(np.std(x - np.polyval(np.polyfit(t, x, 1), t)))
     return {"ok": True, "n_s": n, "gap_trimmed": i0, "tau": taus, "mdev": devs, "err": errs,
-            "transition": transition(taus, devs, errs)}
+            "transition": transition(taus, devs, errs),
+            "sigma_x_s": sigma_x, "reference": REFERENCE_TBOLT_VS_CAESIUM}

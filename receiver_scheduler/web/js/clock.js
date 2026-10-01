@@ -206,10 +206,12 @@
         // Modified Allan deviation of the Thunderbolt's PPS-offset record, on
         // demand (/api/clock/stability): the measured points only, and the
         // transition - where the curve stops falling and turns up - read off
-        // them (clocks.transition). No noise model is drawn: the unit smooths
+        // them (clocks.transition). No noise model is fitted: the unit smooths
         // what it reports, so GPS and oscillator noise cannot be told apart by
         // slope, and the fit that tried said the opposite of the data
-        // (2026-09-30).
+        // (2026-09-30). Two expectations are drawn beside the points instead
+        // (2026-10-01): white phase noise at the record's own scatter, and a
+        // Thunderbolt against caesium from the literature (clocks.py).
         function clockTransitionText(d) {
             const tr = d.transition || {};
             const fmt = v => v >= 100 ? Math.round(v) + ' s' : v.toFixed(v >= 10 ? 0 : 1) + ' s';
@@ -239,7 +241,15 @@
             const pw = W - L - R, ph = H - T - B;
             const lx = v => Math.log10(v);
             const x0 = 0, x1 = Math.max(1, Math.ceil(lx(d.tau[d.tau.length - 1])));
+            // The two expectations (clocks.stability): white phase noise at the
+            // record's own scatter, and a Thunderbolt against caesium. The
+            // caesium curve's visible part sets the range; the white line is
+            // clipped to whatever the data and the curve need.
+            const ref = d.reference || null;
+            const refPts = ref ? ref.tau_s.map((t, i) => [t, ref.mdev[i]])
+                                         .filter(p => p[0] >= Math.pow(10, x0) && p[0] <= Math.pow(10, x1)) : [];
             const vals = d.mdev.map((v, i) => v + d.err[i]).concat(d.mdev.map((v, i) => Math.max(v - d.err[i], v * 0.1)))
+                               .concat(refPts.map(p => p[1]))
                                .filter(v => v > 0);
             const ylo = Math.floor(lx(Math.min(...vals)) - 0.1), yhi = Math.ceil(lx(Math.max(...vals)) + 0.05);
             const X = t => L + (lx(t) - x0) / ((x1 - x0) || 1) * pw;
@@ -264,6 +274,34 @@
                      '" stroke="#223" /><text x="' + (L - 6) + '" y="' + (Y(Math.pow(10, k)) + 4) +
                      '" fill="#888" font-size="11" text-anchor="end">1e' + k + '</text>';
             }
+            const path = pts => pts.map((p, i) => (i ? 'L' : 'M') + X(p[0]).toFixed(1) + ' ' + Y(p[1]).toFixed(1)).join(' ');
+            g += '<defs><clipPath id="stabClip"><rect x="' + L + '" y="' + T + '" width="' + pw + '" height="' + ph +
+                 '"/></clipPath></defs>';
+            const legend = [];
+            if (d.sigma_x_s > 0) {
+                const white = [];
+                for (let k = x0; k <= x1 * 4; k++) {
+                    const t = Math.pow(10, k / 4);
+                    white.push([t, Math.sqrt(3) * d.sigma_x_s * Math.pow(t, -1.5)]);
+                }
+                g += '<path d="' + path(white) + '" clip-path="url(#stabClip)" fill="none" stroke="#eda100" ' +
+                     'stroke-width="1.5" stroke-dasharray="6 4"/>';
+                legend.push(['#eda100', 'white GPS phase noise, σx ' + (d.sigma_x_s * 1e9).toFixed(1) +
+                             ' ns (this record’s scatter)']);
+            }
+            if (refPts.length > 1) {
+                g += '<path d="' + path(refPts) + '" clip-path="url(#stabClip)" fill="none" stroke="#e87ba4" ' +
+                     'stroke-width="1.5" stroke-dasharray="2 3"/>';
+                legend.push(['#e87ba4', ref.label]);
+            }
+            legend.push(['#00d4ff', 'this unit: PPS against its GPS solution']);
+            // Top right: the data are high on the left and fall to the right.
+            legend.forEach((l, i) => {
+                const y = T + 14 + i * 15, xr = L + pw - 8;
+                g += '<line x1="' + (xr - 22) + '" x2="' + xr + '" y1="' + (y - 4) + '" y2="' + (y - 4) + '" stroke="' + l[0] +
+                     '" stroke-width="2"' + (i < legend.length - 1 ? ' stroke-dasharray="5 3"' : '') + '/>' +
+                     '<text x="' + (xr - 28) + '" y="' + y + '" fill="#bbb" font-size="11" text-anchor="end">' + l[1] + '</text>';
+            });
             d.tau.forEach((t, i) => {
                 const v = d.mdev[i], e = d.err[i];
                 g += '<line x1="' + X(t) + '" x2="' + X(t) + '" y1="' + Y(v + e) + '" y2="' + Y(Math.max(v - e, v * 0.1)) +
@@ -281,7 +319,11 @@
                    '1e-12 at 1 s, a hump to 1e-11 near its loop time constant, mid-1e-14 at a day: Van Baak, leapsecond.com). ' +
                    'Measured points only. The transition is where the curve stops falling and turns up, beyond which ' +
                    'averaging longer buys nothing; it is claimed only when the points beyond the lowest rise by more than ' +
-                   'twice their error, and the shading is the range the data allow. No noise model is drawn: the unit smooths ' +
-                   'what it reports, so GPS and oscillator noise cannot be separated by slope. Points reach a quarter of the ' +
+                   'twice their error, and the shading is the range the data allow. The dashed lines are expectations, ' +
+                   'not fits. Orange: white GPS phase noise, √3·σx·τ^-3/2, at this record’s own scatter; the unit smooths ' +
+                   'what it reports, so the points sit below it until τ passes that smoothing. Pink: a Thunderbolt’s 10 MHz ' +
+                   'against an HP 5071A caesium standard, separated by three-cornered hat (KE5FX, 2015; that unit had an ' +
+                   'HP 10811 oscillator, so a stock one should do no better) - a different quantity from the points. ' +
+                   'Points reach a quarter of the ' +
                    'unbroken record, and it restarts with the scheduler - a transition at T needs roughly 20 T of record.</div>';
         }

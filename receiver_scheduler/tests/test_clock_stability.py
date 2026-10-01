@@ -74,5 +74,17 @@ def test_only_the_last_unbroken_run_is_used():
     assert s["ok"] and s["n_s"] == 2000 and s["gap_trimmed"] == 1000
 
 
+def test_the_white_noise_expectation_matches_white_noise():
+    """The plot's white-phase-noise line, sqrt(3) sigma_x tau^-3/2 at the
+    reported sigma_x, lies on the measured MDEV of pure white phase noise."""
+    s = C.stability(_rows(np.random.default_rng(3).normal(0, 2e-9, 20_000)))
+    assert s["sigma_x_s"] == pytest.approx(2e-9, rel=0.02)
+    for t, d in zip(s["tau"], s["mdev"]):
+        if t >= 4:
+            assert d == pytest.approx(np.sqrt(3) * s["sigma_x_s"] * t ** -1.5, rel=0.25)
+    ref = s["reference"]
+    assert len(ref["tau_s"]) == len(ref["mdev"]) and ref["source"].startswith("http")
+
+
 def test_too_short_a_record_is_refused():
     assert not C.stability(_rows(np.zeros(10)))["ok"]
