@@ -179,16 +179,95 @@ def compress(cube_path, out_path, res=0.5, fwhm=1.0, vmax_kms=470.0,
           f"smaller, {time.time() - t0:.0f} s)")
 
 
+# One namespace per compact file per process, so every simulator built on it
+# shares one cube.
+_LOADED = {}
+
+
+def _unpacked_paths(path):
+    """The uncompressed copy kept beside the .xz: the cube as a .npy that can
+    be memory-mapped, and the small arrays with the stamp of the .xz they came
+    from. Not tracked by git; rebuilt whenever the .xz changes."""
+    stem = path[:-len(".npz.xz")] if path.endswith(".npz.xz") else path
+    return stem + ".t.npy", stem + ".meta.npz"
+
+
+def _source_stamp(path):
+    st = os.stat(path)
+    return np.array([st.st_size, st.st_mtime_ns], dtype=np.int64)
+
+
+def _write_unpacked(path, t, npz):
+    """Write the uncompressed copy, each file atomically, the stamp last so a
+    reader never takes a half-written cube for a current one."""
+    t_path, meta_path = _unpacked_paths(path)
+    tmp = "%s.%d.tmp" % (t_path, os.getpid())
+    with open(tmp, "wb") as f:
+        np.save(f, t)
+    os.replace(tmp, t_path)
+    tmp = "%s.%d.tmp" % (meta_path, os.getpid())
+    with open(tmp, "wb") as f:
+        np.savez(f, scale=npz["scale"], v=npz["v"], lon=npz["lon"], lat=npz["lat"],
+                 fwhm=npz["fwhm"], shape=np.array(t.shape), source=_source_stamp(path))
+    os.replace(tmp, meta_path)
+
+
+def _open_unpacked(path):
+    """The namespace from the uncompressed copy, the cube memory-mapped
+    read-only, or None if there is no current copy."""
+    t_path, meta_path = _unpacked_paths(path)
+    try:
+        with np.load(meta_path) as m:
+            if not np.array_equal(m["source"], _source_stamp(path)):
+                return None
+            t = np.load(t_path, mmap_mode="r")
+            if tuple(t.shape) != tuple(m["shape"]):
+                return None
+            return types.SimpleNamespace(
+                t=t, scale=float(m["scale"]), v=m["v"],
+                lon=m["lon"], lat=m["lat"], fwhm=float(m["fwhm"]))
+    except (OSError, KeyError, ValueError):
+        return None
+
+
 def load_compact(path):
     """Load a compact cube; returns a namespace with .t (int16 cube,
     v x lat x lon), .scale (K per step), .v (m/s), .lon/.lat (deg,
     matching the cube axes) and .fwhm (deg, the resolution already in
-    the data)."""
-    with lzma.open(path, "rb") as f:
-        npz = np.load(io.BytesIO(f.read()))
-        return types.SimpleNamespace(
-            t=npz["t"], scale=float(npz["scale"]), v=npz["v"],
-            lon=npz["lon"], lat=npz["lat"], fwhm=float(npz["fwhm"]))
+    the data).
+
+    The cube is 378 MB unpacked. Unpacking it into memory for each simulator
+    held two copies in the scheduler (1.4 GB, peaking at 2.1 GB while
+    decompressing; 2026-10-01). So the first load writes an uncompressed copy
+    beside the .xz and every load memory-maps that, read-only: file-backed
+    pages the kernel can drop and re-read rather than swap, shared by every
+    simulator in the process and every process on the machine. The simulator
+    only reads slices of it. Where the copy cannot be written it falls back to
+    unpacking in memory, as before."""
+    key = os.path.realpath(path)
+    stamp = tuple(_source_stamp(path))
+    got = _LOADED.get(key)
+    if got is not None and got[0] == stamp:
+        return got[1]
+    c = _open_unpacked(path)
+    if c is None:
+        with lzma.open(path, "rb") as f:
+            npz = np.load(io.BytesIO(f.read()))
+        t = npz["t"]                              # each access re-reads the member
+        try:
+            _write_unpacked(path, t, npz)
+            c = _open_unpacked(path)
+        except OSError as exc:
+            print("hi4pi_compress: could not write the unpacked cube beside %s (%s); "
+                  "holding it in memory" % (path, exc), file=sys.stderr)
+        if c is None:
+            c = types.SimpleNamespace(
+                t=t, scale=float(npz["scale"]), v=npz["v"],
+                lon=npz["lon"], lat=npz["lat"], fwhm=float(npz["fwhm"]))
+        else:
+            del t                                 # the mapped copy replaces it
+    _LOADED[key] = (stamp, c)
+    return c
 
 
 def main():

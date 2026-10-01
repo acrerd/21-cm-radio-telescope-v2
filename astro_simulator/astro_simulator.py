@@ -238,7 +238,8 @@ class DishSimulator:
         self.set_band(bw_hz, F_HI)
 
     def _load_compact(self, path):
-        """Point the simulator at a compact cube (all in RAM)."""
+        """Point the simulator at a compact cube (memory-mapped, shared by
+        every simulator in the process; hi4pi_compress.load_compact)."""
         if self._compact_cache is None:
             self._compact_cache = load_compact(path)
         c = self._compact_cache
@@ -430,7 +431,7 @@ class DishSimulator:
         runs = np.split(ci, splits + 1)
         subs, lons = [], []
         for r in runs:
-            if self.compact is not None:      # int16 cube already in RAM
+            if self.compact is not None:      # int16 cube, memory-mapped read-only
                 subs.append(self.compact.t[self.k0:self.k1, y0:y1:step,
                                            r[0]:r[-1] + 1:step]
                             .astype(np.float64) * self.compact.scale)

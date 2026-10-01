@@ -38,6 +38,10 @@ docs/version.tex
 
 # Data files
 *.h5
+# The HI4PI cube unpacked beside its .xz, memory-mapped by load_compact()
+# (hi4pi_compress.py); rebuilt from the tracked .xz whenever that changes.
+astro_simulator/*.t.npy
+astro_simulator/*.meta.npz
 *.hdf5
 receiver_scheduler/data/
 
