@@ -6162,7 +6162,8 @@ def api_observations():
             row.update(name=str(a.get('obs_name', '')),
                        comment=str(a.get('comment', '')),
                        coord_system=str(a.get('coord_system', '')),
-                       created=str(a.get('created', '')),
+                       # A pulsar file stamps its start as created_utc.
+                       created=str(a.get('created') or a.get('created_utc') or ''),
                        units=str(a.get('spectra_units', '')))
             mode = a.get('observation_mode')
             row['mode'] = str(mode) if mode is not None else \

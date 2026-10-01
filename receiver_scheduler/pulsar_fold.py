@@ -955,37 +955,28 @@ def plot_recording(path, out_path, pulsar=None):
     if fitres and not fitres.get("error"):
         mjd = np.array(fitres["mjd"]); res = np.array(fitres["resid_us"]) / 1e3
         err = np.array(fitres["err_us"]) / 1e3; whole = np.array(fitres["whole"], bool)
-        pps = np.array([p == "1" for p in fitres["pps"]])
         m0 = np.floor(mjd.min()) if len(mjd) else 0.0
         raw = np.array(fitres.get("err_raw_us", fitres["err_us"])) / 1e3
-        # Statistical errors as the main bars. A host-clock night also gets a
-        # faint outer bar: statistical and the clock term (EQUAD) together,
-        # which is what the fit weights it by. Without it a host-clock night
-        # looked better than a PPS one of lower S/N, the opposite of how the
-        # fit counts them (2026-09-29). Segments share their night's clock
+        # One TOA per day (red, fitted) - over weeks these show the pulsar and
+        # the model, timing noise included - and that day's 4 h segments
+        # (grey), a check on how its arrival times behave within the run. A
+        # day TOA's bar is the error the fit weights it by: statistical, plus
+        # the clock term (EQUAD) for a host-clock run, so a host-clock run
+        # never looks better than a PPS one of lower S/N (2026-09-29; drawn
+        # as one bar since 2026-10-01). Segments share their run's clock
         # offset, so they carry no clock term among themselves and get none.
-        # One TOA per night (red, fitted) - over weeks these show the pulsar and
-        # the model, timing noise included - and that night's 4 h segments
-        # (grey), a check on how its arrival times behave within the night.
         if (~whole).any():
             a3.errorbar(mjd[~whole] - m0, res[~whole], raw[~whole], fmt=".", color="0.6", ms=5, lw=0.8,
-                        label="4 h segments (a check, not fitted)")
-        host = whole & ~pps
-        if host.any():
-            a3.errorbar(mjd[host] - m0, res[host], err[host], fmt="none", ecolor="C3", alpha=0.25,
-                        lw=3, capsize=0, label="with the host clock's %.0f ms, as fitted" % (np.median(
-                            np.sqrt(np.maximum(err[host] ** 2 - raw[host] ** 2, 0))) or 0))
-        for sel, mk, lab in ((whole & pps, "o", "night TOA (fitted), PPS time"),
-                             (whole & ~pps, "s", "night TOA (fitted), host clock")):
-            if sel.any():
-                a3.errorbar(mjd[sel] - m0, res[sel], raw[sel], fmt=mk, color="C3", mfc="C3" if mk == "o" else "none",
-                            ms=7, lw=1.4, capsize=3, label=lab)
+                        label="4 h segments")
+        if whole.any():
+            a3.errorbar(mjd[whole] - m0, res[whole], err[whole], fmt="o", color="C3",
+                        ms=7, lw=1.4, capsize=3, label="day TOA")
         a3.legend(fontsize=8, loc="lower left")
         a3.axhline(0, color="k", lw=0.5)
-        outer = np.where(host, err, raw)
+        outer = np.where(whole, err, raw)
         lo_y = float(np.min(res - outer)); hi_y = float(np.max(res + outer))
         span_y = max(hi_y - lo_y, 1.0)
-        a3.set_ylim(lo_y - 0.12 * span_y, hi_y + 0.75 * span_y)      # headroom for the numbers
+        a3.set_ylim(lo_y - 0.4 * span_y, hi_y + 0.75 * span_y)       # room for the legend below, the numbers above
         a3.set_xlabel("MJD - %d" % m0); a3.set_ylabel("residual (ms)")
         free = fitres["free"]
         pl = ("P    = %.12f s" % fitres["P"]) + (" +- %.2e (fitted)" % fitres["P_err"] if "F0" in free else "  (catalogue, held)")
@@ -994,11 +985,11 @@ def plot_recording(path, out_path, pulsar=None):
                 "\nP fitted once 3 runs span a day; Pdot once 4 span 3 weeks" if not free else
                 "\nPdot fitted once 4 runs span 3 weeks")
         chi = ("chi2 %.1f / %d dof" % (fitres["chi2"], fitres["dof"])) if fitres.get("chi2") is not None else ""
-        a3.text(0.99, 0.98, "%s\n%s\nat MJD %.3f (barycentric)\n%d night TOAs over %.1f d  %s%s"
+        a3.text(0.99, 0.98, "%s\n%s\nat MJD %.3f (barycentric)\n%d day TOAs over %.1f d  %s%s"
                 % (pl, pdl, fitres["pepoch"], fitres["n_whole"], fitres["span_days"], chi, need),
                 transform=a3.transAxes, ha="right", va="top", fontsize=8, family="monospace",
                 bbox=dict(boxstyle="round", fc="white", ec="0.7", alpha=0.9))
-        a3.set_title("timing residuals (PINT): one TOA per night's run, fitted", fontsize=10)
+        a3.set_title("timing residuals (PINT): one TOA per day's run, fitted", fontsize=10)
     else:
         a3.text(0.5, 0.5, (fitres or {}).get("error") or "timing covers the observatory's own recordings only",
                 ha="center", va="center", transform=a3.transAxes, color="0.4")
