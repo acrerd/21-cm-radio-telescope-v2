@@ -236,6 +236,7 @@ uint32_t diagBootCount() { return rtc.bootCount; }
 
 String diagJSON() {
     String j = "{\"reset_reason\":\"" + String(reasonName(resetReason)) + "\"";
+    j += ",\"build\":\"" + String(__DATE__ " " __TIME__) + "\"";
     j += ",\"loop_watchdog\":" + String(wdtOn ? "true" : "false");
     j += ",\"free_heap\":" + String((unsigned long)ESP.getFreeHeap());
     j += ",\"max_alloc\":" + String((unsigned long)ESP.getMaxAllocHeap());

@@ -302,7 +302,6 @@ other command except `STOP` with `Homing: busy - ignored`.
 #### Calibrator
 | Command | Description |
 |---------|-------------|
-| `CAL ON` / `CAL OFF` / `CAL` | Set or toggle the calibrator pin and the `Cal:` field. Nothing is driven: the noise diode is gone (issue #39) |
 
 #### Configuration
 | Command | Description |
@@ -328,11 +327,11 @@ as `drive_ack` in `/status`.
 
 #### Status Output Format
 
-The ESP32 parses this positionally; currents are printed to one decimal place.
+The ESP32 parses this positionally; currents are printed to one decimal place. The line ends in a checksum, ` *HH`: the XOR of every character before the ` *`, in hex. It replaced the `Cal:ON|OFF` field on 2026-10-02, when the calibrator was removed (issue #39), and the controller rejects a line whose checksum fails.
 ```
-Alt:45.0 Az:180.0 Ialt:0.2A Iaz:0.2A Status:Ready Cal:OFF
-Alt:45.0 Az:180.0 Ialt:1.0A Iaz:1.1A Status:Slewing -> Alt:60.0 Az:200.0 Cal:OFF
-Alt:45.0 Az:180.0 Ialt:0.0A Iaz:0.0A Status:FAULT [Azimuth motor stalled] Cal:OFF
+Alt:45.0 Az:180.0 Ialt:0.2A Iaz:0.2A Status:Ready *7D
+Alt:45.0 Az:180.0 Ialt:1.0A Iaz:1.1A Status:Slewing -> Alt:60.0 Az:200.0 *1F
+Alt:45.0 Az:180.0 Ialt:0.0A Iaz:0.0A Status:FAULT [Azimuth motor stalled] *00
 ```
 
 Encoder pulses are counted on the reed switches' rising edge.
@@ -571,7 +570,7 @@ being written (HDF5 SWMR):
     ├── obs_name, comment, observation_mode          # "track", "drift" or "manual"
     ├── coord_system        # altaz, radec, galactic, object, drift, or satellite
     ├── drift_crossing_time, drift_crossing_offset_deg   # drift scans: parked-beam crossing
-    ├── homed_first, homing_count_error_*_deg        # if homed first, the count error
+    ├── homed_first, homing_count_error_*_deg        # if homed first: the raw stop counters (offset + drift)
     ├── clock_source, clock_ref_locked, reference_*  # the 10 MHz in use; the Thunderbolt's state
     ├── pointing_terms                               # the pointing model in force
     └── ...                 # target coordinates, TLE, schedule times

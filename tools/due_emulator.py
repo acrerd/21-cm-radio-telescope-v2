@@ -44,9 +44,11 @@ WHAT IT EMULATES (matching src/main.cpp)
 - Unsolicited status line once per second (the real Due always sends the
   full line to Serial1), exact positional format:
     Alt:%.1f Az:%.1f Ialt:%.1fA Iaz:%.1fA Status:<state> [<fault>] \
-        -> Alt:%.1f Az:%.1f Cal:ON|OFF
+        -> Alt:%.1f Az:%.1f *HH
+  (*HH: XOR of every character before the " *", in hex; until 2026-10-02 the
+  line ended "Cal:ON|OFF" instead, the calibrator removed with issue #39.)
   ("[<fault>]" only in FAULT state; "-> ..." only while driving.)
-- Commands: "<alt> <az>", DRIVE, HOME, STOP, RESET, CAL [ON|OFF], STATUS
+- Commands: "<alt> <az>", DRIVE, HOME, STOP, RESET, STATUS
   (immediate reply), anything else -> error text, like the real firmware.
 - Motion: constant-rate slew toward the target with positions quantised to
   0.5 deg (PULSES_PER_DEGREE = 2), alt clamped 0..90, az 0..355.
@@ -88,6 +90,14 @@ def quantise(x):
     return round(x / QUANT) * QUANT
 
 
+def status_checksum(body: str) -> str:
+    """The status line's ending, " *HH": the XOR of every character before it."""
+    x = 0
+    for ch in body:
+        x ^= ord(ch)
+    return " *%02X" % x
+
+
 class DueEmulator:
     def __init__(self, port, baud, alt_rate, az_rate, status_period,
                  start_alt, start_az, homing_secs, capture_path):
@@ -103,7 +113,6 @@ class DueEmulator:
         self.target_az = start_az
         self.state = "Ready"        # Ready | Slewing | Homing | FAULT
         self.fault = ""
-        self.cal_on = False
         self.homing_until = 0.0
         self.quiet = False
         self.split_next = False
@@ -136,7 +145,7 @@ class DueEmulator:
                 line += f" [{self.fault}]"
             if self.state == "Slewing":
                 line += f" -> Alt:{self.target_alt:.1f} Az:{self.target_az:.1f}"
-            line += f" Cal:{'ON' if self.cal_on else 'OFF'}"
+            line += status_checksum(line)
             split = self.split_next
             self.split_next = False
 
@@ -210,18 +219,6 @@ class DueEmulator:
                     self.send("Fault cleared. Use HOME to re-home.")
                     self.fault = ""
                     self.state = "Ready"
-        elif cmd == "CAL":
-            with self.lock:
-                if len(parts) > 1 and parts[1].upper() in ("ON", "1"):
-                    self.cal_on = True
-                elif len(parts) > 1 and parts[1].upper() in ("OFF", "0"):
-                    self.cal_on = False
-                elif len(parts) > 1:
-                    self.send("Usage: CAL [ON|OFF]")
-                    return
-                else:
-                    self.cal_on = not self.cal_on
-            self.send(f"Calibrator: {'ON' if self.cal_on else 'OFF'}")
         elif cmd == "STATUS":
             self.send_status()
         else:

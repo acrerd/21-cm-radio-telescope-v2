@@ -401,7 +401,6 @@ The Network tab includes:
 | `/wifi/forget` | GET | Clear saved WiFi credentials |
 | `/offset` | GET | Set pointing offset (alt, az in degrees) |
 | `/offset/clear` | GET | Clear pointing offset |
-| `/calibrator` | GET | `on=1\|true` or `on=0`; sends `CAL ON`/`CAL OFF` to the Due. Nothing is connected to it since the noise diode was removed (issue #39) |
 
 The full endpoint list is in `docs/ESP32_CONTROLLER.md` section 5.
 

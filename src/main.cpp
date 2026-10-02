@@ -288,8 +288,17 @@ char prevStatusLine[128] = "";
 // false when from Serial (programming port).
 bool cmdFromSerial1 = false;
 
-// Calibrator state
-bool calibratorOn = false;
+// The status line ends in a checksum, " *HH": the XOR of every character
+// before the " *", in hex, as NMEA does (2026-10-02). It replaced the trailing
+// "Cal:ON|OFF" field, which the controller used as its end-of-line marker -
+// a truncated line failed to end with it. The checksum catches truncation the
+// same way and also a corrupted byte mid-line, which the marker could not.
+// The calibrator it reported was removed (issue #39).
+static int appendStatusChecksum(char *buf, int pos, int size) {
+    uint8_t x = 0;
+    for (int i = 0; i < pos && buf[i]; i++) x ^= (uint8_t)buf[i];
+    return pos + snprintf(buf + pos, size - pos, " *%02X", x);
+}
 
 // =============================================================================
 // DUAL SERIAL OUTPUT HELPER
@@ -1671,6 +1680,14 @@ static bool refineZeroPositiveEdge() {
     return true;
 }
 
+// False until a homing completes, and again whenever one does not (a fault
+// or a STOP mid-way leaves the position unknown). A homing started with it
+// false says so on its "Drive to limits" line: its first-approach counters
+// then measure only where the counter happened to start - after a reset, 0
+// wherever the mount was - and the controller and scheduler must not judge
+// them as drift (2026-10-02: a boot homing reported as a "false stall").
+static bool positionKnown = false;
+
 void performHoming() {
     // Phase 1: drive to limits with ramp-up. The phase markers go to Serial1
     // as well as USB, because the controller uses "Drive to limits" to reset
@@ -1683,8 +1700,11 @@ void performHoming() {
     homingStopRequested = false;
     homingLineUsbLen = homingLineS1Len = 0;
     measureHomingCurrentZero();
-    printAllLn("Homing: Drive to limits...");
-    Serial1.println("Homing: Drive to limits...");
+    const char *start = positionKnown ? "Homing: Drive to limits..."
+                                      : "Homing: Drive to limits... (from an unknown position)";
+    positionKnown = false;               // until this homing completes
+    printAllLn(start);
+    Serial1.println(start);
     if (!driveToLimits(true)) return;
 
     // The re-approach exists for the case where the first approach could not
@@ -1826,6 +1846,7 @@ void performHoming() {
     targetAlt = positionAlt;
 
     printAllLn("");
+    positionKnown = true;
     printAll("Homing complete. Position: Alt=");
     printAllFloat(cfg.homeAlt, 1);
     printAll(" Az=");
@@ -2128,8 +2149,7 @@ void outputStatus() {
                         (float)targetAz / PULSES_PER_DEGREE);
     }
 
-    pos += snprintf(statusLine + pos, sizeof(statusLine) - pos, " Cal:%s",
-                    calibratorOn ? "ON" : "OFF");
+    pos = appendStatusChecksum(statusLine, pos, sizeof(statusLine));
 
     // Build comparison string excluding currents (for programming port dedup)
     char statusCompare[128];
@@ -2143,8 +2163,6 @@ void outputStatus() {
         cpos += snprintf(statusCompare + cpos, sizeof(statusCompare) - cpos, " -> Alt:%.1f Az:%.1f",
                          (float)targetAlt / PULSES_PER_DEGREE, (float)targetAz / PULSES_PER_DEGREE);
     }
-    cpos += snprintf(statusCompare + cpos, sizeof(statusCompare) - cpos, " Cal:%s",
-                     calibratorOn ? "ON" : "OFF");
 
     // Only print to programming port if non-current fields changed
     if (strcmp(statusCompare, prevStatusLine) != 0) {
@@ -2189,7 +2207,6 @@ void showHelp() {
     printAllLn("  DRIVE <alt> <az> - Slew to position");
     printAllLn("  HOME             - Run homing sequence");
     printAllLn("  STOP             - Emergency stop");
-    printAllLn("  CAL [ON|OFF]     - Toggle/set calibrator");
     printAllLn("  RESET            - Clear fault");
     printAllLn("  STATUS           - Show current status");
     printAllLn("  CONFIG           - Show configuration");
@@ -2538,26 +2555,6 @@ void processCommand(const char* buffer) {
         stopAllMotors();
         printAllLn("STOPPED");
     }
-    else if (strEqualsIgnoreCase(cmd, "CAL")) {
-        // Parse optional ON/OFF argument
-        char arg[8];
-        if (sscanf(buffer, "%*s %7s", arg) == 1) {
-            if (strEqualsIgnoreCase(arg, "ON") || strcmp(arg, "1") == 0) {
-                calibratorOn = true;
-            } else if (strEqualsIgnoreCase(arg, "OFF") || strcmp(arg, "0") == 0) {
-                calibratorOn = false;
-            } else {
-                printAllLn("Usage: CAL [ON|OFF]");
-                return;
-            }
-        } else {
-            // Toggle if no argument
-            calibratorOn = !calibratorOn;
-        }
-        digitalWrite(PIN_CALIBRATOR, calibratorOn ? HIGH : LOW);
-        printAll("Calibrator: ");
-        printAllLn(calibratorOn ? "ON" : "OFF");
-    }
     else if (strEqualsIgnoreCase(cmd, "RESET")) {
         if (systemState != STATE_FAULT) {
             printAllLn("No fault to reset.");
@@ -2587,7 +2584,7 @@ void processCommand(const char* buffer) {
                               (float)targetAlt / PULSES_PER_DEGREE,
                               (float)targetAz / PULSES_PER_DEGREE);
             }
-            p += snprintf(line+p, sizeof(line)-p, " Cal:%s", calibratorOn ? "ON" : "OFF");
+            p = appendStatusChecksum(line, p, sizeof(line));
             #if ENABLE_SERIAL1
             Serial1.println(line);
             #endif
@@ -2807,10 +2804,10 @@ void setup() {
     digitalWrite(PIN_DIR_AZ, AZ_DIR(HIGH));
     digitalWrite(PIN_DIR_ALT, ALT_DIR(HIGH));
 
-    // Configure calibrator output (off by default)
-    pinMode(PIN_CALIBRATOR, OUTPUT);
-    digitalWrite(PIN_CALIBRATOR, LOW);
-    calibratorOn = false;
+    // Pin 26 drove the noise calibrator, removed with issue #39; it is
+    // driven low so it does not float in case anything is ever wired to it.
+    pinMode(26, OUTPUT);
+    digitalWrite(26, LOW);
 
     // Attach interrupts for position sensing
     attachInterrupt(digitalPinToInterrupt(PIN_PULSE_AZ), pulseAzISR, RISING);

@@ -29,7 +29,6 @@ public:
     void sendHome();
     void sendStop();
     void sendReset();
-    void sendCalibrator(bool on);
     void requestStatus();
 
     // Read status from Due
@@ -48,7 +47,6 @@ public:
     String getStatusStr();
     String getFaultStr();
     bool getIsSlewing();
-    bool getCalibratorOn();
     String getLastStatus();
 
     // Status lines from the Due that failed the whole-line check. Should stay
@@ -62,8 +60,10 @@ public:
     // latched. The read loop drops non-status lines, and the status flood
     // during a homing scrolls the log buffer faster than a reader can poll,
     // so the number is held here and surfaced on /status instead. First
-    // approach is the count error accumulated since the last homing; the
-    // re-approach after the back-off is the repeatability. NaN until seen.
+    // approach is the counter at the stop: a fixed switch-detection offset
+    // (normally -2.0..+0.5 deg, most often alt -1.0 / az -0.5) plus any count
+    // drift since the last homing - the scheduler separates the two
+    // (homing_drift). The re-approach after the back-off is the repeatability. NaN until seen.
     String getHomingReportJSON();
 
     // Drive acknowledgement (issue #34). The Due answers every drive target
@@ -96,7 +96,6 @@ private:
     String statusStr;
     String faultStr;
     bool isSlewing;
-    bool calibratorOn;
     uint32_t spliceCount;
 
     // Homing error latch (see getHomingReportJSON).
@@ -106,6 +105,7 @@ private:
     float homingErrAzSecond;
     bool homingSecondApproach;
     bool homingReapproachSkipped;   // the Due found no need for a re-approach (#33)
+    bool homingFromUnknown;         // started without a known position: counters are not drift
     time_t homingReportTime;
 
     // Drive acknowledgement state (see getDriveAckJSON).

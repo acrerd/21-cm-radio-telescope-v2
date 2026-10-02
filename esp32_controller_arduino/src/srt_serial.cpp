@@ -16,7 +16,6 @@ SRTSerial::SRTSerial() :
     azCurrentA(0),
     statusStr("UNKNOWN"),
     isSlewing(false),
-    calibratorOn(false),
     spliceCount(0),
     homingErrAltFirst(NAN),
     homingErrAzFirst(NAN),
@@ -24,6 +23,7 @@ SRTSerial::SRTSerial() :
     homingErrAzSecond(NAN),
     homingSecondApproach(false),
     homingReapproachSkipped(false),
+    homingFromUnknown(false),
     homingReportTime(0),
     drivePendingAlt(0),
     drivePendingAz(0),
@@ -104,7 +104,6 @@ float SRTSerial::getTargetAz()    { SRTLock lock; return targetAz; }
 float SRTSerial::getAltCurrentA() { SRTLock lock; return altCurrentA; }
 float SRTSerial::getAzCurrentA()  { SRTLock lock; return azCurrentA; }
 bool  SRTSerial::getIsSlewing()   { SRTLock lock; return isSlewing; }
-bool  SRTSerial::getCalibratorOn(){ SRTLock lock; return calibratorOn; }
 
 // The String getters are the ones that matter: the copy is made while the lock
 // is held, so it cannot race a reassignment in parseStatus().
@@ -128,6 +127,10 @@ void SRTSerial::handleHomingLine(const String &line) {
         homingErrAltSecond = NAN; homingErrAzSecond = NAN;
         homingSecondApproach = false;
         homingReapproachSkipped = false;
+        // A homing the Due started without a known position (after a reset
+        // or an interrupted homing): its first-approach counters are where
+        // the counter began, not drift. Reported so nobody judges them.
+        homingFromUnknown = line.indexOf("unknown position") >= 0;
         return;
     }
     if (line.indexOf("Re-approach skipped") >= 0) {
@@ -167,6 +170,7 @@ String SRTSerial::getHomingReportJSON() {
     j += "\"alt_error_second_deg\":" + num(homingErrAltSecond) + ",";
     j += "\"az_error_second_deg\":" + num(homingErrAzSecond) + ",";
     j += "\"reapproach_skipped\":" + String(homingReapproachSkipped ? "true" : "false") + ",";
+    j += "\"from_unknown\":" + String(homingFromUnknown ? "true" : "false") + ",";
     j += "\"utc\":" + String((unsigned long)homingReportTime);
     j += "}";
     return j;
@@ -318,14 +322,6 @@ void SRTSerial::sendReset() {
     }
 }
 
-void SRTSerial::sendCalibrator(bool on) {
-    if (uart) {
-        SRTLock lock;
-        logMessage('T', on ? "CAL ON" : "CAL OFF");
-        uart->println(on ? "CAL ON" : "CAL OFF");
-    }
-}
-
 void SRTSerial::requestStatus() {
     // Don't log STATUS requests - too noisy (every second)
     if (uart) {
@@ -353,30 +349,50 @@ static int countOccurrences(const String &haystack, const String &needle) {
     return count;
 }
 
-// Is this a whole, single status line?
+// Is this a whole, single status line? If so, `body` is the line without its
+// ending, ready to parse.
 //
-//   Alt:%.1f Az:%.1f Ialt:%.1fA Iaz:%.1fA Status:<state> [<fault>] -> Alt:%.1f Az:%.1f Cal:ON|OFF
+//   Alt:%.1f Az:%.1f Ialt:%.1fA Iaz:%.1fA Status:<state> [<fault>] -> Alt:%.1f Az:%.1f *HH
+//
+// Since 2026-10-02 (issue #39) the Due ends the line with " *HH", the XOR of
+// every character before the " *": a line that is truncated, spliced or has a
+// byte changed anywhere fails it. Until then it ended with " Cal:ON|OFF", the
+// calibrator's state, which served as the end-of-line marker; that ending is
+// still accepted, so this controller works with a Due of either age.
 //
 // The old check - starts with "Alt:", contains " Az:", contains "Status:" - was
 // satisfied by a splice like "...Status:R" + "Iaz:-0.0A Cal:OFF", which then
 // parsed and put "RIaz:-0.0A" on the web UI. "Alt:" and " Az:" legitimately
 // appear twice when slewing, because of the " -> " target, so they cannot be
 // counted; Ialt/Iaz/Status/Cal appear exactly once in every form of the line.
-static bool statusLineLooksIntact(const String &line) {
-    if (!line.startsWith("Alt:")) return false;
-    if (line.indexOf(" Az:") < 0) return false;
-    static const char *markers[] = {"Ialt:", "Iaz:", "Status:", "Cal:"};
+static bool statusLineLooksIntact(const String &line, String &body) {
+    int n = line.length();
+    if (n > 4 && line.charAt(n - 4) == ' ' && line.charAt(n - 3) == '*' &&
+        isxdigit((unsigned char)line.charAt(n - 2)) && isxdigit((unsigned char)line.charAt(n - 1))) {
+        uint8_t x = 0;
+        for (int i = 0; i < n - 4; i++) x ^= (uint8_t)line.charAt(i);
+        if ((uint8_t)strtol(line.substring(n - 2).c_str(), nullptr, 16) != x) return false;
+        body = line.substring(0, n - 4);
+    } else if (line.endsWith(" Cal:ON") || line.endsWith(" Cal:OFF")) {
+        body = line.substring(0, line.lastIndexOf(" Cal:"));
+        if (body.indexOf("Cal:") >= 0) return false;     // a second copy spliced in
+    } else {
+        return false;                                    // truncated: no ending at all
+    }
+    const String &line_ = body;
+    if (!line_.startsWith("Alt:")) return false;
+    if (line_.indexOf(" Az:") < 0) return false;
+    static const char *markers[] = {"Ialt:", "Iaz:", "Status:"};
     for (const char *marker : markers) {
         // Once on its own catches a second copy welded in by a splice - the
         // real case was "Status:R" joined to "Iaz:-0.0A", giving two "Iaz:".
-        if (countOccurrences(line, marker) != 1) return false;
+        if (countOccurrences(line_, marker) != 1) return false;
         // Once with its leading space catches the other direction, where the
         // preceding field was eaten: "Az:12Ialt:0.0A" has one "Ialt:" but no
         // " Ialt:".
-        if (countOccurrences(line, String(" ") + marker) != 1) return false;
+        if (countOccurrences(line_, String(" ") + marker) != 1) return false;
     }
-    // Cal is always last, so a line truncated anywhere fails here.
-    return line.endsWith(" Cal:ON") || line.endsWith(" Cal:OFF");
+    return true;
 }
 
 bool SRTSerial::readStatus() {
@@ -390,13 +406,14 @@ bool SRTSerial::readStatus() {
         line.trim();
         linesRead++;
 
-        if (statusLineLooksIntact(line)) {
-            lastValidLine = line;
-            logMessage('R', line);  // Log valid status lines
+        String body;
+        if (statusLineLooksIntact(line, body)) {
+            lastValidLine = body;
+            logMessage('R', body);  // Log valid status lines, without the ending
         } else if (line.startsWith("Homing:")) {
             // The Due's homing progress lines are not status lines and were
             // being dropped as junk (issue #24). Log them, and latch the
-            // count error they carry so /status can report it after the
+            // stop counters they carry so /status can report it after the
             // status flood has scrolled the line out of the log buffer.
             logMessage('R', line);
             handleHomingLine(line);
@@ -508,9 +525,4 @@ void SRTSerial::parseStatus(const String &line) {
         }
     }
 
-    // Extract calibrator state Cal:ON or Cal:OFF
-    int calIdx = line.indexOf("Cal:");
-    if (calIdx >= 0) {
-        calibratorOn = (line.substring(calIdx + 4, calIdx + 6) == "ON");
-    }
 }

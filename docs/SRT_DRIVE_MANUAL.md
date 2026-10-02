@@ -197,15 +197,15 @@ Each axis has one reed switch, 2 pulses per degree. The ISRs (`pulseAzISR`, `pul
 Status line format. The ESP32 parser is positional: do not change it.
 
 ```
-Alt:%.1f Az:%.1f Ialt:%.1fA Iaz:%.1fA Status:<state> [<fault>] -> Alt:%.1f Az:%.1f Cal:ON|OFF
+Alt:%.1f Az:%.1f Ialt:%.1fA Iaz:%.1fA Status:<state> [<fault>] -> Alt:%.1f Az:%.1f *HH
 ```
 
-`[<fault>]` appears only in FAULT, `-> Alt Az` (the target) only while Slewing or Reversing, `Cal:` always.
+`[<fault>]` appears only in FAULT, `-> Alt Az` (the target) only while Slewing or Reversing. Every line ends in ` *HH`, the XOR of every character before the ` *` in hex; the controller rejects a line whose checksum fails, which is what catches a truncated or corrupted line. Until 2026-10-02 the line ended `Cal:ON|OFF` instead (issue #39), and the controller still accepts that ending.
 
 ```
-Alt:45.0 Az:180.0 Ialt:0.0A Iaz:0.0A Status:Ready Cal:OFF
-Alt:30.0 Az:150.0 Ialt:2.1A Iaz:1.9A Status:Slewing -> Alt:45.0 Az:180.0 Cal:OFF
-Alt:30.0 Az:150.0 Ialt:5.2A Iaz:0.0A Status:FAULT [Altitude motor overcurrent] Cal:OFF
+Alt:45.0 Az:180.0 Ialt:0.0A Iaz:0.0A Status:Ready *7D
+Alt:30.0 Az:150.0 Ialt:2.1A Iaz:1.9A Status:Slewing -> Alt:45.0 Az:180.0 *16
+Alt:30.0 Az:150.0 Ialt:5.2A Iaz:0.0A Status:FAULT [Altitude motor overcurrent] *6E
 ```
 
 **Fields:**
@@ -438,13 +438,7 @@ Building with `-DHOMING_TRACE` streams the azimuth creep of every homing on the 
 
 ### 6.5 Calibrator Commands
 
-| Command | Description |
-|---------|-------------|
-| `CAL ON` or `CAL 1` | Set pin 26 HIGH |
-| `CAL OFF` or `CAL 0` | Set pin 26 LOW |
-| `CAL` | Toggle |
-
-The reply is `Calibrator: ON|OFF`, and the status line's `Cal:` field follows the pin. The noise diode this pin used to switch is gone (issue #39). Pin 26 drives nothing, and the command changes only the pin and the `Cal:` field.
+Removed on 2026-10-02 (issue #39): the noise diode the `CAL` command switched was gone, and pin 26 is now simply held low. `CAL` is an unknown command.
 
 ### 6.6 Motion Profile
 
@@ -650,7 +644,7 @@ On power-up, the system performs the following sequence:
    - An axis is at its limit when no pulse has passed its debounce for `STALL`. Each stop prints (S1):
      `Homing: Azimuth limit reached at <n> pulses (<deg> deg) [enc: ...] I=<A>A det[armed= creep= cut= low= edges= cutToStall= brake=]`
      and the same for altitude, without `det[...]`.
-   - On the first approach `<n>` is the count error accumulated since the previous homing.
+   - On the first approach `<n>` is a fixed switch-detection offset plus any count drift since the previous homing. The offset is normally −2.0 to +0.5° (most often alt −1.0°, az −0.5°, whether the last homing was an hour or a day ago); only a reading outside that range is drift.
    - A boot homing starts at counter 0 wherever the mount is: it creeps its first 2.5 degrees, then runs at speed.
 
 3. **Azimuth cut edge.** While azimuth creeps, the raw current (8 ADC conversions averaged) is read every pass.
@@ -855,13 +849,13 @@ Homing: Moving to home position...
 Homing complete. Position: Alt=0.0 Az=0.0
 Ready. Type HELP for commands.
 
-Alt:0.0 Az:0.0 Ialt:0.0A Iaz:0.0A Status:Ready Cal:OFF
+Alt:0.0 Az:0.0 Ialt:0.0A Iaz:0.0A Status:Ready *45
 > 45 270
 Slewing to Alt:45.0 Az:270.0
-Alt:0.5 Az:0.5 Ialt:0.0A Iaz:0.0A Status:Slewing -> Alt:45.0 Az:270.0 Cal:OFF
-Alt:1.0 Az:1.0 Ialt:0.0A Iaz:0.0A Status:Slewing -> Alt:45.0 Az:270.0 Cal:OFF
+Alt:0.5 Az:0.5 Ialt:0.0A Iaz:0.0A Status:Slewing -> Alt:45.0 Az:270.0 *26
+Alt:1.0 Az:1.0 Ialt:0.0A Iaz:0.0A Status:Slewing -> Alt:45.0 Az:270.0 *26
 ...
-Alt:45.0 Az:270.0 Ialt:0.0A Iaz:0.0A Status:Ready Cal:OFF
+Alt:45.0 Az:270.0 Ialt:0.0A Iaz:0.0A Status:Ready *71
 ```
 
 ---
@@ -923,13 +917,12 @@ Alt:45.0 Az:270.0 Ialt:0.0A Iaz:0.0A Status:Ready Cal:OFF
 | Reset | `RESET` | Clear a fault (does not re-home) |
 | Status | `STATUS` | Print the status line |
 | Configuration | `CONFIG`, `SET <p> <v>`, `SAVE`, `LOAD`, `DEFAULTS` | Section 6.3 |
-| Calibrator pin | `CAL [ON\|OFF]` | Pin 26; drives nothing |
 | Diagnostics | `XTRACE [s]`, `PROBE [n]`, `TEST2`, `TEST2H` | Section 6.4 |
 
 ### Status Output
 
 ```
-Alt:<deg> Az:<deg> Ialt:<A>A Iaz:<A>A Status:<state> [<fault>] [-> Alt:<deg> Az:<deg>] Cal:ON|OFF
+Alt:<deg> Az:<deg> Ialt:<A>A Iaz:<A>A Status:<state> [<fault>] [-> Alt:<deg> Az:<deg>] *HH
 ```
 
 ### Serial1 Replies

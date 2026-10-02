@@ -193,7 +193,7 @@ void setupWebServer() {
 
     // Serve main page
     webServer.on("/", HTTP_GET, [](AsyncWebServerRequest *request) {
-        AsyncWebServerResponse *response = request->beginResponse_P(200, "text/html", INDEX_HTML);
+        AsyncWebServerResponse *response = request->beginResponse_P(200, "text/html; charset=utf-8", INDEX_HTML);
         response->addHeader("Cache-Control", "no-cache");
         request->send(response);
     });
@@ -239,7 +239,6 @@ void setupWebServer() {
         bool faultActive = (srtSerial.getStatusStr() == "FAULT") || (srtSerial.getFaultStr().length() > 0);
         json += "\"fault_active\":" + String(faultActive ? "true" : "false") + ",";
         json += "\"is_slewing\":" + String(srtSerial.getIsSlewing() ? "true" : "false") + ",";
-        json += "\"calibrator\":" + String(srtSerial.getCalibratorOn() ? "true" : "false") + ",";
         // Clock health is machine-readable here so the scheduler can record sync
         // age with an observation: a scan taken on a stale clock has a corrupted
         // sky position and must be identifiable after the fact.
@@ -286,17 +285,6 @@ void setupWebServer() {
 
     webServer.on("/serial/log", HTTP_GET, [](AsyncWebServerRequest *request) {
         request->send(200, "application/json", srtSerial.getLogJSON());
-    });
-
-    // Calibrator control
-    webServer.on("/calibrator", HTTP_GET, [](AsyncWebServerRequest *request) {
-        bool on = srtSerial.getCalibratorOn();
-        if (request->hasArg("on")) {
-            on = (request->arg("on") == "1" || request->arg("on") == "true");
-            srtSerial.sendCalibrator(on);
-        }
-        String json = "{\"ok\":true,\"calibrator\":" + String(on ? "true" : "false") + "}";
-        request->send(200, "application/json", json);
     });
 
     // Clear pointing offset. Must be registered before "/offset" - see the

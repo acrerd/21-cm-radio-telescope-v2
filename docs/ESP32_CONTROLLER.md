@@ -419,7 +419,7 @@ All endpoints return JSON unless noted.
   "reset_reason": "software (restart or OTA)",
   "loop_age_ms": 4,
   "free_heap": 180000,
-  "raw": "Alt:45.0 Az:180.0 Ialt:0.1A Iaz:0.2A Status:Ready -> Alt:45.0 Az:180.0 Cal:OFF"
+  "raw": "Alt:45.0 Az:180.0 Ialt:0.1A Iaz:0.2A Status:Ready"
 }
 ```
 
@@ -442,9 +442,11 @@ has the rest. `raw` is the last status line as received.
 
 `last_homing` is the encoder error the Due reports at the last homing (issue
 #24), latched from its `Homing: <axis> limit reached at N pulses (D deg)`
-lines. The **first approach** is the count error accumulated since the
-previous homing — the stop is the true zero, so a healthy axis reads within
-a pulse or two. The **re-approach** after the 5° back-off is the stop's
+lines. The **first approach** is a fixed switch-detection offset plus any
+count drift since the previous homing. The offset is normally −2.0 to +0.5°
+(most often alt −1.0°, az −0.5°, however recently the mount was homed), so
+only a reading outside that range is drift; the field names say `error` for
+historical reasons. The **re-approach** after the 5° back-off is the stop's
 repeatability, when there is one: the Due skips it when both axes met their
 switches at creep and the azimuth cut edge was captured (issue #33), prints
 `Re-approach skipped`, and the second-approach values are then `null` with
@@ -501,7 +503,6 @@ target (`null` if none this boot). Events carry UTC once the clock is set,
 | `/home` | (none) | Clear tracking and run the Due homing sequence |
 | `/offset` | `alt`, `az` | Set the operator's pointing offset (degrees, true frame, on top of the model) |
 | `/offset/clear` | (none) | Clear pointing offset |
-| `/calibrator` | `on=1\|true\|0` | Send `CAL ON`/`CAL OFF` to the Due. The noise diode it once switched is gone (issue #39); the Due's pin still switches and `calibrator` in `/status` follows it |
 
 All goto and track endpoints except `/track/sun`, `/track/moon` and
 `/track/galactic-plane` refuse a target below `horizonAlt` with 400 before
