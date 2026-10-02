@@ -236,8 +236,6 @@
     "cfgPowerMeterCentre",
     "cfgPulsarMonitor",
     "cfgPulsarMonitorHours",
-    "cfgPulsarMonitorStart",
-    "cfgPulsarMonitorWindow",
     "cfgReceiverPythonPath",
     "cfgSdrType",
     "cfgSlewTimeout",

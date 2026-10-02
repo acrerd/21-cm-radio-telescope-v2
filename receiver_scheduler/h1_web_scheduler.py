@@ -201,17 +201,23 @@ _DEFAULT_CONFIG = {
     # Track the Sun whenever nothing else wants the telescope (issue #44).
     # Off by default: it makes the host busy most of a summer day.
     "sun_monitor": False,
-    # Record B0329+54 in pulsar mode every night, from pulsar_monitor_start
-    # (local time) for pulsar_monitor_hours, ahead of the Sun monitor. Off by
-    # default.
+    # Record B0329+54 in pulsar mode whenever it is clear of the measured
+    # horizon and nothing is booked, ahead of the Sun monitor: from when it
+    # comes out from behind the horizon each day (it is circumpolar here, but
+    # hidden ~6 h a day by the northern obstruction, and that moves 2 h a month
+    # round the clock), for at most pulsar_monitor_hours. Off by default.
     "pulsar_monitor": False,
-    # "follow": the window opens each day when B0329+54 comes out from behind
-    # the measured horizon (it is circumpolar here, but hidden ~6 h a day by
-    # the northern obstruction, and that moves 2 h a month round the clock).
-    # "clock": it opens at pulsar_monitor_start every day.
+    "pulsar_monitor_hours": 16,
+    # Which monitor has the telescope when both want it: "pulsar" (the
+    # pulsar's window ends a Sun run) or "sun" (a clear Sun ends a pulsar
+    # run). Bookings and anything started by hand outrank both.
+    "monitor_priority": "pulsar",
+    # Retired from the Configuration tab 2026-10-02: the window always follows
+    # the pulsar. The start time is only the fallback with no horizon profile
+    # measured (nothing then hides the pulsar to mark an emergence); the mode
+    # key is ignored and kept so an older config file still loads.
     "pulsar_monitor_window": "follow",
     "pulsar_monitor_start": "20:00",
-    "pulsar_monitor_hours": 16,
     # The Trimble Thunderbolt's serial status (TSIP), read by thunderbolt.py.
     # A missing device is looked for every 30 s, so plugging the adapter in
     # needs no restart. /dev/thunderbolt is the name a udev rule gives the
@@ -3197,6 +3203,55 @@ def _body_clear_minutes(now: datetime, body, profile, max_minutes: int, min_alt:
     return int(max_minutes)
 
 
+_sun_next_cache: dict = {}
+
+
+def sun_monitor_next(now: datetime, profile, min_alt: float,
+                     horizon_minutes: int = 26 * 60) -> Optional[datetime]:
+    """When the Sun next gives a monitor run: `now` if it is clear for at
+    least SUN_MONITOR_MIN_MINUTES plus the guard from now, else the first
+    later minute that starts such a stretch, within `horizon_minutes`; None if
+    none does. What a lower-priority pulsar monitor plans around when the Sun
+    has priority (monitor_priority "sun"). Sampled at the minute, cached per
+    minute, profile and floor."""
+    if not EPHEM_AVAILABLE:
+        return None
+    key = (now.replace(second=0, microsecond=0), float(min_alt), int(horizon_minutes),
+           hash(json.dumps(profile, sort_keys=True, default=str)))
+    if key in _sun_next_cache:
+        return _sun_next_cache[key]
+    import horizon_store
+    floors = bool(profile) and bool(horizon_store.profile_floors(profile))
+    margin = horizon_store.beam_margin_deg()
+    observer = _get_observer()
+    sun = ephem.Sun()
+    need = SUN_MONITOR_MIN_MINUTES + SUN_MONITOR_GUARD_MINUTES
+    t0 = now.replace(second=0, microsecond=0)
+    run = 0
+    result = None
+    for m in range(int(horizon_minutes) + need):
+        observer.date = _local_to_ephem_utc(t0 + timedelta(minutes=m))
+        sun.compute(observer)
+        alt, az = math.degrees(sun.alt), math.degrees(sun.az)
+        floor = float(min_alt)
+        if floors:
+            floor = max(floor, horizon_store.horizon_floor(profile, az) + margin)
+        run = run + 1 if alt >= floor else 0
+        if run >= need:
+            start = m - need + 1
+            result = now if start == 0 else t0 + timedelta(minutes=start)
+            break
+    if len(_sun_next_cache) > 64:
+        _sun_next_cache.clear()
+    _sun_next_cache[key] = result
+    return result
+
+
+def monitor_priority(cfg) -> str:
+    """'pulsar' or 'sun': which monitor wins when both want the telescope."""
+    return "sun" if str(cfg.get("monitor_priority", "pulsar")).lower() == "sun" else "pulsar"
+
+
 def _next_booking_start(schedule, now: datetime) -> Optional[datetime]:
     """The start of the next enabled booking after `now`, or None."""
     best = None
@@ -3345,7 +3400,8 @@ def _sun_monitor_tick(now: datetime, schedule):
     import horizon_store
     minutes, why = sun_monitor_plan(now, schedule, horizon_store.load_active(),
                                     float(cfg.get('min_elevation', 10.0)),
-                                    pulsar_from=_pulsar_monitor_next(now, cfg))
+                                    pulsar_from=(None if monitor_priority(cfg) == "sun"
+                                                 else _pulsar_monitor_next(now, cfg)))
     with sun_monitor_lock:
         changed = sun_monitor_state["waiting"] != why
         sun_monitor_state["waiting"] = why
@@ -3482,14 +3538,17 @@ def pulsar_follow_window(now: datetime, hours: float, profile, min_alt: float):
 
 
 def pulsar_window_for(now: datetime, cfg, profile, min_alt: float):
-    """(opens, closes, open_now) for the configured mode: 'follow' the
-    pulsar out from behind the horizon, or the fixed 'clock' time (also the
-    fallback when nothing hides the pulsar, so there is no emergence)."""
+    """(opens, closes, open_now): the window opens when the pulsar comes out
+    from behind the measured horizon and closes `pulsar_monitor_hours` later
+    or when it goes behind again, whichever is first. Since 2026-10-02 that is
+    the only mode (the Configuration tab's 'clock' choice and its start time
+    were removed as confusing); `pulsar_monitor_start` survives only as the
+    fallback when nothing hides the pulsar - no profile measured - so there is
+    no emergence to follow."""
     hours = cfg.get('pulsar_monitor_hours', 16)
-    if cfg.get('pulsar_monitor_window', 'follow') == 'follow':
-        w = pulsar_follow_window(now, hours, profile, min_alt)
-        if w is not None:
-            return w
+    w = pulsar_follow_window(now, hours, profile, min_alt)
+    if w is not None:
+        return w
     return pulsar_clock_window(now, cfg.get('pulsar_monitor_start', '20:00'), hours)
 
 
@@ -3522,10 +3581,13 @@ def pulsar_session_name(opens: datetime) -> str:
 
 
 def pulsar_monitor_plan(now: datetime, schedule, profile, min_alt: float,
-                        start_hhmm: str, hours: float, mode: str = "clock"):
+                        start_hhmm: str, hours: float, mode: str = "clock",
+                        sun_from: Optional[datetime] = None):
     """(minutes, reason, session): how long a run starting now should last,
     and the window (session) it belongs to. Zero minutes, with the reason,
-    when it should not start."""
+    when it should not start. `sun_from` is when the Sun monitor next wants
+    the telescope, given only when the Sun has priority: it ends a pulsar run
+    like a booking does."""
     cfg = {'pulsar_monitor_window': mode, 'pulsar_monitor_start': start_hhmm,
            'pulsar_monitor_hours': hours}
     opens, closes, open_now = pulsar_window_for(now, cfg, profile, min_alt)
@@ -3537,6 +3599,12 @@ def pulsar_monitor_plan(now: datetime, schedule, profile, min_alt: float,
     if booking is not None:
         limit = min(limit, int((booking - now).total_seconds() // 60)
                     - PULSAR_MONITOR_GUARD_MINUTES)
+    if sun_from is not None:
+        limit = min(limit, int((sun_from - now).total_seconds() // 60)
+                    - PULSAR_MONITOR_GUARD_MINUTES)
+        if limit < PULSAR_MONITOR_MIN_MINUTES and (booking is None or sun_from <= booking):
+            return 0, ("the Sun has priority while it is clear" if sun_from <= now
+                       else "the Sun has priority from %s" % sun_from.strftime('%H:%M')), session
     if limit < PULSAR_MONITOR_MIN_MINUTES:
         return 0, ("the next booking starts at %s" % booking.strftime('%H:%M')
                    if booking is not None and booking < closes
@@ -3600,6 +3668,7 @@ def pulsar_monitor_status() -> dict:
         'mode': cfg.get('pulsar_monitor_window', 'follow'),
         'start': cfg.get('pulsar_monitor_start', '20:00'),
         'hours': cfg.get('pulsar_monitor_hours', 16),
+        'priority': monitor_priority(cfg),
         'window': window,
         'holdoff_until': held.isoformat(timespec='seconds') if held else None,
         'holdoff_reason': reason if held else '',
@@ -3624,7 +3693,8 @@ def _pulsar_monitor_tick(now: datetime, schedule) -> bool:
     minutes, why, session = pulsar_monitor_plan(
         now, schedule, horizon_store.load_active(), float(cfg.get('min_elevation', 10.0)),
         cfg.get('pulsar_monitor_start', '20:00'), cfg.get('pulsar_monitor_hours', 16),
-        cfg.get('pulsar_monitor_window', 'follow'))
+        cfg.get('pulsar_monitor_window', 'follow'),
+        sun_from=_sun_monitor_wants(now, cfg))
     with pulsar_monitor_lock:
         changed = pulsar_monitor_state["waiting"] != why
         pulsar_monitor_state["waiting"] = why
@@ -3640,6 +3710,39 @@ def _pulsar_monitor_tick(now: datetime, schedule) -> bool:
     return True
 
 
+def _sun_monitor_wants(now: datetime, cfg) -> Optional[datetime]:
+    """When the Sun monitor next wants the telescope, if it has priority and
+    is on; else None (it then never limits the pulsar)."""
+    if monitor_priority(cfg) != "sun" or not cfg.get('sun_monitor', False):
+        return None
+    with sun_monitor_lock:
+        held = sun_monitor_state["holdoff_until"]
+    if held is not None and now < held:
+        return None
+    import horizon_store
+    return sun_monitor_next(now, horizon_store.load_active(), float(cfg.get('min_elevation', 10.0)))
+
+
+def _sun_takes_over_from_pulsar(now: datetime) -> bool:
+    """The Sun has priority and is clear while a pulsar monitor run holds the
+    telescope (a run started before the setting changed, or one that outran
+    its plan): stop it so the Sun tick can start. True if it did."""
+    with process_lock:
+        pulsar_running = (not observation_starting and current_process is not None
+                          and current_process.poll() is None
+                          and _is_pulsar_monitor(current_observation))
+    if not pulsar_running:
+        return False
+    if _sun_monitor_wants(now, load_config()) != now:
+        return False
+    with process_lock:
+        if _is_pulsar_monitor(current_observation):
+            current_observation['end_action'] = 'none'   # the Sun homes and slews next
+    log.info("Pulsar monitor gives way to the Sun monitor, which has priority")
+    stop_observation()
+    return True
+
+
 def _pulsar_takes_over_from_sun(now: datetime) -> bool:
     """The pulsar window has opened while a Sun monitor run holds the
     telescope: stop the Sun run so the pulsar tick can start. True if it did."""
@@ -3650,6 +3753,8 @@ def _pulsar_takes_over_from_sun(now: datetime) -> bool:
     if not sun_running:
         return False
     cfg = load_config()
+    if monitor_priority(cfg) == "sun":
+        return False
     if _pulsar_monitor_next(now, cfg) != now:
         return False
     with pulsar_monitor_lock:
@@ -3943,10 +4048,16 @@ def scheduler_thread():
                         if not start_observation(due_obs, duration_override=due_remaining):
                             _record_start_failure(due_obs, "failed to start")
             elif not is_running:
-                if not _pulsar_monitor_tick(now, schedule):
+                if monitor_priority(load_config()) == "sun":
+                    # A Sun run that starts makes the pulsar tick see the
+                    # hardware busy, so the order is all that is needed.
+                    _sun_monitor_tick(now, schedule)
+                    _pulsar_monitor_tick(now, schedule)
+                elif not _pulsar_monitor_tick(now, schedule):
                     _sun_monitor_tick(now, schedule)
             else:
                 _pulsar_takes_over_from_sun(now)
+                _sun_takes_over_from_pulsar(now)
 
         except Exception as e:
             log.error("Scheduler error: %s", e, exc_info=True)
@@ -7224,6 +7335,9 @@ def api_post_config():
         updates['pulsar_monitor_start'] = '%02d:%02d' % (hh, mm)
     if 'sdr_type' in updates and updates['sdr_type'] not in ('b210', 'rtlsdr'):
         return jsonify({'success': False, 'error': "sdr_type must be 'b210' or 'rtlsdr'"}), 400
+    if 'monitor_priority' in updates and updates['monitor_priority'] not in ('pulsar', 'sun'):
+        return jsonify({'success': False,
+                        'error': "monitor priority must be 'pulsar' or 'sun'"}), 400
     if 'pulsar_monitor_window' in updates and updates['pulsar_monitor_window'] not in ('follow', 'clock'):
         return jsonify({'success': False,
                         'error': "pulsar monitor window must be 'follow' or 'clock'"}), 400

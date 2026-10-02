@@ -994,26 +994,22 @@
                 <div class="config-section">
                 <div class="section-title">Pulsar monitor</div>
                 <div class="form-group">
-                    <label title="Record B0329+54 in pulsar mode every day in the window below, ahead of the Sun monitor. Bookings still win: a run stops short of one and resumes after it for the rest of the window, and the pieces of one window share one session and one TOA. Anything started by hand stops it and keeps it off for 30 min.">Record B0329+54 daily</label>
+                    <label title="Record B0329+54 in pulsar mode whenever nothing is booked or running and it is clear of the measured horizon, ahead of the Sun monitor: from when it comes out from behind the horizon each day, for at most the hours below. Bookings still win: a run stops short of one and resumes after it, and the pieces of one day share one session and one TOA. Anything started by hand stops it and keeps it off for 30 min.">Record B0329+54 when visible</label>
                     <select autocomplete="off" id="cfgPulsarMonitor">
                         <option value="false">Off</option>
                         <option value="true">On</option>
                     </select>
                 </div>
                 <div class="form-group">
-                    <label title="B0329+54 never sets here, but the northern obstruction hides it about 6 h a day, and that stretch moves 2 h a month round the clock. 'Follow' opens the window when it comes out from behind the measured horizon, so each day is one unbroken run; by winter that is a daytime run. 'Clock' opens at the fixed time below, and loses whatever the obstruction hides inside it.">Window</label>
-                    <select autocomplete="off" id="cfgPulsarMonitorWindow">
-                        <option value="follow">Follow the pulsar</option>
-                        <option value="clock">Fixed clock time</option>
-                    </select>
-                </div>
-                <div class="form-group">
-                    <label title="Local time the window opens, for a fixed clock window (and the fallback when no horizon profile is measured)">Window opens (HH:MM)</label>
-                    <input autocomplete="off" type="text" id="cfgPulsarMonitorStart" placeholder="20:00">
-                </div>
-                <div class="form-group">
-                    <label title="How long the window stays open; one window is one session, even across midnight">Window length (hours)</label>
+                    <label title="The longest the monitor records in a day, counted from when B0329+54 comes out from behind the measured horizon (the northern obstruction hides it about 6 h a day; that time moves 2 h a month round the clock). It stops sooner if the pulsar goes behind the horizon again. The rest of the day is left to the Sun monitor.">Longest run a day (hours)</label>
                     <input autocomplete="off" type="number" id="cfgPulsarMonitorHours" min="0.5" max="23.5" step="0.5">
+                </div>
+                <div class="form-group">
+                    <label title="Which monitor has the telescope when both want it. Pulsar: the pulsar's daily run ends a Sun run and no Sun run starts into it. Sun: the pulsar's runs stop short of the Sun's clear hours and resume after them, as pieces of the same day. Bookings and anything started by hand come before either.">Priority when both want the telescope</label>
+                    <select autocomplete="off" id="cfgMonitorPriority">
+                        <option value="pulsar">Pulsar</option>
+                        <option value="sun">Sun</option>
+                    </select>
                 </div>
                 </div>
                 <div class="config-section">

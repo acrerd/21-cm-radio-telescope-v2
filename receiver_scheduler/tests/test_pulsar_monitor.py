@@ -325,3 +325,47 @@ def test_the_session_reaches_the_recording():
     import inspect
     src = inspect.getsource(sched.start_observation)
     assert "'pulsar_session': obs.get('pulsar_session'" in src
+
+
+# --- priority between the two monitors (2026-10-02) -------------------------
+
+def test_with_the_sun_first_a_pulsar_run_stops_short_of_the_sun():
+    """The pulsar's window is open, the Sun next comes clear in 3 h: the run is
+    planned to end 2 min before it, and when the Sun is clear now the pulsar
+    waits, saying why."""
+    cfg = {"pulsar_monitor_window": "clock", "pulsar_monitor_start": "20:00", "pulsar_monitor_hours": 16}
+    now = datetime(2026, 10, 2, 21, 0)
+    full, why, _ = sched.pulsar_monitor_plan(now, [], None, 10.0, "20:00", 16)
+    assert full > 180 and why == ""
+    short, why, _ = sched.pulsar_monitor_plan(now, [], None, 10.0, "20:00", 16,
+                                              sun_from=now + timedelta(hours=3))
+    assert short == 180 - sched.PULSAR_MONITOR_GUARD_MINUTES
+    zero, why, _ = sched.pulsar_monitor_plan(now, [], None, 10.0, "20:00", 16, sun_from=now)
+    assert zero == 0 and why == "the Sun has priority while it is clear"
+
+
+def test_the_sun_limits_the_pulsar_only_when_it_has_priority(monkeypatch):
+    monkeypatch.setattr(sched, "sun_monitor_next", lambda now, profile, min_alt: now)
+    now = datetime(2026, 10, 2, 12, 0)
+    assert sched._sun_monitor_wants(now, {"monitor_priority": "pulsar", "sun_monitor": True}) is None
+    assert sched._sun_monitor_wants(now, {"monitor_priority": "sun", "sun_monitor": False}) is None
+    assert sched._sun_monitor_wants(now, {"monitor_priority": "sun", "sun_monitor": True}) == now
+    assert sched.monitor_priority({}) == "pulsar" and sched.monitor_priority({"monitor_priority": "SUN"}) == "sun"
+
+
+def test_the_sun_is_found_clear_at_noon_and_not_at_midnight():
+    """Glasgow, 2 October, no horizon profile, floor 10 deg: clear now at noon;
+    at midnight the next clear stretch starts the next morning."""
+    noon = datetime(2026, 10, 2, 12, 0)
+    assert sched.sun_monitor_next(noon, None, 10.0) == noon
+    midnight = datetime(2026, 10, 3, 0, 0)
+    nxt = sched.sun_monitor_next(midnight, None, 10.0)
+    assert nxt is not None and datetime(2026, 10, 3, 7, 30) < nxt < datetime(2026, 10, 3, 10, 0)
+
+
+def test_the_api_refuses_an_unknown_priority(tmp_path):
+    with patch.object(sched, 'CONFIG_FILE', str(tmp_path / "config.json")), \
+         patch.object(sched, 'sync_observer_from_controller'):
+        client = sched.app.test_client()
+        assert client.post("/api/config", json={"monitor_priority": "moon"}).status_code == 400
+        assert client.post("/api/config", json={"monitor_priority": "sun"}).status_code == 200

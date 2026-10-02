@@ -131,9 +131,8 @@
                 document.getElementById('cfgSoundEnabled').value = cfg.sound_enabled !== false ? 'true' : 'false';
                 document.getElementById('cfgSunMonitor').value = cfg.sun_monitor ? 'true' : 'false';
                 document.getElementById('cfgPulsarMonitor').value = cfg.pulsar_monitor ? 'true' : 'false';
-                document.getElementById('cfgPulsarMonitorWindow').value = cfg.pulsar_monitor_window || 'follow';
-                document.getElementById('cfgPulsarMonitorStart').value = cfg.pulsar_monitor_start || '20:00';
                 document.getElementById('cfgPulsarMonitorHours').value = cfg.pulsar_monitor_hours ?? 16;
+                document.getElementById('cfgMonitorPriority').value = cfg.monitor_priority === 'sun' ? 'sun' : 'pulsar';
                 soundEnabled = cfg.sound_enabled !== false;
             });
         }
@@ -164,9 +163,8 @@
                 sound_enabled: document.getElementById('cfgSoundEnabled').value === 'true',
                 sun_monitor: document.getElementById('cfgSunMonitor').value === 'true',
                 pulsar_monitor: document.getElementById('cfgPulsarMonitor').value === 'true',
-                pulsar_monitor_window: document.getElementById('cfgPulsarMonitorWindow').value,
-                pulsar_monitor_start: document.getElementById('cfgPulsarMonitorStart').value.trim() || '20:00',
                 pulsar_monitor_hours: parseFloat(document.getElementById('cfgPulsarMonitorHours').value) || 16,
+                monitor_priority: document.getElementById('cfgMonitorPriority').value,
             };
             // The instrument: warn before a change goes through, because the
             // calibrations belong to the tuning and every recording after
