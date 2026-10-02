@@ -19,6 +19,7 @@ extern String ethIP;
 #include "diag.h"
 #include "index_html.h"
 #include <time.h>
+#include <sys/time.h>
 #include <WiFi.h>
 #include <ESPAsyncWebServer.h>
 // dns_getserver() reports the resolver lwIP will actually use. The per-netif
@@ -31,6 +32,9 @@ extern String dnsTraceWifi;
 extern uint32_t resolverRestoreCount;
 
 AsyncWebServer webServer(WEB_PORT);
+
+// millis() at which /restart reboots the controller; 0 when none is asked for.
+static volatile uint32_t restartAtMs = 0;
 SRTState state;  // Global state instance
 extern bool mdnsRunning;
 void syncTimeNTP();  // defined in main.cpp; non-blocking, safe from a handler
@@ -469,6 +473,31 @@ void setupWebServer() {
         request->send(200, "application/json", "{\"ok\":true}");
     });
 
+    // Reboot the controller (2026-10-02). POST only, so a link preview or a
+    // stray GET cannot fire it, and refused while it would cut something off:
+    // tracking would stop, and the Due's homing or slew would carry on with
+    // nobody reading it. The Due itself is not restarted. Its fault state,
+    // position and any target it holds survive; tracking does not. The reboot
+    // happens in handleWebServer, after this reply has gone.
+    webServer.on("/restart", HTTP_POST, [](AsyncWebServerRequest *request) {
+        bool tracking;
+        { SRTLock lock; tracking = state.trackingEnabled; }
+        String due = srtSerial.getStatusStr();
+        const char *busy = tracking ? "tracking is on - stop it first"
+                         : due == "Homing" ? "the mount is homing"
+                         : srtSerial.getIsSlewing() ? "the mount is moving" : nullptr;
+        if (busy) {
+            request->send(409, "application/json",
+                          String("{\"ok\":false,\"error\":\"Not restarted: ") + busy + "\"}");
+            return;
+        }
+        String who = request->client() ? request->client()->remoteIP().toString() : String("?");
+        srtSerial.logESP("Restart requested by " + who);
+        restartAtMs = millis() + 500;
+        if (!restartAtMs) restartAtMs = 1;
+        request->send(200, "application/json", "{\"ok\":true}");
+    });
+
     // Run the Due homing sequence
     webServer.on("/home", HTTP_GET, [](AsyncWebServerRequest *request) {
         SRTLock lock;
@@ -712,7 +741,15 @@ void setupWebServer() {
         json += "\"last_offset_ms\":" + String((long)state.lastSyncOffsetMs) + ",";
         json += "\"sync_count\":" + String((unsigned long)state.syncCount) + ",";
         json += "\"utc\":\"" + String(timeStr) + "\",";
-        json += "\"timestamp\":" + String((unsigned long)now);
+        json += "\"timestamp\":" + String((unsigned long)now) + ",";
+        // The same clock to the millisecond, so the page can run its own
+        // clock in step with this one rather than showing whole seconds a
+        // poll late (2026-10-02).
+        struct timeval tv;
+        gettimeofday(&tv, nullptr);
+        char ms[24];
+        snprintf(ms, sizeof(ms), "%llu", (unsigned long long)tv.tv_sec * 1000ULL + tv.tv_usec / 1000);
+        json += "\"unix_ms\":" + String(ms);
         json += "}";
         request->send(200, "application/json", json);
     });
@@ -1183,5 +1220,11 @@ void setupWebServer() {
 }
 
 void handleWebServer() {
-    // AsyncWebServer handles itself - nothing needed here
+    // AsyncWebServer handles itself. The one job here is a restart asked for
+    // by /restart, done from the loop half a second after the reply went.
+    if (restartAtMs && (int32_t)(millis() - restartAtMs) >= 0) {
+        Serial.println("Restarting as requested by /restart");
+        delay(100);
+        ESP.restart();
+    }
 }

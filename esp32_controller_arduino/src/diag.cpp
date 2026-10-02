@@ -8,6 +8,12 @@
 #include <esp_private/panic_internal.h>
 #include <soc/cpu.h>
 #include <xtensa/xtensa_context.h>
+// SRT_SOURCE_HASH, written into the build directory by stamp_build.py.
+#if __has_include("build_hash.h")
+#include "build_hash.h"
+#else
+#define SRT_SOURCE_HASH "unknown"
+#endif
 
 #define DIAG_MAGIC 0x53525445u      // "SRTE": layout with the panic record (2026-10-02)
 #define DIAG_BT_DEPTH 16
@@ -237,6 +243,7 @@ uint32_t diagBootCount() { return rtc.bootCount; }
 String diagJSON() {
     String j = "{\"reset_reason\":\"" + String(reasonName(resetReason)) + "\"";
     j += ",\"build\":\"" + String(__DATE__ " " __TIME__) + "\"";
+    j += ",\"source_hash\":\"" SRT_SOURCE_HASH "\"";
     j += ",\"loop_watchdog\":" + String(wdtOn ? "true" : "false");
     j += ",\"free_heap\":" + String((unsigned long)ESP.getFreeHeap());
     j += ",\"max_alloc\":" + String((unsigned long)ESP.getMaxAllocHeap());
