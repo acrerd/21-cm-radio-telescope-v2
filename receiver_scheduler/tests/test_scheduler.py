@@ -1057,6 +1057,19 @@ class TestFlaskAPI:
         partial = sched.assess_homing_report({"az_error_first_deg": -1.5, "az_error_second_deg": -1.0,
                                               "utc": 1788867839})
         assert partial["level"] == "pending" and "in progress" in partial["summary"]
+        assert sched.assess_homing_report({"az_error_first_deg": -1.5, "utc": 1788867839},
+                                          "Homing")["level"] == "pending"
+        # 2026-10-02: the alt re-approach line was lost on the wire. With the
+        # Due no longer homing the gap is a lost reading, judged on the rest,
+        # not a homing in progress for the rest of the day.
+        today = {"alt_error_first_deg": -0.5, "az_error_first_deg": 0.0, "alt_error_second_deg": None,
+                 "az_error_second_deg": -0.5, "reapproach_skipped": False, "from_unknown": False,
+                 "utc": 1790956533}
+        done = sched.assess_homing_report(today, "Tracking")
+        assert done["level"] == "ok" and "in progress" not in done["summary"]
+        assert "alt -0.5/?" in done["summary"] and "reading lost on the serial link: alt re-approach" in done["summary"]
+        assert sched.assess_homing_report(dict(today, alt_error_first_deg=None), "Ready")["level"] == "ok"
+        assert sched.assess_homing_report(dict(today, az_error_first_deg=-4.0), "Ready")["level"] == "warn"
 
     def test_controller_offset_is_reported(self, client):
         """A hand-set /offset on the controller survives homings and shows
@@ -2495,6 +2508,17 @@ class TestApiHardening:
                               headers={'Origin': 'http://192.0.2.120'})
         assert (resp.headers.get('Access-Control-Allow-Origin')
                 == 'http://192.0.2.120')
+
+    def test_cors_allowed_for_the_ssh_forward_of_the_controller(self):
+        """A remote browser sees the controller page at 127.0.0.1:8080; its
+        Update firmware button was refused from there until 2026-10-02.
+        Another port on the same host is still refused."""
+        client = sched.app.test_client()
+        for origin in ('http://127.0.0.1:8080', 'http://localhost:8080'):
+            resp = client.get('/api/config', headers={'Origin': origin})
+            assert resp.headers.get('Access-Control-Allow-Origin') == origin
+        resp = client.get('/api/config', headers={'Origin': 'http://127.0.0.1:3000'})
+        assert 'Access-Control-Allow-Origin' not in resp.headers
 
     def test_filename_escape_is_contained(self, tmp_path):
         with patch.object(sched, 'get_config_value',

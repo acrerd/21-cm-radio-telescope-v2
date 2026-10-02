@@ -169,3 +169,92 @@ def test_the_flashed_elf_is_kept_for_panic_decoding(tmp_path, monkeypatch):
     assert (tmp_path / "kept" / "current.elf").read_bytes() == b"\x7fELF test"
     assert len(list((tmp_path / "kept").glob("firmware_*.elf"))) == 1
     assert S.keep_controller_elf("no-such-env") is None
+
+
+@pytest.fixture
+def flash(monkeypatch):
+    """Update firmware with the controller reporting state['running'] in
+    /diag and the background build stubbed: started counts the flashes begun."""
+    state = {"running": None, "started": 0, "claimed": None,
+             "status": {"status": "Ready", "is_slewing": False}, "tracking": {"enabled": False}}
+    monkeypatch.setattr(S, "srt_api_call", lambda ep, *a, **k: {
+        "/diag": {"source_hash": state["running"]}, "/status": state["status"],
+        "/tracking": state["tracking"]}.get(ep))
+    monkeypatch.setattr(S, "hardware_in_use", lambda: state["claimed"])
+    monkeypatch.setattr(S, "observation_starting", False)
+    monkeypatch.setattr(S, "_run_firmware_update", lambda: state.__setitem__("started", state["started"] + 1))
+    monkeypatch.setitem(S.firmware_update_state, "running", False)
+    state["checkout"], _ = S.firmware_source_hashes("wt32-eth01-ota")
+    return state, S.app.test_client()
+
+
+def test_update_firmware_flashes_nothing_when_the_source_is_unchanged(flash):
+    state, client = flash
+    assert state["checkout"]
+    state["running"] = state["checkout"]
+    d = client.post("/api/firmware/update").get_json()
+    assert d["success"] and d["unchanged"] and state["checkout"] in d["message"]
+    assert state["started"] == 0
+
+
+@pytest.mark.parametrize("running", ["0123456789abcdef", None, "unknown"])
+def test_update_firmware_flashes_a_changed_or_unknown_source(flash, running):
+    state, client = flash
+    state["running"] = running
+    d = client.post("/api/firmware/update").get_json()
+    assert d["success"] and not d.get("unchanged")
+    S.firmware_update_state["running"] = False
+    assert state["started"] == 1
+
+
+def test_update_firmware_can_be_forced(flash):
+    state, client = flash
+    state["running"] = state["checkout"]
+    d = client.post("/api/firmware/update?force=1").get_json()
+    assert d["success"] and not d.get("unchanged")
+    S.firmware_update_state["running"] = False
+    assert state["started"] == 1
+
+
+def test_the_checkout_hash_is_the_one_the_build_writes():
+    """source_hash.py is the one definition, imported by stamp_build.py and
+    here; a change to the source changes it."""
+    import sys
+    sys.path.insert(0, S.ESP32_FIRMWARE_DIR)
+    import source_hash
+    files = source_hash.source_files(S.ESP32_FIRMWARE_DIR)
+    assert "src/diag.cpp" in files and "platformio.ini" in files
+    assert not any(f.startswith((".pio", "test/")) for f in files)
+    assert source_hash.source_hash(S.ESP32_FIRMWARE_DIR, "a") != source_hash.source_hash(S.ESP32_FIRMWARE_DIR, "b")
+
+
+@pytest.mark.parametrize("busy, reason", [
+    ({"claimed": "an observation is recording"}, "an observation is recording"),
+    ({"status": {"status": "Homing", "is_slewing": False}}, "the mount is homing"),
+    ({"status": {"status": "Slewing", "is_slewing": True}}, "the mount is moving"),
+    ({"tracking": {"enabled": True}}, "the controller is tracking"),
+])
+def test_update_firmware_is_refused_while_the_telescope_is_busy(flash, busy, reason):
+    """A flash reboots the controller: refused rather than cutting off a
+    recording, a homing, a slew or tracking - whether or not the code changed."""
+    state, client = flash
+    state.update(busy)
+    resp = client.post("/api/firmware/update")
+    assert resp.status_code == 409 and reason in resp.get_json()["error"]
+    assert state["started"] == 0
+
+
+def test_update_firmware_is_refused_while_an_observation_starts(flash, monkeypatch):
+    state, client = flash
+    monkeypatch.setattr(S, "observation_starting", True)
+    assert client.post("/api/firmware/update").status_code == 409
+    assert state["started"] == 0
+
+
+def test_a_controller_that_does_not_answer_can_still_be_flashed(flash, monkeypatch):
+    """No /status, /tracking or /diag: the flash may be the cure, so it goes ahead."""
+    state, client = flash
+    monkeypatch.setattr(S, "srt_api_call", lambda *a, **k: None)
+    assert client.post("/api/firmware/update").get_json()["success"]
+    S.firmware_update_state["running"] = False
+    assert state["started"] == 1

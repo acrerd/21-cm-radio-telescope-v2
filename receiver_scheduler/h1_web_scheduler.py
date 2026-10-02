@@ -355,6 +355,14 @@ def _controller_url_candidates() -> list[str]:
 app = Flask(__name__)
 
 
+# The controller page as a remote browser sees it: through the ssh forward of
+# the controller to 127.0.0.1:8080, the address the scheduler page's Open
+# Controller tries first. Its buttons that call the scheduler (Update firmware
+# among them) were refused from there until 2026-10-02 - the reply carried no
+# CORS header and the page said "Scheduler is not responding".
+CONTROLLER_FORWARD_ORIGINS = ("http://127.0.0.1:8080", "http://localhost:8080")
+
+
 @app.after_request
 def add_cors_headers(response):
     """Allow the ESP32-served control page to call this local scheduler API.
@@ -364,7 +372,7 @@ def add_cors_headers(response):
     scheduler (including the firmware-update endpoint).
     """
     origin = _normalize_controller_url(request.headers.get("Origin"))
-    if origin and origin in _controller_url_candidates():
+    if origin and (origin in _controller_url_candidates() or origin in CONTROLLER_FORWARD_ORIGINS):
         response.headers["Access-Control-Allow-Origin"] = origin
         response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
         response.headers["Access-Control-Allow-Headers"] = "Content-Type"
@@ -594,10 +602,15 @@ def describe_homing_first(first: dict) -> str:
 _homing_report_logged_utc = 0
 
 
-def assess_homing_report(report) -> Optional[dict]:
+def assess_homing_report(report, due_status: Optional[str] = None) -> Optional[dict]:
     """Judge the controller's last-homing report. None if there is none.
 
-    Returns level 'ok' or 'warn', a one-line summary, and the numbers.
+    Returns level 'ok', 'warn' or 'pending', a one-line summary, and the
+    numbers. due_status is the Due's state word from /status ('status'): a
+    reading missing while the Due is not homing is a lost line, not a homing
+    in progress (2026-10-02: the alt re-approach line was lost on the wire and
+    the banner said "Homing in progress" for the rest of the day). Without it
+    a gap is taken as in progress, as before.
     """
     if not isinstance(report, dict) or report.get("utc") is None:
         return None
@@ -611,8 +624,9 @@ def assess_homing_report(report) -> Optional[dict]:
     # the azimuth cut edge skips the re-approach (#33): the second-approach
     # fields are then null by design, not because the homing is still running.
     skipped = bool(report.get("reapproach_skipped"))
-    pending = any(v is None for v in first.values()) or (not skipped and any(v is None for v in second.values()))
-    if pending:
+    gap = any(v is None for v in first.values()) or (not skipped and any(v is None for v in second.values()))
+    homing_now = due_status is None or "homing" in str(due_status).lower()
+    if gap and homing_now:
         # The controller stamps the report as the homing starts and fills the
         # numbers in as each axis reaches its stop: a gap means it is running.
         return {"level": "pending", "summary": f"Homing in progress since {when}",
@@ -634,10 +648,17 @@ def assess_homing_report(report) -> Optional[dict]:
                 "utc": int(report["utc"]), "from_unknown": True,
                 "az_first": first["az"], "alt_first": first["alt"],
                 "az_second": second["az"], "alt_second": second["alt"]}
-    problems, readings = [], []
+    problems, readings, lost = [], [], []
     for axis in ("az", "alt"):
         f, s = first[axis], second[axis]
-        readings.append(f"{axis} {f:+.1f}/" + ("skipped" if s is None else f"{s:+.1f}"))
+        if f is None:
+            lost.append(f"{axis} first approach")
+        if s is None and not skipped:
+            lost.append(f"{axis} re-approach")
+        readings.append(f"{axis} " + ("?" if f is None else f"{f:+.1f}") + "/"
+                        + (("skipped" if skipped else "?") if s is None else f"{s:+.1f}"))
+        if f is None:
+            continue
         error = beyond(f, HOMING_FIRST_NORMAL_DEG)        # counts lost or gained since the previous homing
         landing = beyond(s, HOMING_SECOND_NORMAL_DEG) if s is not None else 0.0   # re-approach against its usual range
         if abs(f) >= HOMING_FALSE_STALL_DEG or (s is not None and abs(s) >= HOMING_FALSE_STALL_DEG):
@@ -652,7 +673,8 @@ def assess_homing_report(report) -> Optional[dict]:
                             f"{HOMING_SECOND_NORMAL_DEG[0]:+.1f}..{HOMING_SECOND_NORMAL_DEG[1]:+.1f}")
     level = "warn" if problems else "ok"
     detail = "raw counters first/re-approach " + ", ".join(readings) + (
-        "; re-approach skipped: both axes met the switch at creep" if skipped else "")
+        "; re-approach skipped: both axes met the switch at creep" if skipped else "") + (
+        "; reading lost on the serial link: " + ", ".join(lost) if lost else "")
     summary = f"Last homing {when}: " + ("; ".join(problems) + " (" + detail + ")" if problems
                                         else "normal, no count drift (" + detail + ")")
     return {"level": level, "summary": summary, "utc": int(report["utc"]),
@@ -665,7 +687,7 @@ def _note_homing_report(status: Optional[dict]) -> None:
     global _homing_report_logged_utc
     if not status:
         return
-    verdict = assess_homing_report(status.get("last_homing"))
+    verdict = assess_homing_report(status.get("last_homing"), status.get("status"))
     if verdict is None or verdict["level"] == "pending" or verdict["utc"] == _homing_report_logged_utc:
         return
     _homing_report_logged_utc = verdict["utc"]
@@ -7299,9 +7321,74 @@ def api_stop_all():
                     'tracking_stopped': tracking_stopped})
 
 
+def firmware_source_hashes(env_name: str) -> tuple:
+    """(checkout, controller): the source hash of the firmware checkout for
+    env_name, and the one the running controller reports in /diag. Either is
+    None when it cannot be had - a controller flashed before 2026-10-02 reports
+    none, and one that does not answer cannot be compared."""
+    checkout = None
+    try:
+        if ESP32_FIRMWARE_DIR not in sys.path:
+            sys.path.insert(0, ESP32_FIRMWARE_DIR)
+        from source_hash import source_hash
+        checkout = source_hash(ESP32_FIRMWARE_DIR, env_name)
+    except (ImportError, OSError) as exc:
+        log.warning("Firmware source hash unavailable: %s", exc)
+    diag = srt_api_call("/diag") or {}
+    running = diag.get("source_hash")
+    return checkout, (running if running and running != "unknown" else None)
+
+
+def firmware_flash_refusal() -> Optional[str]:
+    """Why a controller flash must wait, or None. A flash reboots the
+    controller: a recording loses its pointing, a homing or a slew carries on
+    in the Due with nothing reading it, and tracking stops. A controller that
+    does not answer is not refused - that is when a flash may be the cure."""
+    with process_lock:
+        if observation_starting:
+            return "an observation is starting"
+    claimed = hardware_in_use()
+    if claimed:
+        return claimed
+    status = srt_api_call("/status")
+    if status:
+        if "homing" in str(status.get("status", "")).lower():
+            return "the mount is homing"
+        if status.get("is_slewing"):
+            return "the mount is moving"
+    tracking = srt_api_call("/tracking")
+    if tracking and tracking.get("enabled"):
+        return "the controller is tracking"
+    return None
+
+
 @app.route('/api/firmware/update', methods=['POST'])
 def api_firmware_update():
-    """Start an ESP32 OTA firmware update from the local project checkout."""
+    """Start an ESP32 OTA firmware update from the local project checkout.
+
+    Refused (409) while firmware_flash_refusal() names something the reboot
+    would cut off. Flashes nothing when the controller already runs this
+    source (its /diag source_hash equals the checkout's); the reply then
+    carries 'unchanged': true. A controller that reports no hash, or does not
+    answer, is flashed as before. ?force=1 skips both checks - for maintenance
+    from this computer's command line; the controller page never sends it."""
+    body = request.get_json(silent=True) or {}
+    force = bool(body.get("force")) or request.args.get("force") in ("1", "true")
+    with firmware_update_lock:
+        if firmware_update_state["running"]:
+            return jsonify({'success': False, 'error': 'Firmware update already running'}), 409
+    if not force:
+        busy = firmware_flash_refusal()
+        if busy:
+            log.info("Firmware update refused: %s", busy)
+            return jsonify({'success': False, 'error': 'Not flashed: %s. Try again when it has finished.' % busy}), 409
+        env_name = load_config().get("firmware_update_env", FIRMWARE_UPDATE_ENV)
+        checkout, running = firmware_source_hashes(env_name)
+        if checkout and checkout == running:
+            log.info("Firmware update: the controller already runs this source (%s); nothing flashed", checkout)
+            return jsonify({'success': True, 'unchanged': True, 'source_hash': checkout,
+                            'message': 'The controller already runs this firmware source '
+                                       '(%s). Nothing was flashed.' % checkout})
     with firmware_update_lock:
         if firmware_update_state["running"]:
             return jsonify({'success': False, 'error': 'Firmware update already running'}), 409
@@ -7357,7 +7444,7 @@ def api_telescope():
         'tracking': tracking,
         'offset': offset,
         # The last homing, judged (see assess_homing_report), for the status line.
-        'homing': assess_homing_report((status or {}).get('last_homing')),
+        'homing': assess_homing_report((status or {}).get('last_homing'), (status or {}).get('status')),
     })
 
 
