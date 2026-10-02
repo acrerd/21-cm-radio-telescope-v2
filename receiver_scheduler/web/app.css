@@ -21,6 +21,7 @@
         .status-bar { background: #16213e; padding: 6px 12px; border-radius: 8px; margin: 8px 0 10px; display: flex; justify-content: space-between; align-items: center; gap: 18px; flex-wrap: wrap; }
         .status-indicator { display: flex; align-items: center; gap: 10px; }
         .status-bar .btn { padding: 4px 12px; font-size: 13px; }
+        .status-bar .btn:disabled { opacity: 0.4; cursor: not-allowed; }
         .status-group { display: flex; align-items: center; gap: 26px; flex-wrap: wrap; }
         .status-dot { width: 12px; height: 12px; border-radius: 50%; background: #666; }
         .status-dot.running { background: #00ff88; animation: pulse 1s infinite; }

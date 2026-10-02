@@ -242,3 +242,37 @@ def test_a_manual_start_while_recording_is_refused_and_says_what_is_in_the_way(i
         running_proc.poll.return_value = 0
         with patch.object(sched, "SRT_CONTROLLER_URL", None):
             sched.stop_observation()
+
+
+@pytest.mark.parametrize("coord", ["altaz", "calibration", "horizon"])
+@pytest.mark.parametrize("halt", [True, False])
+def test_the_stop_button_halts_the_mount_and_skips_the_end_action(idle, running_proc, coord, halt):
+    """The operator's Stop (halt=True) stops the drives where they are, slewing
+    or tracking, and does not stow or home; a run ending any other way - the
+    slot running out, a monitor giving way - still carries out its end action."""
+    from datetime import datetime
+    sched.current_process = running_proc if coord == "altaz" else None
+    sched.current_observation = dict(OBS, coord_system=coord, end_action="stow",
+                                     output_file="/tmp/state_test.h5")
+    sched.observation_end_time = datetime.now()
+    running_proc.poll.return_value = 0
+    with patch.object(sched, "SRT_CONTROLLER_URL", "http://controller.invalid"), \
+         patch.object(sched, "srt_api_call", return_value={"ok": True}) as api, \
+         patch.object(sched, "srt_go_position") as go, \
+         patch.object(sched, "stop_satellite_tracking"):
+        assert sched.stop_observation(halt=halt) is True
+    stops = [c for c in api.call_args_list if c.args and c.args[0] == "/stop/all"]
+    if halt:
+        assert len(stops) == 1
+        go.assert_not_called()
+    else:
+        assert not stops
+        go.assert_called_once_with("stow", 90, 180)
+    assert_idle("after stop")
+
+
+def test_the_api_stop_route_halts(idle):
+    with patch.object(sched, "stop_observation", return_value=True) as stop, \
+         patch.object(sched, "monitors_hold"):
+        sched.app.test_client().post("/api/stop")
+    stop.assert_called_once_with(halt=True)

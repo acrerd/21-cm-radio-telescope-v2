@@ -1132,9 +1132,19 @@ class TestFlaskAPI:
 
     def test_post_config(self, client):
         cfg = {"srt_controller_url": "http://10.0.0.99", "observer_lat": 51.5}
-        resp = client.post('/api/config',
-                           data=json.dumps(cfg),
-                           content_type='application/json')
+        # The route then syncs the observer location from the controller. On
+        # the observatory host that reached the live one, which wrote its
+        # 55.9 back over the 51.5 under test - the test failed there every
+        # run. It also leaves the module's controller URL pointing at
+        # 10.0.0.99 for every later test unless put back.
+        with patch.object(sched, 'sync_observer_from_controller'), \
+             patch.object(sched, 'SRT_CONTROLLER_URL', sched.SRT_CONTROLLER_URL), \
+             patch.object(sched, 'SRT_SLEW_TIMEOUT', sched.SRT_SLEW_TIMEOUT), \
+             patch.object(sched, 'SRT_POSITION_TOLERANCE', sched.SRT_POSITION_TOLERANCE), \
+             patch.object(sched, 'PYTHON_PATH', sched.PYTHON_PATH):
+            resp = client.post('/api/config',
+                               data=json.dumps(cfg),
+                               content_type='application/json')
         assert resp.status_code == 200
         assert resp.get_json()["success"] is True
 

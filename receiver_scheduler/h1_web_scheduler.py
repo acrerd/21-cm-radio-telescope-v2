@@ -138,6 +138,13 @@ _DEFAULT_CONFIG = {
     "observer_lon": SITE_LON_DEG,
     "observer_elevation": 50,
     "min_elevation": 10.0,
+    # The continuum power meter: the band Sun scans, calibration days and
+    # horizon scans measure total power over. None means the default in
+    # tuning.py (1417.25 MHz, 2.4 MHz wide: clear of H I at any velocity).
+    # Set on the Configuration tab since 2026-10-02; until then the Sun Scan
+    # tab carried its own boxes for them.
+    "power_meter_center_mhz": None,
+    "power_meter_bandwidth_mhz": None,
     # The fixed instrument (issue #27): the B200's tuning is not a
     # per-observation choice. These are the numbers every scheduled
     # observation records with, and they are normally never touched; the
@@ -373,6 +380,40 @@ def dms_to_decimal(deg: int, min: int, sec: float, is_ra: bool = False) -> float
     return sign * decimal
 
 
+# Quiet logging of the controller link (2026-10-02). A request that times out
+# on 192.168.50.120 and succeeds on srt-controller.local (the same controller
+# under its mDNS name) used to write three lines - the miss, "reachable at
+# .local", then "reachable at .120" on the next call: 54 pairs on 10-02, all
+# noise. Now a recovered miss is only counted, and a line is written when it
+# means something: the controller answering again after a total failure, a
+# fallback to a different network path (the WiFi AP), or an hour with an
+# unusual number of recovered misses.
+_CONTROLLER_ALIAS_HOSTS = ("192.168.50.120", "srt-controller.local")
+CONTROLLER_RETRY_REPORT = 10          # recovered misses in an hour worth a line
+_controller_link = {"down": False, "retries": 0, "hour": None}
+
+
+def _same_route(a: Optional[str], b: Optional[str]) -> bool:
+    """True for two URLs of the controller over the private link (its IP and
+    its mDNS name), which are one route, not a failover."""
+    if a == b:
+        return True
+    return bool(a and b and any(h in a for h in _CONTROLLER_ALIAS_HOSTS)
+                and any(h in b for h in _CONTROLLER_ALIAS_HOSTS))
+
+
+def _note_controller_retry(n: int = 1) -> None:
+    hour = time.strftime("%Y-%m-%d %H")
+    with controller_settings_lock:
+        if _controller_link["hour"] != hour:
+            if (_controller_link["hour"] is not None
+                    and _controller_link["retries"] >= CONTROLLER_RETRY_REPORT):
+                log.info("SRT controller: %d requests in the hour from %s:00 needed a second try",
+                         _controller_link["retries"], _controller_link["hour"])
+            _controller_link.update(hour=hour, retries=0)
+        _controller_link["retries"] += n
+
+
 def srt_api_call(endpoint: str, params: Optional[dict] = None,
                  json_body: Optional[dict] = None,
                  timeout: int = 3) -> Optional[dict]:
@@ -410,9 +451,16 @@ def srt_api_call(endpoint: str, params: Optional[dict] = None,
                 payload = response.read().decode(errors="replace")
                 result = json.loads(payload, strict=False)
                 with controller_settings_lock:
-                    if base_url != SRT_CONTROLLER_URL:
-                        log.info("SRT controller reachable at %s", base_url)
-                        SRT_CONTROLLER_URL = base_url
+                    was_down = _controller_link["down"]
+                    _controller_link["down"] = False
+                    changed = not _same_route(base_url, SRT_CONTROLLER_URL)
+                    SRT_CONTROLLER_URL = base_url
+                if was_down:
+                    log.info("SRT controller reachable again at %s", base_url)
+                elif changed:
+                    log.info("SRT controller now reached at %s", base_url)
+                if last_error is not None:
+                    _note_controller_retry()
                 return result
         except urllib.error.HTTPError as e:
             # The controller answers a rejected request with a 4xx and a JSON
@@ -432,15 +480,18 @@ def srt_api_call(endpoint: str, params: Optional[dict] = None,
             last_error = e
             # A single candidate timing out is expected and usually recovered by
             # the next one (the controller stalls briefly under concurrent load,
-            # issue #1). Only the total failure below is worth a warning; the
-            # per-candidate misses are debug, or the log fills with transients.
-            # The endpoint and the wait say which request stalls and for how
-            # long (from 15:00 on 2026-09-30, 10-20 an hour against 1-8 before,
-            # with the controller's loop never over 0.6 s).
-            log.debug("SRT API error via %s%s after %.1f s: %s", base_url, endpoint,
-                      time.monotonic() - t_start, e)
+            # issue #1): counted when the next succeeds (_note_controller_retry),
+            # and only the total failure below is worth a line. 10-20 an hour
+            # from 2026-09-30, with the controller's loop never over 0.6 s.
+            continue
 
-    log.warning("SRT connection error after trying %s: %s", ", ".join(candidates), last_error)
+    with controller_settings_lock:
+        first = not _controller_link["down"]
+        _controller_link["down"] = True
+    # Once per outage: a controller that stays away would otherwise write this
+    # on every poll.
+    (log.warning if first else log.debug)("SRT connection error after trying %s: %s",
+                                          ", ".join(candidates), last_error)
     return None
 
 
@@ -1374,11 +1425,12 @@ def _get_observer() -> 'ephem.Observer':
 
 
 # Mount limits used to sanity-check computed drift-scan pointings. Alt is
-# clamped to the horizon and the mechanical 90 deg stop; the azimuth limit
-# switch sits at ~355 deg so 355-360 is a dead zone the mount cannot reach.
+# clamped to the horizon and the mechanical 90 deg stop. Azimuth stops at 350:
+# the cabling is strained beyond it, and the upper switch cut in at drive 352
+# on 2026-10-01, so 350-360 is a dead zone (the controller's mount_az_max).
 DRIFT_MIN_ALT = 0.0
 DRIFT_MAX_ALT = 90.0
-DRIFT_MAX_AZ = 355.0
+DRIFT_MAX_AZ = 350.0
 
 
 def _local_to_ephem_utc(when_local: datetime) -> datetime:
@@ -1678,7 +1730,7 @@ def plan_drift_parking(obs: dict, beam_time: datetime, terms: Optional[dict]) ->
     if track(beam_time) is None:
         return None
     # Only grid points the mount can reach: inside the alt/az limits and
-    # clear of the 355-360 deg azimuth dead zone. Without this a source that
+    # clear of the 350-360 deg azimuth dead zone. Without this a source that
     # transits through the dead zone (Cas A, due north at alt 87) parked on a
     # grid point at az 357.5, which the controller rejected.
     def reachable(drive_alt, drive_az):
@@ -2054,6 +2106,23 @@ horizon_state: dict = {
     "started_utc": None,
 }
 
+# Interference survey (interference_scan.py): the spectrum the front end passes
+# against azimuth at one altitude, a site survey beside the horizon scan. Holds
+# the SDR and the mount for an hour or more on the same terms as the horizon
+# scan: a booking preempts it, it is cancellable between tunings, and what it
+# has measured is saved even when stopped.
+interference_thread: Optional[threading.Thread] = None
+interference_cancel = threading.Event()
+interference_state: dict = {
+    "running": False,
+    "progress": 0,
+    "total": 0,
+    "point_info": None,
+    "error": None,
+    "started_utc": None,
+    "last_name": None,
+}
+
 # Calibration day state
 cal_day_thread: Optional[threading.Thread] = None
 cal_day_cancel = threading.Event()
@@ -2237,6 +2306,8 @@ def hardware_in_use():
         return "a calibration day is running"
     if horizon_state["running"]:
         return "a horizon scan is running"
+    if interference_state["running"]:
+        return "an interference survey is running"
     if rf_state["running"]:
         return "an RF calibration is running"
     # The manual receiver holds the B200 just as firmly as anything else, and
@@ -2297,6 +2368,7 @@ def start_observation(obs: dict, duration_override: int = None) -> bool:
         if _is_monitor(obs) and (
                 sun_scan_state["running"] or cal_day_state["running"]
                 or horizon_state["running"] or rf_state["running"]
+                or interference_state["running"]
                 or _proc_running(receiver_boot_process)):
             return False
         observation_starting = True
@@ -2315,15 +2387,19 @@ def start_observation(obs: dict, duration_override: int = None) -> bool:
         # Cancellation is only polled between grid points, so a slew plus
         # an integration can pass before it takes effect.
         if (sun_scan_state["running"] or cal_day_state["running"]
-                or horizon_state["running"] or rf_state["running"]):
-            log.info("Scheduled observation preempts the running Sun scan/calibration/horizon scan/RF calibration")
+                or horizon_state["running"] or rf_state["running"]
+                or interference_state["running"]):
+            log.info("Scheduled observation preempts the running Sun scan/calibration/horizon scan/"
+                     "RF calibration/interference survey")
             sun_scan_cancel.set()
             cal_day_cancel.set()
             horizon_cancel.set()
             rf_cancel.set()
+            interference_cancel.set()
             deadline = time.time() + SUN_SCAN_PREEMPT_TIMEOUT
             while (sun_scan_state["running"] or cal_day_state["running"]
-                   or horizon_state["running"] or rf_state["running"]):
+                   or horizon_state["running"] or rf_state["running"]
+                   or interference_state["running"]):
                 if start_abort.is_set():
                     log.info("Observation start aborted while waiting for the Sun scan to stop")
                     return False
@@ -2693,8 +2769,34 @@ def _record_finished_observation(obs: Optional[dict]):
                     obs['output_file'])
 
 
-def stop_observation() -> bool:
-    """Stop current observation."""
+def srt_halt_mount() -> bool:
+    """Stop both drives where they are and drop the tracking target.
+
+    The controller's /stop/all: it clears the target, so tracking does not
+    resume, and sends the Due STOP, which halts a slew mid-way. A STOP during
+    a homing aborts it into FAULT_HOMING_ABORTED - the position is then
+    unknown until the mount is reset and re-homed, which is the honest state.
+    """
+    if not SRT_CONTROLLER_URL:
+        return True
+    result = srt_api_call("/stop/all")
+    ok = bool(result and result.get('ok', False))
+    if ok:
+        log.info("Mount stopped where it is (tracking cancelled)")
+    else:
+        log.warning("Could not stop the mount: the controller did not answer /stop/all")
+    return ok
+
+
+def stop_observation(halt: bool = False) -> bool:
+    """Stop current observation.
+
+    With `halt` - the operator's Stop button - the mount is stopped where it
+    is, slewing or tracking, and the entry's end action (home or stow) is not
+    carried out: Stop means stop, not "finish early". Without it - the slot
+    ending, a monitor giving way, a booking preempting - the end action runs
+    as before.
+    """
     global current_process, current_observation, observation_end_time
     global current_receiver_log
 
@@ -2703,15 +2805,29 @@ def stop_observation() -> bool:
     was_starting = observation_starting
     start_abort.set()
 
+    end_actions = not halt
+    # A scan thread drives the mount point by point, so it is told to cancel
+    # first, or it could send the next point after the stop. Otherwise the
+    # halt goes before anything that can take time (the receiver gets ten
+    # seconds to close its file): the dish should stop when the button is
+    # pressed.
+    if halt and current_observation and \
+            current_observation.get('coord_system') in ('calibration', 'horizon'):
+        cal_day_cancel.set()
+        sun_scan_cancel.set()
+        horizon_cancel.set()
+    if halt and (current_observation or was_starting):
+        srt_halt_mount()
+
     # Handle calibration observations (thread-based, not subprocess)
     if current_observation and current_observation.get('coord_system') == 'calibration':
         name = current_observation.get('name', '?')
         end_action = current_observation.get('end_action', 'none')
         cal_day_cancel.set()
         sun_scan_cancel.set()
-        if SRT_CONTROLLER_URL and end_action == 'home':
+        if SRT_CONTROLLER_URL and end_actions and end_action == 'home':
             srt_go_position("home", 0, 0)
-        elif SRT_CONTROLLER_URL and end_action == 'stow':
+        elif SRT_CONTROLLER_URL and end_actions and end_action == 'stow':
             srt_go_position("stow", 90, 180)
         log.info("Stopped calibration: %s", name)
         with process_lock:            # the scheduler thread reads this pair under the lock (S6)
@@ -2725,9 +2841,9 @@ def stop_observation() -> bool:
         name = current_observation.get('name', '?')
         end_action = current_observation.get('end_action', 'none')
         horizon_cancel.set()
-        if SRT_CONTROLLER_URL and end_action == 'home':
+        if SRT_CONTROLLER_URL and end_actions and end_action == 'home':
             srt_go_position("home", 0, 0)
-        elif SRT_CONTROLLER_URL and end_action == 'stow':
+        elif SRT_CONTROLLER_URL and end_actions and end_action == 'stow':
             srt_go_position("stow", 90, 180)
         log.info("Stopped horizon scan: %s", name)
         with process_lock:            # the scheduler thread reads this pair under the lock (S6)
@@ -2764,8 +2880,8 @@ def stop_observation() -> bool:
         if key:
             finished_slots.add(key)
 
-        # Return telescope to home/stow if requested
-        if SRT_CONTROLLER_URL and current_observation:
+        # Return telescope to home/stow if requested (not on the Stop button)
+        if SRT_CONTROLLER_URL and current_observation and end_actions:
             end_action = current_observation.get('end_action', 'none')
             if end_action == 'home':
                 srt_go_position("home", 0, 0)
@@ -2828,9 +2944,10 @@ def _start_calibration_observation(obs: dict, duration_override: int = None) -> 
         "n": obs.get("cal_grid_n", 5),
         "grid_spacing_deg": obs.get("cal_spacing_deg", 1.5),
         "integration_time_s": obs.get("integration_time_s", 3.0),
-        "center_freq_mhz": obs.get("center_freq_mhz", _POWER_METER_CENTER_MHZ),
-        "bandwidth_mhz": obs.get("bandwidth_mhz", 2.4),
-        "gain_db": obs.get("gain_db", 30),
+        # an entry's own band if it has one, else the Configuration tab's
+        "center_freq_mhz": obs.get("center_freq_mhz") or power_meter_band()[0],
+        "bandwidth_mhz": obs.get("bandwidth_mhz") or power_meter_band()[1],
+        "gain_db": obs.get("gain_db", 20),
         "sdr_type": obs.get("sdr_type", "b210"),
         # Starting guess for the raster's Gaussian fit, and the width the
         # demo Sun is drawn with: the measured beam, not a placeholder.
@@ -2900,8 +3017,10 @@ def _start_horizon_observation(obs: dict, duration_override: int = None) -> bool
         "alt_max": float(obs.get("horizon_alt_max", 60.0)),
         "settle_s": float(obs.get("horizon_settle_s", 2.0)),
         "integration_time_s": float(obs.get("horizon_integration_s", 2.0)),
-        "center_freq_mhz": float(obs.get("center_freq_mhz", _POWER_METER_CENTER_MHZ)),
-        "bandwidth_mhz": float(obs.get("bandwidth_mhz", 2.4)),
+        # an entry's own band if it has one (a deliberate setting: narrower
+        # costs nothing here), else the Configuration tab's
+        "center_freq_mhz": float(obs.get("center_freq_mhz") or power_meter_band()[0]),
+        "bandwidth_mhz": float(obs.get("bandwidth_mhz") or power_meter_band()[1]),
         "gain_db": float(obs.get("gain_db", 30)),
         "sdr_type": obs.get("sdr_type", "b210"),
     }
@@ -3039,8 +3158,7 @@ SUN_MONITOR_MAX_MINUTES = 12 * 60  # one run cannot outlast a summer day's clear
 SUN_MONITOR_GUARD_MINUTES = 2      # the slew comes out of the window, and a margin
 SUN_MONITOR_HOLDOFF_MINUTES = 30   # after anyone uses the telescope by hand
 SUN_MONITOR_RETRY_MINUTES = 10     # after a start that failed or died early
-SUN_MONITOR_COMMENT = ("Sun monitor (issue #44): tracked because nothing else "
-                       "wanted the telescope and the Sun was clear.")
+SUN_MONITOR_COMMENT = "Sun monitor: the Sun tracked while the telescope is free."
 
 sun_monitor_lock = threading.Lock()
 sun_monitor_state = {"holdoff_until": None, "holdoff_reason": "", "waiting": ""}
@@ -3266,8 +3384,7 @@ PULSAR_MONITOR_NAME = "Pulsar monitor"
 PULSAR_MONITOR_MIN_MINUTES = 30      # homing and slew cost ~5 min; less is not worth a file
 PULSAR_MONITOR_GUARD_MINUTES = 2
 PULSAR_MONITOR_RETRY_MINUTES = 10
-PULSAR_MONITOR_COMMENT = ("Pulsar monitor: B0329+54 in its nightly window. A night "
-                          "interrupted comes in pieces sharing pulsar_session.")
+PULSAR_MONITOR_COMMENT = "Pulsar monitor: B0329+54 in its daily window."
 
 pulsar_monitor_lock = threading.Lock()
 pulsar_monitor_state = {"holdoff_until": None, "holdoff_reason": "", "waiting": ""}
@@ -3561,6 +3678,29 @@ def _observation_is_tracked(obs: Optional[dict]) -> bool:
     return system == 'pulsar' or system in observation_files.TRACKING_COORD_SYSTEMS - {'satellite'}
 
 
+# The ELF of the controller firmware last flashed, kept by the flash step
+# (docs/HOST_REBUILD.md), so a panic's return addresses can be named.
+CONTROLLER_ELF = os.path.join(_SCRIPT_DIR, "data", "controller_firmware", "current.elf")
+_ADDR2LINE = os.path.expanduser("~/.platformio/packages/toolchain-xtensa-esp32/bin/xtensa-esp32-elf-addr2line")
+
+
+def decode_controller_backtrace(addrs, elf=CONTROLLER_ELF, tool=_ADDR2LINE):
+    """'<addr> <function> <file:line>' for each address, or the bare
+    addresses when the ELF or the tool is missing. The ELF must be the build
+    that was running, or the names are wrong."""
+    addrs = [str(a) for a in addrs]
+    if not addrs:
+        return []
+    if not (os.path.exists(elf) and os.path.exists(tool)):
+        return ["backtrace " + " ".join(addrs) + " (no ELF to decode it against)"]
+    try:
+        out = subprocess.run([tool, "-pfiaC", "-e", elf] + addrs, capture_output=True,
+                             text=True, timeout=20).stdout.strip().splitlines()
+    except (OSError, subprocess.SubprocessError) as exc:
+        return ["backtrace " + " ".join(addrs) + " (addr2line failed: %s)" % exc]
+    return out or ["backtrace " + " ".join(addrs)]
+
+
 def controller_watchdog():
     """Once a minute: has the controller restarted, is its loop alive, and -
     during a tracked observation - is it still tracking?
@@ -3594,6 +3734,12 @@ def controller_watchdog():
                           pb.get("max_loop_gap_ms"), pb.get("min_free_heap"), pb.get("min_max_alloc"))
                 for ev in (pb.get("events") or [])[-12:]:
                     log.error("    %s", ev)
+                pn = pb.get("panic")
+                if pn:
+                    log.error("  panic: %s (%s, core %s) at %s", pn.get("reason"), pn.get("kind"),
+                              pn.get("core"), pn.get("addr"))
+                    for line in decode_controller_backtrace(pn.get("backtrace") or []):
+                        log.error("    %s", line)
         _controller_watch["uptime"], _controller_watch["boot"] = up, boot
     age = st.get("loop_age_ms")
     if age is not None:
@@ -3831,6 +3977,23 @@ PAGE_DIR = os.path.join(_SCRIPT_DIR, "web")
 # Sun Scan Integration
 # =============================================================================
 
+def power_meter_band() -> tuple:
+    """(centre MHz, bandwidth MHz) for the continuum power meter: the
+    Configuration tab's values, or tuning.py's default for any unset or
+    implausible one."""
+    try:
+        c = float(get_config_value("power_meter_center_mhz"))
+        c = c if 1000.0 <= c <= 2000.0 else _POWER_METER_CENTER_MHZ
+    except (TypeError, ValueError):
+        c = _POWER_METER_CENTER_MHZ
+    try:
+        b = float(get_config_value("power_meter_bandwidth_mhz"))
+        b = b if 0.02 <= b <= 8.0 else 2.4
+    except (TypeError, ValueError):
+        b = 2.4
+    return c, b
+
+
 def _validate_sun_scan_params(raw: dict, include_interval: bool = False) -> dict:
     """Validate and normalise values received from the calibration web forms."""
     if not isinstance(raw, dict):
@@ -3850,9 +4013,9 @@ def _validate_sun_scan_params(raw: dict, include_interval: bool = False) -> dict
         "n": number("n", 5, 3, 15, integer=True),
         "grid_spacing_deg": number("grid_spacing_deg", 1.5, 0.1, 10.0),
         "integration_time_s": number("integration_time_s", 3.0, 0.1, 60.0),
-        "center_freq_mhz": number("center_freq_mhz", _POWER_METER_CENTER_MHZ, 0.001, 100000.0),
-        "bandwidth_mhz": number("bandwidth_mhz", 2.4, 0.01, 100.0),
-        "gain_db": number("gain_db", 30.0, 0.0, 100.0),
+        "center_freq_mhz": number("center_freq_mhz", power_meter_band()[0], 0.001, 100000.0),
+        "bandwidth_mhz": number("bandwidth_mhz", power_meter_band()[1], 0.01, 100.0),
+        "gain_db": number("gain_db", 20.0, 0.0, 100.0),
         "beam_fwhm_deg": number("beam_fwhm_deg", beam_fwhm_deg(), 0.1, 30.0),
     }
     if params["n"] % 2 == 0:
@@ -4062,6 +4225,51 @@ def _run_horizon_scan(params: dict):
         horizon_state["error"] = str(exc)
     finally:
         horizon_state["running"] = False
+
+
+def interference_dir():
+    """Where interference surveys are kept: data/interference_scans/."""
+    return os.path.join(get_config_value("data_output_folder"), "interference_scans")
+
+
+def _run_interference_scan(params: dict):
+    """Survey the band against azimuth, in a worker thread; stow at the end."""
+    import interference_scan as isc
+    interference_cancel.clear()
+    try:
+        def progress(done, total, info):
+            interference_state.update(progress=done, total=total, point_info=info)
+
+        sdr = str(params.get("sdr_type", "b210"))
+        path = isc.interference_scan(
+            alt=float(params.get("alt", isc.DEFAULT_ALT)),
+            az_start=float(params.get("az_start", isc.DEFAULT_AZ_START)),
+            az_end=float(params.get("az_end", isc.DEFAULT_AZ_END)),
+            az_step=float(params.get("az_step", isc.DEFAULT_AZ_STEP)),
+            dwell_s=float(params.get("dwell_s", isc.DEFAULT_DWELL_S)),
+            gain_db=float(params.get("gain_db", isc.DEFAULT_GAIN_DB)),
+            sdr_type=sdr,
+            srt_url=SRT_CONTROLLER_URL,
+            home_first=bool(params.get("home_first", True)),
+            out_dir=interference_dir(),
+            slew_timeout=SRT_SLEW_TIMEOUT,
+            position_tolerance=SRT_POSITION_TOLERANCE,
+            progress_callback=progress,
+            cancel_event=interference_cancel,
+        )
+        if path:
+            interference_state["last_name"] = os.path.basename(path)[:-4]
+        log.info("Interference survey finished: %s", path)
+    except Exception as exc:                          # noqa: BLE001
+        log.error("Interference survey failed: %s", exc)
+        interference_state["error"] = str(exc)
+    finally:
+        interference_state["running"] = False
+        # Stopped by a booking, it leaves the mount to the booking; otherwise
+        # park, so the dish does not sit staring at the horizon.
+        if (params.get("stow_after", True) and params.get("sdr_type") != "demo"
+                and SRT_CONTROLLER_URL and not observation_starting):
+            srt_go_position("stow", 90, 180)
 
 
 def _horizon_clear_eta(lat, lon, elev, n, spacing, sectors,
@@ -5025,12 +5233,13 @@ def api_clock_cable_delay():
 
 @app.route('/api/clock/stability', methods=['GET'])
 def api_clock_stability():
-    """Modified Allan deviation of the Thunderbolt's PPS-offset record, with
-    the GPS-noise and output-noise components fitted by slope. Computed only
-    when the panel's button asks (clocks.stability)."""
+    """Modified Allan deviation of the Thunderbolt's PPS-offset record: the
+    in-memory one-second record, and the long-term log's 10-minute means for
+    tau >= 10 min. Computed only when the panel's button asks
+    (clocks.stability)."""
     if _thunderbolt is None:
         return jsonify({"ok": False, "error": "no Thunderbolt monitor running"})
-    return jsonify(clocks.stability(_thunderbolt.rows()))
+    return jsonify(clocks.stability(_thunderbolt.rows(), log_blocks=clocks.read_log(REFERENCE_LOG_DIR)))
 
 
 @app.route('/api/clock', methods=['GET'])
@@ -6713,6 +6922,9 @@ def _background_activity():
     if horizon_state["running"]:
         return {"kind": "horizon", "label": "Horizon scan",
                 "progress": horizon_state.get("progress"), "total": horizon_state.get("total")}
+    if interference_state["running"]:
+        return {"kind": "interference", "label": "Interference survey",
+                "progress": interference_state.get("progress"), "total": interference_state.get("total")}
     if cal_day_state["running"]:
         return {"kind": "calibration", "label": "Calibration day",
                 "progress": cal_day_state.get("scans_completed")}
@@ -6875,7 +7087,7 @@ def api_stop():
     # Stopping by hand means stop: without the hold, a stopped monitor run
     # would start again on the next tick.
     monitors_hold("an observation was stopped by hand")
-    success = stop_observation()
+    success = stop_observation(halt=True)
     return jsonify({'success': success})
 
 
@@ -7149,7 +7361,7 @@ def api_drift_preview():
         elif alt < get_config_value('min_elevation'):
             warnings.append(f"below the {get_config_value('min_elevation'):g}° minimum elevation")
         if az > DRIFT_MAX_AZ:
-            warnings.append('in the azimuth dead zone (355-360°)')
+            warnings.append(f'in the azimuth dead zone ({DRIFT_MAX_AZ:g}-360°)')
             reachable = False
 
         # Next meridian transit after T. The few minutes of slack keep the
@@ -7980,6 +8192,83 @@ def api_horizon_start():
 def api_horizon_stop():
     horizon_cancel.set()
     return jsonify({'success': True})
+
+
+@app.route('/api/interference/start', methods=['POST'])
+def api_interference_start():
+    """Start an interference survey (interference_scan.py)."""
+    global interference_thread
+    sun_monitor_yield("an interference survey was started")
+    busy = hardware_in_use()
+    if busy:
+        return jsonify({'success': False, 'error': 'Cannot start an interference survey: %s' % busy}), 409
+    params = request.get_json(silent=True) or {}
+    try:
+        alt = float(params.get("alt", 10.0))
+        az_step = float(params.get("az_step", 5.0))
+        dwell = float(params.get("dwell_s", 60.0))
+    except (TypeError, ValueError):
+        return jsonify({'success': False, 'error': 'altitude, step and dwell must be numbers'}), 400
+    if not (0.0 < alt <= 89.0 and 0.5 <= az_step <= 90.0 and 7.0 <= dwell <= 1800.0):
+        return jsonify({'success': False,
+                        'error': 'altitude 0-89 deg, azimuth step 0.5-90 deg, dwell 7-1800 s'}), 400
+    interference_state.update(running=True, progress=0, total=0, point_info=None, error=None,
+                              started_utc=datetime.now(timezone.utc).isoformat())
+    interference_thread = threading.Thread(target=_run_interference_scan, args=(params,), daemon=True)
+    interference_thread.start()
+    return jsonify({'success': True})
+
+
+@app.route('/api/interference/stop', methods=['POST'])
+def api_interference_stop():
+    interference_cancel.set()
+    return jsonify({'success': True})
+
+
+@app.route('/api/interference/status', methods=['GET'])
+def api_interference_status():
+    return jsonify({k: interference_state[k] for k in
+                    ("running", "progress", "total", "point_info", "error", "started_utc", "last_name")})
+
+
+@app.route('/api/interference/scans', methods=['GET'])
+def api_interference_scans():
+    import interference_scan as isc
+    return jsonify({'success': True, 'scans': isc.list_scans(interference_dir())})
+
+
+@app.route('/api/interference/plot', methods=['GET'])
+def api_interference_plot():
+    """A survey as a PNG. ?name= (default newest), ?mode=floor|median, ?stat=mean|peak."""
+    from flask import send_file
+    import interference_scan as isc
+    name = request.args.get('name')
+    if not name:
+        scans = isc.list_scans(interference_dir())
+        if not scans:
+            return jsonify({'success': False, 'error': 'No interference survey yet'}), 404
+        name = scans[0]["name"]
+    try:
+        path = isc.scan_path(interference_dir(), name)
+    except ValueError:
+        return jsonify({'success': False, 'error': 'Bad survey name'}), 400
+    if not os.path.exists(path):
+        return jsonify({'success': False, 'error': 'No such survey'}), 404
+    mode = request.args.get('mode', 'floor')
+    stat = request.args.get('stat', 'mean')
+    if mode not in ('floor', 'median') or stat not in ('mean', 'peak'):
+        return jsonify({'success': False, 'error': 'mode floor|median, stat mean|peak'}), 400
+    floor = None
+    try:
+        import horizon_store
+        profile = horizon_store.load_active()
+        if profile:
+            floor = lambda az: horizon_store.horizon_floor(profile, az)   # noqa: E731
+    except Exception:                                 # noqa: BLE001
+        floor = None
+    with observe_plot_lock:                           # pyplot is not thread-safe
+        png = isc.plot_scan(isc.load_scan(path), mode=mode, stat=stat, horizon_floor=floor)
+    return send_file(io.BytesIO(png), mimetype='image/png')
 
 
 @app.route('/api/horizon/status', methods=['GET'])

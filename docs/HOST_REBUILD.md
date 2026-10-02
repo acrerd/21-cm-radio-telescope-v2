@@ -149,6 +149,7 @@ In git already: the code, the calibrations in force (`gain_calibration.json`, `b
 | `rs/pointing_model.json` | the scheduler's copy of the model in force, used by the scallop reduction and drift parking | the controller still holds the model and `/pointing` serves it; files fall back to the model embedded in each recording |
 | `rs/last_observation.json` | pointer to the last run | cosmetic |
 | `rs/data/` (about 3 GB now) | every recording (`data/observations/`), `solar_reference_history.json`, PRESTO exports, diagnostics | recordings are "archived on the sky", but a year of them is not re-observable in practice. **Copy it.** |
+| `rs/data/controller_firmware/` | the ELF of each controller build flashed (`current.elf` is the one running; the others are named by UTC time and commit), from `esp32_controller_arduino/.pio/build/wt32-eth01-ota/firmware.elf` at each flash | a panic's backtrace (`/diag`, logged by the scheduler's watchdog) can only be decoded against the exact build that was running. After a rebuild, re-flash and copy the new ELF to `current.elf` |
 | `rs/scheduler.log*` | the operational record | history only |
 | `~/.claude/projects/-home-astro-21-cm-radio-telescope-v2/memory/` | Claude's working memory for this project | Claude loses the lessons learned. Copy the folder to the same path. |
 | `~/.config/gh/hosts.yml` | the GitHub token | re-run `gh auth login` rather than copy a token |

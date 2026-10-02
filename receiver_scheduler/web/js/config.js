@@ -123,6 +123,8 @@
                 document.getElementById('cfgCameraDevice').value = cfg.camera_device || '';
                 document.getElementById('cfgCameraResolution').value = cfg.camera_resolution || '';
                 document.getElementById('cfgReceiverPythonPath').value = cfg.receiver_python_path || cfg.python_path || '';
+                document.getElementById('cfgPowerMeterCentre').value = cfg.power_meter_center_mhz ?? '';
+                document.getElementById('cfgPowerMeterBandwidth').value = cfg.power_meter_bandwidth_mhz ?? '';
                 document.getElementById('cfgSdrType').value = cfg.sdr_type || 'b210';
                 document.getElementById('cfgDataFolder').value = cfg.data_output_folder || '';
                 document.getElementById('cfgLogLines').value = cfg.log_lines || 100;
@@ -154,6 +156,9 @@
                 camera_device: document.getElementById('cfgCameraDevice').value,
                 camera_resolution: document.getElementById('cfgCameraResolution').value,
                 receiver_python_path: document.getElementById('cfgReceiverPythonPath').value,
+                // empty box: back to the default in tuning.py
+                power_meter_center_mhz: parseFloat(document.getElementById('cfgPowerMeterCentre').value) || null,
+                power_meter_bandwidth_mhz: parseFloat(document.getElementById('cfgPowerMeterBandwidth').value) || null,
                 data_output_folder: document.getElementById('cfgDataFolder').value,
                 log_lines: parseInt(document.getElementById('cfgLogLines').value) || 100,
                 sound_enabled: document.getElementById('cfgSoundEnabled').value === 'true',

@@ -34,6 +34,7 @@
                 <div class="status-indicator" data-help="What the scheduler is doing: the observation or scan running now, or Idle with a countdown to the next booking. When the pulsar monitor is on, it also says when its window opens.">
                     <div class="status-dot" id="statusDot"></div>
                     <span id="statusText">Idle</span>
+                    <button title="Stop the observation now. The dish stops where it is, slewing or tracking, and does not stow or home; the file keeps what it has. The Sun and pulsar monitors are held off for 30 min." class="btn btn-danger" id="stopBtn" style="display:none" onclick="stopObs()">Stop</button>
                 </div>
                 <div class="status-indicator" data-help="The mount's drive position (encoder frame: the sky position differs by the pointing model) and what it is doing: [Homing], [Slewing to alt az] or [Tracking]. Amber means an operator offset is set on the controller or the last homing looks suspect. Offline: the controller is not answering.">
                     <div class="status-dot" id="telescopeDot"></div>
@@ -42,12 +43,9 @@
                 <div class="status-indicator" data-help="Whether the receiver (software-defined radio) is busy, and whether an observation or a manual session owns it.">
                     <div class="status-dot" id="receiverDot"></div>
                     <span id="receiverText">Receiver: --</span>
-                    <button class="btn btn-secondary" id="receiverBootBtn" onclick="bootReceiver()" title="Opens the receiver's Qt window on the observatory console, for warm-up and checking the band. Not part of the observing path, and it will fail over ssh - there is no display.">Start receiver GUI (console only)</button>
+                    <button class="btn btn-secondary" id="receiverBootBtn" onclick="bootReceiver()" title="Opens the receiver's Qt window on the observatory console, for warm-up and checking the band. Not part of the observing path, and it will fail over ssh - there is no display.">Receiver GUI (console)</button>
                     <a class="btn btn-secondary" href="http://192.168.50.120/" target="_blank" rel="noopener" onclick="return openController(event)" title="Open the telescope controller. Tries the remote ssh port-forward (127.0.0.1:8080) first, then the observatory-console address (192.168.50.120).">Open Controller</a>
                 </div>
-            </div>
-            <div style="display:flex; align-items:center; gap:14px;">
-                <button title="Stop the observation that is recording now. The file keeps what it has; the dish stows or homes if the entry asked for it. The Sun and pulsar monitors are held off for 30 min." class="btn btn-danger" id="stopBtn" style="display:none" onclick="stopObs()">Stop</button>
             </div>
         </div>
         <div class="tabs">
@@ -83,7 +81,7 @@
 
         <div class="tab-content" id="tab-sunscan">
             <div style="display:flex; gap:20px; flex-wrap:wrap;">
-                <div class="config-form" style="flex:0 0 340px;">
+                <div class="config-form" style="flex:0 0 250px;">
                     <div class="section-title">Scan Parameters</div>
                     <div class="form-group">
                         <label>Grid Size (n x n)</label>
@@ -95,24 +93,15 @@
                     </div>
                     <div class="form-group">
                         <label>Beam FWHM starting guess (degrees)</label>
-                        <input autocomplete="off" type="number" id="ssBeamFwhm" min="0.5" max="20" step="0.1" value="5.2">
+                        <input autocomplete="off" type="number" id="ssBeamFwhm" min="0.5" max="20" step="0.01" value="4.30" oninput="this.dataset.edited = '1'" title="Set from the beam in force each time the tab opens, unless you have typed a value.">
                     </div>
-                    <div class="section-title">Receiver Settings (Sun scan and console receiver)</div>
                     <div class="form-group">
                         <label>Integration Time per Point <span class="unit">(s)</span></label>
                         <input autocomplete="off" type="number" id="ssIntegration" min="0.1" max="60" step="0.1" value="3.0">
                     </div>
                     <div class="form-group">
-                        <label>Center Frequency <span class="unit">(MHz)</span></label>
-                        <input autocomplete="off" type="number" id="ssCenterFreq" step="any" value="1417.25">
-                    </div>
-                    <div class="form-group">
-                        <label>Bandwidth <span class="unit">(MHz)</span></label>
-                        <input autocomplete="off" type="number" id="ssBandwidth" step="0.1" value="2.4">
-                    </div>
-                    <div class="form-group">
                         <label>Gain <span class="unit">(dB)</span></label>
-                        <input autocomplete="off" type="number" id="ssGain" min="0" max="80" value="30">
+                        <input autocomplete="off" type="number" id="ssGain" min="0" max="80" value="20">
                     </div>
                     <div class="form-group">
                         <label>SDR Type</label>
@@ -469,6 +458,83 @@
                     <div id="hzPlotContainer" style="text-align:center;"></div>
                 </div>
             </div>
+
+            <div style="display:flex; gap:20px; flex-wrap:wrap; margin-top:25px;">
+                <div class="config-form" style="flex:0 0 320px;">
+                    <div class="section-title">Interference Survey</div>
+                    <p style="color:#888; font-size:12px; margin-bottom:12px;">
+                        A site survey: the dish holds one altitude and steps round in
+                        azimuth, and at each step the B200 is stepped across everything
+                        the front-end filters pass, 1332.5&ndash;1507.5&nbsp;MHz, in seven
+                        25&nbsp;MHz tunings. Drawn as azimuth against frequency in dB.
+                        Gain 0&nbsp;dB, because pointed at the mast the B200 clips at
+                        20&nbsp;dB. About 65&nbsp;s an azimuth, so 75&nbsp;minutes for the
+                        whole circle at 5&deg;.
+                    </p>
+                    <div class="form-group">
+                        <label>Altitude <span class="unit">(deg)</span></label>
+                        <input autocomplete="off" type="number" id="ifAlt" min="1" max="89" step="1" value="10">
+                    </div>
+                    <div class="form-group">
+                        <label>Azimuth from / to <span class="unit">(deg)</span></label>
+                        <div style="display:flex; gap:6px;">
+                            <input autocomplete="off" type="number" id="ifAzStart" min="0" max="360" step="1" value="5">
+                            <input autocomplete="off" type="number" id="ifAzEnd" min="0" max="345" step="1" value="345">
+                        </div>
+                    </div>
+                    <div class="form-group">
+                        <label>Azimuth Step <span class="unit">(deg)</span></label>
+                        <input autocomplete="off" type="number" id="ifAzStep" min="1" max="30" step="1" value="5">
+                    </div>
+                    <div class="form-group">
+                        <label>Dwell per Azimuth <span class="unit">(s, shared by the seven tunings)</span></label>
+                        <input autocomplete="off" type="number" id="ifDwell" min="7" max="1800" step="1" value="60">
+                    </div>
+                    <div class="form-group">
+                        <label>B200 Gain <span class="unit">(dB)</span></label>
+                        <input autocomplete="off" type="number" id="ifGain" min="0" max="40" step="1" value="0">
+                    </div>
+                    <div class="form-group">
+                        <label><input autocomplete="off" type="checkbox" id="ifHomeFirst" checked> Home the mount first</label>
+                    </div>
+                    <div class="form-group">
+                        <label><input autocomplete="off" type="checkbox" id="ifStowAfter" checked> Stow at the end</label>
+                    </div>
+                    <div class="form-group">
+                        <label>SDR</label>
+                        <select autocomplete="off" id="ifSdrType">
+                            <option value="b210">B200</option>
+                            <option value="demo">Demo (no hardware)</option>
+                        </select>
+                    </div>
+                    <div style="display:flex; gap:10px; margin-top:15px;">
+                        <button title="Step round in azimuth at one altitude, recording the whole filter passband at each step." class="btn btn-primary" id="ifStartBtn" onclick="startInterference()">Start Survey</button>
+                        <button title="Stop the survey. The azimuths measured so far are saved and can be plotted." class="btn btn-danger" id="ifStopBtn" style="display:none" onclick="stopInterference()">Stop</button>
+                    </div>
+                    <div id="ifStatus" style="margin-top:12px; font-size:13px;">
+                        <span style="color:#888;">Idle.</span>
+                    </div>
+                </div>
+                <div style="flex:1; min-width:420px;">
+                    <div class="section-title">Surveys</div>
+                    <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin-bottom:10px;">
+                        <select autocomplete="off" id="ifScanSelect" style="flex:1; min-width:260px;" onchange="showInterferencePlot()"></select>
+                        <select autocomplete="off" id="ifMode" onchange="showInterferencePlot()"
+                                title="Over floor: dB above the B200's own noise, so 0 dB is nothing there. Over median: dB above each frequency's median across azimuth, so what is the same in every direction cancels and a directional source stands out.">
+                            <option value="floor">dB over receiver floor</option>
+                            <option value="median">dB over median across azimuth</option>
+                        </select>
+                        <select autocomplete="off" id="ifStat" onchange="showInterferencePlot()"
+                                title="Mean: the average spectrum over the dwell. Peak: the highest 33 ms spectrum in it, which catches signals that come and go.">
+                            <option value="mean">mean</option>
+                            <option value="peak">peak</option>
+                        </select>
+                    </div>
+                    <div id="ifPlotBox" style="text-align:center;">
+                        <span style="color:#888;">No interference survey yet.</span>
+                    </div>
+                </div>
+            </div>
         </div>
 
         <div class="tab-content" id="tab-camera">
@@ -805,6 +871,15 @@
                     </select>
                     <div style="color:#666; font-size:12px; margin-top:4px;">The radio a run started from the Observe tab records with. Schedule entries and scans keep their own choice.</div>
                 </div>
+                <div class="form-group">
+                    <label>Continuum power meter: centre frequency <span class="unit">(MHz)</span></label>
+                    <input autocomplete="off" type="number" id="cfgPowerMeterCentre" step="any" min="1000" max="2000" placeholder="1417.25">
+                </div>
+                <div class="form-group">
+                    <label>Continuum power meter: bandwidth <span class="unit">(MHz)</span></label>
+                    <input autocomplete="off" type="number" id="cfgPowerMeterBandwidth" step="any" min="0.1" max="8" placeholder="2.4">
+                    <div style="color:#666; font-size:12px; margin-top:4px;">The band Sun scans, calibration days and horizon scans measure total power over. The default, 1416.05&ndash;1418.45&nbsp;MHz, keeps clear of hydrogen at any galactic velocity (<code>tuning.py</code>).</div>
+                </div>
                 </div>
                 <div class="config-section">
                 <div class="section-title">Instrument</div>
@@ -919,7 +994,7 @@
                 <div class="config-section">
                 <div class="section-title">Pulsar monitor</div>
                 <div class="form-group">
-                    <label title="Record B0329+54 in pulsar mode every day in the window below, ahead of the Sun monitor. Bookings still win: a run stops short of one and resumes after it for the rest of the window, and the pieces of one window share one session and one TOA. Anything started by hand stops it and keeps it off for 30 min.">Record B0329+54 nightly</label>
+                    <label title="Record B0329+54 in pulsar mode every day in the window below, ahead of the Sun monitor. Bookings still win: a run stops short of one and resumes after it for the rest of the window, and the pieces of one window share one session and one TOA. Anything started by hand stops it and keeps it off for 30 min.">Record B0329+54 daily</label>
                     <select autocomplete="off" id="cfgPulsarMonitor">
                         <option value="false">Off</option>
                         <option value="true">On</option>
@@ -1770,6 +1845,7 @@ with h5py.File('data/observations/20260828_060018_drift.h5', 'r') as f:
 <script src="/js/observe.js"></script>
 <script src="/js/sunscan.js"></script>
 <script src="/js/horizon.js"></script>
+<script src="/js/interference.js"></script>
 <script src="/js/rf.js"></script>
 <script src="/js/camera.js"></script>
 <script src="/js/config.js"></script>

@@ -10,8 +10,6 @@
                 n: parseInt(document.getElementById('ssGridN').value),
                 grid_spacing_deg: parseFloat(document.getElementById('ssSpacing').value),
                 integration_time_s: parseFloat(document.getElementById('ssIntegration').value),
-                center_freq_mhz: parseFloat(document.getElementById('ssCenterFreq').value),
-                bandwidth_mhz: parseFloat(document.getElementById('ssBandwidth').value),
                 gain_db: parseFloat(document.getElementById('ssGain').value),
                 sdr_type: document.getElementById('ssSdrType').value,
                 beam_fwhm_deg: parseFloat(document.getElementById('ssBeamFwhm').value),
@@ -141,8 +139,6 @@
                 n: parseInt(document.getElementById('ssGridN').value),
                 grid_spacing_deg: parseFloat(document.getElementById('ssSpacing').value),
                 integration_time_s: parseFloat(document.getElementById('ssIntegration').value),
-                center_freq_mhz: parseFloat(document.getElementById('ssCenterFreq').value),
-                bandwidth_mhz: parseFloat(document.getElementById('ssBandwidth').value),
                 gain_db: parseFloat(document.getElementById('ssGain').value),
                 sdr_type: document.getElementById('ssSdrType').value,
                 beam_fwhm_deg: parseFloat(document.getElementById('ssBeamFwhm').value),
@@ -435,6 +431,11 @@
                     + (b.ok === false ? ' &mdash; <span style="color:#ff4757;">not adopted: ' + (b.why || []).join('; ') + '</span>' : '')
                     + '</span></div>';
             };
+            // The raster fit's starting guess follows the beam in force,
+            // unless the operator has typed one.
+            const guess = document.getElementById('ssBeamFwhm');
+            const fwhm = d.in_force ? d.in_force.fwhm_deg : d.reference_fwhm_deg;
+            if (guess && !guess.dataset.edited && fwhm) guess.value = Number(fwhm).toFixed(2);
             let html = '';
             if (d.in_force) html += fmt(d.in_force, 'In force:');
             else html += '<div style="color:#888;">No beam measured yet; the reference ' + (d.reference_fwhm_deg || 0).toFixed(2) + '&deg; is in use.</div>';

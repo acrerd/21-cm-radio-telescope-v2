@@ -85,3 +85,75 @@ def test_a_stuck_loop_is_logged_once(watch, caplog):
         tick()
         tick()
     assert caplog.text.count("loop has not run") == 1
+
+
+def test_a_panic_backtrace_is_logged_even_without_an_elf(watch, caplog, tmp_path):
+    state, calls, pointed, tick = watch
+    tick()
+    state["status"] = dict(state["status"], uptime_s=20, boot=4, reset_reason="panic (exception or abort)")
+    state["diag"]["previous_boot"]["panic"] = {"reason": "LoadProhibited", "kind": "fault", "core": 1,
+                                               "addr": "0x400d1234", "backtrace": ["0x400d1234", "0x400d5678"]}
+    with caplog.at_level(logging.ERROR, logger="scheduler"):
+        tick()
+    assert "panic: LoadProhibited (fault, core 1) at 0x400d1234" in caplog.text
+    assert "0x400d1234" in caplog.text and "0x400d5678" in caplog.text
+
+
+def test_the_backtrace_decoder_says_when_it_cannot_decode(tmp_path):
+    out = S.decode_controller_backtrace(["0x400d1234"], elf=str(tmp_path / "none.elf"))
+    assert out == ["backtrace 0x400d1234 (no ELF to decode it against)"]
+    assert S.decode_controller_backtrace([]) == []
+
+
+def test_a_recovered_miss_on_the_alias_is_counted_not_logged(monkeypatch, caplog):
+    """192.168.50.120 timing out and srt-controller.local answering is one
+    controller by two names: nothing in the log, one retry counted."""
+    import urllib.error
+
+    class _Resp:
+        def __init__(self, body): self.body = body
+        def read(self): return self.body
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+
+    def fake_urlopen(req, timeout=3):
+        if "192.168.50.120" in req.full_url:
+            raise urllib.error.URLError("timed out")
+        return _Resp(b'{"ok": true}')
+
+    monkeypatch.setattr(S.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(S, "_controller_url_candidates",
+                        lambda: ["http://192.168.50.120", "http://srt-controller.local"])
+    monkeypatch.setattr(S, "SRT_CONTROLLER_URL", "http://192.168.50.120")
+    monkeypatch.setattr(S, "_controller_link", {"down": False, "retries": 0, "hour": None})
+    with caplog.at_level(logging.DEBUG, logger="scheduler"):
+        assert S.srt_api_call("/status") == {"ok": True}
+    assert "reachable" not in caplog.text and "SRT API error" not in caplog.text
+    assert S._controller_link["retries"] == 1
+
+
+def test_a_total_failure_warns_once_and_recovery_says_so(monkeypatch, caplog):
+    import urllib.error
+    state = {"up": False}
+
+    class _Resp:
+        def read(self): return b'{"ok": true}'
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+
+    def fake_urlopen(req, timeout=3):
+        if not state["up"]:
+            raise urllib.error.URLError("timed out")
+        return _Resp()
+
+    monkeypatch.setattr(S.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(S, "_controller_url_candidates", lambda: ["http://192.168.50.120"])
+    monkeypatch.setattr(S, "SRT_CONTROLLER_URL", "http://192.168.50.120")
+    monkeypatch.setattr(S, "_controller_link", {"down": False, "retries": 0, "hour": None})
+    with caplog.at_level(logging.INFO, logger="scheduler"):
+        assert S.srt_api_call("/status") is None
+        assert S.srt_api_call("/status") is None
+        state["up"] = True
+        assert S.srt_api_call("/status") == {"ok": True}
+    assert caplog.text.count("SRT connection error") == 1
+    assert "reachable again at http://192.168.50.120" in caplog.text

@@ -278,17 +278,22 @@
             if (data.running) {
                 dot.classList.add('running');
                 dot.style.background = '';
-                const label = data.source === 'observation' ? 'Observation' : 'Started';
+                // Short: the observation's name is already in the status
+                // item beside it, so it goes in the tooltip with the PID.
+                const owned = data.source === 'observation';
+                text.textContent = owned ? 'Receiver: recording' : 'Receiver: GUI';
                 const obs = data.observation ? ` (${data.observation})` : '';
-                text.textContent = `Receiver: ${label}${obs}${data.pid ? ' #' + data.pid : ''}`;
+                text.title = (owned ? 'Observation' : 'Receiver GUI started by hand')
+                           + obs + (data.pid ? ', PID ' + data.pid : '');
                 btn.disabled = true;
-                btn.title = data.source === 'observation'
+                btn.title = owned
                     ? 'An observation is using the B200.'
                     : 'The receiver GUI is already running on the console.';
             } else {
                 dot.classList.remove('running');
                 dot.style.background = data.returncode === null ? '#666' : '#ff9500';
                 text.textContent = data.returncode === null ? 'Receiver: Idle' : `Receiver: Stopped (${data.returncode})`;
+                text.title = '';
                 btn.disabled = false;
                 // Says what it is for, because the name no longer has to:
                 // this is the one deliberately graphical path in a system that
@@ -332,7 +337,7 @@
             if (name === 'sunscan') { pollSunScan(); pollCalDay(); loadCalModel(); refreshPointingModels(); loadBeam(); }
             // Leaving the tab stops the loop; scheduleCameraRefresh cancels
             // itself whenever the camera tab is not the one on screen.
-            if (name === 'horizon') { pollHorizon(); loadHorizonProfiles(); }
+            if (name === 'horizon') { pollHorizon(); loadHorizonProfiles(); pollInterference(); loadInterferenceScans(); }
             if (name === 'observe') refreshObserveTuning();
             if (name === 'rf') {
                 rfRefresh(); rfRefreshTarget(); rfShowChosen();

@@ -26,10 +26,10 @@ def client():
 def clean_state():
     saved = {name: dict(getattr(sched, name)) for name in
              ("sun_scan_state", "cal_day_state", "horizon_state", "rf_state",
-              "sun_monitor_state")}
+              "interference_state", "sun_monitor_state")}
     saved_proc, saved_obs = sched.current_process, sched.current_observation
     saved_starting = (sched.observation_starting, sched.starting_observation)
-    for name in ("sun_scan_state", "cal_day_state", "horizon_state", "rf_state"):
+    for name in ("sun_scan_state", "cal_day_state", "horizon_state", "rf_state", "interference_state"):
         getattr(sched, name)["running"] = False
     sched.sun_monitor_state.update(holdoff_until=None, holdoff_reason="", waiting="")
     sched.current_process = None
@@ -207,7 +207,7 @@ def test_yield_leaves_anything_else_running():
 def test_the_monitor_never_preempts_a_scan_or_a_hand_started_receiver():
     """start_observation cancels scans for a booking; never for the monitor."""
     entry = sched.sun_monitor_entry(NOON, 60)
-    for flag in ("sun_scan_state", "cal_day_state", "horizon_state", "rf_state"):
+    for flag in ("sun_scan_state", "cal_day_state", "horizon_state", "rf_state", "interference_state"):
         getattr(sched, flag)["running"] = True
         sched.sun_scan_cancel.clear()
         with patch.object(sched, "stop_booted_receiver") as stop_rx:
@@ -241,6 +241,7 @@ MANUAL_PATHS = {
                            {"n": 5, "interval_minutes": 30,
                             "respect_local_horizon": False}, "rf_state"),
     "horizon scan":       ("/api/horizon/start", {}, "rf_state"),
+    "interference survey": ("/api/interference/start", {"sdr_type": "demo"}, "rf_state"),
 }
 
 

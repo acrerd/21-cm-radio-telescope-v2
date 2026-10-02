@@ -1,6 +1,8 @@
 // Lower-panel plot: stepped spectrum with a velocity axis on top, or
 // a drift scan (a stepped simulated measurement).  Canvas port of the desktop
-// panel: wheel zoom about the cursor, double-click to reset.
+// panel: drag a box to zoom, double-click to reset.  Not wheel zoom: a
+// wheel handler that stops the page scrolling catches the scroll whenever
+// the pointer happens to cross the plot on its way down the page.
 
 import { C_LIGHT, F_HI } from "./skydata.js";
 
@@ -27,11 +29,16 @@ export class Plot {
     this.canvas = canvas;
     this.ctx = canvas.getContext("2d");
     this.view = null;                    // {x0,x1,y0,y1} data coords
+    this.home = null;                    // the view a double-click restores
     this.data = null;
-    canvas.addEventListener("wheel", (e) => this._wheel(e),
-                            { passive: false });
+    this.drag = null;                    // {x0,y0,x1,y1} canvas px
+    canvas.style.cursor = "crosshair";
+    canvas.addEventListener("mousedown", (e) => this._dragStart(e));
+    window.addEventListener("mousemove", (e) => this._dragMove(e));
+    window.addEventListener("mouseup", (e) => this._dragEnd(e));
     canvas.addEventListener("dblclick", () => {
-      this.view = null;
+      if (!this.home) return;
+      this.view = { ...this.home };
       this.render();
     });
   }
@@ -48,19 +55,61 @@ export class Plot {
              py: r.y + (v.y1 - y) / (v.y1 - v.y0) * r.h };
   }
 
-  _wheel(e) {
-    if (!this.view) return;
-    e.preventDefault();
-    const r = this.rect(), v = this.view;
+  _canvasPx(e) {
     const cr = this.canvas.getBoundingClientRect();
+    const r = this.rect();
     const px = (e.clientX - cr.left) * this.canvas.width / cr.width;
     const py = (e.clientY - cr.top) * this.canvas.height / cr.height;
-    const fx = (px - r.x) / r.w, fy = (r.y + r.h - py) / r.h;
-    const x = v.x0 + fx * (v.x1 - v.x0);
-    const y = v.y0 + fy * (v.y1 - v.y0);
-    const f = e.deltaY < 0 ? 1 / 1.3 : 1.3;
-    this.view = { x0: x - (x - v.x0) * f, x1: x + (v.x1 - x) * f,
-                  y0: y - (y - v.y0) * f, y1: y + (v.y1 - y) * f };
+    return { px: Math.min(Math.max(px, r.x), r.x + r.w),
+             py: Math.min(Math.max(py, r.y), r.y + r.h), raw: { px, py } };
+  }
+
+  _dragStart(e) {
+    if (!this.view || !this.data || e.button !== 0) return;
+    const p = this._canvasPx(e), r = this.rect();
+    if (p.raw.px < r.x || p.raw.px > r.x + r.w ||
+        p.raw.py < r.y || p.raw.py > r.y + r.h) return;
+    e.preventDefault();                  // no text selection while dragging
+    this.drag = { x0: p.px, y0: p.py, x1: p.px, y1: p.py };
+  }
+
+  _dragMove(e) {
+    if (!this.drag) return;
+    const p = this._canvasPx(e);
+    this.drag.x1 = p.px; this.drag.y1 = p.py;
+    this.render();
+    const d = this.drag, ctx = this.ctx;
+    ctx.save();
+    ctx.fillStyle = "rgba(59, 123, 191, 0.12)";
+    ctx.strokeStyle = ACCENT; ctx.lineWidth = 1;
+    ctx.fillRect(d.x0, d.y0, d.x1 - d.x0, d.y1 - d.y0);
+    ctx.strokeRect(d.x0, d.y0, d.x1 - d.x0, d.y1 - d.y0);
+    ctx.restore();
+  }
+
+  // A box zooms both axes; a drag that is nearly flat (or nearly upright)
+  // zooms only along it, which is the usual wish on a spectrum: pick out a
+  // velocity range and keep the temperature scale.
+  _dragEnd(e) {
+    if (!this.drag) return;
+    const d = this.drag;
+    this.drag = null;
+    const MIN = 6;
+    const wide = Math.abs(d.x1 - d.x0) >= MIN;
+    const tall = Math.abs(d.y1 - d.y0) >= MIN;
+    if (wide || tall) {
+      const r = this.rect(), v = this.view;
+      const xAt = (px) => v.x0 + (px - r.x) / r.w * (v.x1 - v.x0);
+      const yAt = (py) => v.y1 - (py - r.y) / r.h * (v.y1 - v.y0);
+      const nv = { ...v };
+      if (wide) {
+        nv.x0 = xAt(Math.min(d.x0, d.x1)); nv.x1 = xAt(Math.max(d.x0, d.x1));
+      }
+      if (tall) {
+        nv.y0 = yAt(Math.max(d.y0, d.y1)); nv.y1 = yAt(Math.min(d.y0, d.y1));
+      }
+      this.view = nv;
+    }
     this.render();
   }
 
@@ -145,6 +194,7 @@ export class Plot {
     this.data = { mode: "spec", fMHz, t, title, velLabel };
     this.view = { x0: lo, x1: hi, y0: Math.min(tlo - pad, -pad),
                   y1: thi + pad };
+    this.home = { ...this.view };
     this.render();
   }
 
@@ -161,6 +211,7 @@ export class Plot {
     this.data = { mode: "drift", mins, tbar, smp, halfMin, title };
     this.view = { x0: mins[0], x1: mins[mins.length - 1],
                   y0: ylo - pad, y1: yhi + pad };
+    this.home = { ...this.view };
     this.render();
   }
 
