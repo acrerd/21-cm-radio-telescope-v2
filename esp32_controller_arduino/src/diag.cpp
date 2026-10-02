@@ -4,8 +4,13 @@
 #include <esp_system.h>
 #include <esp_task_wdt.h>
 #include <time.h>
+#include <esp_debug_helpers.h>
+#include <esp_private/panic_internal.h>
+#include <soc/cpu.h>
+#include <xtensa/xtensa_context.h>
 
-#define DIAG_MAGIC 0x53525444u      // "SRTD"
+#define DIAG_MAGIC 0x53525445u      // "SRTE": layout with the panic record (2026-10-02)
+#define DIAG_BT_DEPTH 16
 #define DIAG_EVENTS 24
 #define DIAG_EVENT_LEN 64
 #define LOOP_WDT_S 30               // a pass of the loop taking this long is a hang
@@ -22,6 +27,16 @@ struct DiagRecord {
     uint32_t head;                  // next event slot
     uint32_t count;
     char events[DIAG_EVENTS][DIAG_EVENT_LEN];
+    // Written by the panic handler as the boot dies (__wrap_esp_panic_handler):
+    // what the ESP32 otherwise prints only to the board's own serial port.
+    uint32_t panicked;
+    uint32_t panicCore;
+    uint32_t panicException;        // panic_exception_t: 2 TWDT, 3 abort, 4 fault
+    uint32_t panicAddr;
+    uint32_t panicDepth;
+    uint32_t panicBacktrace[DIAG_BT_DEPTH];
+    char panicReason[48];
+    char panicStage[4];             // spare; keeps the record a multiple of 4
 };
 
 // RTC slow memory, not initialised at boot: survives panic, watchdog and
@@ -84,6 +99,37 @@ void diagBoot() {
     char msg[DIAG_EVENT_LEN];
     snprintf(msg, sizeof(msg), "boot %lu: reset by %s", (unsigned long)boots, reasonName(resetReason));
     diagEvent(msg);
+}
+
+// The panic hook (2026-10-02). On 2026-10-01 the controller panicked at 20:53
+// BST in the stage that reads the Due, and its backtrace went to the WT32's
+// UART0, which nothing records. The link is wrapped (-Wl,--wrap=
+// esp_panic_handler in platformio.ini) so this runs first: it copies the
+// reason, the faulting address and up to 16 return addresses into the RTC
+// record, then hands over to the real handler, which prints and resets as
+// before. Decode the addresses with xtensa-esp32-elf-addr2line against the
+// ELF of the build that was running (kept by flash_controller, see CLAUDE.md).
+// Nothing here allocates or locks: the heap or the lock may be what failed.
+extern "C" void __real_esp_panic_handler(panic_info_t *info);
+extern "C" void __wrap_esp_panic_handler(panic_info_t *info) {
+    rtc.panicked = 1;
+    rtc.panicCore = (uint32_t)info->core;
+    rtc.panicException = (uint32_t)info->exception;
+    rtc.panicAddr = (uint32_t)info->addr;
+    const char *r = info->reason ? info->reason : "";
+    size_t n = 0;
+    for (; n < sizeof(rtc.panicReason) - 1 && r[n]; n++) rtc.panicReason[n] = r[n];
+    rtc.panicReason[n] = 0;
+    rtc.panicDepth = 0;
+    const XtExcFrame *f = (const XtExcFrame *)info->frame;
+    if (f) {
+        esp_backtrace_frame_t bt = {(uint32_t)f->pc, (uint32_t)f->a1, (uint32_t)f->a0, f};
+        rtc.panicBacktrace[rtc.panicDepth++] = esp_cpu_process_stack_pc(bt.pc);
+        while (rtc.panicDepth < DIAG_BT_DEPTH && bt.next_pc && esp_backtrace_get_next_frame(&bt)) {
+            rtc.panicBacktrace[rtc.panicDepth++] = esp_cpu_process_stack_pc(bt.pc);
+        }
+    }
+    __real_esp_panic_handler(info);
 }
 
 void diagWatchdogStart() {
@@ -156,6 +202,20 @@ static String recordJSON(const DiagRecord &r, bool current) {
     j += ",\"max_loop_gap_ms\":" + String((unsigned long)r.maxLoopGapMs);
     j += ",\"min_free_heap\":" + String((unsigned long)(r.minFreeHeap == 0xFFFFFFFFu ? 0 : r.minFreeHeap));
     j += ",\"min_max_alloc\":" + String((unsigned long)(r.minMaxAlloc == 0xFFFFFFFFu ? 0 : r.minMaxAlloc));
+    if (r.panicked) {
+        static const char *kinds[] = {"debug", "interrupt watchdog", "task watchdog", "abort", "fault"};
+        char b[16];
+        j += ",\"panic\":{\"reason\":\"" + esc(r.panicReason) + "\"";
+        j += ",\"kind\":\"" + String(r.panicException < 5 ? kinds[r.panicException] : "?") + "\"";
+        j += ",\"core\":" + String((unsigned long)r.panicCore);
+        snprintf(b, sizeof(b), "0x%08lx", (unsigned long)r.panicAddr);
+        j += ",\"addr\":\"" + String(b) + "\",\"backtrace\":[";
+        for (uint32_t i = 0; i < r.panicDepth && i < DIAG_BT_DEPTH; i++) {
+            snprintf(b, sizeof(b), "0x%08lx", (unsigned long)r.panicBacktrace[i]);
+            j += (i ? ",\"" : "\"") + String(b) + "\"";
+        }
+        j += "]}";
+    }
     j += ",\"events\":[";
     uint32_t start = (r.count < DIAG_EVENTS) ? 0 : r.head;
     for (uint32_t i = 0; i < r.count; i++) {

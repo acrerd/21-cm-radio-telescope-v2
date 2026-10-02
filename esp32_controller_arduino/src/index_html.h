@@ -184,7 +184,7 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
                         <h4>Direct Control (Alt/Az)</h4>
                         <div class="coord-row">
                             <label>Alt: <input class="fault-dependent" type="number" id="direct_alt" step="0.5" min="0" max="90" value="45"></label>
-                            <label>Az: <input class="fault-dependent" type="number" id="direct_az" step="0.5" min="0" max="355" value="180"></label>
+                            <label>Az: <input class="fault-dependent" type="number" id="direct_az" step="0.5" min="0" max="350" value="180"></label>
                         </div>
                         <div class="btn-row">
                             <button class="fault-dependent" onclick="goDirect()" data-help="Cancel tracking and slew once to this sky Alt/Az. The pointing model is applied; refused if the drive position is outside the mount limits.">Go To</button>
@@ -444,7 +444,7 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
                         <h3>Coordinate Systems (J2000)</h3>
                         <p><strong>RA/Dec</strong>: Right Ascension 0-24h, Dec -90 to +90</p>
                         <p><strong>Galactic</strong>: l 0-360, b -90 to +90</p>
-                        <p><strong>Alt/Az</strong>: Altitude 0-90, Azimuth 0-355</p>
+                        <p><strong>Alt/Az</strong>: Altitude 0-90, Azimuth 0-350</p>
                         <p style="font-size:0.85em;"><strong>Sky</strong> alt/az is where the dish looks. <strong>Drive</strong> alt/az is what the mount reads on its encoders. The Pointing tab holds the model that converts between them.</p>
                     </div>
                     <div class="box">

@@ -93,7 +93,7 @@
 
 // Mount software limits (degrees)
 #define MOUNT_AZ_MIN 2.0
-#define MOUNT_AZ_MAX 353.0
+#define MOUNT_AZ_MAX 350.0     // the azimuth cabling is strained beyond this (2026-10-01)
 #define MOUNT_ALT_MIN 0.0
 #define MOUNT_ALT_MAX 90.0
 
