@@ -231,7 +231,12 @@
             if (!box.innerHTML) note.textContent = 'Computing…';
             fetch('/api/clock/stability').then(r => r.json()).then(d => {
                 if (!d.ok) { note.textContent = d.error || 'not available'; box.innerHTML = ''; return; }
-                note.textContent = (d.n_s / 3600).toFixed(2) + ' h of one-second data · ' + clockTransitionText(d);
+                const lg = d.log;
+                note.textContent = (d.n_s / 3600).toFixed(2) + ' h of one-second data' +
+                    (lg ? ' · ' + (lg.span_s / 3600).toFixed(1) + ' h of 10-minute log since ' +
+                          lg.since_utc.slice(0, 16).replace('T', ' ') + ' UTC' +
+                          (lg.n_gaps ? ' (' + lg.n_gaps + ' block' + (lg.n_gaps > 1 ? 's' : '') + ' missing)' : '') : '') +
+                    ' · ' + clockTransitionText(d);
                 box.innerHTML = stabilitySvg(d);
             }).catch(e => { note.textContent = 'Failed: ' + e; });
         }
@@ -240,7 +245,9 @@
             const W = 620, H = 330, L = 72, R = 20, T = 14, B = 44;
             const pw = W - L - R, ph = H - T - B;
             const lx = v => Math.log10(v);
-            const x0 = 0, x1 = Math.max(1, Math.ceil(lx(d.tau[d.tau.length - 1])));
+            const lg = d.log && d.log.tau.length ? d.log : null;
+            const tauMax = Math.max(d.tau[d.tau.length - 1], lg ? lg.tau[lg.tau.length - 1] : 0);
+            const x0 = 0, x1 = Math.max(1, Math.ceil(lx(tauMax)));
             // The two expectations (clocks.stability): white phase noise at the
             // record's own scatter, and a Thunderbolt against caesium. The
             // caesium curve's visible part sets the range; the white line is
@@ -248,7 +255,9 @@
             const ref = d.reference || null;
             const refPts = ref ? ref.tau_s.map((t, i) => [t, ref.mdev[i]])
                                          .filter(p => p[0] >= Math.pow(10, x0) && p[0] <= Math.pow(10, x1)) : [];
-            const vals = d.mdev.map((v, i) => v + d.err[i]).concat(d.mdev.map((v, i) => Math.max(v - d.err[i], v * 0.1)))
+            const pts = d.tau.map((t, i) => [d.mdev[i], d.err[i]])
+                             .concat(lg ? lg.tau.map((t, i) => [lg.mdev[i], lg.err[i]]) : []);
+            const vals = pts.map(p => p[0] + p[1]).concat(pts.map(p => Math.max(p[0] - p[1], p[0] * 0.1)))
                                .concat(refPts.map(p => p[1]))
                                .filter(v => v > 0);
             const ylo = Math.floor(lx(Math.min(...vals)) - 0.1), yhi = Math.ceil(lx(Math.max(...vals)) + 0.05);
@@ -287,19 +296,20 @@
                 g += '<path d="' + path(white) + '" clip-path="url(#stabClip)" fill="none" stroke="#eda100" ' +
                      'stroke-width="1.5" stroke-dasharray="6 4"/>';
                 legend.push(['#eda100', 'white GPS phase noise, σx ' + (d.sigma_x_s * 1e9).toFixed(1) +
-                             ' ns (this record’s scatter)']);
+                             ' ns (this record’s scatter)', '5 3']);
             }
             if (refPts.length > 1) {
                 g += '<path d="' + path(refPts) + '" clip-path="url(#stabClip)" fill="none" stroke="#e87ba4" ' +
                      'stroke-width="1.5" stroke-dasharray="2 3"/>';
-                legend.push(['#e87ba4', ref.label]);
+                legend.push(['#e87ba4', ref.label, '5 3']);
             }
-            legend.push(['#00d4ff', 'this unit: PPS against its GPS solution']);
+            legend.push(['#00d4ff', 'this unit: PPS against its GPS solution, one-second record', '']);
+            if (lg) legend.push(['#c792ea', 'the same, from the 10-minute log', '']);
             // Top right: the data are high on the left and fall to the right.
             legend.forEach((l, i) => {
                 const y = T + 14 + i * 15, xr = L + pw - 8;
                 g += '<line x1="' + (xr - 22) + '" x2="' + xr + '" y1="' + (y - 4) + '" y2="' + (y - 4) + '" stroke="' + l[0] +
-                     '" stroke-width="2"' + (i < legend.length - 1 ? ' stroke-dasharray="5 3"' : '') + '/>' +
+                     '" stroke-width="2"' + (l[2] ? ' stroke-dasharray="' + l[2] + '"' : '') + '/>' +
                      '<text x="' + (xr - 28) + '" y="' + y + '" fill="#bbb" font-size="11" text-anchor="end">' + l[1] + '</text>';
             });
             d.tau.forEach((t, i) => {
@@ -307,6 +317,16 @@
                 g += '<line x1="' + X(t) + '" x2="' + X(t) + '" y1="' + Y(v + e) + '" y2="' + Y(Math.max(v - e, v * 0.1)) +
                      '" stroke="#00d4ff" stroke-width="1"/><circle cx="' + X(t) + '" cy="' + Y(v) + '" r="2.6" fill="#00d4ff">' +
                      '<title>τ ' + t + ' s: ' + v.toExponential(2) + ' ± ' + e.toExponential(1) + '</title></circle>';
+            });
+            // The log's points: the same estimator on 10-minute phase means,
+            // drawn hollow so where the two overlap (10 min to a quarter of the
+            // one-second record) each can be checked against the other.
+            if (lg) lg.tau.forEach((t, i) => {
+                const v = lg.mdev[i], e = lg.err[i];
+                g += '<line x1="' + X(t) + '" x2="' + X(t) + '" y1="' + Y(v + e) + '" y2="' + Y(Math.max(v - e, v * 0.1)) +
+                     '" stroke="#c792ea" stroke-width="1"/><circle cx="' + X(t) + '" cy="' + Y(v) + '" r="3.2" fill="#0f0f23" ' +
+                     'stroke="#c792ea" stroke-width="1.5"><title>τ ' + t + ' s (log): ' + v.toExponential(2) + ' ± ' +
+                     e.toExponential(1) + '</title></circle>';
             });
             g += '<text x="' + (L + pw / 2) + '" y="' + (H - 6) + '" fill="#aaa" font-size="12" text-anchor="middle">averaging time τ (s)</text>' +
                  '<text x="14" y="' + (T + ph / 2) + '" fill="#aaa" font-size="12" text-anchor="middle" transform="rotate(-90 14 ' +
@@ -324,6 +344,10 @@
                    'what it reports, so the points sit below it until τ passes that smoothing. Pink: a Thunderbolt’s 10 MHz ' +
                    'against an HP 5071A caesium standard, separated by three-cornered hat (KE5FX, 2015; that unit had an ' +
                    'HP 10811 oscillator, so a stock one should do no better) - a different quantity from the points. ' +
-                   'Points reach a quarter of the ' +
-                   'unbroken record, and it restarts with the scheduler - a transition at T needs roughly 20 T of record.</div>';
+                   'Filled points: the one-second record, kept in memory for at most 6 h and restarted with the scheduler, ' +
+                   'reaching a quarter of its unbroken length. Hollow points: the same estimator on the long-term log’s ' +
+                   '10-minute means of the same offset, which survive restarts and reach a quarter of the log since the ' +
+                   'unit’s settings last changed (from an hour after any survey or change of time constant, damping or ' +
+                   'cable delay; a missing or partial block costs only the terms that touch it). The transition is read ' +
+                   'off the one-second points below 10 min and the log’s above. A transition at T needs roughly 20 T of record.</div>';
         }

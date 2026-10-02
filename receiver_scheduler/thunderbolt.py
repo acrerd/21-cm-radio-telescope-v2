@@ -384,7 +384,8 @@ LOG_COLUMNS = ("utc_start", "utc_end", "n_s", "normal_s", "holdover_s_max",
                "critical_alarm_s", "serious_minor_alarm_s", "critical_bits", "minor_bits",
                "osc_ppb_mean", "osc_ppb_std", "pps_ns_mean", "pps_ns_std", "pps_ns_min", "pps_ns_max",
                "dac_v_mean", "dac_v_min", "dac_v_max", "temp_c_mean", "temp_c_min", "temp_c_max",
-               "sats_mean", "sats_min", "level_mean", "level_top4", "time_constant_s", "damping")
+               "sats_mean", "sats_min", "level_mean", "level_top4", "time_constant_s", "damping",
+               "cable_delay_ns")
 
 
 class Summary:
@@ -423,7 +424,7 @@ class Summary:
             self.level_mean.append(sum(lv) / len(lv))
             self.level_top.append(sum(lv[:4]) / len(lv[:4]))
 
-    def row(self, end, loop=None):
+    def row(self, end, loop=None, pps=None):
         import statistics as st
         def stats(v):
             if not v:
@@ -440,18 +441,27 @@ class Summary:
                 fmt(sum(self.sats) / len(self.sats), 2) if self.sats else "", min(self.sats) if self.sats else "",
                 fmt(sum(self.level_mean) / len(self.level_mean), 2) if self.level_mean else "",
                 fmt(sum(self.level_top) / len(self.level_top), 2) if self.level_top else "",
-                fmt(loop["time_constant_s"], 1) if loop else "", fmt(loop["damping"], 3) if loop else ""]
+                fmt(loop["time_constant_s"], 1) if loop else "", fmt(loop["damping"], 3) if loop else "",
+                fmt(pps["cable_delay_ns"], 1) if pps else ""]
 
 
 def append_log_row(log_dir, row):
-    """One row into the month's CSV, with a header if the file is new."""
+    """One row into the month's CSV, with a header if the file is new - or
+    if the file's last header names other columns, so a column added
+    mid-month starts a new header line rather than shifting every reader
+    (clocks.read_log rebinds at each header line)."""
     import csv
     os.makedirs(log_dir, exist_ok=True)
     path = os.path.join(log_dir, "thunderbolt_%s.csv" % row[0][:7])
-    new = not os.path.exists(path)
+    header = None
+    if os.path.exists(path):
+        with open(path, newline="") as fh:
+            for r in csv.reader(fh):
+                if r and r[0] == LOG_COLUMNS[0]:
+                    header = tuple(r)
     with open(path, "a", newline="") as fh:
         w = csv.writer(fh)
-        if new:
+        if header != LOG_COLUMNS:
             w.writerow(LOG_COLUMNS)
         w.writerow(row)
     return path
@@ -498,8 +508,9 @@ class Monitor:
             self.packets += 1
             self.latest[kind] = (now, wall, fields)
             loop = self.latest.get("loop")
+            pps = self.latest.get("pps_config")
         if self.log_dir:
-            self._log(kind, fields, wall, loop[2] if loop else None)
+            self._log(kind, fields, wall, loop[2] if loop else None, pps[2] if pps else None)
         with self.lock:
             if kind == "supplemental":
                 # The unit's own second, from the 0x8F-AB sent just before
@@ -519,13 +530,13 @@ class Monitor:
         if kind == "supplemental":
             self._note_level(now)
 
-    def _log(self, kind, fields, wall, loop):
+    def _log(self, kind, fields, wall, loop, pps=None):
         """Accumulate the interval's statistics; write a row as each
         LOG_EVERY_S boundary passes. Only from the reader thread."""
         slot = int(wall // LOG_EVERY_S) * LOG_EVERY_S
         if self._summary is not None and slot > self._summary.start and self._summary.n:
             try:
-                append_log_row(self.log_dir, self._summary.row(min(wall, self._summary.start + LOG_EVERY_S), loop))
+                append_log_row(self.log_dir, self._summary.row(min(wall, self._summary.start + LOG_EVERY_S), loop, pps))
             except OSError as exc:
                 self.error = "log: %s" % exc
         if self._summary is None or slot > self._summary.start:

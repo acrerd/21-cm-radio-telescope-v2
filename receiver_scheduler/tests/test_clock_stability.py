@@ -1,5 +1,7 @@
 """Modified Allan deviation of the Thunderbolt's PPS record, and the
 transition read off it: where the curve stops falling and turns up."""
+import time
+
 import numpy as np
 import pytest
 
@@ -88,3 +90,108 @@ def test_the_white_noise_expectation_matches_white_noise():
 
 def test_too_short_a_record_is_refused():
     assert not C.stability(_rows(np.zeros(10)))["ok"]
+
+
+def _brute_mdev(x, m):
+    """MDEV at factor m straight from the definition, skipping every term
+    whose 3m samples include a NaN."""
+    terms = []
+    for j in range(len(x) - 3 * m + 1):
+        w = x[j:j + 3 * m]
+        if np.isnan(w).any():
+            continue
+        a = [np.mean(w[i * m:(i + 1) * m]) for i in range(3)]
+        terms.append((a[2] - 2 * a[1] + a[0]) ** 2)
+    return np.sqrt(np.mean(terms) / (2.0 * m * m))
+
+
+def test_a_gap_costs_only_the_terms_that_touch_it():
+    rng = np.random.default_rng(5)
+    x = rng.normal(0, 1e-9, 400)
+    x[150:153] = np.nan
+    t, d, k = C.mdev(x, 1.0, [1, 4, 20])
+    for m, v in zip(t, d):
+        assert v == pytest.approx(_brute_mdev(x, int(m)), rel=1e-9)
+    assert k[0] == 400 - 2 - 5          # 398 terms, five of which touch the three missing samples
+
+
+def _blocks_from_seconds(x_s, t0=1_790_000_400.0, block=600, **settings):
+    """The long-term log's rows for a one-second phase record."""
+    out = []
+    for i in range(len(x_s) // block):
+        out.append({"start": t0 + i * block, "n_s": block, "normal_s": block, "minor_bits": 0,
+                    "pps_ns_mean": float(np.mean(x_s[i * block:(i + 1) * block]) * 1e9),
+                    "time_constant_s": settings.get("tc", "100.0"), "damping": "1.000",
+                    "cable_delay_ns": settings.get("cable", "")})
+    return out
+
+
+def test_the_log_means_give_the_one_second_mdev():
+    """A block's mean is the phase averaged over 600 s, so the log's MDEV at
+    tau = M x 600 s is the one-second estimator there, sampled at fewer
+    starts: the two agree within their errors."""
+    rng = np.random.default_rng(6)
+    x = _white_pm_and_random_walk_fm(rng, 2 * 86400, 1e-14)
+    lg = C.log_stability(_blocks_from_seconds(x))
+    t1, d1, k1 = C.mdev(x, 1.0, [int(t) for t in lg["tau"]])
+    e1 = C.mdev_errors(t1, d1, k1, 1.0)
+    for t, d, e, ds, es in zip(lg["tau"], lg["mdev"], lg["err"], d1, e1):
+        assert abs(d - ds) < 3 * np.hypot(e, es), t
+    assert lg["n_gaps"] == 0 and lg["span_s"] == 2 * 86400
+
+
+def test_the_log_skips_partial_and_missing_blocks():
+    rng = np.random.default_rng(7)
+    b = _blocks_from_seconds(rng.normal(0, 2e-9, 86400))
+    b[40]["n_s"] = b[40]["normal_s"] = 462           # a scheduler restart cut it
+    b[60]["normal_s"] = 500                          # not all in normal disciplining
+    del b[80]                                        # not written at all
+    lg = C.log_stability(b)
+    assert lg["n_gaps"] == 3 and lg["n_blocks"] == 144 - 3
+
+
+def test_the_log_run_starts_an_hour_after_a_survey_or_a_change():
+    rng = np.random.default_rng(8)
+    b = _blocks_from_seconds(rng.normal(0, 2e-9, 86400))
+    t0 = b[0]["start"]
+    b[30]["minor_bits"] = 0x20                       # survey in progress
+    assert C.log_run_start(b)[0] == t0 + 31 * 600 + C.LOG_SETTLE_S
+    for r in b[100:]:
+        r["cable_delay_ns"] = "-50.5"                # set at block 100; earlier rows lack the column
+    assert C.log_run_start(b)[0] == t0 + 31 * 600 + C.LOG_SETTLE_S    # '' is unknown, not a change
+    for r in b[:100]:
+        r["cable_delay_ns"] = "0.0"
+    start, settings = C.log_run_start(b)
+    assert start == t0 + 101 * 600 + C.LOG_SETTLE_S
+    assert settings["cable_delay_ns"] == "-50.5"
+    lg = C.log_stability(b)
+    assert lg["since_utc"] == time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(start))
+
+
+def test_a_log_whose_columns_grew_mid_month_reads_whole(tmp_path):
+    """append_log_row starts a fresh header line when the columns change,
+    and read_log rebinds at it."""
+    import thunderbolt
+    old = [c for c in thunderbolt.LOG_COLUMNS if c != "cable_delay_ns"]
+    path = tmp_path / "thunderbolt_2026-10.csv"
+    row = {c: "" for c in thunderbolt.LOG_COLUMNS}
+    row.update(utc_start="2026-10-01T00:00:00Z", utc_end="2026-10-01T00:10:00Z", n_s="600",
+               normal_s="600", minor_bits="0x0000", pps_ns_mean="0.25", time_constant_s="100.0", damping="1.000")
+    path.write_text(",".join(old) + "\n" + ",".join(row[c] for c in old) + "\n")
+    row.update(utc_start="2026-10-01T00:10:00Z", utc_end="2026-10-01T00:20:00Z", pps_ns_mean="-0.5",
+               cable_delay_ns="-50.5")
+    thunderbolt.append_log_row(str(tmp_path), [row[c] for c in thunderbolt.LOG_COLUMNS])
+    row["utc_start"] = "2026-10-01T00:20:00Z"
+    thunderbolt.append_log_row(str(tmp_path), [row[c] for c in thunderbolt.LOG_COLUMNS])
+    assert path.read_text().count("utc_start") == 2  # one new header, not one per row
+    b = C.read_log(str(tmp_path))
+    assert [r["pps_ns_mean"] for r in b] == [0.25, -0.5, -0.5]
+    assert [r["cable_delay_ns"] for r in b] == ["", "-50.5", "-50.5"]
+
+
+def test_the_transition_uses_the_log_beyond_ten_minutes():
+    rng = np.random.default_rng(9)
+    x = _white_pm_and_random_walk_fm(rng, 86400, 3e-13)
+    s = C.stability(_rows(x[-20000:]), log_blocks=_blocks_from_seconds(x))
+    assert s["transition_from"] == "one-second + log" and s["log"]["tau"][0] == 600
+    assert C.stability(_rows(x[-20000:]))["transition_from"] == "one-second"

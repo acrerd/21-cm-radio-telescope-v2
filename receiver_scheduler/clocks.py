@@ -161,25 +161,42 @@ REFERENCE_TBOLT_VS_CAESIUM = {
 def mdev(x, tau0, ms):
     """Modified Allan deviation of phase data `x` (seconds, one sample every
     `tau0` s) at averaging factors `ms`: (taus, mdevs, n_terms). The standard
-    estimator (Riley, NIST SP 1065 eq. 14), with the inner sums by cumulative
-    sum so each tau costs O(N)."""
+    estimator (Riley, NIST SP 1065 eq. 14) written as second differences of
+    m-sample phase averages, the averages by cumulative sum so each tau costs
+    O(N). A NaN in `x` is a missing sample: every term that would average
+    over it is dropped and the rest are kept, so a gap costs only the terms
+    that touch it. With no NaN it is exactly the textbook estimator."""
     import numpy as np
     x = np.asarray(x, float)
     n = len(x)
+    ok = np.isfinite(x)
+    v = np.where(ok, x - (np.mean(x[ok]) if ok.any() else 0.0), 0.0)
+    cs = np.concatenate([[0.0], np.cumsum(v)])
+    cn = np.concatenate([[0], np.cumsum(ok)])
     taus, devs, counts = [], [], []
     for m in ms:
         m = int(m)
-        k = n - 3 * m + 1
-        if m < 1 or k < 1:
+        if m < 1 or n - 3 * m + 1 < 1:
             continue
-        s = x[2 * m:] - 2 * x[m:n - m] + x[:n - 2 * m]          # N - 2m second differences
-        c = np.concatenate([[0.0], np.cumsum(s)])
-        w = c[m:m + k] - c[:k]                                   # k sums of m consecutive
+        a = (cs[m:] - cs[:-m]) / m                              # n - m + 1 averages
+        full = (cn[m:] - cn[:-m]) == m
+        d = a[2 * m:] - 2 * a[m:-m] + a[:-2 * m]
+        use = full[2 * m:] & full[m:-m] & full[:-2 * m]
+        k = int(np.sum(use))
+        if k < 1:
+            continue
         tau = m * tau0
         taus.append(tau)
-        devs.append(float(np.sqrt(np.sum(w * w) / (2.0 * m * m * tau * tau * k))))
+        devs.append(float(np.sqrt(np.sum(d[use] ** 2) / (2.0 * tau * tau * k))))
         counts.append(k)
     return taus, devs, counts
+
+
+def mdev_errors(taus, devs, counts, tau0):
+    """One-sigma error of each MDEV point: the terms overlap, so a point
+    rests on about k/m independent ones (k terms, m = tau/tau0)."""
+    import numpy as np
+    return [d / np.sqrt(max(k / (t / tau0), 1.0)) for d, k, t in zip(devs, counts, taus)]
 
 
 def transition(taus, devs, errs):
@@ -230,9 +247,131 @@ def contiguous_tail(times, tol=0.5, unit_s=None):
     return int(bad[-1] + 1) if len(bad) else 0
 
 
-def stability(rows, n_tau=25):
+LOG_BLOCK_S = 600                # thunderbolt.LOG_EVERY_S
+LOG_BLOCK_MIN_FILL = 0.9         # a block holding less of its seconds is a gap
+LOG_SURVEY_BITS = (1 << 5) | (1 << 6)   # minor alarms: survey in progress, no stored position
+# How long after the unit's configuration changes the record is left out.
+# The 50.5 ns cable-delay step of 2026-09-30 17:00 UTC took 20-30 min to
+# pull in (block means 31, 2.9, 1.3 ns against a normal scatter of 0.4); an
+# hour is that with margin, and the changes are rare.
+LOG_SETTLE_S = 3600
+
+
+def read_log(log_dir):
+    """The long-term log's rows, oldest first, as dicts with `start` (epoch
+    s), `n_s`, `normal_s`, `minor_bits`, `pps_ns_mean` and the settings
+    `time_constant_s`, `damping`, `cable_delay_ns` (strings, '' where the
+    row predates the column or the unit had not reported it). A header line
+    rebinds the columns, so a file whose columns grew mid-month reads
+    whole. Rows that cannot be read are skipped; no directory is no rows."""
+    import calendar
+    import csv
+    import glob
+    import os
+    out = []
+    for path in sorted(glob.glob(os.path.join(log_dir, "thunderbolt_*.csv"))):
+        try:
+            with open(path, newline="") as fh:
+                cols = None
+                for row in csv.reader(fh):
+                    if row and row[0] == "utc_start":
+                        cols = row
+                        continue
+                    if cols is None:
+                        continue
+                    r = dict(zip(cols, row))
+                    try:
+                        out.append({
+                            "start": float(calendar.timegm(time.strptime(r["utc_start"], "%Y-%m-%dT%H:%M:%SZ"))),
+                            "n_s": int(r["n_s"]), "normal_s": int(r["normal_s"]),
+                            "minor_bits": int(r.get("minor_bits") or "0", 16),
+                            "pps_ns_mean": float(r["pps_ns_mean"]) if r.get("pps_ns_mean") else None,
+                            "time_constant_s": r.get("time_constant_s") or "",
+                            "damping": r.get("damping") or "",
+                            "cable_delay_ns": r.get("cable_delay_ns") or ""})
+                    except (KeyError, ValueError, TypeError):
+                        continue
+        except OSError:
+            continue
+    out.sort(key=lambda b: b["start"])
+    return out
+
+
+def log_run_start(blocks):
+    """Where the run the stability plot may use begins: LOG_SETTLE_S after
+    the last block in which the unit was surveying, or after the block in
+    which its time constant, damping or cable delay last changed - so the
+    curve describes one loop, settled, and no operator's step in the PPS is
+    read as the clock. A setting the row does not carry ('', older rows)
+    is unknown and never reads as a change. Returns (start epoch s, the
+    settings in force)."""
+    keys = ("time_constant_s", "damping", "cable_delay_ns")
+    eff = [None] * len(keys)
+    for i in range(len(blocks) - 1, -1, -1):
+        b = blocks[i]
+        if b["minor_bits"] & LOG_SURVEY_BITS:
+            return b["start"] + LOG_BLOCK_S + LOG_SETTLE_S, dict(zip(keys, eff))
+        cfg = [b[k] or None for k in keys]
+        if any(c is not None and e is not None and c != e for c, e in zip(cfg, eff)):
+            return blocks[i + 1]["start"] + LOG_BLOCK_S + LOG_SETTLE_S, dict(zip(keys, eff))
+        eff = [e if e is not None else c for c, e in zip(cfg, eff)]
+    return (blocks[0]["start"] if blocks else 0.0), dict(zip(keys, eff))
+
+
+def log_stability(blocks, n_tau=14):
+    """MDEV at tau = 10 min and beyond from the long-term log's block means.
+
+    MDEV is built from the phase averaged over tau, and a 10-minute block's
+    `pps_ns_mean` is exactly that average over 600 s, so the mean of M
+    consecutive blocks is the phase average over M x 600 s and `mdev` of the
+    block series at factor M is the one-second estimator at tau = M x 600 s,
+    sampled at block-aligned starts only - fewer terms, but overlapping terms
+    are nearly redundant anyway. Unlike the one-second record it survives
+    scheduler restarts: a block that is missing, holds under 90% of its
+    seconds (the one a restart cuts) or was not all in normal disciplining
+    is a gap, and costs only the terms that touch it. Only the run from an
+    hour after the last survey or change of settings is used
+    (`log_run_start`). None when there are no usable blocks."""
+    import numpy as np
+    blocks = [b for b in blocks if b["start"] % LOG_BLOCK_S == 0]
+    if not blocks:
+        return None
+    t_run, settings = log_run_start(blocks)
+    run = [b for b in blocks if b["start"] >= t_run]
+    if not run:
+        return None
+    t0 = run[0]["start"]
+    n = int((run[-1]["start"] - t0) // LOG_BLOCK_S) + 1
+    x = np.full(n, np.nan)
+    for b in run:
+        if (b["pps_ns_mean"] is not None and b["n_s"] >= LOG_BLOCK_MIN_FILL * LOG_BLOCK_S
+                and b["normal_s"] == b["n_s"]):
+            x[int((b["start"] - t0) // LOG_BLOCK_S)] = b["pps_ns_mean"] * 1e-9
+    n_ok = int(np.sum(np.isfinite(x)))
+    if n < 3:
+        return None
+    ms = np.unique(np.round(np.logspace(0, np.log10(max(1, n // 4)), n_tau)).astype(int))
+    taus, devs, counts = mdev(x, float(LOG_BLOCK_S), ms)
+    # as the one-second path: no point resting on less than one independent term
+    keep = [i for i, (t, k) in enumerate(zip(taus, counts)) if k >= t / LOG_BLOCK_S]
+    taus, devs, counts = ([v[i] for i in keep] for v in (taus, devs, counts))
+    if not taus:
+        return None
+    return {"tau": taus, "mdev": devs, "err": mdev_errors(taus, devs, counts, float(LOG_BLOCK_S)),
+            "since_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(t0)),
+            "span_s": n * LOG_BLOCK_S, "n_blocks": n_ok, "n_gaps": n - n_ok,
+            "time_constant_s": settings["time_constant_s"], "damping": settings["damping"],
+            "cable_delay_ns": settings["cable_delay_ns"]}
+
+
+def stability(rows, n_tau=25, log_blocks=None):
     """The panel's stability plot from the monitor's rows (wall, osc_ppb,
-    pps_ns, ...): measured MDEV with error bars and the transition."""
+    pps_ns, ...): measured MDEV with error bars and the transition. With the
+    long-term log's rows (`read_log`) it adds `log`, the same quantity at
+    tau >= 10 min over however long the log reaches (`log_stability`); the
+    transition is then read off the one-second points below the log's first
+    tau and the log's points from there, provided the log spans at least the
+    one-second record - otherwise from the one-second points alone."""
     import numpy as np
     if len(rows) < 30:
         return {"ok": False, "error": "only %d s of Thunderbolt record; need at least 30" % len(rows)}
@@ -246,13 +385,22 @@ def stability(rows, n_tau=25):
     # the last point rests on a single term and can land anywhere
     ms = np.unique(np.round(np.logspace(0, np.log10(max(1, n // 4)), n_tau)).astype(int))
     taus, devs, counts = mdev(x, 1.0, ms)
-    errs = [d / np.sqrt(max(k / (t / taus[0]), 1.0)) for d, k, t in zip(devs, counts, taus)]
+    errs = mdev_errors(taus, devs, counts, 1.0)
     # The white-phase-noise expectation, MDEV = sqrt(3) sigma_x tau^-3/2 for
     # one-second samples, at the record's own scatter about a straight line:
     # measured, not fitted. The unit smooths what it reports, so the small-tau
     # points sit far below it; it describes them only once tau is past that.
     t = np.arange(n, dtype=float)
     sigma_x = float(np.std(x - np.polyval(np.polyfit(t, x, 1), t)))
+    lg = log_stability(log_blocks) if log_blocks else None
+    tt, td, te, source = taus, devs, errs, "one-second"
+    if lg and lg["span_s"] >= n:
+        cut = lg["tau"][0]
+        below = [i for i, v in enumerate(taus) if v < cut]
+        tt = [taus[i] for i in below] + lg["tau"]
+        td = [devs[i] for i in below] + lg["mdev"]
+        te = [errs[i] for i in below] + lg["err"]
+        source = "one-second + log"
     return {"ok": True, "n_s": n, "gap_trimmed": i0, "tau": taus, "mdev": devs, "err": errs,
-            "transition": transition(taus, devs, errs),
+            "log": lg, "transition": transition(tt, td, te), "transition_from": source,
             "sigma_x_s": sigma_x, "reference": REFERENCE_TBOLT_VS_CAESIUM}
