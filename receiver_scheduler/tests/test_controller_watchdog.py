@@ -157,3 +157,15 @@ def test_a_total_failure_warns_once_and_recovery_says_so(monkeypatch, caplog):
         assert S.srt_api_call("/status") == {"ok": True}
     assert caplog.text.count("SRT connection error") == 1
     assert "reachable again at http://192.168.50.120" in caplog.text
+
+
+def test_the_flashed_elf_is_kept_for_panic_decoding(tmp_path, monkeypatch):
+    fw = tmp_path / "fw"
+    (fw / ".pio" / "build" / "wt32-eth01").mkdir(parents=True)
+    (fw / ".pio" / "build" / "wt32-eth01" / "firmware.elf").write_bytes(b"\x7fELF test")
+    monkeypatch.setattr(S, "ESP32_FIRMWARE_DIR", str(fw))
+    monkeypatch.setattr(S, "CONTROLLER_ELF", str(tmp_path / "kept" / "current.elf"))
+    assert S.keep_controller_elf("wt32-eth01") == str(tmp_path / "kept" / "current.elf")
+    assert (tmp_path / "kept" / "current.elf").read_bytes() == b"\x7fELF test"
+    assert len(list((tmp_path / "kept").glob("firmware_*.elf"))) == 1
+    assert S.keep_controller_elf("no-such-env") is None

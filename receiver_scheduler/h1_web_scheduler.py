@@ -526,9 +526,13 @@ def sync_observer_from_controller():
 
 # The Due reports the encoder counter at the stop on each homing (issue #24)
 # and the controller keeps the last report in /status "last_homing". Two
-# numbers per axis: the *first approach* is the count error accumulated since
-# the previous homing (the stop is the true zero), the *re-approach* after the
-# 5 deg back-off is the repeatability and should read ~0. Read for the
+# numbers per axis: the *first approach* is the counter at the stop - a fixed
+# switch-detection offset (the normal range below; alt -1.0 / az -0.5 in 155 of
+# 279 homings to 2026-10-02, as often an hour after the last homing as hours
+# after) PLUS any count error accumulated since the previous homing. Only the
+# departure from the normal range is drift: reading -1.0/-0.5 as "a degree of
+# drift" was made four times before the wording was fixed (2026-10-02). The
+# *re-approach* after the 5 deg back-off is the repeatability. Read for the
 # operator, because the report is only useful if someone looks at it: on
 # 2026-09-08 a homing landed one pulse (0.5 deg) off the zero the pointing
 # model was fitted to - a Sun track sawtoothed for an hour before anyone knew -
@@ -558,6 +562,35 @@ HOMING_FIRST_NORMAL_DEG = (-2.0, 0.5)      # after travel ... from the zero itse
 HOMING_SECOND_NORMAL_DEG = (-1.0, 0.0)     # two early reversal pulses ... none
 HOMING_WARN_DEG = 0.75             # beyond the range by more than a pulse and a half
 HOMING_FALSE_STALL_DEG = 5.0       # a reading this large is a false stall or gross loss
+
+
+def _beyond_range(value: float, lo_hi) -> float:
+    """How far `value` lies outside [lo, hi]; 0 inside it."""
+    lo, hi = lo_hi
+    return (value - lo) if value < lo else (value - hi) if value > hi else 0.0
+
+
+def homing_drift(first: dict) -> dict:
+    """The count drift since the previous homing, per axis, from the
+    first-approach counters: their departure from the normal range, 0 within
+    it. This, not the raw reading, is what accumulated."""
+    return {axis: _beyond_range(float(v), HOMING_FIRST_NORMAL_DEG)
+            for axis, v in (first or {}).items() if v is not None}
+
+
+def describe_homing_first(first: dict) -> str:
+    """The first-approach reading in words a reader cannot mistake: the raw
+    counters, the normal range, and whether anything lies outside it."""
+    if not first:
+        return "not captured"
+    raw = "Alt=%s Az=%s" % (("%.1f" % first["alt"]) if "alt" in first else "?",
+                            ("%.1f" % first["az"]) if "az" in first else "?")
+    lo, hi = HOMING_FIRST_NORMAL_DEG
+    drift = {k: v for k, v in homing_drift(first).items() if v}
+    if not drift:
+        return "%s, inside the normal %+.1f..%+.1f deg: no count drift" % (raw, lo, hi)
+    return "%s, outside the normal %+.1f..%+.1f deg: count drift %s" % (
+        raw, lo, hi, ", ".join("%s %+.1f deg" % (k, v) for k, v in sorted(drift.items())))
 _homing_report_logged_utc = 0
 
 
@@ -586,9 +619,21 @@ def assess_homing_report(report) -> Optional[dict]:
                 "utc": int(report["utc"]),
                 "az_first": first["az"], "alt_first": first["alt"],
                 "az_second": second["az"], "alt_second": second["alt"]}
-    def beyond(value, lo_hi):
-        lo, hi = lo_hi
-        return (value - lo) if value < lo else (value - hi) if value > hi else 0.0
+    beyond = _beyond_range
+    if report.get("from_unknown"):
+        # The Due started this homing without a known position - it had been
+        # reset (every flash, every power cycle), or the previous homing was
+        # interrupted - so the first approach measured only where its counter
+        # began. Nothing to judge; the zero it set is as good as any.
+        def raw(v):
+            return "?" if v is None else f"{v:+.1f}"
+        return {"level": "ok",
+                "summary": (f"Last homing {when}: from an unknown position (the Due had restarted "
+                            f"or a homing was interrupted), so the counters show where it started, "
+                            f"not drift (raw first approach az {raw(first['az'])}, alt {raw(first['alt'])})"),
+                "utc": int(report["utc"]), "from_unknown": True,
+                "az_first": first["az"], "alt_first": first["alt"],
+                "az_second": second["az"], "alt_second": second["alt"]}
     problems, readings = [], []
     for axis in ("az", "alt"):
         f, s = first[axis], second[axis]
@@ -606,10 +651,10 @@ def assess_homing_report(report) -> Optional[dict]:
             problems.append(f"{axis} re-approach {s:+.1f}, {abs(landing):.1f} beyond its normal "
                             f"{HOMING_SECOND_NORMAL_DEG[0]:+.1f}..{HOMING_SECOND_NORMAL_DEG[1]:+.1f}")
     level = "warn" if problems else "ok"
-    detail = "first/re-approach " + ", ".join(readings) + (
+    detail = "raw counters first/re-approach " + ", ".join(readings) + (
         "; re-approach skipped: both axes met the switch at creep" if skipped else "")
     summary = f"Last homing {when}: " + ("; ".join(problems) + " (" + detail + ")" if problems
-                                        else "normal (" + detail + ")")
+                                        else "normal, no count drift (" + detail + ")")
     return {"level": level, "summary": summary, "utc": int(report["utc"]),
             "az_first": first["az"], "alt_first": first["alt"],
             "az_second": second["az"], "alt_second": second["alt"]}
@@ -1189,9 +1234,10 @@ def _homing_counters(messages: list) -> dict:
     """What the encoder counters read as each axis hit its stop, per approach.
 
     Each axis reaches its stop twice - the first approach, from wherever the
-    mount was, and the re-approach after backing off 5 degrees - so the first
-    reading is the count error accumulated since the previous homing (the stop
-    is the true zero) and the second is the repeatability of the stop itself.
+    mount was, and the re-approach after backing off 5 degrees. The first
+    reading is the switch-detection offset plus any count drift since the
+    previous homing (homing_drift separates them); the second is the
+    repeatability of the stop itself.
 
     The number comes from the "limit reached" line when the firmware prints it
     (issue #24). Otherwise it is the last `Alt:… Az:…` status line before that
@@ -1278,17 +1324,21 @@ def srt_home_with_report(timeout: int = 300,
                 # controller too old to carry it.
                 counters = _homing_counters_from_status(status) or _homing_counters(messages)
                 first, second = counters["first"], counters["second"]
+                lh = status.get("last_homing") if isinstance(status.get("last_homing"), dict) else {}
+                counters["from_unknown"] = bool(lh.get("from_unknown"))
                 fmt = lambda d: ("Alt=%s Az=%s" % (
                     ("%.1f" % d["alt"]) if "alt" in d else "?",
                     ("%.1f" % d["az"]) if "az" in d else "?"))
-                log.info("Homing complete at drive Alt=%.2f Az=%.2f. Counters at the stops: "
-                         "first approach %s (count error accumulated since the last homing), "
-                         "re-approach %s (repeatability)",
+                log.info("Homing complete at drive Alt=%.2f Az=%.2f. First approach %s. "
+                         "Re-approach %s (repeatability)",
                          float(status.get("alt", 0.0)), float(status.get("az", 0.0)),
-                         fmt(first), fmt(second))
+                         (describe_homing_first(first) if not counters["from_unknown"] else
+                          "from an unknown position (the Due had restarted or a homing was "
+                          "interrupted), so the counters (%s) are not drift" % fmt(first)),
+                         fmt(second) if second else "skipped")
                 if not first:
                     log.warning("Homing: the Due's limit messages were not captured from "
-                                "/serial/log, so the count error is unknown")
+                                "/serial/log, so the count drift is unknown")
                 return dict(status, counters=counters)
         if not started and time.time() - started_at >= 10:
             raise RuntimeError(
@@ -1351,6 +1401,31 @@ def _append_firmware_output(line: str):
         firmware_update_state["output"] = firmware_update_state["output"][-200:]
 
 
+def keep_controller_elf(env_name: str) -> Optional[str]:
+    """Copy the ELF of a build just flashed to the controller into
+    data/controller_firmware/: current.elf (what decode_controller_backtrace
+    reads) and a copy named by UTC time and commit. A panic's addresses mean
+    something only against the exact build that was running. None if there is
+    no ELF to keep."""
+    import shutil
+    src = os.path.join(ESP32_FIRMWARE_DIR, ".pio", "build", env_name, "firmware.elf")
+    if not os.path.exists(src):
+        return None
+    os.makedirs(os.path.dirname(CONTROLLER_ELF), exist_ok=True)
+    try:
+        commit = subprocess.run(["git", "rev-parse", "--short", "HEAD"], cwd=ESP32_FIRMWARE_DIR,
+                                capture_output=True, text=True, timeout=10).stdout.strip() or "unknown"
+        dirty = subprocess.run(["git", "status", "--porcelain", "--", "."], cwd=ESP32_FIRMWARE_DIR,
+                               capture_output=True, text=True, timeout=10).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        commit, dirty = "unknown", ""
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    shutil.copy2(src, os.path.join(os.path.dirname(CONTROLLER_ELF),
+                                   "firmware_%s_%s%s.elf" % (stamp, commit, "-dirty" if dirty else "")))
+    shutil.copy2(src, CONTROLLER_ELF)
+    return CONTROLLER_ELF
+
+
 def _run_firmware_update():
     """Build and upload ESP32 firmware over OTA in a background thread."""
     pio = _find_platformio()
@@ -1406,6 +1481,10 @@ def _run_firmware_update():
             ),
         )
         log.info("Firmware update %s", "complete" if success else f"failed ({returncode})")
+        if success:
+            kept = keep_controller_elf(env_name)
+            log.info("Firmware update: %s", ("ELF kept for panic decoding as " + kept) if kept
+                     else "no ELF found to keep - a panic's backtrace cannot be decoded")
     except Exception as exc:
         log.error("Firmware update error: %s", exc, exc_info=True)
         _set_firmware_state(
@@ -2557,15 +2636,23 @@ def start_observation(obs: dict, duration_override: int = None) -> bool:
             'drift_drive_az': obs.get('drift_drive_az', ''),
             'drift_crossing_time': obs.get('drift_crossing_time', ''),
             'drift_crossing_offset_deg': obs.get('drift_crossing_offset_deg', ''),
-            # Whether the mount was homed just before this recording, and
-            # what the counters read at the stops on the first approach -
-            # the count error accumulated since the previous homing, in
-            # drive degrees. Absent unless the entry asked for a homing.
+            # Whether the mount was homed just before this recording. The
+            # homing_count_error_* attributes are the RAW first-approach
+            # counters (switch-detection offset plus drift; the old name is
+            # kept so older readers still find them); homing_drift_* is the
+            # drift alone, their departure from the normal range, 0 within
+            # it (2026-10-02). Empty unless the entry asked for a homing.
             'homed_first': bool(obs.get('home_first', False)),
             'homing_count_error_alt_deg':
                 (obs.get('homing_counters') or {}).get('first', {}).get('alt', ''),
             'homing_count_error_az_deg':
                 (obs.get('homing_counters') or {}).get('first', {}).get('az', ''),
+            # Empty when the homing started from an unknown position: its
+            # counters are then where the counter began, not drift.
+            'homing_drift_alt_deg': ('' if (obs.get('homing_counters') or {}).get('from_unknown') else
+                homing_drift((obs.get('homing_counters') or {}).get('first', {})).get('alt', '')),
+            'homing_drift_az_deg': ('' if (obs.get('homing_counters') or {}).get('from_unknown') else
+                homing_drift((obs.get('homing_counters') or {}).get('first', {})).get('az', '')),
             **pulsar_meta,
             # The frequency reference's own account of itself at the start:
             # locked or in holdover, alarms, its 10 MHz and PPS estimates.

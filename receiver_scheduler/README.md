@@ -423,7 +423,7 @@ Displays the last N lines of `scheduler.log` with auto-refresh (5 second interva
 | Integration Time | Seconds per record (does not apply to a pulsar entry) |
 | SDR Type | B200, RTL-SDR, or Demo |
 | Respect local horizon | Advisory check against the measured horizon; trims a scheduled entry |
-| Home the mount first | Run the physical homing before pointing, recording the count error |
+| Home the mount first | Run the physical homing before pointing, recording the counters at the stops and any count drift |
 | Pilot off for this entry | Leave the pilot transmitter off for this run (the pilot is off by default in any case) |
 | When Done | Action after observation ends: Stay, Go Home (Alt 0°, Az 0°), or Stow (Alt 90°, Az 180°) |
 | Filename | Output file (auto-generated if empty) |
@@ -649,7 +649,7 @@ When launched from the scheduler, additional observation metadata is included:
 | `drift_alt` / `drift_az` | The true alt/az commanded |
 | `drift_drive_alt` / `drift_drive_az` | The drive-grid point parked on |
 | `drift_crossing_time`, `drift_crossing_offset_deg` | When the source crosses the parked beam, and how far off centre |
-| `homed_first`, `homing_count_error_alt_deg`, `homing_count_error_az_deg` | Homing before the run, and the count error at the stops |
+| `homed_first`, `homing_count_error_alt_deg`, `homing_count_error_az_deg`, `homing_drift_alt_deg`, `homing_drift_az_deg` | Homing before the run: the raw first-approach counters (a fixed switch-detection offset, normally alt −1.0 / az −0.5, plus any drift; the name is historical) and the drift alone (0 when inside the normal range) |
 
 ### Pulsar recordings
 

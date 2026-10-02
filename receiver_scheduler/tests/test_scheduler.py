@@ -1039,7 +1039,7 @@ class TestFlaskAPI:
                                             "alt_error_second_deg": None, "az_error_second_deg": None,
                                             "reapproach_skipped": False, "utc": 1788000000})
         assert still["level"] == "pending"
-        assert "az " not in bad["summary"].split("(first/re-approach")[0].replace("az -1.5", "")
+        assert "az " not in bad["summary"].split("(raw counters first/re-approach")[0].replace("az -1.5", "")
         # Counts really lost: the first approach well beyond the range.
         lost = sched.assess_homing_report({"alt_error_first_deg": -4.0, "az_error_first_deg": -1.0,
                                            "alt_error_second_deg": -0.5, "az_error_second_deg": -0.5,
@@ -3219,3 +3219,34 @@ class TestIssueHome:
         api, calls, state = self._api(lambda n: [], ok=False)
         with patch.object(sched, 'srt_api_call', side_effect=api), pytest.raises(RuntimeError):
             sched.srt_issue_home()
+
+
+def test_a_normal_homing_reading_is_not_called_drift():
+    """Alt -1.0 / az -0.5 is the normal first-approach reading (155 of 279
+    homings to 2026-10-02): no drift, said in words. Only the departure from
+    the normal range is drift (2026-10-02: misread as drift four times)."""
+    assert sched.homing_drift({"alt": -1.0, "az": -0.5}) == {"alt": 0.0, "az": 0.0}
+    assert "no count drift" in sched.describe_homing_first({"alt": -1.0, "az": -0.5})
+    d = sched.homing_drift({"alt": -2.5, "az": -0.5})
+    assert d["alt"] == pytest.approx(-0.5) and d["az"] == 0.0
+    text = sched.describe_homing_first({"alt": -2.5, "az": -0.5})
+    assert "count drift alt -0.5 deg" in text
+    ok = sched.assess_homing_report({"alt_error_first_deg": -1.0, "az_error_first_deg": -0.5,
+                                     "alt_error_second_deg": None, "az_error_second_deg": None,
+                                     "reapproach_skipped": True, "utc": 1788000000})
+    assert "normal, no count drift" in ok["summary"]
+
+
+def test_a_homing_from_an_unknown_position_is_not_judged():
+    """After a Due reset the counter starts at 0 wherever the mount is, so the
+    first approach is just the distance travelled: 2026-10-02 a boot homing
+    after a flash read az -62.5 / alt -40.5 and was called a false stall."""
+    r = sched.assess_homing_report({"alt_error_first_deg": -40.5, "az_error_first_deg": -62.5,
+                                    "alt_error_second_deg": 0.5, "az_error_second_deg": 1.0,
+                                    "reapproach_skipped": False, "from_unknown": True, "utc": 1790954460})
+    assert r["level"] == "ok" and "false stall" not in r["summary"]
+    assert "from an unknown position" in r["summary"] and "not drift" in r["summary"]
+    same = sched.assess_homing_report({"alt_error_first_deg": -40.5, "az_error_first_deg": -62.5,
+                                       "alt_error_second_deg": 0.5, "az_error_second_deg": 1.0,
+                                       "reapproach_skipped": False, "utc": 1790954460})
+    assert same["level"] == "warn"            # without the flag it still looks like a false stall
