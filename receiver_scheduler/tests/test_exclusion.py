@@ -48,6 +48,8 @@ SUBSYSTEMS = {
                                                         "interval_minutes": 30,
                                                         "respect_local_horizon": False})},
     "horizon scan":    {"flag": "horizon_state", "start": ("/api/horizon/start", {})},
+    "interference survey": {"flag": "interference_state",
+                            "start": ("/api/interference/start", {"sdr_type": "demo"})},
     "RF calibration":  {"flag": "rf_state", "start": ("/api/rf/run", {"job": "gain"})},
 }
 
@@ -68,8 +70,8 @@ def quiet_hardware():
     a real mount, from a unit test.
     """
     saved = {name: dict(getattr(sched, name)) for name in
-             ("sun_scan_state", "cal_day_state", "horizon_state", "rf_state")}
-    THREADS = ("sun_scan_thread", "cal_day_thread", "horizon_thread", "rf_thread")
+             ("sun_scan_state", "cal_day_state", "horizon_state", "rf_state", "interference_state")}
+    THREADS = ("sun_scan_thread", "cal_day_thread", "horizon_thread", "rf_thread", "interference_thread")
     saved_threads = {n: getattr(sched, n, None) for n in THREADS}
     saved_proc = sched.current_process
     saved_obs = sched.current_observation
