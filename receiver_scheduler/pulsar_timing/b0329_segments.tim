@@ -7,7 +7,7 @@ C a within-night check, never to be fitted together with that file.
 20260926_203116_pulsar.h5_s3 1413.000000 61310.3964001661649 488.722 ar -pps 0 -snr 10.9 -tobs 14341 -bw 32.0 -be b200 -fe sawbird -tmpl epn_hx97b_1410
 20260927_201114_pulsar.h5_s0 1413.000000 61310.8828610732793 449.249 ar -pps 0 -snr 11.8 -tobs 14400 -bw 32.0 -be b200 -fe sawbird -tmpl epn_hx97b_1410
 20260927_201114_pulsar.h5_s1 1413.000000 61311.0495214543906 579.385 ar -pps 0 -snr 9.2 -tobs 14400 -bw 32.0 -be b200 -fe sawbird -tmpl epn_hx97b_1410
-20260928_194315_pulsar.h5_p 1413.000000 61312.1130676850980 557.031 ar -pps 1 -snr 9.5 -tobs 57536 -bw 32.0 -be b200 -fe sawbird -tmpl epn_hx97b_1410
+20260928_194315_pulsar.h5_p 1413.000000 61312.1130676850980 557.012 ar -pps 1 -snr 9.5 -tobs 57536 -bw 32.0 -be b200 -fe sawbird -tmpl epn_hx97b_1410
 20260929_193914_pulsar.h5_s0 1413.000000 61312.8335438631999 545.225 ar -pps 1 -snr 9.7 -tobs 9720 -bw 32.0 -be b200 -fe sawbird -tmpl epn_hx97b_1410
 20260929_193914_pulsar.h5_s1 1413.000000 61312.9456928904796 789.188 ar -pps 1 -snr 6.7 -tobs 9660 -bw 32.0 -be b200 -fe sawbird -tmpl epn_hx97b_1410
 20260929_193914_pulsar.h5_p 1413.000000 61313.0015027685712 387.513 ar -pps 1 -snr 13.7 -tobs 38743 -bw 32.0 -be b200 -fe sawbird -tmpl epn_hx97b_1410
@@ -16,3 +16,5 @@ C a within-night check, never to be fitted together with that file.
 20260930_193502_pulsar.h5_p 1413.000000 61314.0000615301397 656.123 ar -pps 1 -snr 8.1 -tobs 38997 -bw 32.0 -be b200 -fe sawbird -tmpl epn_hx97b_1410
 20261001_083513_pulsar.h5_p 1413.000000 61314.3790136333638 632.441 ar -pps 1 -snr 8.4 -tobs 10855 -bw 32.0 -be b200 -fe sawbird -tmpl epn_hx97b_1410
 20261001_083513_pulsar.h5_s3 1413.000000 61314.4262317762414 683.594 ar -pps 1 -snr 7.8 -tobs 2695 -bw 32.0 -be b200 -fe sawbird -tmpl epn_hx97b_1410
+20261001_193030_pulsar.h5_s0 1413.000000 61314.8545603761850 653.399 ar -pps 1 -snr 8.1 -tobs 14400 -bw 32.0 -be b200 -fe sawbird -tmpl epn_hx97b_1410
+20261001_193030_pulsar.h5_p 1413.000000 61315.1042126570090 630.946 ar -pps 1 -snr 8.4 -tobs 57540 -bw 32.0 -be b200 -fe sawbird -tmpl epn_hx97b_1410
