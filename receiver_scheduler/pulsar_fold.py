@@ -802,7 +802,7 @@ def mean_flux_mjy(profile, period_s, t_sys_k, k_per_jy):
     return float(p[on].sum() / nb * scale), float(sig * math.sqrt(on.sum()) / nb * scale)
 
 
-def plot_recording(path, out_path, pulsar=None):
+def plot_recording(path, out_path, pulsar=None, pdf_path=None):
     """Reduce a pulsar-mode recording and draw it.
 
     Left, this run: its profile at the predicted period and the absolute
@@ -885,12 +885,21 @@ def plot_recording(path, out_path, pulsar=None):
     plt.setp(a0.get_xticklabels(), visible=False)
 
     # the sub-integrations on the same axis, two periods, pixel edges on the bin edges
+    # Each row zeroed at its own off-pulse median and drawn in units of the
+    # typical row's noise, clipped at -2..+3. Daytime interference leaves the
+    # row noise nearly alone but lifts the row's level, flat across phase, by
+    # up to 20x a row's noise by the morning (nights of 10-02 and 10-03); on a
+    # 2-98 percentile scale those rows set the range and the rest went flat.
     sub = 100 * np.array(r["subints_predicted"])
     if sub.size:
-        img = np.concatenate([sub, sub], axis=1)
-        lo, hi = np.percentile(img, [2, 98])
-        a1.imshow(img, aspect="auto", origin="lower", interpolation="nearest", cmap="viridis",
-                  extent=[0.0, 2.0, 0.0, sub.shape[0] * r["subint_s"] / 60.0], vmin=lo, vmax=hi)
+        sub = sub - np.median(sub[:, off64], axis=1)[:, None]
+        sig = np.median(1.4826 * np.median(np.abs(sub[:, off64]), axis=1))
+        img = np.concatenate([sub, sub], axis=1) / (sig if sig > 0 else 1.0)
+        im = a1.imshow(img, aspect="auto", origin="lower", interpolation="nearest", cmap="viridis",
+                       extent=[0.0, 2.0, 0.0, sub.shape[0] * r["subint_s"] / 60.0], vmin=-2.0, vmax=3.0)
+        # in an inset beside the panel: ax=a1 would narrow it off the profile's phase axis
+        cb = fig.colorbar(im, cax=a1.inset_axes([1.01, 0.0, 0.015, 1.0]))
+        cb.set_label("excess / typical row noise", fontsize=8); cb.ax.tick_params(labelsize=8)
     for a in (a0, a1):
         for x in (0.5, 1.5):
             a.axvline(x, color="w" if a is a1 else "0.5", lw=0.6, ls=":")
@@ -898,7 +907,8 @@ def plot_recording(path, out_path, pulsar=None):
     a1.set_xticks(np.arange(0.0, 2.01, 0.25))
     a1.set_xlabel("pulse phase (absolute; two periods, the pulse at 0.5 and 1.5)")
     a1.set_ylabel("time from start (min)")
-    a1.set_title("sub-integrations of %.0f s at the predicted period" % r["subint_s"], fontsize=10)
+    a1.set_title("sub-integrations of %.0f s at the predicted period, each row's baseline removed"
+                 % r["subint_s"], fontsize=10)
 
     # every run so far, added at the absolute phase
     a2 = fig.add_subplot(gs[0, 1])
@@ -958,7 +968,7 @@ def plot_recording(path, out_path, pulsar=None):
         m0 = np.floor(mjd.min()) if len(mjd) else 0.0
         raw = np.array(fitres.get("err_raw_us", fitres["err_us"])) / 1e3
         # One TOA per day (red, fitted) - over weeks these show the pulsar and
-        # the model, timing noise included - and that day's 4 h segments
+        # the model, timing noise included - and that day's segments
         # (grey), a check on how its arrival times behave within the run. A
         # day TOA's bar is the error the fit weights it by: statistical, plus
         # the clock term (EQUAD) for a host-clock run, so a host-clock run
@@ -967,7 +977,7 @@ def plot_recording(path, out_path, pulsar=None):
         # offset, so they carry no clock term among themselves and get none.
         if (~whole).any():
             a3.errorbar(mjd[~whole] - m0, res[~whole], raw[~whole], fmt=".", color="0.6", ms=5, lw=0.8,
-                        label="4 h segments")
+                        label="segments")
         if whole.any():
             a3.errorbar(mjd[whole] - m0, res[whole], err[whole], fmt="o", color="C3",
                         ms=7, lw=1.4, capsize=3, label="day TOA")
@@ -1000,7 +1010,9 @@ def plot_recording(path, out_path, pulsar=None):
         int(attrs.get("overflows_total", 0)), int(attrs.get("n_time_marks", 0)),
         "  (exact)" if int(attrs.get("time_marks_exact", 0)) else "",
         ";  clock: %s" % attrs.get("time_source", "host")), fontsize=10)
-    fig.savefig(out_path, dpi=90, bbox_inches="tight"); plt.close(fig)
+    fig.savefig(out_path, dpi=90, bbox_inches="tight")
+    plot_backend.save_pdf(fig, pdf_path, bbox_inches="tight")   # the sub-integrations stay a raster in it
+    plt.close(fig)
     return r
 
 

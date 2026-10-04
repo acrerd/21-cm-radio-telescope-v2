@@ -439,6 +439,34 @@ def test_the_live_recording_can_be_plotted_and_listed(client, no_run, tmp_path, 
         hf.close()
 
 
+def test_the_plot_on_screen_downloads_as_a_pdf(client, no_run, tmp_path, monkeypatch):
+    """Download PDF gives the figure Plot Result just drew, from the same
+    drawing (no second reduction), named after the recording; nothing drawn,
+    nothing to give; a PRESTO name that is not a prepfold plot is refused."""
+    import numpy as np
+    import b210_h1_receiver as rx
+
+    monkeypatch.setattr(sched, "get_config_value",
+                        lambda k, *a, **kw: str(tmp_path) if k == "data_output_folder" else None)
+    monkeypatch.setattr(sched, "observe_pdfs", {})
+    assert client.get("/api/observe/pdf?kind=plot").status_code == 404
+    assert client.get("/api/observe/pdf?kind=presto&name=../../etc/passwd").status_code == 404
+    folder = tmp_path / "observations"; folder.mkdir()
+    path = str(folder / "20260826_130000_track.h5")
+    monkeypatch.setenv("H1_OBS_METADATA",
+                       '{"coord_system": "galactic", "observation_mode": "track"}')
+    freq = np.linspace(1419.5e6, 1421.5e6, 64)
+    hf = rx.init_hdf5(path, freq, 64, "demo", 1420.4e6, 2.0e6, 0.0)
+    for i in range(3):
+        rx.append_spectrum(hf, np.full(64, 0.003 + 1e-5 * i), 1.0e9 + i, 1.0, 64)
+    hf.close()
+    assert client.get("/api/observe/plot?file=20260826_130000_track.h5").status_code == 200
+    r = client.get("/api/observe/pdf?kind=plot")
+    assert r.status_code == 200, r.get_json()
+    assert r.mimetype == "application/pdf" and r.data[:5] == b"%PDF-"
+    assert "20260826_130000_track.pdf" in r.headers["Content-Disposition"]
+
+
 @pytest.mark.parametrize("info,why", [
     ({"coord_system": "object", "object_name": "sun"}, "no H I model"),
     ({"coord_system": "object", "object_name": "moon"}, "no H I model"),

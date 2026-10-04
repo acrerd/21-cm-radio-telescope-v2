@@ -4884,6 +4884,7 @@ def api_observe_params():
 # in force stays in gain_calibration.json until someone applies it.
 last_observe_fit = None
 OBSERVE_FIT_PLOT = os.path.join(_SCRIPT_DIR, 'data', 'observe_fit.png')
+OBSERVE_FIT_PDF = os.path.join(_SCRIPT_DIR, 'data', 'observe_fit.pdf')
 
 
 @app.route('/api/observe/fit', methods=['POST'])
@@ -4948,11 +4949,13 @@ def api_observe_fit():
             # per-channel calibration, which it is not.
             import drift_fit
             cal = drift_fit.fit_total_power(path)
-            observation_plot.plot_drift_fit(cal, OBSERVE_FIT_PLOT)
+            observation_plot.plot_drift_fit(cal, OBSERVE_FIT_PLOT, pdf_path=OBSERVE_FIT_PDF)
         else:
             cal = rf_calibration.calibrate_observation(path, glon, glat)
             cal['source_file'] = os.path.basename(path)
-            observation_plot.plot_gain_check(cal, OBSERVE_FIT_PLOT)
+            observation_plot.plot_gain_check(cal, OBSERVE_FIT_PLOT, pdf_path=OBSERVE_FIT_PDF)
+        observe_pdfs['fit'] = (OBSERVE_FIT_PDF,
+                               os.path.splitext(os.path.basename(path))[0] + '_fit.pdf')
     except KeyError as exc:
         # A recording without the product the fit needs - one from before
         # the fixed instrument asked for as continuum.
@@ -6630,6 +6633,11 @@ def api_observations():
 # process with its port closed. A second click now waits for the first.
 observe_plot_lock = threading.Lock()
 
+# The PDF drawn beside each kind of plot the Observe tab shows - kind ->
+# (path, name to download it as) - so "Download PDF" gives the figure on the
+# screen without drawing it again (a 16 h pulsar fold is 25 s).
+observe_pdfs = {}
+
 
 @app.route('/api/observe/plot', methods=['GET'])
 def api_observe_plot():
@@ -6655,7 +6663,9 @@ def api_observe_plot():
                                 'error': 'No observation has finished yet'}), 404
             info = dict(last_observation)
     out = os.path.join(_SCRIPT_DIR, 'data', 'last_observation.png')
+    pdf = os.path.splitext(out)[0] + '.pdf'
     os.makedirs(os.path.dirname(out), exist_ok=True)
+    log_y = request.args.get('log') in ('1', 'true', 'yes')
     try:
         with observe_plot_lock:
             observation_plot.plot_observation(
@@ -6663,7 +6673,9 @@ def api_observe_plot():
                 mode=info.get('mode', 'spectrum'),
                 transit_minutes=info.get('transit_minutes'),
                 # ?log=1: a total-power panel on a log axis, for sidelobes.
-                log_y=request.args.get('log') in ('1', 'true', 'yes'))
+                log_y=log_y, pdf_path=pdf)
+            observe_pdfs['plot'] = (pdf, os.path.splitext(os.path.basename(info['output_file']))[0]
+                                    + ('_db' if log_y else '') + '.pdf')
     except FileNotFoundError as exc:
         return jsonify({'success': False, 'error': str(exc)}), 404
     except (RuntimeError, ValueError) as exc:
@@ -6706,6 +6718,40 @@ def api_observe_presto():
              summary.get('reduced_chi2'))
     return jsonify({'success': True, 'summary': {k: v for k, v in summary.items() if k != 'png'},
                     'plot': os.path.basename(png)})
+
+
+@app.route('/api/observe/pdf', methods=['GET'])
+def api_observe_pdf():
+    """The plot on the Observe tab as a PDF, to download: ?kind=plot (a
+    recording) or fit, the PDF saved beside the PNG last drawn; ?kind=presto
+    with ?name=<the .pfd.png shown>, prepfold's own PostScript converted.
+    Vector lines and text; the image panels (our sub-integrations, prepfold's
+    greyscales) stay rasters inside it."""
+    from flask import send_file
+    kind = request.args.get('kind', 'plot')
+    if kind == 'presto':
+        import pulsar_fold
+        name = os.path.basename(request.args.get('name', ''))
+        png = os.path.join(_SCRIPT_DIR, 'data', 'presto', name)
+        ps = png[:-len('.png')] + '.ps' if name.endswith('.pfd.png') else ''
+        if not ps or not os.path.isfile(ps):
+            return jsonify({'success': False, 'error': 'no PRESTO plot to convert'}), 404
+        pdf = ps[:-len('.ps')] + '.pdf'
+        if not os.path.exists(pdf) or os.path.getmtime(pdf) < os.path.getmtime(ps):
+            env = dict(os.environ, PATH=os.environ.get('PATH', '') + os.pathsep + pulsar_fold.PRESTO_BIN)
+            # -dEPSCrop: PGPLOT writes EPS; the page auto-rotates to landscape
+            res = subprocess.run(['ps2pdf', '-dEPSCrop', ps, pdf], capture_output=True, text=True,
+                                 timeout=60, env=env)
+            if res.returncode != 0 or not os.path.exists(pdf):
+                return jsonify({'success': False, 'error': 'ps2pdf failed: %s'
+                                % (res.stderr or res.stdout)[-300:]}), 500
+        return send_file(pdf, as_attachment=True, mimetype='application/pdf', max_age=0,
+                         download_name=name.split('_prepfold')[0] + '_prepfold.pdf')
+    entry = observe_pdfs.get(kind)
+    if not entry or not os.path.isfile(entry[0]):
+        return jsonify({'success': False, 'error': 'draw the plot first'}), 404
+    return send_file(entry[0], as_attachment=True, mimetype='application/pdf', max_age=0,
+                     download_name=entry[1])
 
 
 @app.route('/api/observe/presto/plot', methods=['GET'])

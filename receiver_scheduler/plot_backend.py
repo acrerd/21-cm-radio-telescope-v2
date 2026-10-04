@@ -56,3 +56,36 @@ def use_headless(default="Agg"):
         return False
     matplotlib.use(default)
     return True
+
+
+# Vector copies for download (Observe tab, 2026-10-04). Lines and text go in
+# as vectors; images (the pulsar sub-integrations, imshow) are embedded as
+# rasters, which is what PDF does with them anyway, and anything marked
+# rasterized is drawn at VECTOR_DPI. Fonts as TrueType (fonttype 42), so the
+# text stays text when the file is edited, not Type 3 outlines.
+VECTOR_DPI = 300
+
+
+def save_pdf(fig, pdf_path, **savefig_kw):
+    """Write `fig` as a PDF beside its PNG. Does nothing when pdf_path is None.
+
+    A failure is logged and leaves no file rather than raising: the PNG is
+    what the page is waiting for, and a missing PDF is reported when asked for.
+    """
+    if not pdf_path:
+        return None
+    import logging
+    import os
+    import matplotlib
+
+    try:
+        with matplotlib.rc_context({"pdf.fonttype": 42}):
+            fig.savefig(pdf_path, format="pdf", dpi=VECTOR_DPI, **savefig_kw)
+        return pdf_path
+    except Exception as exc:                 # noqa: BLE001 - never cost the PNG
+        logging.getLogger("scheduler").warning("PDF of the plot failed: %s", exc)
+        try:
+            os.remove(pdf_path)
+        except OSError:
+            pass
+        return None

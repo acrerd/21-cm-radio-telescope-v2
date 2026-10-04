@@ -743,6 +743,9 @@
                             title="plot the recording in progress, as it stands; refreshes while it records">View live recording</button>
                     <button class="btn btn-secondary" id="obvFitBtn" onclick="fitObserveModel()"
                             title="Fit the simulator's sky to this recording. A tracked spectrum gets the per-channel gain and T_sys, which Apply can make the calibration; a drift scan gets a total-power fit, reported only. Not for Sun or Moon tracks or pulsar recordings.">Fit model</button>
+                    <button class="btn btn-secondary" id="obvPdfBtn" onclick="downloadObservePdf()" disabled
+                            style="opacity:0.4; cursor:not-allowed;"
+                            title="download the plot on screen as a vector PDF: lines and text as vectors, image panels (pulsar sub-integrations, PRESTO's greyscales) as rasters">Download PDF</button>
                     <button class="btn btn-secondary" onclick="downloadObserveFile()"
                             title="download the selected HDF5 recording">Download file</button>
                     <button class="btn btn-primary" id="obvFitApplyBtn" style="display:none;"

@@ -41,6 +41,7 @@ from datetime import datetime, timezone
 import numpy as np
 
 import bandpass
+import plot_backend
 from observatory import SITE_HEIGHT_M, SITE_LAT_DEG, SITE_LON_DEG
 
 SIMULATOR_DIR = os.path.join(os.path.dirname(os.path.dirname(
@@ -371,15 +372,16 @@ def patch_dc_artefact(freq_hz, spectra, header, half_window=48):
 
 def plot_observation(path, output_path, name="", mode="spectrum",
                      transit_minutes=None, figsize=(16.0, 9.0), dpi=120,
-                     log_y=False):
-    """Render a finished observation to a PNG. Returns the output path."""
+                     log_y=False, pdf_path=None):
+    """Render a finished observation to a PNG, and to a PDF from the same
+    figure when pdf_path is given. Returns the output path."""
     if not MATPLOTLIB_AVAILABLE:
         raise RuntimeError("matplotlib is not installed, so no plot can be drawn")
     if mode == "pulsar":
         # A pulsar-mode recording holds a filterbank, not spectra: the plot is
         # the fold (pulsar_fold.py), drawn from the catalogue numbers in the file.
         import pulsar_fold
-        pulsar_fold.plot_recording(path, output_path)
+        pulsar_fold.plot_recording(path, output_path, pdf_path=pdf_path)
         return output_path
     # A drift scan or a solar track is a continuum measurement: the wide
     # product where the file has one, its single product otherwise, and the
@@ -581,6 +583,7 @@ def plot_observation(path, output_path, name="", mode="spectrum",
             spine.set_color(_PLOT_GRID)
     fig.tight_layout()
     fig.savefig(output_path, facecolor=fig.get_facecolor())
+    plot_backend.save_pdf(fig, pdf_path, facecolor=fig.get_facecolor())
     plt.close(fig)
     log.info("Observation plot written to %s (%s, %d spectra)",
              output_path, mode, n)
@@ -1094,7 +1097,7 @@ def plot_bandpass_check(observation_path, output_path, template=None,
     return output_path
 
 
-def plot_gain_check(calibration, output_path, figsize=(16.0, 9.0), dpi=120):
+def plot_gain_check(calibration, output_path, figsize=(16.0, 9.0), dpi=120, pdf_path=None):
     """The measured sky in kelvin, over the model it was calibrated against.
 
     Drawn from the same reduction the fit used - rf_calibration.reduce_for_fit -
@@ -1299,11 +1302,12 @@ def plot_gain_check(calibration, output_path, figsize=(16.0, 9.0), dpi=120):
     _style_dark(fig)
     fig.subplots_adjust(top=0.89, left=0.055, right=0.985, bottom=0.075)
     fig.savefig(output_path, facecolor=fig.get_facecolor())
+    plot_backend.save_pdf(fig, pdf_path, facecolor=fig.get_facecolor())
     plt.close(fig)
     return output_path
 
 
-def plot_drift_fit(fit, output_path, figsize=(16.0, 9.0), dpi=120):
+def plot_drift_fit(fit, output_path, figsize=(16.0, 9.0), dpi=120, pdf_path=None):
     """The recorded drift scan over the simulator's prediction, after the fit.
 
     Two panels: the measured band power in kelvin (counts through the fitted
@@ -1347,5 +1351,6 @@ def plot_drift_fit(fit, output_path, figsize=(16.0, 9.0), dpi=120):
     fig.tight_layout()
     _style_dark(fig)
     fig.savefig(output_path, facecolor=fig.get_facecolor())
+    plot_backend.save_pdf(fig, pdf_path, facecolor=fig.get_facecolor())
     plt.close(fig)
     return output_path

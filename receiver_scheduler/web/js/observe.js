@@ -475,6 +475,7 @@
         function showPrestoFold() {
             const host = document.getElementById('obvPlot');
             const file = obvSelectedFile();
+            obvSetShownPlot(null);
             host.innerHTML = '<span style="color:#888; font-size:12px;">Exporting and folding with PRESTO&hellip; (a minute or two for a long run)</span>';
             fetch('/api/observe/presto', {method: 'POST', headers: {'Content-Type': 'application/json'},
                                           body: JSON.stringify({file})})
@@ -487,11 +488,49 @@
                         + ' &mdash; PRESTO\'s statistic, much lower than our matched S/N for a pulse one bin wide.</div>'
                         + '<img src="/api/observe/presto/plot?name=' + encodeURIComponent(d.plot) + '&t=' + Date.now()
                         + '" style="width:100%; height:auto; border-radius:8px; border:1px solid #333; background:#fff;">';
+                    obvSetShownPlot({kind: 'presto', name: d.plot});
                 }).catch(e => { host.innerHTML = '<span style="color:#ffa502; font-size:12px;">' + e.message + '</span>'; });
+        }
+
+        // Download PDF: whatever plot is on screen - a recording, a model fit
+        // or PRESTO's fold - as a vector PDF the server saved beside the PNG
+        // (prepfold's own PostScript for PRESTO), images left as rasters in it.
+        // {kind, name} of the plot shown, or null while drawing or after an error.
+        let obvShownPlot = null;
+
+        function obvSetShownPlot(shown) {
+            obvShownPlot = shown;
+            const b = document.getElementById('obvPdfBtn');
+            if (!b) return;
+            if (b.dataset.title === undefined) b.dataset.title = b.title || '';
+            b.disabled = !shown;
+            b.style.opacity = shown ? '' : '0.4';
+            b.style.cursor = shown ? '' : 'not-allowed';
+            b.title = shown ? b.dataset.title : 'draw a plot first';
+        }
+
+        function downloadObservePdf() {
+            if (!obvShownPlot) return;
+            const q = 'kind=' + encodeURIComponent(obvShownPlot.kind)
+                    + (obvShownPlot.name ? '&name=' + encodeURIComponent(obvShownPlot.name) : '');
+            // Fetched, not navigated to: a refusal is JSON with a reason, which
+            // a navigation would save as the "PDF".
+            fetch('/api/observe/pdf?' + q + '&' + Date.now()).then(r => {
+                if (!r.ok) return r.json().then(d => { throw new Error(d.error || ('HTTP ' + r.status)); });
+                const m = /filename\*?=(?:UTF-8'')?"?([^";]+)"?/i.exec(r.headers.get('Content-Disposition') || '');
+                return r.blob().then(b => ({b, name: m ? decodeURIComponent(m[1]) : 'plot.pdf'}));
+            }).then(({b, name}) => {
+                const a = document.createElement('a');
+                a.href = URL.createObjectURL(b);
+                a.download = name;
+                document.body.appendChild(a); a.click(); a.remove();
+                setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+            }).catch(e => { document.getElementById('obvFitInfo').textContent = 'PDF: ' + e.message; });
         }
 
         function showObservePlot() {
             const host = document.getElementById('obvPlot');
+            obvSetShownPlot(null);
             host.innerHTML = '<span style="color:#888; font-size:12px;">Drawing&hellip;</span>';
             // Fetched rather than dropped straight into an img src: a refusal
             // comes back as JSON with a reason - still recording, no spectra -
@@ -504,6 +543,7 @@
                 const url = URL.createObjectURL(b);
                 host.innerHTML = '<img src="' + url + '" style="width:100%; height:auto; '
                                + 'border-radius:8px; border:1px solid #333;">';
+                obvSetShownPlot({kind: 'plot'});
             }).catch(e => {
                 host.innerHTML = '<span style="color:#ffa502; font-size:12px;">' + e.message + '</span>';
             });
@@ -518,6 +558,7 @@
             const host = document.getElementById('obvPlot');
             const apply = document.getElementById('obvFitApplyBtn');
             apply.style.display = 'none';
+            obvSetShownPlot(null);
             info.textContent = 'Fitting the simulator to the recording\u2026';
             fetch('/api/observe/fit', {method: 'POST', headers: {'Content-Type': 'application/json'},
                    body: JSON.stringify({file: obvSelectedFile()})}).then(r => r.json()).then(d => {
@@ -555,6 +596,7 @@
                 }).then(b => {
                     host.innerHTML = '<img src="' + URL.createObjectURL(b) + '" style="width:100%; height:auto; '
                                    + 'border-radius:8px; border:1px solid #333;">';
+                    obvSetShownPlot({kind: 'fit'});
                 }).catch(e => { host.innerHTML = '<span style="color:#ffa502; font-size:12px;">' + e.message + '</span>'; });
             }).catch(e => { info.textContent = 'Fit failed: ' + e; });
         }
