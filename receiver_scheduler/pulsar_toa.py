@@ -45,7 +45,7 @@ TEMPLATE_NAME = "epn_hx97b_1410"
 # end, re-observable. Plotting writes here; committing stays a person's act.
 TOA_DIR = os.path.join(HERE, "pulsar_timing")
 # One TOA per night, and nothing else: what any timing program should fit.
-# The 4 h segments are the same photons again, so they live in a file of
+# The segments are the same photons again, so they live in a file of
 # their own - in one file PINT, tempo2 or pintk would count a night twice,
 # and nothing in the format can tell them not to (2026-09-28).
 TIM_FILE = os.path.join(TOA_DIR, "b0329.tim")
@@ -71,6 +71,28 @@ PROFILE_CACHE_DIR = os.path.join(TOA_DIR, "profiles")    # one folded profile pe
 OBS_DIR = os.path.join(HERE, "data", "observations")
 PINT_PY = "/home/astro/radioconda/envs/pint/bin/python"
 SEGMENT_SUFFIX = "_s"             # tim names: <recording> for the run, <recording>_sN per segment
+
+# The frequency a TOA refers to (2026-10-04). The band is summed into one
+# channel, so the pulse in it is every frequency's pulse weighted by the
+# receiver's gain and the pulsar's spectrum, and it peaks when the pulse
+# reaches an effective frequency - not the band centre. At DM 26.76 that is
+# 79 us later per MHz lower. From the 64-channel stowed passband at 32 Msps,
+# LO 1413 MHz (data/pulsar_injection/wide32_1413_64ch.h5: 4.5 dB down at the
+# bottom edge, ~1.5 dB down over the upper half; the Nyquist bin split
+# between the two edges), weighted by S ~ f^-1.6: 1411.93 MHz, where a pulse
+# arrives 84 us after it reaches 1413.000. An index of 0 to -2.5 moves it
+# 0.05 MHz (5 us). The stamped time is the instant the pulse peak arrived
+# there, so the label has to say 1411.93 - written as 1413 until this date,
+# and the lines already in the .tim relabelled (the times themselves do not
+# change). Re-measure if the passband changes. Any other band: its centre.
+EFFECTIVE_FREQ_MHZ = {(1413.0, 32.0): 1411.93}
+
+
+def toa_freq_mhz(freq_hz, bw_hz):
+    """The frequency to write beside a TOA from a band centred on freq_hz,
+    bw_hz wide: the measured effective frequency, else the centre."""
+    key = (round(float(freq_hz) / 1e6, 3), round(float(bw_hz or 0.0) / 1e6, 3))
+    return EFFECTIVE_FREQ_MHZ.get(key, float(freq_hz) / 1e6)
 
 
 # ---------------------------------------------------------------------------
@@ -222,7 +244,8 @@ def toas_for_recording(path, segments=1, tmpl=None, pulsar=None, analysis=None):
         t_toa = arrival_time(toa, fit["tau"], 0.5 * (lo + hi))
         out.append({
             "name": name, "recording": base, "t_unix": t_toa, "mjd": mjd_string(t_toa),
-            "err_us": fit["sigma_tau"] * toa["p_mean"] * 1e6, "freq_mhz": toa["freq_hz"] / 1e6,
+            "err_us": fit["sigma_tau"] * toa["p_mean"] * 1e6,
+            "freq_mhz": toa_freq_mhz(toa["freq_hz"], toa["bw_hz"]), "band_centre_mhz": toa["freq_hz"] / 1e6,
             "snr": fit["snr"], "tau": fit["tau"], "sigma_tau": fit["sigma_tau"], "chi2_red": fit["chi2_red"],
             "tobs_s": hi - lo, "bw_mhz": (toa["bw_hz"] or 0.0) / 1e6, "pps": pps,
             "time_source": str(attrs.get("time_source", "host")),
@@ -276,7 +299,8 @@ def session_toa(session, tmpl=None):
     return {
         "name": name, "recording": name, "session": session, "pieces": len(pieces),
         "t_unix": t_toa, "mjd": mjd_string(t_toa),
-        "err_us": fit["sigma_tau"] * p_mean * 1e6, "freq_mhz": first["freq_hz"] / 1e6,
+        "err_us": fit["sigma_tau"] * p_mean * 1e6,
+        "freq_mhz": toa_freq_mhz(first["freq_hz"], first["bw_hz"]), "band_centre_mhz": first["freq_hz"] / 1e6,
         "snr": fit["snr"], "tau": fit["tau"], "sigma_tau": fit["sigma_tau"], "chi2_red": fit["chi2_red"],
         "tobs_s": float(dur.sum()), "bw_mhz": first["bw_hz"] / 1e6,
         "pps": int(all(p["pps"] for p in pieces)),
@@ -324,7 +348,7 @@ def segment_file(tim_file=TIM_FILE):
     return root + "_segments" + ext
 
 
-SEGMENT_HEADER = ("C 4 h segments of nights whose whole-run TOA is in %s. The same data again:\n"
+SEGMENT_HEADER = ("C Segments of nights whose whole-run TOA is in %s. The same data again:\n"
                   "C a within-night check, never to be fitted together with that file.\n")
 
 

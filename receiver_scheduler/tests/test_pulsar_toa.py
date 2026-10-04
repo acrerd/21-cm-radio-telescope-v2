@@ -256,3 +256,15 @@ def test_the_mean_flux_is_the_pulse_area_over_the_period():
     assert s == pytest.approx(area * 200.0 / 2.5e-3 * 1e3)
     assert s == pytest.approx(h * 0.010 / P * 200.0 / 2.5e-3 * 1e3, rel=0.05)
     assert e == 0.0                                            # a noiseless off-pulse region
+
+
+def test_a_toa_is_labelled_with_the_frequency_its_pulse_arrived_at():
+    """The summed 32 MHz band peaks when the pulse reaches its gain- and
+    spectrum-weighted frequency, 1411.93 MHz, 84 us after 1413.000: that is
+    the frequency the stamped time belongs to. An unmeasured band keeps its
+    centre."""
+    assert T.toa_freq_mhz(1412999999.999998, 32e6) == 1411.93
+    assert T.toa_freq_mhz(1420.0e6, 8e6) == 1420.0
+    assert T.toa_freq_mhz(1413.0e6, None) == 1413.0
+    k = PF.K_DM_S * PF.B0329["dm"]
+    assert 80e-6 < k * (1 / 1411.93 ** 2 - 1 / 1413.0 ** 2) < 90e-6

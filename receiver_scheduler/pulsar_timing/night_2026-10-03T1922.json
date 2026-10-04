@@ -1,0 +1,23 @@
+{
+ "name": "night_2026-10-03T1922",
+ "recording": "night_2026-10-03T1922",
+ "session": "2026-10-03T1922",
+ "pieces": 1,
+ "t_unix": 1791083955.4025724,
+ "mjd": "61317.1383727149583",
+ "err_us": 391.46615838931285,
+ "freq_mhz": 1411.93,
+ "snr": 13.566391277695926,
+ "tau": -0.00045019744663132855,
+ "sigma_tau": 0.000547907368975418,
+ "chi2_red": 1.0,
+ "tobs_s": 64316.93799996376,
+ "bw_mhz": 32.0,
+ "pps": 1,
+ "time_source": "pps",
+ "time_marks_exact": 1,
+ "template": "epn_hx97b_1410",
+ "toa_bins": 1024,
+ "phase_offset": 0.3105,
+ "band_centre_mhz": 1412.9999999999982
+}
