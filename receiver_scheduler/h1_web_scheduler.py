@@ -3017,6 +3017,12 @@ def stop_observation(halt: bool = False) -> bool:
             # than waiting for somebody to plot it.
             threading.Thread(target=update_pulsar_timing,
                              args=(current_observation['output_file'],), daemon=True).start()
+        if current_observation and live_plot_kind(current_observation) == 'solar' \
+                and current_observation.get('output_file'):
+            # Every Sun track, monitor or booked, rewrites its day's solar
+            # flux products (data/solar_flux/), so the folder is never behind.
+            threading.Thread(target=update_solar_flux_export,
+                             args=(current_observation['output_file'],), daemon=True).start()
         current_process = None
         current_observation = None
         current_receiver_log = None
@@ -8194,6 +8200,47 @@ def update_pulsar_timing(path: str) -> Optional[dict]:
     else:
         log.error("Pulsar timing failed for %s (exit %s): %s", os.path.basename(path),
                   out.returncode, (out.stderr or '').strip().splitlines()[-3:])
+    return {'returncode': out.returncode, 'output': out.stdout}
+
+
+SOLAR_EXPORT_TIMEOUT_S = 600
+# Two Sun runs ending close together would write the same day's files.
+solar_export_lock = threading.Lock()
+
+
+def solar_flux_export_command(path: str) -> list:
+    """The day's solar flux products for one recording: solar_flux_export.py
+    on every UTC day it touches, at the lowest CPU and disk priority, since
+    the next run may already be recording."""
+    cmd = [sys.executable, os.path.join(_SCRIPT_DIR, 'solar_flux_export.py'), '--recording', path]
+    if sys.platform != 'win32':
+        cmd = ['nice', '-n', '19'] + (['ionice', '-c', '3'] if shutil.which('ionice') else []) + cmd
+    return cmd
+
+
+def update_solar_flux_export(path: str) -> Optional[dict]:
+    """Rewrite the FITS and RSTN3 files for a finished Sun track's day(s).
+    Thread target, run from stop_observation for every solar track however it
+    ended. Skips a recording outside the observations folder. Returns
+    {'returncode', 'output'} or None if skipped."""
+    import solar_flux_export
+    if not path or not os.path.exists(path) or not solar_flux_export.in_observations(path):
+        return None
+    cmd = solar_flux_export_command(path)
+    with solar_export_lock:
+        try:
+            out = subprocess.run(cmd, capture_output=True, text=True, cwd=_SCRIPT_DIR,
+                                 timeout=SOLAR_EXPORT_TIMEOUT_S)
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            log.error("Solar flux export failed for %s: %s", os.path.basename(path), exc)
+            return {'returncode': None, 'output': str(exc)}
+    if out.returncode == 0:
+        for ln in out.stdout.splitlines():
+            if ln.strip():
+                log.info("Solar flux export: %s", ln)
+    else:
+        log.error("Solar flux export failed for %s (exit %s): %s", os.path.basename(path),
+                  out.returncode, (out.stderr or out.stdout or '').strip().splitlines()[-3:])
     return {'returncode': out.returncode, 'output': out.stdout}
 
 

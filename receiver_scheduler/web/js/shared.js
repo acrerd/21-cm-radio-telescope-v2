@@ -135,6 +135,16 @@
             const running = data.running ? data.observation : null;
             if (running && running.pulsar_monitor) return '';
             if (running && running.sun_monitor) {
+                // With the Sun first the scheduler never stops a Sun run for
+                // the pulsar; it resumes the window afterwards, if at least
+                // PULSAR_MONITOR_MIN_MINUTES of it is left.
+                if (pm.priority === 'sun') {
+                    if (!pm.window.closes || data.remaining_seconds == null) return '';
+                    const closes = new Date(pm.window.closes);
+                    const sunEnds = now.getTime() + data.remaining_seconds * 1000;
+                    if (closes - sunEnds < 30 * 60000) return '';
+                    return ' — pulsar observation resumes after it (window until ' + hhmm(closes) + ')';
+                }
                 if (pm.window.open) return ' — pulsar observation takes over now';
                 if (running && data.remaining_seconds != null
                         && opens - now < data.remaining_seconds * 1000) {
