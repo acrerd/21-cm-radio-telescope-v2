@@ -100,6 +100,20 @@ unsigned long lastEphemerisUpdate = 0;
 float lastSentAlt = -999;
 float lastSentAz = -999;
 bool wasTracking = false;
+
+// The encoder pulse the Due will drive to for a drive target: the target as
+// sent on the wire (one decimal, sendDriveTarget) rounded to the 0.5 deg grid,
+// as executeDrive does. The tracking send compares these as well as the
+// deadband (2026-10-07): with the deadband alone a new target went only every
+// 0.05 deg of demand, so the Due stepped when a *sent* target crossed the
+// rounding boundary - up to 0.05 deg of motion after the demand did, a lag
+// that varied step to step. Fitted on nine Sun tracks it was 0.02-0.05 deg in
+// azimuth, and it is what kept the tracking scallop from being predictable.
+static long drivePulse(float drive) {
+    char buf[16];
+    snprintf(buf, sizeof(buf), "%.1f", drive);
+    return lroundf(strtof(buf, nullptr) * 2.0f);
+}
 uint32_t lastTrackingRevision = 0;
 
 // Issue #11 boot trace. The web server only starts at the end of setup(), so by
@@ -512,7 +526,9 @@ void updateTracking() {
             // Deadband, drive against drive.
             if (lastSentAlt < -900 || lastSentAz < -900 ||
                 fabs(driveAlt - lastSentAlt) >= settings.positionDeadband ||
-                fabs(driveAz - lastSentAz) >= settings.positionDeadband) {
+                fabs(driveAz - lastSentAz) >= settings.positionDeadband ||
+                drivePulse(driveAlt) != drivePulse(lastSentAlt) ||
+                drivePulse(driveAz) != drivePulse(lastSentAz)) {
                 if (state.offsetAlt != 0 || state.offsetAz != 0) {
                     DBG(Serial.printf("Tracking %s: true Alt=%.1f Az=%.1f, offset %.1f/%.1f, drive %.1f/%.1f\n",
                                   state.targetName.c_str(), alt, az, state.offsetAlt, state.offsetAz, driveAlt, driveAz));
