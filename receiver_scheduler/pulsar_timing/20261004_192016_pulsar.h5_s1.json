@@ -1,0 +1,21 @@
+{
+ "name": "20261004_192016_pulsar.h5_s1",
+ "recording": "20261004_192016_pulsar.h5",
+ "t_unix": 1791162140.4395633,
+ "mjd": "61318.0432921245749",
+ "err_us": 878.2901894733558,
+ "freq_mhz": 1411.93,
+ "band_centre_mhz": 1412.9999999999982,
+ "snr": 6.04673416000661,
+ "tau": 0.0036864633643740596,
+ "sigma_tau": 0.0012292794024261796,
+ "chi2_red": 1.0,
+ "tobs_s": 16080.0,
+ "bw_mhz": 32.0,
+ "pps": 1,
+ "time_source": "pps",
+ "time_marks_exact": 1,
+ "template": "epn_hx97b_1410",
+ "toa_bins": 1024,
+ "phase_offset": 0.3105
+}
