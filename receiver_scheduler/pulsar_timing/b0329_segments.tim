@@ -39,3 +39,7 @@ C a within-night check, never to be fitted together with that file.
 20261007_190816_pulsar.h5_p 1411.930000 61321.0824551534763 288.333 ar -pps 1 -snr 18.4 -tobs 56448 -bw 32.0 -be b200 -fe sawbird -tmpl epn_hx97b_1410
 20261007_190816_pulsar.h5_s2 1411.930000 61321.1644712123358 489.132 ar -pps 1 -snr 10.9 -tobs 14100 -bw 32.0 -be b200 -fe sawbird -tmpl epn_hx97b_1410
 20261007_190816_pulsar.h5_s3 1411.930000 61321.3275937724307 432.361 ar -pps 1 -snr 12.3 -tobs 14088 -bw 32.0 -be b200 -fe sawbird -tmpl epn_hx97b_1410
+20261008_190417_pulsar.h5_s0 1411.930000 61321.8381146327158 362.712 ar -pps 1 -snr 14.6 -tobs 14700 -bw 32.0 -be b200 -fe sawbird -tmpl epn_hx97b_1410
+20261008_190417_pulsar.h5_s1 1411.930000 61322.0079105884251 356.027 ar -pps 1 -snr 14.9 -tobs 14640 -bw 32.0 -be b200 -fe sawbird -tmpl epn_hx97b_1410
+20261008_190417_pulsar.h5_p 1411.930000 61322.0922752148686 229.644 ar -pps 1 -snr 23.1 -tobs 58618 -bw 32.0 -be b200 -fe sawbird -tmpl epn_hx97b_1410
+20261008_190417_pulsar.h5_s2 1411.930000 61322.1773510462487 375.637 ar -pps 1 -snr 14.1 -tobs 14640 -bw 32.0 -be b200 -fe sawbird -tmpl epn_hx97b_1410
