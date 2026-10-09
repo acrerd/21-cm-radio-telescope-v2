@@ -80,10 +80,10 @@ def _synthetic_run(path, t0, minutes, late, seed, session=""):
     return tm
 
 
-def test_a_night_in_pieces_is_one_toa_and_the_pieces_are_checks(tmp_path, monkeypatch):
-    """A pulsar-monitor night interrupted by a booking: two 40-min pieces an
+def test_a_session_in_pieces_is_one_toa_and_the_pieces_are_checks(tmp_path, monkeypatch):
+    """A pulsar-monitor session interrupted by a booking: two 40-min pieces an
     hour apart, same session. Their folds add at the absolute phase into one
-    night TOA, which recovers the offset with a smaller error than either
+    session TOA, which recovers the offset with a smaller error than either
     piece; each piece's own TOA is named as a check and kept out of the .tim."""
     monkeypatch.setattr(T, "PROFILE_CACHE_DIR", str(tmp_path / "profiles"))
     late, t0 = 0.02, 1790000000.0
@@ -98,7 +98,7 @@ def test_a_night_in_pieces_is_one_toa_and_the_pieces_are_checks(tmp_path, monkey
         per_run.append(T.timing_toas(path, analysis, segments=1))
     toas = per_run[-1]
     names = [t["name"] for t in toas]
-    assert names == ["20260928_214000_pulsar.h5_p", "night_2026-09-28"]
+    assert names == ["20260928_214000_pulsar.h5_p", "session_2026-09-28"]
     night = toas[-1]
     piece = toas[0]
     assert night["pieces"] == 2 and night["tobs_s"] == pytest.approx(4800, abs=5)
@@ -110,8 +110,31 @@ def test_a_night_in_pieces_is_one_toa_and_the_pieces_are_checks(tmp_path, monkey
     assert (at[1] - 0.5 - night["tau"] + 0.5) % 1.0 - 0.5 == pytest.approx(0.0, abs=1e-6)
     tim = str(tmp_path / "b0329.tim")
     T.write_tim(per_run[0] + per_run[1], tim)
-    assert _names(tim) == ["night_2026-09-28"]                            # rewritten, not duplicated
+    assert _names(tim) == ["session_2026-09-28"]                          # rewritten, not duplicated
     assert _names(T.segment_file(tim)) == ["20260928_200000_pulsar.h5_p", "20260928_214000_pulsar.h5_p"]
+
+
+
+def test_a_legacy_night_line_is_renamed_not_duplicated(tmp_path):
+    """Session TOAs were named night_<session> until 2026-10-09. A .tim still
+    holding one, written again with the same session's new name, must end
+    with one line, renamed - two would count the session twice in a fit."""
+    tim = str(tmp_path / "b0329.tim")
+    old = ("night_2026-09-28T1942 1411.930000 61312.1130676850980 557.012 ar -pps 1 -snr 9.5 "
+           "-tobs 57536 -bw 32.0 -be b200 -fe sawbird -tmpl epn_hx97b_1410")
+    with open(tim, "w") as fh:
+        fh.write("FORMAT 1\n" + old + "\n")
+    T.write_tim([], tim)
+    assert _names(tim) == ["session_2026-09-28T1942"]
+    assert open(tim).read().split("\n")[1] == old.replace("night_", "session_", 1)
+    new = {"name": "session_2026-09-28T1942", "freq_mhz": 1411.93, "mjd": "61312.1130676850980",
+           "err_us": 500.0, "pps": 1, "snr": 10.0, "tobs_s": 57536, "bw_mhz": 32.0,
+           "template": "epn_hx97b_1410"}
+    with open(tim, "w") as fh:
+        fh.write("FORMAT 1\n" + old + "\n")
+    T.write_tim([new], tim)
+    assert _names(tim) == ["session_2026-09-28T1942"]
+    assert " 500.000 " in open(tim).read()
 
 
 def test_mjd_text_keeps_the_nanoseconds():

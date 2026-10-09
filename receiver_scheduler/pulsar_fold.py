@@ -143,7 +143,7 @@ K_DM_S = 4.148808e3      # dispersion constant, s MHz^2 pc^-1 cm^3
 
 
 def absolute_phase(t_unix, pulsar=None, freq_hz=None, knot_s=60.0):
-    """Pulse phase from the pulsar's own ephemeris, the same zero every night.
+    """Pulse phase from the pulsar's own ephemeris, the same zero every run.
 
     Each time goes to the solar-system barycentre - TDB, plus astropy's
     light-travel time from the site (the Roemer delay, up to 500 s over the
@@ -827,8 +827,8 @@ def plot_recording(path, out_path, pulsar=None, pdf_path=None):
     acc = fitres = None
     if timing:
         try:
-            # Profile first: a piece of a pulsar-monitor night needs its own
-            # stored beside the others for the night's combined TOA.
+            # Profile first: a piece of a pulsar-monitor session needs its own
+            # stored beside the others for the session's combined TOA.
             T.cache_profile(path, r["toa"], attrs)
             toas = [t for t in T.timing_toas(path, (r, attrs), segments=4)
                     if t["snr"] >= T.MIN_TOA_SNR]
@@ -927,7 +927,7 @@ def plot_recording(path, out_path, pulsar=None, pdf_path=None):
         model = f["b"] * (ts - np.median(ts[off]))
         unit = float(np.max(model)) if np.max(model) > 0 else 1.0
         # Each night on its own T_sys (its recorded calibration, else the one
-        # in force): acc["kelvin"] is the same weighted sum with every night's
+        # in force): acc["kelvin"] is the same weighted sum with every run's
         # fraction converted first; the template is drawn at the stack's
         # weighted-mean T_sys.
         cal = acc.get("kelvin") is not None

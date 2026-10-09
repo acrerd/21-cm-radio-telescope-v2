@@ -65,7 +65,7 @@ def test_it_runs_pulsar_toa_quietly_with_a_segment_per_four_hours(tmp_path, monk
     monkeypatch.setattr(pulsar_toa, "OBS_DIR", str(tmp_path))
     path = str(tmp_path / "20260928_194200_pulsar.h5")
     _recording(path, 30)
-    done = MagicMock(returncode=0, stdout="night_2026-09-28T1942 MJD ... S/N  15.0\nwritten: ...\n", stderr="")
+    done = MagicMock(returncode=0, stdout="session_2026-09-28T1942 MJD ... S/N  15.0\nwritten: ...\n", stderr="")
     with patch.object(sched.subprocess, "run", return_value=done) as run:
         result = sched.update_pulsar_timing(path)
     cmd = run.call_args[0][0]

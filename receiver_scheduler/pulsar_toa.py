@@ -2,7 +2,7 @@
 """Times of arrival for B0329+54 from pulsar-mode recordings, and the .tim file.
 
 The recording is folded at the absolute phase (`pulsar_fold.absolute_phase`,
-the same zero every night) into 1024 bins per 60 s; the profile of a span is
+the same zero every run) into 1024 bins per 60 s; the profile of a span is
 matched against a template by a least-squares fit of a shift, amplitude and
 offset (Taylor 1992, done in the Fourier domain so the shift is continuous,
 not a bin), and the shift becomes a topocentric UTC arrival time at the
@@ -44,26 +44,31 @@ TEMPLATE_NAME = "epn_hx97b_1410"
 # product - 16 h of telescope time each - where a raw recording is, in the
 # end, re-observable. Plotting writes here; committing stays a person's act.
 TOA_DIR = os.path.join(HERE, "pulsar_timing")
-# One TOA per night, and nothing else: what any timing program should fit.
-# The segments are the same photons again, so they live in a file of
-# their own - in one file PINT, tempo2 or pintk would count a night twice,
-# and nothing in the format can tell them not to (2026-09-28).
+# One TOA per run or pulsar-monitor session, and nothing else: what any
+# timing program should fit. The segments are the same photons again, so they
+# live in a file of their own - in one file PINT, tempo2 or pintk would count
+# a run twice, and nothing in the format can tell them not to (2026-09-28).
 TIM_FILE = os.path.join(TOA_DIR, "b0329.tim")
-# A pulsar-monitor night can come in pieces - a booking or a hand-started job
-# interrupts it and the monitor resumes afterwards - and every piece carries
-# `pulsar_session`, when its window opened. The night's TOA is fitted on
-# the pieces' folds added at the absolute phase (`night_<session>`), one per
-# night as for an unbroken run; each piece's own TOA (`<recording>_p`) goes
-# with the segments, a check on the same data rather than more of it.
+# A pulsar-monitor session can come in pieces - a booking or a hand-started
+# job interrupts it and the monitor resumes afterwards - and every piece
+# carries `pulsar_session`, when its window opened. The session's TOA is
+# fitted on the pieces' folds added at the absolute phase
+# (`session_<session>`), one per session as for an unbroken run; each piece's
+# own TOA (`<recording>_p`) goes with the segments, a check on the same data
+# rather than more of it. "Session", not "night": B0329+54 is circumpolar
+# here and the window follows it round the clock, a daytime run from
+# December. Named `night_<session>` until 2026-10-09; _read_tim renames those
+# lines as it reads, so an old line can never sit beside its new name.
 SEGMENT_NAME = re.compile(r"_(s\d+|p)$")
 PIECE_SUFFIX = "_p"
-NIGHT_PREFIX = "night_"
+SESSION_PREFIX = "session_"
+LEGACY_SESSION_PREFIX = "night_"
 PAR_FILE = os.path.join(TOA_DIR, "B0329+54.par")
 # Our site as a PINT observatory (pint_tools.register_site), at the surveyed
 # position rather than PINT's own "acre", which is 49 m away.
 SITE_CODE = "ar"
 # Below this a template fit can lock onto a noise feature and its error stops
-# being Gaussian, so the TOA is not written: a faint night adds nothing but a
+# being Gaussian, so the TOA is not written: a faint run adds nothing but a
 # wrong point to the timing fit (whole runs and segments alike).
 MIN_TOA_SNR = 6.0
 HOST_CLOCK_EQUAD_US = 2000.0      # NTP root distance ~1-4 ms (timesyncd), until the PPS
@@ -260,7 +265,7 @@ def _stored_session(d):
 
 
 def session_toa(session, tmpl=None):
-    """One TOA for a pulsar-monitor night from every stored profile of that
+    """One TOA for a pulsar-monitor session from every stored profile of that
     session, added at the absolute phase - so it needs the pieces' profiles
     cached first (cache_profile). None if none are stored. The TOA sits at
     the pieces' time-weighted middle; tobs is the recorded time, not the span."""
@@ -295,7 +300,7 @@ def session_toa(session, tmpl=None):
     knots = t_mid + np.arange(-600.0, 601.0, 60.0)
     phi_k, p_mean = PF.absolute_phase(knots, PF.B0329, first["freq_hz"])
     t_toa = arrival_time({"knots": knots, "phi_k": phi_k}, fit["tau"], t_mid)
-    name = NIGHT_PREFIX + session
+    name = SESSION_PREFIX + session
     return {
         "name": name, "recording": name, "session": session, "pieces": len(pieces),
         "t_unix": t_toa, "mjd": mjd_string(t_toa),
@@ -312,8 +317,8 @@ def session_toa(session, tmpl=None):
 
 def timing_toas(path, analysis, segments=4):
     """The TOAs a recording contributes: its own run and segments, and - for a
-    piece of a pulsar-monitor night - the run renamed as a piece (a check)
-    and the whole night's TOA recomputed with this piece in. Cache the
+    piece of a pulsar-monitor session - the run renamed as a piece (a check)
+    and the whole session's TOA recomputed with this piece in. Cache the
     recording's profile (cache_profile) before calling."""
     r, attrs = analysis
     toas = toas_for_recording(path, segments=segments, analysis=analysis)
@@ -324,9 +329,9 @@ def timing_toas(path, analysis, segments=4):
     for t in toas:
         if t["name"] == base:
             t["name"] = base + PIECE_SUFFIX
-    night = session_toa(session)
-    if night is not None:
-        toas.append(night)
+    whole = session_toa(session)
+    if whole is not None:
+        toas.append(whole)
     return toas
 
 
@@ -348,8 +353,8 @@ def segment_file(tim_file=TIM_FILE):
     return root + "_segments" + ext
 
 
-SEGMENT_HEADER = ("C Segments of nights whose whole-run TOA is in %s. The same data again:\n"
-                  "C a within-night check, never to be fitted together with that file.\n")
+SEGMENT_HEADER = ("C Segments of runs and sessions whose whole TOA is in %s. The same data again:\n"
+                  "C a within-run check, never to be fitted together with that file.\n")
 
 
 def _read_tim(path):
@@ -358,7 +363,12 @@ def _read_tim(path):
         for ln in open(path):
             ln = ln.strip()
             if ln and not ln.startswith(("FORMAT", "C ", "#", "MODE")):
-                lines[ln.split()[0]] = ln
+                name = ln.split()[0]
+                if name.startswith(LEGACY_SESSION_PREFIX):
+                    new = SESSION_PREFIX + name[len(LEGACY_SESSION_PREFIX):]
+                    ln = new + ln[len(name):]
+                    name = new
+                lines[name] = ln
     return lines
 
 
@@ -420,7 +430,7 @@ def write_par(par_file=PAR_FILE, pulsar=None):
 
 
 # ---------------------------------------------------------------------------
-# every night's fold, added up; the timing fit
+# every run's fold, added up; the timing fit
 
 
 def in_observations(path):
@@ -437,7 +447,7 @@ def cache_profile(path, toa, attrs=None):
     out = os.path.join(PROFILE_CACHE_DIR, os.path.splitext(os.path.basename(path))[0] + ".npz")
     a = attrs or {}
     # The calibration the recording was made under, so the stack can put each
-    # night on its own scale: recorded in the file from 2026-09-30, else the
+    # run on its own scale: recorded in the file from 2026-09-30, else the
     # one in force when the profile is stored (right for every earlier run,
     # all made under the 09-25 calibration). NaN when there is none.
     cal = a if "cal_t_sys_k" in a else PF.calibration_in_force()
@@ -477,7 +487,7 @@ def _rotated(x, dphase):
 
 def accumulated_profile(fold_missing=True, calibrated=False):
     """Every stored profile, summed with its own noise weights (the
-    per-second 1/sigma^2 the fold applied, so a noisier 8 MHz night counts
+    per-second 1/sigma^2 the fold applied, so a noisier 8 MHz run counts
     for less). Recordings on disk whose profile is missing or stale are
     folded first if `fold_missing`; a profile whose recording is gone still
     counts. One made under another phase_offset is rotated to today's."""
@@ -502,7 +512,7 @@ def accumulated_profile(fold_missing=True, calibrated=False):
             s_, c_ = _rotated(s_, shift), _rotated(c_, shift)
         S += s_; C += c_; hours += float(d["hours"]); used.append(os.path.basename(store)[:-4])
         if calibrated:
-            # this night's own calibration, else the one in force now
+            # this run's own calibration, else the one in force now
             t = float(d["cal_t_sys_k"]) if "cal_t_sys_k" in d.files else float("nan")
             ae = float(d["cal_effective_area_m2"]) if "cal_effective_area_m2" in d.files else float("nan")
             if not (math.isfinite(t) and math.isfinite(ae)):
@@ -515,8 +525,8 @@ def accumulated_profile(fold_missing=True, calibrated=False):
     prof = np.where(C > 0, S / np.maximum(C, 1e-300), 0.0)
     if not calibrated:
         return prof, hours, used
-    # Weighted sums of each night converted first, with the same weights: the
-    # stack in kelvin and in janskys even when nights differ in T_sys or A_e.
+    # Weighted sums of each run converted first, with the same weights: the
+    # stack in kelvin and in janskys even when runs differ in T_sys or A_e.
     ok = all_cal and CT > 0
     return {"profile": prof, "hours": hours, "used": used,
             "kelvin": np.where(C > 0, SK / np.maximum(C, 1e-300), 0.0) if ok else None,
@@ -527,7 +537,7 @@ def accumulated_profile(fold_missing=True, calibrated=False):
 def timing_fit(tim_file=TIM_FILE, par_file=PAR_FILE, timeout_s=600):
     """PINT on the whole-run TOAs in `tim_file`, with the segments from its
     segment_file() given residuals under the same model but never fitted:
-    F0 free from three nights, F1 free once they span three weeks;
+    F0 free from three runs, F1 free once they span three weeks;
     otherwise residuals only. Returns pint_tools' dict, or {'error': ...}."""
     import subprocess
     import observatory

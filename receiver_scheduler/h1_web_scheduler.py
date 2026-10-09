@@ -3736,7 +3736,7 @@ def pulsar_monitor_plan(now: datetime, schedule, profile, min_alt: float,
 
 
 def pulsar_monitor_entry(now: datetime, minutes: int, session: str) -> dict:
-    """A pulsar monitor run: an ordinary pulsar-mode entry, tagged with its night."""
+    """A pulsar monitor run: an ordinary pulsar-mode entry, tagged with its session."""
     return {
         'name': PULSAR_MONITOR_NAME, 'comment': PULSAR_MONITOR_COMMENT,
         'pulsar_monitor': True, 'pulsar_session': session,
