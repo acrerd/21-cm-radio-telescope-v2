@@ -153,7 +153,20 @@
                 return '';
             }
             if (running || data.background) return '';
-            if (pm.holdoff_until) {
+            // Idle with the Sun first: the Sun monitor is the one waiting, so
+            // say so rather than the pulsar's hold-off (2026-10-09). Its
+            // `waiting` is the last reason it gave, empty once the Sun is clear.
+            const sm = data.sun_monitor;
+            if (pm.priority === 'sun' && sm && sm.enabled) {
+                if (sm.holdoff_until) {
+                    return ' — Sun observation held off until ' + hhmm(new Date(sm.holdoff_until))
+                        + (sm.holdoff_reason ? ' (' + sm.holdoff_reason + ')' : '');
+                }
+                if (!sm.waiting) return ' — Sun observation starting';
+            }
+            // A hold-off that ends before the window opens is not what the
+            // pulsar is waiting for: the window is.
+            if (pm.holdoff_until && (pm.window.open || new Date(pm.holdoff_until) > opens)) {
                 return ' — pulsar observation held off until ' + hhmm(new Date(pm.holdoff_until))
                     + (pm.holdoff_reason ? ' (' + pm.holdoff_reason + ')' : '');
             }
