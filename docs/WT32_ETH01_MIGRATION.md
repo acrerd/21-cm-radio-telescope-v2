@@ -245,9 +245,9 @@ build_flags =
 upload_speed = 460800
 upload_protocol = esptool
 
-lib_deps =
-    https://github.com/me-no-dev/AsyncTCP.git
-    https://github.com/me-no-dev/ESPAsyncWebServer.git
+lib_deps = ${common.lib_deps}
+; the platform, framework and both web libraries are pinned to exact versions
+; in [common] at the top of platformio.ini - see there for the current ones
 
 [env:wt32-eth01-ota]
 extends = env:wt32-eth01

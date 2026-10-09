@@ -197,7 +197,12 @@ void setupWebServer() {
 
     // Serve main page
     webServer.on("/", HTTP_GET, [](AsyncWebServerRequest *request) {
-        AsyncWebServerResponse *response = request->beginResponse_P(200, "text/html; charset=utf-8", INDEX_HTML);
+        // Bytes and a length, so the 72 kB page streams from flash
+        // (AsyncProgmemResponse). beginResponse_P is deprecated from
+        // ESPAsyncWebServer 3.12, and its plain const char* replacement would
+        // copy the page into RAM for every request.
+        AsyncWebServerResponse *response = request->beginResponse(200, "text/html; charset=utf-8",
+                                                                  (const uint8_t *)INDEX_HTML, strlen(INDEX_HTML));
         response->addHeader("Cache-Control", "no-cache");
         request->send(response);
     });
