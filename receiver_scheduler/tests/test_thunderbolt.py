@@ -363,8 +363,13 @@ def test_warnings_are_only_what_is_active_now():
     import thunderbolt as T
     ok_primary = {"time_set": True, "utc_known": True, "utc": True}
     assert T.active_warnings(_sup(), ok_primary) == []
-    w = T.active_warnings(_sup(minor_alarms=1 << 7, holdover_s=40), dict(ok_primary, utc=False))
+    w = T.active_warnings(_sup(minor_alarms=1 << 7, holdover_s=40, disciplining_mode=2,
+                               disciplining_mode_text="auto holdover"), dict(ok_primary, utc=False))
     assert "leap second pending" in w and any("holdover for 40 s" in x for x in w)
+    assert not any(x.startswith("disciplining:") for x in w)        # said once, not twice
+    # holdover_s keeps the last holdover's length after the unit relocks:
+    # locked and normal is no warning, whatever it says (2026-10-09's 762 s)
+    assert T.active_warnings(_sup(holdover_s=762), ok_primary) == []
     assert "reporting GPS time, not UTC" in w
     assert any(x.startswith("CRITICAL") for x in T.active_warnings(_sup(critical_alarms=1 << 4)))
 

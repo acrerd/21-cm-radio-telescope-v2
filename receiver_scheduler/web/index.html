@@ -1039,7 +1039,32 @@
                 <label style="color:#888; font-size:12px;">
                     <input autocomplete="off" type="checkbox" id="logAutoRefresh" onchange="toggleLogRefresh()" checked> Auto-refresh (5s)
                 </label>
+                <select autocomplete="off" id="logLines" onchange="loadLog()" title="How many of the newest lines to show. The log grows about 100 lines a day.">
+                    <option value="100">last 100 lines</option>
+                    <option value="500">last 500 lines</option>
+                    <option value="1000">last 1000 lines</option>
+                </select>
                 <span style="color:#888; font-size:12px;">timestamps are local time</span>
+            </div>
+            <div class="log-controls">
+                <input autocomplete="off" type="text" id="logSearchQ" placeholder="search the whole log, e.g. holdover" style="width:260px;"
+                       title="Text to find, any case. Searches the current log and the older rotated files, newest match first."
+                       onkeydown="if (event.key === 'Enter') searchLog()">
+                <label style="color:#888; font-size:12px;">from <input autocomplete="off" type="date" id="logSearchSince" title="First day to search (local date). Empty: from the start of the oldest log."></label>
+                <label style="color:#888; font-size:12px;">to <input autocomplete="off" type="date" id="logSearchUntil" title="Last day to search (local date). Empty: up to now."></label>
+                <select autocomplete="off" id="logSearchLevel" title="Only lines at this level or worse.">
+                    <option value="">any level</option>
+                    <option value="WARNING">warnings and errors</option>
+                    <option value="ERROR">errors only</option>
+                </select>
+                <select autocomplete="off" id="logSearchAfter" title="Lines to show after each match - a panic's backtrace, a homing's report.">
+                    <option value="0">match only</option>
+                    <option value="3">+3 lines</option>
+                    <option value="10">+10 lines</option>
+                </select>
+                <button title="Search the current log and the older ones. Pauses auto-refresh until Back to live." class="btn btn-secondary" onclick="searchLog()">Search</button>
+                <button title="Leave the search and show the end of the log again, refreshing every 5 s." class="btn btn-secondary" onclick="clearLogSearch()">Back to live</button>
+                <span id="logSearchInfo" style="color:#888; font-size:12px;"></span>
             </div>
             <div class="log-container" id="logContent">Loading log...</div>
         </div>

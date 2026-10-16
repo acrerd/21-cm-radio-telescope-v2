@@ -253,8 +253,11 @@ def test_every_manual_start_makes_the_monitor_give_way(client, path_name):
         sched.current_observation = {"name": "something else"}
     else:
         getattr(sched, busy)["running"] = True
+    # display_available: a receiver start with no display is refused before
+    # the yield, deliberately, and pytest here usually runs without one.
     with patch.object(sched, "sun_monitor_yield") as yield_, \
          patch.object(sched, "start_observation", return_value=False), \
+         patch.object(sched, "display_available", return_value=True), \
          patch.object(sched.subprocess, "Popen") as popen:
         client.post(path, json=payload)
     assert yield_.called, "%s did not make the Sun monitor give way" % path_name

@@ -2017,6 +2017,35 @@ def stop_booted_receiver():
     except subprocess.TimeoutExpired:
         proc.kill()
         proc.wait()
+    # Stopped on purpose, to free the B200: not an exit for the page to
+    # report as "killed by SIGTERM".
+    with receiver_boot_lock:
+        if receiver_boot_process is proc:
+            receiver_boot_process = None
+
+
+def display_available() -> bool:
+    """Whether the receiver GUI could open its window from this process.
+
+    The GUI is Qt, and Qt with no display does not fail politely: it aborts
+    (SIGABRT, exit -6) a second after starting, its message going to the
+    scheduler's stdout, which is what both hand starts of 2026-10-11 did. A
+    scheduler started from the desktop has DISPLAY or WAYLAND_DISPLAY; one
+    started over ssh has neither.
+    """
+    return bool(os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"))
+
+
+def receiver_exit_reason(returncode: int) -> str:
+    """Words for a receiver's exit status, for the page."""
+    if returncode == 0:
+        return "closed"
+    if returncode < 0:
+        try:
+            return "killed by %s" % signal.Signals(-returncode).name
+        except ValueError:
+            return "killed by signal %d" % -returncode
+    return "exit code %d" % returncode
 
 
 def receiver_python_path() -> str:
@@ -2105,11 +2134,17 @@ def receiver_status_snapshot() -> dict:
             "scheduler_python": sys.executable,
         }
 
+    global receiver_boot_exit_seen
     with receiver_boot_lock:
         boot_proc = receiver_boot_process
         boot_running = _proc_running(boot_proc)
         boot_returncode = None if boot_proc is None else boot_proc.poll()
         boot_pid = boot_proc.pid if boot_running else None
+        if boot_returncode is not None:
+            if receiver_boot_exit_seen is None:
+                receiver_boot_exit_seen = time.time()
+            elif time.time() - receiver_boot_exit_seen > RECEIVER_EXIT_SHOWN_S:
+                boot_returncode = None
 
     return {
         "success": True,
@@ -2117,6 +2152,8 @@ def receiver_status_snapshot() -> dict:
         "source": "manual" if boot_running else "idle",
         "pid": boot_pid,
         "returncode": boot_returncode,
+        "reason": None if boot_returncode is None else receiver_exit_reason(boot_returncode),
+        "display": display_available(),
         "observation": None,
         "python": receiver_python_path(),
         "scheduler_python": sys.executable,
@@ -2149,6 +2186,12 @@ starting_observation: Optional[dict] = None
 start_abort = threading.Event()
 receiver_boot_process: Optional[subprocess.Popen] = None
 receiver_boot_lock = threading.Lock()
+# When the status first found the hand-started receiver gone. Its exit is
+# reported for RECEIVER_EXIT_SHOWN_S after that and then forgotten: kept for
+# the life of the process object, a GUI that aborted on 2026-10-11 still read
+# "Stopped (-6)" on the page four days later.
+receiver_boot_exit_seen: Optional[float] = None
+RECEIVER_EXIT_SHOWN_S = 600
 scheduler_running = True
 
 # Sun scan state
@@ -6645,6 +6688,72 @@ observe_plot_lock = threading.Lock()
 observe_pdfs = {}
 
 
+# A drawn plot is kept, keyed by everything it depends on, and served again
+# when nothing has changed (2026-10-16): a 16 h pulsar run costs about half a
+# minute of folding each time it is drawn. The key is the recording (path,
+# size, mtime - a live one changes every record, so it never matches), the
+# plot's options, the code as the scheduler loaded it (fingerprinted once at
+# start, which is the code that draws), the calibration files a plot applies
+# and, for a pulsar plot, the whole timing folder, since its stacked profile
+# and residuals come from every other night.
+PLOT_CACHE_DIR = os.path.join(_SCRIPT_DIR, 'data', 'plot_cache')
+OBSERVE_PLOT_PNG = os.path.join(_SCRIPT_DIR, 'data', 'last_observation.png')
+PLOT_CACHE_MAX = 200
+PLOT_CACHE_LIVE_S = 120          # a recording written to this recently is live: not stored
+_PLOT_DEPENDS = ('gain_calibration.json', 'bandpass_template.json', 'bandpass_template_wide.json',
+                 'beam_calibration.json', 'scallop_reference.json', 'pointing_model.json',
+                 'horizon_profile.json', 'ad9361_chain.json',
+                 os.path.join('data', 'solar_reference_history.json'))
+
+
+def _code_fingerprint() -> str:
+    import hashlib
+    h = hashlib.sha256()
+    for folder in (_SCRIPT_DIR, os.path.join(_SCRIPT_DIR, '..', 'astro_simulator')):
+        for path in sorted(glob.glob(os.path.join(folder, '*.py'))):
+            h.update(os.path.basename(path).encode())
+            try:
+                with open(path, 'rb') as fh:
+                    h.update(fh.read())
+            except OSError:
+                pass
+    return h.hexdigest()[:16]
+
+
+PLOT_CODE_FINGERPRINT = _code_fingerprint()
+
+
+def plot_cache_key(path: str, mode: str, name: str, transit_minutes, log_y: bool) -> str:
+    import hashlib
+    parts = [PLOT_CODE_FINGERPRINT, os.path.realpath(path), str(mode), str(name),
+             repr(transit_minutes), str(bool(log_y))]
+    files = [path] + [os.path.join(_SCRIPT_DIR, f) for f in _PLOT_DEPENDS]
+    if mode == 'pulsar':
+        files += sorted(glob.glob(os.path.join(_SCRIPT_DIR, 'pulsar_timing', '**', '*'), recursive=True))
+    for f in files:
+        try:
+            st = os.stat(f)
+        except OSError:
+            continue
+        if os.path.isfile(f):
+            parts.append('%s:%d:%d' % (os.path.relpath(f, _SCRIPT_DIR), st.st_size, st.st_mtime_ns))
+    return hashlib.sha256('\n'.join(parts).encode()).hexdigest()[:24]
+
+
+def _plot_cache_store(key: str, png: str, pdf: str) -> None:
+    os.makedirs(PLOT_CACHE_DIR, exist_ok=True)
+    shutil.copyfile(png, os.path.join(PLOT_CACHE_DIR, key + '.png'))
+    if os.path.exists(pdf):
+        shutil.copyfile(pdf, os.path.join(PLOT_CACHE_DIR, key + '.pdf'))
+    entries = sorted(glob.glob(os.path.join(PLOT_CACHE_DIR, '*.png')), key=os.path.getmtime)
+    for old in entries[:max(0, len(entries) - PLOT_CACHE_MAX)]:
+        for f in (old, os.path.splitext(old)[0] + '.pdf'):
+            try:
+                os.remove(f)
+            except OSError:
+                pass
+
+
 @app.route('/api/observe/plot', methods=['GET'])
 def api_observe_plot():
     """Render the last finished observation to a PNG.
@@ -6668,10 +6777,28 @@ def api_observe_plot():
                 return jsonify({'success': False,
                                 'error': 'No observation has finished yet'}), 404
             info = dict(last_observation)
-    out = os.path.join(_SCRIPT_DIR, 'data', 'last_observation.png')
+    out = OBSERVE_PLOT_PNG
     pdf = os.path.splitext(out)[0] + '.pdf'
     os.makedirs(os.path.dirname(out), exist_ok=True)
     log_y = request.args.get('log') in ('1', 'true', 'yes')
+    from flask import send_file
+    pdf_name = (os.path.splitext(os.path.basename(info['output_file']))[0]
+                + ('_db' if log_y else '') + '.pdf')
+    plot_args = (info['output_file'], info.get('mode', 'spectrum'), info.get('name', ''),
+                 info.get('transit_minutes'), log_y)
+    try:
+        key = plot_cache_key(*plot_args)
+    except OSError:
+        key = None
+    if key:
+        cached = os.path.join(PLOT_CACHE_DIR, key + '.png')
+        if os.path.exists(cached):
+            cpdf = os.path.join(PLOT_CACHE_DIR, key + '.pdf')
+            if os.path.exists(cpdf):
+                observe_pdfs['plot'] = (cpdf, pdf_name)
+            resp = send_file(cached, mimetype='image/png')
+            resp.headers['X-Plot-Cache'] = 'hit'
+            return resp
     try:
         with observe_plot_lock:
             observation_plot.plot_observation(
@@ -6680,8 +6807,7 @@ def api_observe_plot():
                 transit_minutes=info.get('transit_minutes'),
                 # ?log=1: a total-power panel on a log axis, for sidelobes.
                 log_y=log_y, pdf_path=pdf)
-            observe_pdfs['plot'] = (pdf, os.path.splitext(os.path.basename(info['output_file']))[0]
-                                    + ('_db' if log_y else '') + '.pdf')
+            observe_pdfs['plot'] = (pdf, pdf_name)
     except FileNotFoundError as exc:
         return jsonify({'success': False, 'error': str(exc)}), 404
     except (RuntimeError, ValueError) as exc:
@@ -6691,8 +6817,17 @@ def api_observe_plot():
     except Exception as exc:
         log.error("Observation plot failed: %s", exc, exc_info=True)
         return jsonify({'success': False, 'error': str(exc)}), 500
-    from flask import send_file
-    return send_file(out, mimetype='image/png')
+    try:
+        live = time.time() - os.path.getmtime(info['output_file']) < PLOT_CACHE_LIVE_S
+        if not live:
+            # keyed after drawing: drawing a Sun track can itself update the
+            # carried scallop parameters, a dependency
+            _plot_cache_store(plot_cache_key(*plot_args), out, pdf)
+    except OSError as exc:
+        log.warning("Plot cache: %s", exc)
+    resp = send_file(out, mimetype='image/png')
+    resp.headers['X-Plot-Cache'] = 'miss'
+    return resp
 
 
 @app.route('/api/observe/presto', methods=['POST'])
@@ -7261,7 +7396,7 @@ def api_receiver_status():
 @app.route('/api/receiver/start', methods=['POST'])
 def api_receiver_start():
     """Start the B200 receiver using radioconda so the scheduler can launch it."""
-    global receiver_boot_process
+    global receiver_boot_process, receiver_boot_exit_seen
     python_path = receiver_python_path()
     repo_root = os.path.abspath(os.path.join(_SCRIPT_DIR, ".."))
 
@@ -7271,6 +7406,13 @@ def api_receiver_start():
     if not os.path.exists(python_path):
         return jsonify({'success': False, 'running': False,
                         'error': f'Python not found: {python_path}'}), 400
+    # Before the monitors are made to give way: a start that cannot run has
+    # no business stopping them.
+    if not display_available():
+        return jsonify({'success': False, 'running': False, 'display': False,
+                        'error': 'The scheduler has no display, so the receiver GUI '
+                                 'cannot open its window. Start the scheduler from the '
+                                 'desktop launcher to use it; observations do not need it.'}), 409
 
     # The whole check-and-claim under the shared lock, so a Sun scan or
     # calibration day starting at the same instant cannot slip between the
@@ -7311,6 +7453,7 @@ def api_receiver_start():
             cmd = [python_path, RECEIVER_SCRIPT, "--sdr", "b210"]
             try:
                 receiver_boot_process = subprocess.Popen(cmd, cwd=repo_root, env=env)
+                receiver_boot_exit_seen = None
             except Exception as exc:
                 log.error("Failed to start receiver: %s", exc)
                 return jsonify({'success': False, 'running': False, 'error': str(exc),
@@ -7725,7 +7868,13 @@ def api_drift_preview():
 
 @app.route('/api/log', methods=['GET'])
 def api_get_log():
-    n = get_config_value("log_lines") or 100
+    # ?lines=N from the Log tab's selector (100/500/1000), else the configured
+    # number; capped, since the page asks every 5 s.
+    try:
+        n = int(request.args.get('lines') or get_config_value("log_lines") or 100)
+    except ValueError:
+        n = 100
+    n = max(1, min(n, LOG_SEARCH_MAX))
     try:
         with open(LOG_FILE, 'r', encoding='utf-8', errors='replace') as f:
             all_lines = f.readlines()
@@ -7735,6 +7884,76 @@ def api_get_log():
     except Exception as e:
         lines = [f"Error reading log: {e}"]
     return jsonify({'lines': lines})
+
+
+LOG_SEARCH_MAX = 5000
+_LOG_LEVELS = ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL")
+
+
+def log_files() -> list:
+    """The log and its rotated predecessors, oldest first: scheduler.log.3,
+    .2, .1, then scheduler.log (RotatingFileHandler, 5 MB each). Not
+    scheduler.log.stdout, which is the process's own output, not the log."""
+    rotated = []
+    for path in glob.glob(LOG_FILE + ".*"):
+        suffix = path[len(LOG_FILE) + 1:]
+        if suffix.isdigit():
+            rotated.append((int(suffix), path))
+    return [p for _, p in sorted(rotated, reverse=True)] + ([LOG_FILE] if os.path.exists(LOG_FILE) else [])
+
+
+def search_log(query: str = "", since: str = "", until: str = "", level: str = "",
+               after: int = 0, limit: int = 500) -> dict:
+    """Lines of every log file matching `query` (case-insensitive text), on or
+    after `since` and on or before `until` (YYYY-MM-DD, the log's local
+    dates), at `level` or worse, newest first, each followed by up to
+    `after` lines of what came next (a panic's backtrace lines do not
+    themselves say "panic"). `limit` caps the matches; `total` says how many
+    there were."""
+    q = (query or "").strip().lower()
+    after = max(0, min(int(after or 0), 20))
+    limit = max(1, min(int(limit or 500), LOG_SEARCH_MAX))
+    min_level = _LOG_LEVELS.index(level.upper()) if level and level.upper() in _LOG_LEVELS else 0
+    hits, total = [], 0
+    files = log_files()
+    for path in files:
+        try:
+            with open(path, 'r', encoding='utf-8', errors='replace') as fh:
+                lines = [ln.rstrip('\n') for ln in fh]
+        except OSError:
+            continue
+        for i, ln in enumerate(lines):
+            day = ln[:10]
+            dated = len(day) == 10 and day[4] == '-' and day[7] == '-'
+            if since and dated and day < since:
+                continue
+            if until and dated and day > until:
+                continue
+            if q and q not in ln.lower():
+                continue
+            if min_level:
+                parts = ln.split(None, 3)
+                lv = parts[2] if len(parts) > 2 else ""
+                if lv not in _LOG_LEVELS or _LOG_LEVELS.index(lv) < min_level:
+                    continue
+            total += 1
+            hits.append([ln] + lines[i + 1:i + 1 + after])
+    hits.reverse()
+    return {'matches': hits[:limit], 'total': total, 'truncated': total > limit,
+            'files': [os.path.basename(p) for p in files]}
+
+
+@app.route('/api/log/search', methods=['GET'])
+def api_log_search():
+    """Search the log and its rotated files: ?q=text&since=YYYY-MM-DD
+    &until=YYYY-MM-DD&level=WARNING&after=N&limit=N. The Log tab's search."""
+    a = request.args
+    try:
+        return jsonify(search_log(a.get('q', ''), a.get('since', ''), a.get('until', ''),
+                                  a.get('level', ''), int(a.get('after', 0) or 0),
+                                  int(a.get('limit', 500) or 500)))
+    except ValueError as exc:
+        return jsonify({'error': str(exc)}), 400
 
 
 # =============================================================================

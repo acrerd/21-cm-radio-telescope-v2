@@ -29,6 +29,21 @@ def _script(html):
     return "\n".join(blocks)
 
 
+def _starts_regex(js, i):
+    """Whether the '/' at js[i] opens a regex literal rather than dividing:
+    true after an operator, an opening bracket, a comma or semicolon, the
+    start, or a keyword such as return - the places a value is expected."""
+    k = i - 1
+    while k >= 0 and js[k] in " \t\r\n":
+        k -= 1
+    if k < 0:
+        return True
+    if js[k] in "(,=:[!&|?{};+-*%<>~^":
+        return True
+    m = re.search(r"([A-Za-z_$][\w$]*)$", js[max(0, k - 12):k + 1])
+    return bool(m) and m.group(1) in ("return", "typeof", "case", "in", "of", "void", "delete")
+
+
 def scan_javascript(js):
     """Return a list of complaints. Empty means nothing obviously broken."""
     problems = []
@@ -83,6 +98,25 @@ def scan_javascript(js):
             state = "/*"
             i += 2
             continue
+        if c == "/" and _starts_regex(js, i):
+            # A regex literal, skipped to its closing slash on the same line:
+            # its quotes are not strings. /filename\*?=(?:UTF-8'')?"?.../i in
+            # observe.js (2026-10-04) read as two unclosed strings until this.
+            j, in_class = i + 1, False
+            while j < n and js[j] != "\n":
+                if js[j] == "\\":
+                    j += 2
+                    continue
+                if js[j] == "[":
+                    in_class = True
+                elif js[j] == "]":
+                    in_class = False
+                elif js[j] == "/" and not in_class:
+                    break
+                j += 1
+            if j < n and js[j] == "/":
+                i = j + 1
+                continue
         if c in "'\"`":
             state = c
             opened_at = line_no

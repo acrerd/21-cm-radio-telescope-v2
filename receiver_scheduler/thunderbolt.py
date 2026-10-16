@@ -301,9 +301,15 @@ def active_warnings(sup, primary=None):
         for b, text in sorted(CRITICAL_ALARMS.items()):
             if sup["critical_alarms"] >> b & 1:
                 out.append("CRITICAL: " + text)
-        if sup.get("holdover_s"):
-            out.append("in holdover for %d s: the 10 MHz and PPS are free-running" % sup["holdover_s"])
-        if sup.get("disciplining_mode") not in (0, None):
+        # holdover_s is the length of the last holdover and stays set after
+        # the unit relocks, so it is a warning only while the disciplining
+        # mode says holdover (2 auto, 3 manual). Read alone, a 12-minute
+        # holdover on 2026-10-09 kept "in holdover" on the Clocks card for a
+        # week of normal locking.
+        mode = sup.get("disciplining_mode")
+        if mode in (2, 3):
+            out.append("in holdover for %d s: the 10 MHz and PPS are free-running" % sup.get("holdover_s", 0))
+        elif mode not in (0, None):
             out.append("disciplining: " + sup["disciplining_mode_text"])
         if sup.get("gps_decoding") not in (0, None):
             out.append("GPS: " + sup["gps_decoding_text"])

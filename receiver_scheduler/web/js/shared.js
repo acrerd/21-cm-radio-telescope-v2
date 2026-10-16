@@ -314,17 +314,28 @@
                     : 'The receiver GUI is already running on the console.';
             } else {
                 dot.classList.remove('running');
-                dot.style.background = data.returncode === null ? '#666' : '#ff9500';
-                text.textContent = data.returncode === null ? 'Receiver: Idle' : `Receiver: Stopped (${data.returncode})`;
-                text.title = '';
-                btn.disabled = false;
+                // returncode is the hand-started GUI's, and the server reports
+                // it for ten minutes after the GUI is found gone, then idle.
+                const ended = data.returncode !== null && data.returncode !== undefined;
+                dot.style.background = ended && data.returncode !== 0 ? '#ff9500' : '#666';
+                text.textContent = ended
+                    ? 'Receiver: GUI ' + (data.reason || 'exit ' + data.returncode)
+                    : 'Receiver: Idle';
+                text.title = ended
+                    ? 'The receiver GUI started by hand has ended (exit status '
+                      + data.returncode + '). Its messages are in scheduler_stdout.log.'
+                    : '';
                 // Says what it is for, because the name no longer has to:
                 // this is the one deliberately graphical path in a system that
                 // is otherwise entirely headless.
-                btn.title = 'Opens the receiver\u2019s Qt window on the observatory '
-                          + 'console, for warm-up and checking the band. Not part of '
-                          + 'the observing path, and it will fail over ssh - there is '
-                          + 'no display. Uses ' + (data.python || 'radioconda Python') + '.';
+                btn.disabled = data.display === false;
+                btn.title = data.display === false
+                    ? 'The scheduler has no display (it was started over ssh), so the '
+                      + 'receiver\u2019s Qt window cannot open. Start the scheduler from '
+                      + 'the desktop launcher to use it; observations do not need it.'
+                    : 'Opens the receiver\u2019s Qt window on the observatory '
+                      + 'console, for warm-up and checking the band. Not part of '
+                      + 'the observing path. Uses ' + (data.python || 'radioconda Python') + '.';
             }
         }
 

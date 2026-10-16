@@ -2147,10 +2147,11 @@ class TestObservationLifecycle:
         manual_proc.terminate.assert_called_once()
         assert sched.current_process is obs_proc
 
+    @patch.object(sched, 'display_available', return_value=True)
     @patch.object(sched, 'receiver_python_path', return_value='/tmp/radioconda/bin/python')
     @patch.object(os.path, 'exists', return_value=True)
     @patch('subprocess.Popen')
-    def test_receiver_start_does_not_preempt_scheduled_observation(self, mock_popen, mock_exists, mock_receiver_python):
+    def test_receiver_start_does_not_preempt_scheduled_observation(self, mock_popen, mock_exists, mock_receiver_python, mock_display):
         sched.current_observation = {"name": "Scheduled"}
         sched.current_process = MagicMock()
         sched.current_process.poll.return_value = None
@@ -2165,6 +2166,65 @@ class TestObservationLifecycle:
         assert data["source"] == "observation"
         assert data["pid"] == 1234
         mock_popen.assert_not_called()
+
+    @patch.object(sched, 'display_available', return_value=False)
+    @patch.object(sched, 'receiver_python_path', return_value='/tmp/radioconda/bin/python')
+    @patch.object(os.path, 'exists', return_value=True)
+    @patch('subprocess.Popen')
+    def test_receiver_gui_is_refused_without_a_display(self, mock_popen, mock_exists, mock_receiver_python, mock_display):
+        """Qt with no display aborts a second after starting (-6, 2026-10-11).
+
+        Refused up front instead, and before the monitors are made to give way,
+        since a start that cannot run has no business stopping them.
+        """
+        sched.receiver_boot_process = None
+        sched.app.config['TESTING'] = True
+        with patch.object(sched, 'sun_monitor_yield') as yield_, \
+             sched.app.test_client() as client:
+            resp = client.post('/api/receiver/start')
+        assert resp.status_code == 409
+        data = resp.get_json()
+        assert data["success"] is False and data["display"] is False
+        assert "display" in data["error"]
+        mock_popen.assert_not_called()
+        yield_.assert_not_called()
+
+    def test_a_gui_exit_is_reported_for_a_while_then_forgotten(self):
+        """It read "Stopped (-6)" on the page for four days."""
+        proc = MagicMock()
+        proc.poll.return_value = -6
+        sched.receiver_boot_process = proc
+        sched.receiver_boot_exit_seen = None
+        try:
+            with patch.object(sched.time, 'time', return_value=1000.0):
+                first = sched.receiver_status_snapshot()
+            assert first["returncode"] == -6
+            assert first["reason"] == "killed by SIGABRT"
+            later = 1000.0 + sched.RECEIVER_EXIT_SHOWN_S - 1
+            with patch.object(sched.time, 'time', return_value=later):
+                assert sched.receiver_status_snapshot()["returncode"] == -6
+            with patch.object(sched.time, 'time', return_value=later + 2):
+                gone = sched.receiver_status_snapshot()
+            assert gone["returncode"] is None and gone["reason"] is None
+        finally:
+            sched.receiver_boot_process = None
+            sched.receiver_boot_exit_seen = None
+
+    def test_a_gui_stopped_for_an_observation_is_not_reported_as_an_exit(self):
+        proc = MagicMock()
+        proc.poll.return_value = None
+        proc.wait.return_value = -15
+        sched.receiver_boot_process = proc
+        sched.stop_booted_receiver()
+        proc.terminate.assert_called_once()
+        assert sched.receiver_boot_process is None
+        assert sched.receiver_status_snapshot()["returncode"] is None
+
+    def test_receiver_exit_reasons(self):
+        assert sched.receiver_exit_reason(0) == "closed"
+        assert sched.receiver_exit_reason(-6) == "killed by SIGABRT"
+        assert sched.receiver_exit_reason(-9) == "killed by SIGKILL"
+        assert sched.receiver_exit_reason(1) == "exit code 1"
 
     @patch.object(sched, 'receiver_python_path', return_value='/tmp/radioconda/bin/python')
     @patch.object(sched, '_same_executable', return_value=False)
@@ -3274,3 +3334,86 @@ def test_a_homing_from_an_unknown_position_is_not_judged():
                                        "alt_error_second_deg": 0.5, "az_error_second_deg": 1.0,
                                        "reapproach_skipped": False, "utc": 1790954460})
     assert same["level"] == "warn"            # without the flag it still looks like a false stall
+
+
+def test_log_search_reaches_the_rotated_files_newest_first(tmp_path, monkeypatch):
+    """The Log tab's search: the current log and its rotated predecessors
+    (not the .stdout capture), case-insensitive, by date and level, with the
+    lines that follow a match, newest first (2026-10-16)."""
+    log = tmp_path / "scheduler.log"
+    (tmp_path / "scheduler.log.2").write_text(
+        "2026-09-01 10:00:00 INFO  Reference: locked (ok)\n")
+    (tmp_path / "scheduler.log.1").write_text(
+        "2026-10-09 16:51:31 WARNING Reference: not tracking satellites (bad)\n"
+        "2026-10-09 17:04:08 WARNING Reference: auto holdover 12m37s (warn)\n")
+    log.write_text(
+        "2026-10-14 18:54:40 ERROR SRT controller restarted (reset by panic)\n"
+        "2026-10-14 18:54:40 ERROR   0x400e4d64: AsyncClient::_lwip_fin\n"
+        "2026-10-16 11:00:00 INFO  Reference: locked (ok)\n")
+    (tmp_path / "scheduler.log.stdout").write_text("2026-10-16 holdover in the stdout, not the log\n")
+    monkeypatch.setattr(sched, "LOG_FILE", str(log))
+    r = sched.search_log("HOLDOVER")
+    assert r["total"] == 1 and r["matches"][0][0].endswith("auto holdover 12m37s (warn)")
+    assert r["files"] == ["scheduler.log.2", "scheduler.log.1", "scheduler.log"]
+    r = sched.search_log("reference:")
+    assert [m[0][:10] for m in r["matches"]] == ["2026-10-16", "2026-10-09", "2026-10-09", "2026-09-01"]
+    assert sched.search_log("reference", since="2026-10-01", until="2026-10-10")["total"] == 2
+    assert sched.search_log("", level="ERROR")["total"] == 2
+    assert sched.search_log("", level="WARNING")["total"] == 4
+    hit = sched.search_log("restarted", after=1)["matches"][0]
+    assert len(hit) == 2 and "_lwip_fin" in hit[1]                  # the backtrace line comes with it
+    r = sched.search_log("reference", limit=2)
+    assert r["total"] == 4 and len(r["matches"]) == 2 and r["truncated"]
+    client = sched.app.test_client()
+    d = client.get("/api/log/search?q=holdover&since=2026-10-01").get_json()
+    assert d["total"] == 1
+
+
+def test_the_log_tab_asks_for_100_500_or_1000_lines(tmp_path, monkeypatch):
+    log = tmp_path / "scheduler.log"
+    log.write_text("".join("2026-10-16 12:00:%02d INFO  line %d\n" % (i % 60, i) for i in range(1200)))
+    monkeypatch.setattr(sched, "LOG_FILE", str(log))
+    client = sched.app.test_client()
+    for n in (100, 500, 1000):
+        lines = client.get("/api/log?lines=%d" % n).get_json()["lines"]
+        assert len(lines) == n and lines[-1].endswith("line 1199")
+    assert len(client.get("/api/log?lines=99999").get_json()["lines"]) == 1200     # capped at the file
+    assert len(client.get("/api/log?lines=abc").get_json()["lines"]) == 100
+
+
+def test_an_unchanged_plot_is_served_from_the_cache(tmp_path, monkeypatch):
+    """Plot Result keeps what it drew, keyed by the recording, the options,
+    the code and the calibration files, and draws again only when one of
+    them changes; a recording still being written is never stored."""
+    import os, time
+    rec = tmp_path / "20261015_183612_pulsar.h5"
+    rec.write_bytes(b"recording")
+    old = time.time() - 3600
+    os.utime(rec, (old, old))
+    calls = []
+
+    def draw(path, out, **kw):
+        calls.append(kw.get("log_y"))
+        open(out, "wb").write(b"PNG %d" % len(calls))
+        open(kw["pdf_path"], "wb").write(b"PDF")
+    import observation_plot
+    monkeypatch.setattr(observation_plot, "plot_observation", draw)
+    monkeypatch.setattr(sched, "PLOT_CACHE_DIR", str(tmp_path / "cache"))
+    monkeypatch.setattr(sched, "OBSERVE_PLOT_PNG", str(tmp_path / "last.png"))
+    monkeypatch.setattr(sched, "_observation_info",
+                        lambda f: {"output_file": str(rec), "mode": "spectrum", "name": "x"})
+    client = sched.app.test_client()
+    r1 = client.get("/api/observe/plot?file=x")
+    r2 = client.get("/api/observe/plot?file=x")
+    assert (r1.headers["X-Plot-Cache"], r2.headers["X-Plot-Cache"]) == ("miss", "hit")
+    assert r2.data == b"PNG 1" and len(calls) == 1
+    assert sched.observe_pdfs["plot"][0].startswith(str(tmp_path / "cache"))   # the download still works
+    assert client.get("/api/observe/plot?file=x&log=1").headers["X-Plot-Cache"] == "miss"   # another option
+    os.utime(rec, (old + 60, old + 60))                                       # the recording changed
+    assert client.get("/api/observe/plot?file=x").headers["X-Plot-Cache"] == "miss"
+    monkeypatch.setattr(sched, "PLOT_CODE_FINGERPRINT", "different code")
+    assert client.get("/api/observe/plot?file=x").headers["X-Plot-Cache"] == "miss"
+    now = time.time()
+    os.utime(rec, (now, now))                                                 # live: drawn, not kept
+    client.get("/api/observe/plot?file=x")
+    assert client.get("/api/observe/plot?file=x").headers["X-Plot-Cache"] == "miss"

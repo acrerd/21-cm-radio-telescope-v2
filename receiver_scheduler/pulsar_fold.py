@@ -802,6 +802,17 @@ def mean_flux_mjy(profile, period_s, t_sys_k, k_per_jy):
     return float(p[on].sum() / nb * scale), float(sig * math.sqrt(on.sum()) / nb * scale)
 
 
+def _utc_span(t0, t1):
+    """'2026-10-15 17:36 - 2026-10-16 11:10 UTC', or with the date once when
+    both ends fall on the same UTC day."""
+    from datetime import datetime, timezone
+    a = datetime.fromtimestamp(float(t0), tz=timezone.utc)
+    b = datetime.fromtimestamp(float(t1), tz=timezone.utc)
+    if a.date() == b.date():
+        return "%s-%s UTC" % (a.strftime("%Y-%m-%d %H:%M"), b.strftime("%H:%M"))
+    return "%s - %s UTC" % (a.strftime("%Y-%m-%d %H:%M"), b.strftime("%Y-%m-%d %H:%M"))
+
+
 def plot_recording(path, out_path, pulsar=None, pdf_path=None):
     """Reduce a pulsar-mode recording and draw it.
 
@@ -843,7 +854,8 @@ def plot_recording(path, out_path, pulsar=None, pdf_path=None):
     edges = np.linspace(0.0, 2.0, 2 * nb + 1)
 
     fig = plt.figure(figsize=(16, 10))
-    gs = fig.add_gridspec(2, 2, height_ratios=[1, 1.15], hspace=0.32, wspace=0.28)
+    gs = fig.add_gridspec(2, 2, height_ratios=[1, 1.15], hspace=0.32, wspace=0.26,   # room for two colour bars
+                          left=0.05, right=0.985, top=0.9, bottom=0.07)
     a0 = fig.add_subplot(gs[0, 0])
     a1 = fig.add_subplot(gs[1, 0], sharex=a0)
 
@@ -873,14 +885,12 @@ def plot_recording(path, out_path, pulsar=None, pdf_path=None):
     flux = ""
     if t_sys:
         a0.set_ylabel("antenna temperature (mK)")
-        a0.secondary_yaxis("right", functions=(lambda v: v / ysc, lambda q: q * ysc)
-                           ).set_ylabel("% of total power")
         s_, e_ = mean_flux_mjy(p0 / 100.0, r["period_topo_mean_s"], t_sys, k_jy)
-        flux = "\nmean flux density %.0f +- %.0f mJy  (T_sys %.0f K, A_e %.2f m2, one polarisation; %s calibration)" % (
-            s_, e_, t_sys, k_jy * 2 * BOLTZMANN / 1e-26, cal_where)
+        flux = "\nmean flux density %.0f +- %.0f mJy  (T_sys %.0f K, A_e %.2f m2)" % (
+            s_, e_, t_sys, k_jy * 2 * BOLTZMANN / 1e-26)
     else:
         a0.set_ylabel("excess over the off-pulse level (%)")
-    a0.set_title("this run: matched SNR %.1f at the predicted period, %.0f min, %d periods%s"
+    a0.set_title("matched SNR %.1f at the predicted period, %.0f min, %d folds%s"
                  % (r["snr_matched"], r["duration_s"] / 60, r["n_periods"], flux), fontsize=10)
     plt.setp(a0.get_xticklabels(), visible=False)
 
@@ -890,16 +900,37 @@ def plot_recording(path, out_path, pulsar=None, pdf_path=None):
     # row noise nearly alone but lifts the row's level, flat across phase, by
     # up to 20x a row's noise by the morning (nights of 10-02 and 10-03); on a
     # 2-98 percentile scale those rows set the range and the rest went flat.
-    sub = 100 * np.array(r["subints_predicted"])
-    if sub.size:
-        sub = sub - np.median(sub[:, off64], axis=1)[:, None]
+    # The left period is that; the right one (2026-10-16) is the same rows
+    # with their level KEPT, on a scale of its own, so the interference the
+    # zeroing hides shows as bright bands across the whole phase - drawn the
+    # same twice, the panel said nothing the left half had not.
+    raw = 100 * np.array(r["subints_predicted"])
+    if raw.size:
+        sub = raw - np.median(raw[:, off64], axis=1)[:, None]
         sig = np.median(1.4826 * np.median(np.abs(sub[:, off64]), axis=1))
-        img = np.concatenate([sub, sub], axis=1) / (sig if sig > 0 else 1.0)
-        im = a1.imshow(img, aspect="auto", origin="lower", interpolation="nearest", cmap="viridis",
-                       extent=[0.0, 2.0, 0.0, sub.shape[0] * r["subint_s"] / 60.0], vmin=-2.0, vmax=3.0)
-        # in an inset beside the panel: ax=a1 would narrow it off the profile's phase axis
-        cb = fig.colorbar(im, cax=a1.inset_axes([1.01, 0.0, 0.015, 1.0]))
-        cb.set_label("excess / typical row noise", fontsize=8); cb.ax.tick_params(labelsize=8)
+        sig = sig if sig > 0 else 1.0
+        top = raw.shape[0] * r["subint_s"] / 60.0
+        im = a1.imshow(sub / sig, aspect="auto", origin="lower", interpolation="nearest", cmap="viridis",
+                       extent=[0.0, 1.0, 0.0, top], vmin=-2.0, vmax=3.0)
+        kept = raw / sig
+        # Scaled to the 97th percentile, the brightest rows saturating: the
+        # end of a run that reaches into sunrise rose to 60x the row noise
+        # and on a full scale left every other band black.
+        hi = max(3.0, float(np.percentile(kept, 97)))
+        im2 = a1.imshow(kept, aspect="auto", origin="lower", interpolation="nearest", cmap="magma",
+                        extent=[1.0, 2.0, 0.0, top], vmin=-2.0, vmax=hi)
+        a1.set_ylim(0.0, top)
+        a1.axvline(1.0, color="w", lw=1.2)
+        for x, label in ((0.5, "baseline removed"), (1.5, "level kept")):
+            a1.text(x, 0.985, label, transform=a1.get_xaxis_transform(), ha="center", va="top",
+                    fontsize=8, color="w", bbox=dict(facecolor="k", alpha=0.45, lw=0, pad=1.5))
+        # in insets beside the panel: ax=a1 would narrow it off the profile's phase axis
+        # Both in units of the typical row's noise; the halves' own labels say
+        # which is which, so the bars carry no titles.
+        cb = fig.colorbar(im, cax=a1.inset_axes([1.01, 0.0, 0.012, 1.0]))
+        cb.ax.tick_params(labelsize=7)
+        cb2 = fig.colorbar(im2, cax=a1.inset_axes([1.07, 0.0, 0.012, 1.0]), extend="max")
+        cb2.ax.tick_params(labelsize=7)
     for a in (a0, a1):
         for x in (0.5, 1.5):
             a.axvline(x, color="w" if a is a1 else "0.5", lw=0.6, ls=":")
@@ -907,8 +938,8 @@ def plot_recording(path, out_path, pulsar=None, pdf_path=None):
     a1.set_xticks(np.arange(0.0, 2.01, 0.25))
     a1.set_xlabel("pulse phase (absolute; two periods, the pulse at 0.5 and 1.5)")
     a1.set_ylabel("time from start (min)")
-    a1.set_title("sub-integrations of %.0f s at the predicted period, each row's baseline removed"
-                 % r["subint_s"], fontsize=10)
+    a1.set_title("%.0f-s sub-integrations, %s" % (r["subint_s"], _utc_span(toa["t_first"], toa["t_last"])),
+                 fontsize=10)
 
     # every run so far, added at the absolute phase
     a2 = fig.add_subplot(gs[0, 1])
@@ -987,7 +1018,34 @@ def plot_recording(path, out_path, pulsar=None, pdf_path=None):
         lo_y = float(np.min(res - outer)); hi_y = float(np.max(res + outer))
         span_y = max(hi_y - lo_y, 1.0)
         a3.set_ylim(lo_y - 0.4 * span_y, hi_y + 0.75 * span_y)       # room for the legend below, the numbers above
+        # An arrow under the day TOA of the run drawn on the left: its
+        # session's TOA for a pulsar-monitor piece, else the recording's own.
+        session = str(attrs.get("pulsar_session", "") or "")
+        mine = (T.SESSION_PREFIX + session) if session else os.path.basename(path)
+        names = list(fitres["names"])
+        if mine in names:
+            i = names.index(mine)
+            y0, y1 = a3.get_ylim()
+            tip = res[i] - err[i] - 0.03 * (y1 - y0)
+            a3.annotate("", xy=(mjd[i] - m0, tip), xytext=(mjd[i] - m0, tip - 0.1 * (y1 - y0)),
+                        arrowprops=dict(arrowstyle="-|>", color="k", lw=1.2))
         a3.set_xlabel("MJD - %d" % m0); a3.set_ylabel("residual (ms)")
+        # Calendar dates along the top, for finding a night's recording by
+        # its date. Matplotlib's date numbers count days from 1970-01-01,
+        # which is MJD 40587. Ticks fall on UTC midnights at an even step;
+        # AutoDateLocator restarts its step at every month, so 29 Sep was
+        # followed by 01 Oct and then 05 Oct.
+        import matplotlib.dates as mdates
+        from matplotlib.ticker import FixedLocator
+        top = a3.secondary_xaxis("top", functions=(lambda x: x + m0 - 40587.0,
+                                                   lambda d: d - m0 + 40587.0))
+        lo_x, hi_x = a3.get_xlim()
+        step = next(s for s in (1, 2, 3, 7, 14, 28, 56, 91, 182, 364, 728)
+                    if (hi_x - lo_x) / s <= 7)
+        days = np.arange(np.ceil(lo_x), np.floor(hi_x) + 1, step)
+        top.xaxis.set_major_locator(FixedLocator(days + m0 - 40587.0))
+        top.xaxis.set_major_formatter(mdates.DateFormatter("%d %b" if hi_x - lo_x < 300 else "%b %Y"))
+        top.tick_params(labelsize=8)
         free = fitres["free"]
         pl = ("P    = %.12f s" % fitres["P"]) + (" +- %.2e (fitted)" % fitres["P_err"] if "F0" in free else "  (catalogue, held)")
         pdl = ("Pdot = %.4e" % fitres["Pdot"]) + (" +- %.1e (fitted)" % fitres["Pdot_err"] if "F1" in free else "  (catalogue, held)")
