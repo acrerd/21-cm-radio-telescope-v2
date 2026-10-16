@@ -1,40 +1,39 @@
 {
-  "n_records": 711,
-  "span_before_deg": 15.549008121868479,
-  "span_after_deg": 14.119237610198448,
-  "closest_approach_deg": 0.09703385091483432,
-  "peak_over_baseline": 9.981135105712625,
-  "t_a_peak_k": 1696.072162674262,
+  "n_records": 353,
+  "span_before_deg": 8.091910918950704,
+  "span_after_deg": 6.610173583356166,
+  "closest_approach_deg": 0.047917577528174125,
+  "peak_over_baseline": 8.9783785533571,
   "sides": {
     "before": {
-      "solid_angle_sq_deg": 22.05234335996594,
-      "null_deg": 5.2705030702173294,
-      "sidelobe_peak_fraction": 0.004384912987349567,
-      "sidelobe_measured": true,
-      "span_deg": 15.549008121868479
+      "solid_angle_sq_deg": 21.537497505082822,
+      "null_deg": 5.0844913881322675,
+      "sidelobe_peak_fraction": 0.004798640336006028,
+      "sidelobe_measured": false,
+      "span_deg": 8.091910918950704
     },
     "after": {
-      "solid_angle_sq_deg": 19.873768383947734,
-      "null_deg": 4.885556675892953,
-      "sidelobe_peak_fraction": 0.008415205226221177,
-      "sidelobe_measured": true,
-      "span_deg": 14.119237610198448
+      "solid_angle_sq_deg": 20.20682689720733,
+      "null_deg": 4.689046535747828,
+      "sidelobe_peak_fraction": 0.0028811201202808842,
+      "sidelobe_measured": false,
+      "span_deg": 6.610173583356166
     }
   },
-  "solid_angle_sq_deg": 20.963055871956836,
-  "solid_angle_sr": 0.0063857119905601015,
-  "fwhm_deg": 4.30142486213837,
-  "side_disagreement": 0.10392449408736137,
-  "sidelobe_peak_fraction": 0.008415205226221177,
-  "sidelobe_measured": true,
-  "gaussian_fwhm_deg": 4.403915529413287,
-  "gaussian_centre_deg": -0.053464994499291194,
+  "solid_angle_sq_deg": 20.872162201145073,
+  "solid_angle_sr": 0.00635802419508248,
+  "fwhm_deg": 4.2920894622065315,
+  "side_disagreement": 0.0637533665679587,
+  "sidelobe_peak_fraction": 0.004798640336006028,
+  "sidelobe_measured": false,
+  "gaussian_fwhm_deg": 4.492967673256865,
+  "gaussian_centre_deg": -0.008400006459155965,
   "ok": true,
   "why": [],
   "version": 1,
-  "source_file": "20260925_120824_drift.h5",
-  "measured_utc": "2026-09-25T12:07:53Z",
-  "gain_db": 20.0,
-  "t_sys_k": 188.84830733650165,
-  "created_utc": "2026-09-25T15:36:31Z"
+  "source_file": "20260925_142025_drift.h5",
+  "measured_utc": "2026-09-25T13:49:57Z",
+  "gain_db": 10.0,
+  "t_sys_k": null,
+  "created_utc": "2026-10-11T16:51:20Z"
 }
