@@ -60,17 +60,15 @@ def test_a_buried_pulse_is_recovered_at_its_phase():
     # about sensitivity: 15 min of the real thing at 100 K is only ~2.7 sigma
     # in an 11 ms bin, and a noise bin could outvote it.
     t, freq, power, p, pmean = _synthetic(minutes=15.0, peak_k=0.2)
-    r = PF.analyse(t, freq, power, p, search_ppm=40.0)
+    r = PF.analyse(t, freq, power, p)
     assert r["snr_predicted"] > 5.0, r["snr_predicted"]
     assert abs(r["peak_bin_predicted"] - int(0.2 * r["nbins"])) <= 1
-    # the search does not wander off: within the phase resolution of the run
-    assert abs(r["best_ppm"]) < 1e6 / (r["nbins"] * r["n_periods"]) * 3
     assert r["n_periods"] == pytest.approx(15 * 60 / pmean, rel=1e-3)
 
 
 def test_no_pulse_no_detection():
     t, freq, power, p, _ = _synthetic(minutes=5.0, peak_k=0.0, seed=3)
-    r = PF.analyse(t, freq, power, p, search_ppm=40.0)
+    r = PF.analyse(t, freq, power, p)
     assert r["snr_predicted"] < 4.0
 
 
@@ -162,7 +160,7 @@ def test_the_streaming_fold_agrees_and_reads_in_blocks(tmp_path):
         hf.create_dataset("power", data=power, chunks=(1024, 16))
         hf.create_dataset("time_marks", data=np.array([[0, t[0]]]))
         hf.attrs["dt_s"] = 1e-3; hf.attrs["t0_unix"] = float(t[0]); hf.attrs["pulsar_name"] = "B0329+54"
-    r, attrs = PF.analyse_file(path, block_rows=100_000, search_ppm=20.0)
+    r, attrs = PF.analyse_file(path, block_rows=100_000)
     assert r["snr_matched"] > 5.0 and abs(r["peak_bin_predicted"] - 12) <= 1
     assert r["nchan"] == 16 and len(r["subints"]) == int(15 * 60 // PF.SUBINT_S)
 
@@ -180,7 +178,7 @@ def test_a_one_channel_recording_folds_and_exports(tmp_path):
         hf.create_dataset("time_marks", data=np.array([[0, t[0]]]))
         hf.attrs["dt_s"] = 1e-3; hf.attrs["t0_unix"] = float(t[0]); hf.attrs["pulsar_name"] = "B0329+54"
         hf.attrs["channel_width_hz"] = 8e6; hf.attrs["sample_rate_hz"] = 8e6
-    r, _ = PF.analyse_file(path, block_rows=100_000, search_ppm=20.0)
+    r, _ = PF.analyse_file(path, block_rows=100_000)
     assert r["nchan"] == 1 and r["snr_matched"] > 5.0
     out, s = SE.export(path)
     h, hlen = SE.read_header(out)
@@ -204,7 +202,7 @@ def test_an_artificial_pulsar_is_folded_at_its_own_period(tmp_path):
         hf.create_dataset("time_marks", data=np.array([[0, t0]]))
         hf.attrs["dt_s"] = dt; hf.attrs["t0_unix"] = t0
         hf.attrs["inject_period_s"] = P; hf.attrs["inject_duty"] = 0.01
-    r, attrs = PF.analyse_file(path, block_rows=100_000, search_ppm=20.0)
+    r, attrs = PF.analyse_file(path, block_rows=100_000)
     assert r["pulsar"] == "artificial pulsar" and r["period_topo_mean_s"] == P
     assert r["snr_matched"] > 20 and r["observer_velocity_m_s"] == [0.0, 0.0]
     assert r["peak_bin_predicted"] == 0                          # the gate opens at phase 0
@@ -279,6 +277,6 @@ def test_two_nights_fold_to_the_same_phase(tmp_path):
             hf.create_dataset("power", data=power, chunks=(1024, 1))
             hf.create_dataset("time_marks", data=np.array([[0, t0]]))
             hf.attrs["dt_s"] = dt; hf.attrs["t0_unix"] = t0
-        r, _ = PF.analyse_file(path, pulsar=p, block_rows=100_000, search_ppm=5.0)
+        r, _ = PF.analyse_file(path, pulsar=p, block_rows=100_000)
         got.append(r["matched_phase"])
     assert got[0] == pytest.approx(0.5, abs=2.0 / 256) and got[1] == pytest.approx(0.5, abs=2.0 / 256)

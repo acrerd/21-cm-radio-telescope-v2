@@ -25,10 +25,11 @@ telescope: the observer's velocity toward the pulsar - Earth's rotation and
 orbit, astropy's barycentric correction - compresses or stretches the pulse
 train by up to a part in 10^4, which over an hour of 5000 periods is most of
 a period. Integrated across the run rather than held fixed, since the
-rotation term changes through the hour. The fold also searches a small
-window of fractional period around the prediction and reports where the
-peak signal-to-noise fell, in parts per million: near zero says the
-conversion is right, and a sign error would show as twice the velocity term.
+rotation term changes through the hour. The fold used to search a small
+window of fractional period around the prediction as a check on that
+conversion; it landed within 0.2 ppm on the first strong nights and was
+removed on 2026-10-20, when the TOAs and PINT residuals had long since become
+the far finer check, and on weak nights the search only found noise.
 
 Absolute time is not needed for any of this. The fold wants the sample
 cadence stable (the B200's clock, on the external reference) and the start
@@ -50,7 +51,6 @@ C_M_S = 299792458.0
 NCHAN = 1               # the whole band summed (2026-09-26; 16 bought nothing on the sky, at 16x the storage)
 DT_S = 1.0e-3           # one row per millisecond
 NBINS = 64              # phase bins in the folded profile
-SEARCH_PPM = 150.0      # +-fractional period searched around the prediction, ppm
 SUBINT_S = 600.0        # sub-integration length for the time-phase panel (10 min, 2026-09-27)
 DETREND_S = 10.0        # running-median window for each channel's gain drift
 
@@ -58,9 +58,9 @@ DETREND_S = 10.0        # running-median window for each channel's gain drift
 # else is a factor of 20 or more in time at any T_sys we will reach (B0950+08
 # at 8 h is the nearest), so the mode is built for B0329+54 and nothing
 # else: no catalogue, no picker, no lookup. Values as published in the ATNF
-# catalogue (PSR J0332+5434) as remembered here; the fold's period search
-# absorbs a part in 10^4, which covers their precision, and the number that
-# matters most - the barycentric period - is good to nine digits.
+# catalogue (PSR J0332+5434) as remembered here; the PINT fit of the TOAs
+# refines F0 and F1, and the number that matters most - the barycentric
+# period - is good to nine digits.
 #
 #   PSRJ   J0332+5434      PSRB  B0329+54
 #   RAJ    03:32:59.4096   DECJ  +54:34:43.329      (J2000)
@@ -178,8 +178,8 @@ def absolute_phase(t_unix, pulsar=None, freq_hz=None, knot_s=60.0):
     phk = (f0 * dt - whole) + 0.5 * f1 * dt ** 2 + f2 * dt ** 3 / 6.0 + p.get("phase_offset", 0.0)
     phk = phk + (whole - whole[0])                # continuous across the run
     # Whole periods only, so the fraction - the phase that matters - is kept:
-    # counted from the run's first period, as the period search's phase/(1+d)
-    # scaling and n_periods assume (the F1 term alone is -3300 periods by now).
+    # counted from the run's first period, as n_periods assumes (the F1 term
+    # alone is -3300 periods by now).
     phk = phk - np.floor(phk[0])
     freq_topo = np.gradient(phk, knots) if len(knots) > 2 else np.array([f0, f0])
     return np.interp(t, knots, phk), float(1.0 / np.mean(freq_topo))
@@ -337,28 +337,11 @@ def matched_snr(series, phase, width_s, period_s, nbins=FINE_BINS):
     return float((sm[k] - base) / sig), (k + 0.5) / nbins, prof
 
 
-def search_period(series, phase0, ppm=SEARCH_PPM, nbins=NBINS, steps=None):
-    """Fold at fractional period offsets within +-ppm of the prediction and
-    return (best_ppm, best_snr, trial_ppm, trial_snr). `phase0` is the
-    predicted phase; a period longer by a fraction d has phase phase0/(1+d).
-    The step is set by the phase resolution across the run: one bin at the
-    last sample."""
-    n_periods = float(phase0[-1] - phase0[0]) if len(phase0) > 1 else 1.0
-    step_ppm = max(0.25, 1e6 / (nbins * max(n_periods, 1.0)))
-    trials = np.arange(-ppm, ppm + step_ppm, step_ppm) if steps is None else np.linspace(-ppm, ppm, steps)
-    snrs = np.empty(len(trials))
-    for i, d in enumerate(trials):
-        prof, _ = fold(series, phase0 / (1.0 + d * 1e-6), nbins)
-        snrs[i] = profile_snr(prof)[0]
-    k = int(np.argmax(snrs))
-    return float(trials[k]), float(snrs[k]), trials, snrs
-
-
-def analyse(t, freq_hz, power, pulsar, nbins=NBINS, search_ppm=SEARCH_PPM):
+def analyse(t, freq_hz, power, pulsar, nbins=NBINS):
     """The whole reduction for one recording against one catalogue pulsar.
 
-    Returns a dict with the summed profile at the predicted period and at the
-    best searched period, the per-channel profiles, the time-phase
+    Returns a dict with the summed profile at the predicted period, the
+    per-channel profiles, the time-phase
     sub-integrations, the DM-predicted delay per channel, and the numbers.
     """
     dt = float(np.median(np.diff(t))) if len(t) > 1 else DT_S
@@ -375,12 +358,8 @@ def analyse(t, freq_hz, power, pulsar, nbins=NBINS, search_ppm=SEARCH_PPM):
     snr0 = profile_snr(prof0)
     width_s = float(pulsar.get("w50_ms", 6.6)) * 1e-3
     m_snr, m_phase, _ = matched_snr(total, phase0, width_s, p_mean)
-    best_ppm, best_snr, trial_ppm, trial_snr = search_period(total, phase0, search_ppm, nbins)
-    phase_best = phase0 / (1.0 + best_ppm * 1e-6)
-    prof_best, _ = fold(total, phase_best, nbins)
-    snr_best = profile_snr(prof_best)
-    # per-channel profiles at the best period, and where their peaks fall
-    chan_prof = np.array([fold(clip_rfi(per_chan[:, c])[0], phase_best, nbins)[0]
+    # per-channel profiles, and where their peaks fall
+    chan_prof = np.array([fold(clip_rfi(per_chan[:, c])[0], phase0, nbins)[0]
                           for c in range(per_chan.shape[1])])
     # the dispersion delay of each channel relative to the highest frequency
     f_ghz = np.asarray(freq_hz, float) / 1e9
@@ -388,7 +367,7 @@ def analyse(t, freq_hz, power, pulsar, nbins=NBINS, search_ppm=SEARCH_PPM):
     # sub-integrations: the profile in slices of SUBINT_S, to see it build
     n_sub = max(1, int((t[-1] - t[0]) // SUBINT_S))
     edges = np.linspace(t[0], t[-1] + 1e-6, n_sub + 1)
-    subints = np.array([fold(total[(t >= a) & (t < b)], phase_best[(t >= a) & (t < b)], nbins)[0]
+    subints = np.array([fold(total[(t >= a) & (t < b)], phase0[(t >= a) & (t < b)], nbins)[0]
                         for a, b in zip(edges[:-1], edges[1:])])
     v = observer_velocity_toward(pulsar["ra_deg"], pulsar["dec_deg"], np.array([t[0], t[-1]]))
     return {
@@ -398,9 +377,6 @@ def analyse(t, freq_hz, power, pulsar, nbins=NBINS, search_ppm=SEARCH_PPM):
         "nbins": nbins, "n_clipped": n_clipped,
         "profile_predicted": prof0.tolist(), "snr_predicted": snr0[0], "peak_bin_predicted": snr0[1],
         "snr_matched": m_snr, "matched_phase": m_phase, "matched_width_s": width_s,
-        "profile_best": prof_best.tolist(), "snr_best": snr_best[0], "peak_bin_best": snr_best[1],
-        "best_ppm": best_ppm, "search_ppm": [float(trial_ppm.min()), float(trial_ppm.max())],
-        "search_snr": trial_snr.tolist(), "search_trial_ppm": trial_ppm.tolist(),
         "channel_profiles": chan_prof.tolist(), "channel_freq_hz": np.asarray(freq_hz, float).tolist(),
         "dm_delay_s": delay_s.tolist(), "subints": subints.tolist(), "subint_s": SUBINT_S,
         "duty_expected": None,
@@ -412,7 +388,7 @@ BLOCK_ROWS = 600_000     # 10 minutes of rows per read: 38 MB of float32
 
 STREAM_DETREND_S = 1.0  # analyse_file's baseline block (the 408 MHz pipeline's 1 s median)
 WEIGHT_S = 1.0          # per-second inverse-variance weighting, as the 408 MHz fold did
-SUB_S = 60.0            # sub-profile length the period search shifts
+SUB_S = 60.0            # sub-profile length: the time-phase panel and the TOA segments are built from these
 
 
 def _block_times(lo, hi, dt, t0, marks):
@@ -440,7 +416,7 @@ def _matched_from_profile(prof, width_s, period_s):
     return float((sm[k] - base) / sig), (k + 0.5) / nb
 
 
-def analyse_file(path, pulsar=None, nbins=NBINS, search_ppm=SEARCH_PPM, block_rows=BLOCK_ROWS, toa_bins=None):
+def analyse_file(path, pulsar=None, nbins=NBINS, block_rows=BLOCK_ROWS, toa_bins=None):
     """`analyse` for a recording on disk, in one pass and bounded memory.
 
     Nothing the length of the run is kept. The first version held the row
@@ -456,8 +432,7 @@ def analyse_file(path, pulsar=None, nbins=NBINS, search_ppm=SEARCH_PPM, block_ro
     24 s and 260 MB. A 1 s baseline cuts the red noise at 0.1-0.5 Hz from
     7x to 2x white, but the pulse's harmonics lie above it. Everything is
     accumulated into 60 s sub-profiles of the 256-bin fold. The 64-bin
-    profile, the matched filter, the period search (sub-profiles shifted per
-    trial, as prepfold does) and the time-phase panel all come from those.
+    profile, the matched filter and the time-phase panel all come from those.
     """
     import observation_plot
     with observation_plot.open_readonly(path) as hf:
@@ -502,7 +477,6 @@ def analyse_file(path, pulsar=None, nbins=NBINS, search_ppm=SEARCH_PPM, block_ro
         fb = FINE_BINS
         nsub = int((t_last - t_first) // SUB_S) + 1
         S = np.zeros((nsub, fb)); C = np.zeros((nsub, fb))
-        phi_sum = np.zeros(nsub); phi_n = np.zeros(nsub)
         chan_sum = np.zeros((nchan, nbins)); chan_cnt = np.zeros((nchan, nbins))
         per = max(1, int(round(STREAM_DETREND_S / dt)))
         wper = max(1, int(round(WEIGHT_S / dt)))
@@ -548,8 +522,6 @@ def analyse_file(path, pulsar=None, nbins=NBINS, search_ppm=SEARCH_PPM, block_ro
             fbin = np.clip(np.floor((phase % 1.0) * fb).astype(np.int64), 0, fb - 1)
             S += np.bincount(sub * fb + fbin, weights=w * y, minlength=nsub * fb).reshape(nsub, fb)
             C += np.bincount(sub * fb + fbin, weights=w, minlength=nsub * fb).reshape(nsub, fb)
-            phi_sum += np.bincount(sub, weights=phase, minlength=nsub)
-            phi_n += np.bincount(sub, minlength=nsub)
             if toa_bins:
                 tb = int(toa_bins)
                 tbin = np.clip(np.floor((phase % 1.0) * tb).astype(np.int64), 0, tb - 1)
@@ -563,31 +535,7 @@ def analyse_file(path, pulsar=None, nbins=NBINS, search_ppm=SEARCH_PPM, block_ro
     snr0 = profile_snr(prof0)
     width_s = float(pulsar.get("w50_ms", 6.6)) * 1e-3
     m_snr, m_phase = _matched_from_profile(fine, width_s, p_mean)
-    phi_mid = phi_sum / np.maximum(phi_n, 1)
     n_periods = float(np.interp(t_last, knots, phi_k) - np.interp(t_first, knots, phi_k))
-    step_ppm = max(0.25, 1e6 / (nbins * max(n_periods, 1.0)))
-    trials = np.arange(-search_ppm, search_ppm + step_ppm, step_ppm)
-    cols = np.arange(fb)
-
-    def shifted(d_ppm):
-        # a period longer by d has phase phase/(1+d): each sub-profile moves
-        # back by phi_mid * d (cycles), applied as a whole number of fine bins
-        shifts = np.round(-phi_mid * d_ppm * 1e-6 * fb).astype(np.int64) % fb
-        idx = (cols[None, :] - shifts[:, None]) % fb
-        return np.take_along_axis(S, idx, axis=1), np.take_along_axis(C, idx, axis=1)
-
-    snrs = np.empty(len(trials))
-    for ii, d in enumerate(trials):
-        rs, rc = shifted(d)
-        ss = rs.sum(axis=0).reshape(nbins, group).sum(axis=1)
-        cc = rc.sum(axis=0).reshape(nbins, group).sum(axis=1)
-        snrs[ii] = profile_snr(np.where(cc > 0, ss / np.maximum(cc, 1e-300), 0.0))[0]
-    kbest = int(np.argmax(snrs)); best_ppm = float(trials[kbest])
-    rs, rc = shifted(best_ppm)
-    ss = rs.sum(axis=0).reshape(nbins, group).sum(axis=1)
-    cc = rc.sum(axis=0).reshape(nbins, group).sum(axis=1)
-    prof_best = np.where(cc > 0, ss / np.maximum(cc, 1e-300), 0.0)
-    snr_best = profile_snr(prof_best)
     per_sub = max(1, int(round(SUBINT_S / SUB_S)))
     ns2 = nsub // per_sub
 
@@ -598,9 +546,8 @@ def analyse_file(path, pulsar=None, nbins=NBINS, search_ppm=SEARCH_PPM, block_ro
         c2 = CC[:ns2 * per_sub].reshape(ns2, per_sub, nbins, group).sum(axis=(1, 3))
         return np.where(c2 > 0, s2 / np.maximum(c2, 1e-300), 0.0)
 
-    subints = _subints(rs, rc, prof_best)
-    # at the predicted period and the absolute phase - what the plot draws
-    subints_predicted = _subints(S, C, prof0)
+    # at the predicted period and the absolute phase
+    subints = _subints(S, C, prof0)
     chan_prof = np.where(chan_cnt > 0, chan_sum / np.maximum(chan_cnt, 1), 0.0)
     f_ghz = freq / 1e9
     delay_s = 4.148808e-3 * pulsar["dm"] * (1.0 / f_ghz ** 2 - 1.0 / f_ghz.max() ** 2)
@@ -613,12 +560,8 @@ def analyse_file(path, pulsar=None, nbins=NBINS, search_ppm=SEARCH_PPM, block_ro
         "nbins": nbins, "n_clipped": n_clipped, "nchan": int(nchan),
         "profile_predicted": prof0.tolist(), "snr_predicted": snr0[0], "peak_bin_predicted": snr0[1],
         "snr_matched": m_snr, "matched_phase": m_phase, "matched_width_s": width_s,
-        "profile_best": prof_best.tolist(), "snr_best": snr_best[0], "peak_bin_best": snr_best[1],
-        "best_ppm": best_ppm, "search_ppm": [float(trials.min()), float(trials.max())],
-        "search_snr": snrs.tolist(), "search_trial_ppm": trials.tolist(),
         "channel_profiles": chan_prof.tolist(), "channel_freq_hz": freq.tolist(),
         "dm_delay_s": delay_s.tolist(), "subints": subints.tolist(), "subint_s": per_sub * SUB_S,
-        "subints_predicted": subints_predicted.tolist(),
         "duty_expected": None,
     }
     if toa_bins:
@@ -841,8 +784,7 @@ def plot_recording(path, out_path, pulsar=None, pdf_path=None):
             # Profile first: a piece of a pulsar-monitor session needs its own
             # stored beside the others for the session's combined TOA.
             T.cache_profile(path, r["toa"], attrs)
-            toas = [t for t in T.timing_toas(path, (r, attrs), segments=4)
-                    if t["snr"] >= T.MIN_TOA_SNR]
+            toas = T.writable(T.timing_toas(path, (r, attrs), segments=4))
             if toas:
                 T.write_tim(toas)
             acc = T.accumulated_profile(fold_missing=True, calibrated=True)
@@ -859,17 +801,16 @@ def plot_recording(path, out_path, pulsar=None, pdf_path=None):
     a0 = fig.add_subplot(gs[0, 0])
     a1 = fig.add_subplot(gs[1, 0], sharex=a0)
 
-    # this run's profile: predicted (the number that counts) in blue
+    # this run's profile, folded at the predicted period and absolute phase
     # Baseline at zero - the off-pulse median, |phase - 0.5| > 0.1 - so the
     # axis is the pulse's own excess; baseline=None below so matplotlib does
     # not pin the axis at zero and cut off the noise that dips below it.
     ph64 = (np.arange(nb) + 0.5) / nb
     off64 = np.abs(ph64 - 0.5) > 0.1
-    p0 = 100 * np.array(r["profile_predicted"]); pb = 100 * np.array(r["profile_best"])
-    p0 = p0 - np.median(p0[off64]); pb = pb - np.median(pb[off64])
+    p0 = 100 * np.array(r["profile_predicted"])
+    p0 = p0 - np.median(p0[off64])
     # Calibrated: % of total power -> antenna temperature (mK), the axis the
-    # profile is drawn on; % stays as a small axis on the right. Without a
-    # calibration it falls back to % alone.
+    # profile is drawn on. Without a calibration it falls back to %.
     try:
         t_sys, k_jy, cal_where = radiometer_scale(attrs)
     except Exception:                                    # noqa: BLE001 - the plot still draws
@@ -877,11 +818,9 @@ def plot_recording(path, out_path, pulsar=None, pdf_path=None):
     ysc = t_sys * 10.0 if t_sys else 1.0                 # % -> mK
     # One SNR, the matched one at the predicted period (in the title): the
     # peak-bin figure differs by the bin's share of the pulse and only confused.
-    a0.stairs(np.concatenate([pb, pb]) * ysc, edges, color="C1", lw=0.8, alpha=0.8, baseline=None,
-              label="best searched period (%+.1f ppm)" % r["best_ppm"])
-    a0.stairs(np.concatenate([p0, p0]) * ysc, edges, color="C0", lw=1.6, baseline=None, label="predicted period")
+    a0.stairs(np.concatenate([p0, p0]) * ysc, edges, color="C0", lw=1.6, baseline=None)
     a0.axhline(0, color="k", lw=0.5)
-    a0.legend(fontsize=8, loc="upper center"); a0.grid(alpha=0.3)
+    a0.grid(alpha=0.3)
     flux = ""
     if t_sys:
         a0.set_ylabel("antenna temperature (mK)")
@@ -904,7 +843,7 @@ def plot_recording(path, out_path, pulsar=None, pdf_path=None):
     # with their level KEPT, on a scale of its own, so the interference the
     # zeroing hides shows as bright bands across the whole phase - drawn the
     # same twice, the panel said nothing the left half had not.
-    raw = 100 * np.array(r["subints_predicted"])
+    raw = 100 * np.array(r["subints"])
     if raw.size:
         sub = raw - np.median(raw[:, off64], axis=1)[:, None]
         sig = np.median(1.4826 * np.median(np.abs(sub[:, off64]), axis=1))

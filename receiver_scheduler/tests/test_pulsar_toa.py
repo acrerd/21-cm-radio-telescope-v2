@@ -173,6 +173,22 @@ def test_segments_are_kept_out_of_the_tim_a_fit_reads(tmp_path):
     assert any(ln.startswith("C ") for ln in open(seg))
 
 
+def test_a_segment_needs_more_snr_than_a_run():
+    """A faint 4 h segment's best phase can be noise (the 10-19 run's last
+    segment locked 0.61 of a period out at S/N 6.1), so segments are held to
+    7; runs, pieces and sessions, never seen off-phase, keep 6."""
+    toas = []
+    for name in ("r.h5", "r.h5_p", "session_2026-10-19T1820", "r.h5_s0", "r.h5_s3"):
+        for snr in (6.1, 7.2):
+            t = _toa(name, 61333.0)
+            t["snr"] = snr
+            toas.append(t)
+    kept = [(t["name"], t["snr"]) for t in T.writable(toas)]
+    assert kept == [("r.h5", 6.1), ("r.h5", 7.2), ("r.h5_p", 6.1), ("r.h5_p", 7.2),
+                    ("session_2026-10-19T1820", 6.1), ("session_2026-10-19T1820", 7.2),
+                    ("r.h5_s0", 7.2), ("r.h5_s3", 7.2)]
+
+
 def test_a_night_without_segments_makes_no_segment_file(tmp_path):
     tim = str(tmp_path / "b0329.tim")
     T.write_tim([_toa("a.h5", 61310.1)], tim)

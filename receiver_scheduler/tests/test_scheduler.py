@@ -2293,6 +2293,14 @@ class TestHomingCounters:
         # The bare prefix, no number and no preceding status line: unknown.
         assert sched._homing_counters(["Homing: Azimuth limit reached"]) == {"first": {}, "second": {}}
 
+    def test_reads_the_encoder_edges_the_due_kept_out(self):
+        """Since 2026-10-27 each homing reports the edges that arrived with
+        the motor off; an older Due prints nothing, which is not zero."""
+        lines = ["Homing: Drive to limits...",
+                 "Homing: Encoder edges ignored since the last homing (motor off): az 0, alt 12"]
+        assert sched.homing_ignored_edges(lines) == {"az": 0, "alt": 12}
+        assert sched.homing_ignored_edges(lines[:1]) is None
+
     def test_reads_the_error_the_controller_latched_on_status(self):
         """The controller latches the homing error on /status (issue #24),
         which survives the status flood that scrolls it out of the log."""

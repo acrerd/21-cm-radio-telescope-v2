@@ -1233,6 +1233,24 @@ _HOMING_POSITION_RE = re.compile(r"Alt:(-?\d+(?:\.\d+)?)\s+Az:(-?\d+(?:\.\d+)?)"
 # scrape below is the fallback for firmware that predates it.
 _HOMING_LIMIT_RE = re.compile(
     r"Homing: (Azimuth|Altitude) limit reached(?: at -?\d+ pulses \((-?\d+(?:\.\d+)?) deg\))?")
+# Since 2026-10-27 the Due counts an encoder edge only while that axis's
+# motor is driven or coasting (the drives are worms, so the mount cannot
+# move otherwise), and each homing reports the edges it kept out since the
+# last one. A night of 12 such edges on altitude is what cost the 10-26/27
+# pulsar run. Any is worth a warning: none should ever arrive.
+_HOMING_IGNORED_RE = re.compile(r"Homing: Encoder edges ignored since the last homing "
+                                r"\(motor off\): az (\d+), alt (\d+)")
+
+
+def homing_ignored_edges(messages: list) -> Optional[dict]:
+    """{'az': n, 'alt': m} from the homing's report of the encoder edges kept
+    out of the counters since the last homing, or None from a Due too old to
+    print it (or a line the serial log lost)."""
+    for msg in messages:
+        m = _HOMING_IGNORED_RE.search(msg)
+        if m:
+            return {"az": int(m.group(1)), "alt": int(m.group(2))}
+    return None
 
 
 def _homing_counters_from_status(status: dict) -> dict:
@@ -1361,6 +1379,13 @@ def srt_home_with_report(timeout: int = 300,
                 if not first:
                     log.warning("Homing: the Due's limit messages were not captured from "
                                 "/serial/log, so the count drift is unknown")
+                ignored = homing_ignored_edges(messages)
+                counters["ignored_edges"] = ignored
+                if ignored is not None:
+                    log.log(logging.WARNING if (ignored["az"] or ignored["alt"]) else logging.INFO,
+                            "Homing: encoder edges ignored since the last homing, with the motor "
+                            "off (spurious - each would have been half a degree of count error): "
+                            "az %d, alt %d", ignored["az"], ignored["alt"])
                 return dict(status, counters=counters)
         if not started and time.time() - started_at >= 10:
             raise RuntimeError(
@@ -3964,6 +3989,20 @@ def decode_controller_backtrace(addrs, elf=CONTROLLER_ELF, tool=_ADDR2LINE):
     return out or ["backtrace " + " ".join(addrs)]
 
 
+def planned_controller_restart(reset_reason: str, previous_boot: dict) -> str:
+    """Why a controller restart was one we asked for, or '' if it was not:
+    a software reset whose previous boot ended with a completed firmware
+    update or a /restart request, and no panic on record."""
+    if not previous_boot or previous_boot.get("panic") or "software" not in str(reset_reason):
+        return ""
+    for ev in reversed((previous_boot.get("events") or [])[-3:]):
+        if "OTA update complete" in ev:
+            return "firmware update"
+        if "Restart requested" in ev:
+            return "restart requested"
+    return ""
+
+
 def controller_watchdog():
     """Once a minute: has the controller restarted, is its loop alive, and -
     during a tracked observation - is it still tracking?
@@ -3987,16 +4026,24 @@ def controller_watchdog():
     if up is not None:
         prev_up, prev_boot = _controller_watch["uptime"], _controller_watch["boot"]
         if prev_up is not None and (up < prev_up or (boot is not None and prev_boot is not None and boot != prev_boot)):
-            log.error("SRT controller restarted (reset by %s; up %s s)", st.get("reset_reason", "?"), up)
             diag = srt_api_call("/diag") or {}
             pb = diag.get("previous_boot") or {}
+            why = planned_controller_restart(st.get("reset_reason", ""), pb)
+            # A restart we asked for - a flash, a Restart - is the controller
+            # doing as told, so the report goes at INFO; a panic, a watchdog
+            # reset or anything unexplained stays an ERROR (2026-10-16: the
+            # #53 flash had put twenty ERROR lines in the log).
+            level = logging.INFO if why else logging.ERROR
+            log.log(level, "SRT controller restarted (reset by %s; up %s s)%s", st.get("reset_reason", "?"), up,
+                    " - planned: %s" % why if why else "")
             if pb:
-                log.error("  previous boot: up %s s, last loop stage '%s', last target sent %s s before, "
-                          "longest loop pass %s ms, lowest free heap %s, smallest largest-block %s",
-                          pb.get("uptime_s"), pb.get("last_stage"), pb.get("last_target_age_s"),
-                          pb.get("max_loop_gap_ms"), pb.get("min_free_heap"), pb.get("min_max_alloc"))
+                log.log(level, "  previous boot: up %s s, last loop stage '%s', last target sent %s s before, "
+                        "longest loop pass %s ms, lowest free heap %s, smallest largest-block %s",
+                        pb.get("uptime_s"), pb.get("last_stage"), pb.get("last_target_age_s"),
+                        pb.get("max_loop_gap_ms"), pb.get("min_free_heap"), pb.get("min_max_alloc"))
+                # the controller's own event times, which are UTC - the log's are local
                 for ev in (pb.get("events") or [])[-12:]:
-                    log.error("    %s", ev)
+                    log.log(level, "    %s UTC%s", ev[:8], ev[8:])
                 pn = pb.get("panic")
                 if pn:
                     log.error("  panic: %s (%s, core %s) at %s", pn.get("reason"), pn.get("kind"),
@@ -8419,7 +8466,61 @@ def update_pulsar_timing(path: str) -> Optional[dict]:
     else:
         log.error("Pulsar timing failed for %s (exit %s): %s", os.path.basename(path),
                   out.returncode, (out.stderr or '').strip().splitlines()[-3:])
+    if out.returncode == 0:
+        # After the TOAs, since the plot's stack and residuals come from
+        # them: drawn now, the first look at the run is a cache hit.
+        prerender_observation_plot(path)
     return {'returncode': out.returncode, 'output': out.stdout}
+
+
+PRERENDER_TIMEOUT_S = 900
+_PRERENDER_CODE = ("import json, sys, observation_plot as P; a = json.loads(sys.argv[1]); "
+                   "P.plot_observation(a['path'], a['png'], name=a['name'], mode=a['mode'], "
+                   "transit_minutes=a['transit'], pdf_path=a['pdf'])")
+
+
+def prerender_observation_plot(path: str) -> bool:
+    """Draw a finished recording's Plot Result into the plot cache, as the
+    Observe tab would ask for it (?file=, linear scale), so nobody waits for
+    it. A subprocess at the lowest CPU and disk priority, since the next run
+    may already be recording; under observe_plot_lock, since a pulsar plot
+    writes the same .tim and profiles. The key is taken after drawing, as the
+    endpoint does. True if a plot was stored."""
+    t0 = time.time()
+    try:
+        info = _observation_info(os.path.basename(path))
+    except (ValueError, OSError) as exc:
+        log.warning("Plot pre-render: %s", exc)
+        return False
+    os.makedirs(PLOT_CACHE_DIR, exist_ok=True)
+    png = os.path.join(PLOT_CACHE_DIR, 'prerender.tmp.png')
+    pdf = os.path.join(PLOT_CACHE_DIR, 'prerender.tmp.pdf')
+    args = {'path': info['output_file'], 'png': png, 'pdf': pdf, 'name': info.get('name', ''),
+            'mode': info.get('mode', 'spectrum'), 'transit': info.get('transit_minutes')}
+    cmd = [sys.executable, '-c', _PRERENDER_CODE, json.dumps(args)]
+    if sys.platform != 'win32':
+        cmd = ['nice', '-n', '19'] + (['ionice', '-c', '3'] if shutil.which('ionice') else []) + cmd
+    try:
+        with observe_plot_lock:
+            out = subprocess.run(cmd, capture_output=True, text=True, cwd=_SCRIPT_DIR,
+                                 timeout=PRERENDER_TIMEOUT_S)
+            if out.returncode != 0 or not os.path.exists(png):
+                log.warning("Plot pre-render of %s failed (exit %s): %s", os.path.basename(path),
+                            out.returncode, (out.stderr or '').strip().splitlines()[-3:])
+                return False
+            _plot_cache_store(plot_cache_key(info['output_file'], args['mode'], args['name'],
+                                             args['transit'], False), png, pdf)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        log.warning("Plot pre-render of %s failed: %s", os.path.basename(path), exc)
+        return False
+    finally:
+        for f in (png, pdf):
+            try:
+                os.remove(f)
+            except OSError:
+                pass
+    log.info("Plot of %s drawn into the cache (%.0f s)", os.path.basename(path), time.time() - t0)
+    return True
 
 
 SOLAR_EXPORT_TIMEOUT_S = 600

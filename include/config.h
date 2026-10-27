@@ -129,6 +129,18 @@
 #define PULSES_PER_DEGREE   2       // Encoder resolution
 #define DEFAULT_DEBOUNCE_MS     50   // Azimuth: minimum time between valid pulses
 #define DEFAULT_DEBOUNCE_ALT_MS 100  // Altitude: minimum time between valid pulses
+// An edge is counted only while the axis's motor is driven (PWM not
+// PWM_STOP) or for this long after it was last switched off, the coast.
+// Both drives are worms and cannot be back-driven, so an axis whose motor is
+// off for longer cannot have moved: any edge then is the reed or its wiring,
+// never the mount. The encoder is a single reed signed by the DIR pin, so
+// such an edge always counts the way DIR last pointed and the error only
+// grows. On the windy night of 2026-10-26/27 the altitude counter gained 12
+// pulses (first approach -7.0 at the next homing, normally -1.0) with the
+// mount tracking B0329+54; every tracking step ends with the reed parked at
+// the first steady LOW (MOTION_FINISHING), right at a transition. The stall
+// timeout is the longest a coast is ever waited for, so it is the window.
+#define ENCODER_COAST_MS        2000
 
 // =============================================================================
 // PWM VALUES (fixed, hardware-dependent)

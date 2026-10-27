@@ -258,3 +258,35 @@ def test_a_controller_that_does_not_answer_can_still_be_flashed(flash, monkeypat
     assert client.post("/api/firmware/update").get_json()["success"]
     S.firmware_update_state["running"] = False
     assert state["started"] == 1
+
+
+def test_a_restart_we_asked_for_is_logged_as_information(watch, caplog):
+    """A flash or a Restart reboots the controller as told: the report goes
+    at INFO and says why. A panic or a watchdog reset stays an ERROR. The
+    event times are the controller's, in UTC, and say so (2026-10-16)."""
+    state, calls, pointed, tick = watch
+    tick()
+    state["diag"] = {"previous_boot": {"uptime_s": 62691, "last_stage": "OTA handle",
+                                       "events": ["11:53:42 STOP all", "11:53:49 OTA update starting",
+                                                  "11:53:56 OTA update complete"]}}
+    state["status"] = dict(state["status"], uptime_s=14, boot=5, reset_reason="software (restart or OTA)")
+    with caplog.at_level(logging.INFO, logger="scheduler"):
+        tick()
+    recs = [r for r in caplog.records if "restarted" in r.getMessage() or "OTA" in r.getMessage()]
+    assert recs and all(r.levelno == logging.INFO for r in recs)
+    assert "planned: firmware update" in caplog.text and "11:53:56 UTC OTA update complete" in caplog.text
+    assert S.planned_controller_restart("software (restart or OTA)",
+                                        {"events": ["12:00:00 Restart requested by 192.168.50.1"]}) == "restart requested"
+    # an unexplained software reset, a panic, a watchdog reset: not planned
+    assert S.planned_controller_restart("software (restart or OTA)", {"events": ["10:00:00 NTP resync"]}) == ""
+    assert S.planned_controller_restart("panic (exception or abort)",
+                                        {"events": ["11:53:56 OTA update complete"]}) == ""
+    assert S.planned_controller_restart("software (restart or OTA)",
+                                        {"events": ["11:53:56 OTA update complete"], "panic": {"reason": "x"}}) == ""
+    caplog.clear()
+    state["diag"] = {"previous_boot": {"uptime_s": 900, "last_stage": "tracking",
+                                       "events": ["13:00:00 Tracking enabled"]}}
+    state["status"] = dict(state["status"], uptime_s=10, boot=6, reset_reason="task watchdog")
+    with caplog.at_level(logging.INFO, logger="scheduler"):
+        tick()
+    assert any(r.levelno == logging.ERROR and "restarted" in r.getMessage() for r in caplog.records)

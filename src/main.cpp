@@ -435,6 +435,19 @@ volatile unsigned long encMinAcceptedAz = 0, encMinAcceptedAlt = 0;  // 0 = none
 volatile unsigned long encMaxRejectedAz = 0, encMaxRejectedAlt = 0;
 volatile unsigned long encLastAcceptedAz = 0, encLastAcceptedAlt = 0; // interval of the latest accepted pulse: the speed at the stop
 
+// The motor-on/coast gate (ENCODER_COAST_MS): whether each motor is driven,
+// and when it was last switched off. Set by writeMotorPwm, the one way the
+// motor PWM is written, and read by the ISRs. Edges outside the gate are
+// counted here instead of in the position, since the last homing.
+volatile bool motorOnAz = false, motorOnAlt = false;
+volatile unsigned long motorOffMsAz = 0, motorOffMsAlt = 0;
+volatile uint32_t encIgnoredAz = 0, encIgnoredAlt = 0;
+
+static inline bool encoderGateOpen(bool alt, unsigned long now) {
+    if (alt ? motorOnAlt : motorOnAz) return true;
+    return (now - (alt ? motorOffMsAlt : motorOffMsAz)) < ENCODER_COAST_MS;
+}
+
 static void resetEncoderStats() {
     noInterrupts();
     encRejectedAz = encRejectedAlt = 0;
@@ -463,6 +476,10 @@ void pulseAzISR() {
     if (digitalRead(PIN_PULSE_AZ) != HIGH) return;
 
     unsigned long now = millis();
+    if (!encoderGateOpen(false, now)) {   // motor off and the coast over: not the mount
+        encIgnoredAz++;
+        return;
+    }
     unsigned long interval = now - lastPulseAz;
     if (interval >= cfg.debounceMs) {
         if (azBacklashRemaining > 0) {
@@ -490,6 +507,10 @@ void pulseAltISR() {
     if (digitalRead(PIN_PULSE_ALT) != HIGH) return;
 
     unsigned long now = millis();
+    if (!encoderGateOpen(true, now)) {
+        encIgnoredAlt++;
+        return;
+    }
     unsigned long interval = now - lastPulseAlt;
     if (interval >= cfg.debounceAltMs) {
         // Determine direction from DIR pin state
@@ -579,13 +600,27 @@ void simulatePulses() {
 // MOTOR CONTROL FUNCTIONS
 // =============================================================================
 
+// Every write of a motor's PWM goes through here, so the encoder gate knows
+// whether the motor is driven and when it stopped. Other pins pass through.
+void writeMotorPwm(int pin, int val) {
+    bool on = (val != PWM_STOP);
+    if (pin == PIN_PWM_AZ) {
+        if (motorOnAz && !on) motorOffMsAz = millis();
+        motorOnAz = on;
+    } else if (pin == PIN_PWM_ALT) {
+        if (motorOnAlt && !on) motorOffMsAlt = millis();
+        motorOnAlt = on;
+    }
+    analogWrite(pin, val);
+}
+
 void stopMotorAz() {
-    analogWrite(PIN_PWM_AZ, PWM_STOP);
+    writeMotorPwm(PIN_PWM_AZ, PWM_STOP);
     motionStateAz = MOTION_IDLE;
 }
 
 void stopMotorAlt() {
-    analogWrite(PIN_PWM_ALT, PWM_STOP);
+    writeMotorPwm(PIN_PWM_ALT, PWM_STOP);
     motionStateAlt = MOTION_IDLE;
 }
 
@@ -1191,8 +1226,8 @@ static bool driveToLimits(bool slowFinal) {
     digitalWrite(PIN_DIR_ALT, ALT_DIR(LOW));
 
     unsigned long startTime = millis();
-    analogWrite(PIN_PWM_AZ, PWM_MIN_SPEED);
-    analogWrite(PIN_PWM_ALT, PWM_MIN_SPEED);
+    writeMotorPwm(PIN_PWM_AZ, PWM_MIN_SPEED);
+    writeMotorPwm(PIN_PWM_ALT, PWM_MIN_SPEED);
 
     motionStateAz = MOTION_DRIVING;
     motionStateAlt = MOTION_DRIVING;
@@ -1242,8 +1277,8 @@ static bool driveToLimits(bool slowFinal) {
                 }
             }
         }
-        if (!azAtLimit) analogWrite(PIN_PWM_AZ, azPwm);
-        if (!altAtLimit) analogWrite(PIN_PWM_ALT, altPwm);
+        if (!azAtLimit) writeMotorPwm(PIN_PWM_AZ, azPwm);
+        if (!altAtLimit) writeMotorPwm(PIN_PWM_ALT, altPwm);
 
         // Azimuth cut-edge capture: only while creeping (after the brake -
         // the brake itself takes the current to zero), arm on seeing creep
@@ -1404,8 +1439,8 @@ static bool backOffFromLimits(float degrees) {
     digitalWrite(PIN_DIR_ALT, ALT_DIR(HIGH));
 
     unsigned long startTime = millis();
-    analogWrite(PIN_PWM_AZ, PWM_MIN_SPEED);
-    analogWrite(PIN_PWM_ALT, PWM_MIN_SPEED);
+    writeMotorPwm(PIN_PWM_AZ, PWM_MIN_SPEED);
+    writeMotorPwm(PIN_PWM_ALT, PWM_MIN_SPEED);
     // The axes are driving: say so, or anything keyed on the idle state (the
     // current-zero tracker, until 2026-09-14) treats the back-off current as
     // the sensor's zero.
@@ -1423,15 +1458,15 @@ static bool backOffFromLimits(float degrees) {
 
         // Ramp up to full speed (no ramp-down — short distance, hard stop at count)
         int currentPwm = calculatePWM(INT32_MAX, startTime);
-        if (!azDone) analogWrite(PIN_PWM_AZ, currentPwm);
-        if (!altDone) analogWrite(PIN_PWM_ALT, currentPwm);
+        if (!azDone) writeMotorPwm(PIN_PWM_AZ, currentPwm);
+        if (!altDone) writeMotorPwm(PIN_PWM_ALT, currentPwm);
 
         if (!azDone && positionAz >= targetPulses) {
-            analogWrite(PIN_PWM_AZ, PWM_STOP);
+            writeMotorPwm(PIN_PWM_AZ, PWM_STOP);
             azDone = true;
         }
         if (!altDone && positionAlt >= targetPulses) {
-            analogWrite(PIN_PWM_ALT, PWM_STOP);
+            writeMotorPwm(PIN_PWM_ALT, PWM_STOP);
             altDone = true;
         }
 
@@ -1584,10 +1619,10 @@ static bool refineZeroPositiveEdge() {
     lastPulseAlt = millis();
     unsigned long startTime = millis();
     if (!azFromCut || azCreepToEntry) {       // az creeps on the fallback path, or to the dwell entry
-        analogWrite(PIN_PWM_AZ, PWM_MIN_SPEED);   // slow creep, so the edge is precise
+        writeMotorPwm(PIN_PWM_AZ, PWM_MIN_SPEED);   // slow creep, so the edge is precise
         motionStateAz = MOTION_DRIVING;
     }
-    analogWrite(PIN_PWM_ALT, PWM_MIN_SPEED);
+    writeMotorPwm(PIN_PWM_ALT, PWM_MIN_SPEED);
     motionStateAlt = MOTION_DRIVING;
 
     // Every level transition of the reed pin during the creep, with its time:
@@ -1705,6 +1740,18 @@ void performHoming() {
     positionKnown = false;               // until this homing completes
     printAllLn(start);
     Serial1.println(start);
+    {
+        // The edges the encoder gate kept out of the counters since the last
+        // homing (ENCODER_COAST_MS): each would have been a pulse of error.
+        noInterrupts();
+        uint32_t ia = encIgnoredAz, il = encIgnoredAlt;
+        encIgnoredAz = encIgnoredAlt = 0;
+        interrupts();
+        String m = "Homing: Encoder edges ignored since the last homing (motor off): az "
+                 + String(ia) + ", alt " + String(il);
+        printAllLn(m.c_str());
+        Serial1.println(m);
+    }
     if (!driveToLimits(true)) return;
 
     // The re-approach exists for the case where the first approach could not
@@ -1781,7 +1828,7 @@ void performHoming() {
                 stopMotorAz();
             } else {
                 int pwm = calculatePWM(remaining, driveStartTimeAz);
-                analogWrite(PIN_PWM_AZ, pwm);
+                writeMotorPwm(PIN_PWM_AZ, pwm);
             }
         }
 
@@ -1792,7 +1839,7 @@ void performHoming() {
                 stopMotorAlt();
             } else {
                 int pwm = calculatePWM(remaining, driveStartTimeAlt);
-                analogWrite(PIN_PWM_ALT, pwm);
+                writeMotorPwm(PIN_PWM_ALT, pwm);
             }
         }
 
@@ -1941,7 +1988,7 @@ void updateAxisMotion(
             if (remaining == 0) {
                 // Reached target — stop the motor and verify the reed switch
                 // settles in a steady LOW (closed) state in MOTION_FINISHING.
-                analogWrite(pinPwm, PWM_STOP);
+                writeMotorPwm(pinPwm, PWM_STOP);
                 *stopStartTime = millis();
                 *motionState = MOTION_FINISHING;
             } else if (needsPositiveDir != *currentDir) {
@@ -1962,17 +2009,17 @@ void updateAxisMotion(
             } else {
                 // Continue driving toward target
                 int pwm = calculatePWM(remaining, *driveStartTime);
-                analogWrite(pinPwm, pwm);
+                writeMotorPwm(pinPwm, pwm);
             }
             break;
 
         case MOTION_STOPPING:
             {
                 int pwm = calculateStopPWM(*stopStartPwm, *stopStartTime);
-                analogWrite(pinPwm, pwm);
+                writeMotorPwm(pinPwm, pwm);
 
                 if (pwm >= PWM_STOP - 5) {  // Close enough to stopped
-                    analogWrite(pinPwm, PWM_STOP);
+                    writeMotorPwm(pinPwm, PWM_STOP);
 
                     // The ramp is down but the axis may still be coasting, and
                     // DIR still points the old way, so any coast pulse counts
@@ -2023,13 +2070,13 @@ void updateAxisMotion(
 
             // Initial settle: let any motor coast finish before sampling
             if (sinceStop < 50) {
-                analogWrite(pinPwm, PWM_STOP);
+                writeMotorPwm(pinPwm, PWM_STOP);
                 break;
             }
 
             // Safety timeout — never reached steady LOW
             if (sinceStop > 2000) {
-                analogWrite(pinPwm, PWM_STOP);
+                writeMotorPwm(pinPwm, PWM_STOP);
                 *motionState = MOTION_IDLE;
                 break;
             }
@@ -2044,11 +2091,11 @@ void updateAxisMotion(
             }
 
             if (steadyLow) {
-                analogWrite(pinPwm, PWM_STOP);
+                writeMotorPwm(pinPwm, PWM_STOP);
                 *motionState = MOTION_IDLE;
             } else {
                 // Not steady LOW — drive slowly until it settles closed
-                analogWrite(pinPwm, PWM_MIN_SPEED);
+                writeMotorPwm(pinPwm, PWM_MIN_SPEED);
             }
             break;
         }
@@ -2437,7 +2484,7 @@ static void probeAzSwitch(int cycles) {
         digitalWrite(PIN_DIR_AZ, AZ_DIR(HIGH));
         lastPulseAz = millis();
         motionStateAz = MOTION_DRIVING;
-        analogWrite(PIN_PWM_AZ, PWM_MIN_SPEED);
+        writeMotorPwm(PIN_PWM_AZ, PWM_MIN_SPEED);
         unsigned long s = millis();
         while (positionAz < target && millis() - s < 15000UL) {
             sample('o'); if (faulted()) return; delay(4);
@@ -2452,7 +2499,7 @@ static void probeAzSwitch(int cycles) {
         digitalWrite(PIN_DIR_AZ, AZ_DIR(LOW));
         lastPulseAz = millis();
         motionStateAz = MOTION_DRIVING;
-        analogWrite(PIN_PWM_AZ, PWM_MIN_SPEED);
+        writeMotorPwm(PIN_PWM_AZ, PWM_MIN_SPEED);
         s = millis();
         while (msSincePulse(lastPulseAz) < 1000UL && millis() - s < 15000UL) {
             sample('i'); if (faulted()) return; delay(4);
@@ -2468,7 +2515,7 @@ static void probeAzSwitch(int cycles) {
     digitalWrite(PIN_DIR_AZ, AZ_DIR(HIGH));
     lastPulseAz = millis();
     motionStateAz = MOTION_DRIVING;
-    analogWrite(PIN_PWM_AZ, PWM_MIN_SPEED);
+    writeMotorPwm(PIN_PWM_AZ, PWM_MIN_SPEED);
     unsigned long s = millis();
     while (positionAz < target && millis() - s < 15000UL) {
         sample('o'); if (faulted()) return; delay(4);

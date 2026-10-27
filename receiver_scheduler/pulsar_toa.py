@@ -71,6 +71,23 @@ SITE_CODE = "ar"
 # being Gaussian, so the TOA is not written: a faint run adds nothing but a
 # wrong point to the timing fit (whole runs and segments alike).
 MIN_TOA_SNR = 6.0
+# A 4 h segment (`_sN`) needs more. The fit searches every phase and reports
+# the best, and on a faint segment the best can be noise: eight segments to
+# 2026-10-19 locked off-phase at S/N 3.0-4.8, and the 10-19 run's last one at
+# 6.1, 0.61 of a period out, while its own run sat at the predicted phase.
+# No run or session TOA has ever landed off-phase, so they keep 6.
+MIN_SEGMENT_SNR = 7.0
+SEGMENT_ONLY = re.compile(r"_s\d+$")
+
+
+def min_snr(name):
+    """The S/N a TOA of this name must reach to be written."""
+    return MIN_SEGMENT_SNR if SEGMENT_ONLY.search(name) else MIN_TOA_SNR
+
+
+def writable(toas):
+    """The TOAs that clear their threshold (min_snr)."""
+    return [t for t in toas if t["snr"] >= min_snr(t["name"])]
 HOST_CLOCK_EQUAD_US = 2000.0      # NTP root distance ~1-4 ms (timesyncd), until the PPS
 PROFILE_CACHE_DIR = os.path.join(TOA_DIR, "profiles")    # one folded profile per recording
 OBS_DIR = os.path.join(HERE, "data", "observations")
@@ -570,9 +587,10 @@ def main():
     for t in toas:
         print("%-40s MJD %s  %8.1f us  S/N %5.1f  tau %+.5f  chi2r %.2f  pps %d"
               % (t["name"], t["mjd"], t["err_us"], t["snr"], t["tau"], t["chi2_red"], t["pps"]))
-    keep = [t for t in toas if t["snr"] >= MIN_TOA_SNR]
+    keep = writable(toas)
     if len(keep) < len(toas):
-        print("not written (S/N < %.0f):" % MIN_TOA_SNR, ", ".join(t["name"] for t in toas if t not in keep))
+        print("not written (S/N < %.0f, segments %.0f):" % (MIN_TOA_SNR, MIN_SEGMENT_SNR),
+              ", ".join(t["name"] for t in toas if t not in keep))
     if not a.no_write and keep:
         print("written:", write_tim(keep), write_par())
 

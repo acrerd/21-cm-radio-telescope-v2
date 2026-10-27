@@ -1,10 +1,10 @@
 {
-  "phase_alt_deg": 0.011904761904761862,
-  "phase_az_deg": -0.035714285714285726,
-  "k_alt_over_beam": 0.0,
-  "k_az_over_beam": 0.8902483037428408,
+  "phase_alt_deg": 0.0357142857142857,
+  "phase_az_deg": 0.0357142857142857,
+  "k_alt_over_beam": 0.6888599983206567,
+  "k_az_over_beam": 1.1803433552844382,
   "beam_fwhm_deg": 4.2920894622065315,
-  "records": 137,
-  "fitted_utc": "2026-10-16T11:53:57Z",
+  "records": 491,
+  "fitted_utc": "2026-10-26T17:18:38Z",
   "source_file": ""
 }
