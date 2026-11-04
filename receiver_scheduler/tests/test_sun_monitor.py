@@ -227,6 +227,7 @@ def test_the_monitor_never_preempts_a_scan_or_a_hand_started_receiver():
 MANUAL_PATHS = {
     "Observe start":      ("/api/start", {"name": "x"}, "process"),
     "beam scan":          ("/api/beam/start", {}, "process"),
+    "H I pointing":       ("/api/hipointing/start", {}, "process"),
     "simulator start":    ("/api/simulator/schedule",
                            {"l": 120, "b": 0, "mode": "hi"}, "process"),
     "receiver start":     ("/api/receiver/start", {}, "sun_scan_state"),

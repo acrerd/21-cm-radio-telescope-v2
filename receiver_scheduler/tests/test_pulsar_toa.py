@@ -273,6 +273,80 @@ def test_the_stack_puts_each_night_on_its_own_calibration(tmp_path, monkeypatch)
     assert len(used) == 3 and prof.max() == pytest.approx(1e-4)
 
 
+def test_the_stack_takes_out_a_steady_drift_between_nights(tmp_path, monkeypatch):
+    """Five nights over three weeks, each pulse 1.2% of a period later than
+    the last (an ephemeris a little off, as by 2026-11): the stack lines them
+    up at the first night's phase, so it is as narrow as one night; with only
+    a few days of nights no line is trusted and nothing moves."""
+    store = tmp_path / "profiles"; store.mkdir()
+    monkeypatch.setattr(T, "PROFILE_CACHE_DIR", str(store))
+    monkeypatch.setattr(T, "OBS_DIR", str(tmp_path / "none"))
+    rng = np.random.default_rng(3)
+    tm = T.template(T.TOA_BINS, PF.DT_S, 8e6, 1413e6)
+    t0 = 1.79e9
+    for k in range(5):
+        frac = 1e-4 * T._rotated(tm, 0.012 * k) + rng.normal(0, 2e-6, T.TOA_BINS)
+        np.savez(os.path.join(str(store), "n%d_pulsar.npz" % k), S=frac, C=np.ones(T.TOA_BINS), hours=10.0,
+                 phase_offset=PF.B0329["phase_offset"], row_centre=PF.ROW_CENTRE, nbins=T.TOA_BINS,
+                 t_first_unix=t0 + 5 * 86400.0 * k, t_last_unix=t0 + 5 * 86400.0 * k + 36000.0,
+                 dt_s=PF.DT_S, bw_hz=8e6, freq_hz=1413e6)
+    acc = T.accumulated_profile(fold_missing=False, calibrated=False)
+    slope, t_ref, n = T.stack_drift([(t0 + 5 * 86400.0 * k + 18000.0, T._rotated(tm, 0.012 * k), tm, 10.0)
+                                     for k in range(5)])
+    assert n == 5 and slope == pytest.approx(0.012 / 5, rel=0.02)
+    prof = acc[0]
+    f = T.fit_shift(prof, tm)
+    assert abs(f["tau"]) < 0.002                                  # at the first night's phase
+    assert prof.max() == pytest.approx(1e-4, rel=0.03)            # not smeared
+    # three nights a day apart: too short a span, so no alignment
+    for k in range(3, 5):
+        os.remove(os.path.join(str(store), "n%d_pulsar.npz" % k))
+    for k in range(3):
+        np.savez(os.path.join(str(store), "n%d_pulsar.npz" % k), S=1e-4 * T._rotated(tm, 0.012 * k),
+                 C=np.ones(T.TOA_BINS), hours=10.0, phase_offset=PF.B0329["phase_offset"],
+                 row_centre=PF.ROW_CENTRE, nbins=T.TOA_BINS,
+                 t_first_unix=t0 + 86400.0 * k, t_last_unix=t0 + 86400.0 * k + 36000.0)
+    assert T.accumulated_profile(fold_missing=False, calibrated=True)["drift"] is None
+
+
+def test_the_stack_is_lined_up_on_the_timing_fit_and_each_residual(tmp_path, monkeypatch):
+    """Nights folded on an ephemeris 2e-9 off in F0, each also off by its own
+    residual: given the fit's F0, F1 and residuals the stack puts every night
+    with a TOA at the first night's model phase. A night with no TOA in the
+    fit is moved by the model alone."""
+    store = tmp_path / "profiles"; store.mkdir()
+    monkeypatch.setattr(T, "PROFILE_CACHE_DIR", str(store))
+    monkeypatch.setattr(T, "OBS_DIR", str(tmp_path / "none"))
+    c = PF.B0329
+    pep = 61330.0
+    dtc = (pep - c["pepoch_mjd"]) * 86400.0
+    f0c = c["f0"] + c["f1"] * dtc + 0.5 * c["f2"] * dtc ** 2
+    f1c = c["f1"] + c["f2"] * dtc
+    f0p = f0c - 2.8e-9
+    mjds = [61310.0 + 5 * k for k in range(5)]
+    resid_us = [300.0, -500.0, 0.0, 800.0, -200.0]
+    tm = T.template(T.TOA_BINS, PF.DT_S, 8e6, 1413e6)
+    for k, m in enumerate(mjds):
+        tau = 2.8e-9 * (m - pep) * 86400.0 + resid_us[k] * 1e-6 * f0p
+        t_unix = (m - 40587.0) * 86400.0
+        np.savez(os.path.join(str(store), "n%d_pulsar.npz" % k), S=1e-4 * T._rotated(tm, tau),
+                 C=np.ones(T.TOA_BINS), hours=10.0, phase_offset=c["phase_offset"],
+                 row_centre=PF.ROW_CENTRE, nbins=T.TOA_BINS, recording="n%d_pulsar.h5" % k, session="",
+                 t_first_unix=t_unix - 18000.0, t_last_unix=t_unix + 18000.0)
+    fit = {"F0": f0p, "F1": f1c, "pepoch": pep, "mjd": mjds[:4],
+           "names": ["n%d_pulsar.h5" % k for k in range(4)], "resid_us": resid_us[:4], "whole": [True] * 4}
+    al = T.timing_alignment(fit)
+    first = 2.8e-9 * (mjds[0] - pep) * 86400.0
+    for k, m in enumerate(mjds):
+        d = np.load(os.path.join(str(store), "n%d_pulsar.npz" % k))
+        moved = T._rotated(d["S"], al("n%d_pulsar.h5" % k, m))
+        want = first + (resid_us[4] * 1e-6 * f0p if k == 4 else 0.0)      # the last has no TOA
+        assert T.fit_shift(moved, tm)["tau"] == pytest.approx(want, abs=2e-4)
+    acc = T.accumulated_profile(fold_missing=False, calibrated=True, timing=fit)
+    assert acc["aligned"]["method"] == "timing" and acc["aligned"]["n_resid"] == 4
+    assert T.timing_alignment({"error": "no PINT environment"}) is None
+
+
 def test_a_recording_is_scaled_by_its_own_calibration_not_todays(monkeypatch):
     monkeypatch.setattr(PF, "calibration_in_force",
                         lambda: {"cal_t_sys_k": 187.0, "cal_effective_area_m2": 7.0})

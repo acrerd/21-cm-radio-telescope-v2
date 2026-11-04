@@ -566,7 +566,16 @@ def sync_observer_from_controller():
 # and gross count loss (many pulses): warn beyond the range plus a pulse and
 # a half, and say which. A one-pulse landing on the other edge is invisible
 # here; only a Sun scan sees that.
-HOMING_FIRST_NORMAL_DEG = (-2.0, 0.5)      # after travel ... from the zero itself
+#
+# Per axis since 2026-10-30, so either can be moved alone. After the dish was
+# turned on its alt shaft (10-29) the alt first approach read -3.0 (10-29
+# 16:41) and -2.5 (10-30 11:17), taken at first for a new switch offset; the
+# next two (12:40, 13:40, from verified zeros) read the old -1.0 / -0.5, so
+# the range stayed where it was. The Due's first approach now creeps to 7.5 deg
+# below the zero (HOMING_FIRST_CREEP_FLOOR_PULSES), so if the offset ever does
+# move, this is the only number to change - no flash.
+HOMING_FIRST_NORMAL_DEG = {"alt": (-2.0, 0.5),   # after travel ... from the zero itself
+                           "az": (-2.0, 0.5)}
 HOMING_SECOND_NORMAL_DEG = (-1.0, 0.0)     # two early reversal pulses ... none
 HOMING_WARN_DEG = 0.75             # beyond the range by more than a pulse and a half
 HOMING_FALSE_STALL_DEG = 5.0       # a reading this large is a false stall or gross loss
@@ -582,8 +591,8 @@ def homing_drift(first: dict) -> dict:
     """The count drift since the previous homing, per axis, from the
     first-approach counters: their departure from the normal range, 0 within
     it. This, not the raw reading, is what accumulated."""
-    return {axis: _beyond_range(float(v), HOMING_FIRST_NORMAL_DEG)
-            for axis, v in (first or {}).items() if v is not None}
+    return {axis: _beyond_range(float(v), HOMING_FIRST_NORMAL_DEG[axis])
+            for axis, v in (first or {}).items() if v is not None and axis in HOMING_FIRST_NORMAL_DEG}
 
 
 def describe_homing_first(first: dict) -> str:
@@ -593,12 +602,12 @@ def describe_homing_first(first: dict) -> str:
         return "not captured"
     raw = "Alt=%s Az=%s" % (("%.1f" % first["alt"]) if "alt" in first else "?",
                             ("%.1f" % first["az"]) if "az" in first else "?")
-    lo, hi = HOMING_FIRST_NORMAL_DEG
+    ranges = "alt %+.1f..%+.1f, az %+.1f..%+.1f" % (HOMING_FIRST_NORMAL_DEG["alt"] + HOMING_FIRST_NORMAL_DEG["az"])
     drift = {k: v for k, v in homing_drift(first).items() if v}
     if not drift:
-        return "%s, inside the normal %+.1f..%+.1f deg: no count drift" % (raw, lo, hi)
-    return "%s, outside the normal %+.1f..%+.1f deg: count drift %s" % (
-        raw, lo, hi, ", ".join("%s %+.1f deg" % (k, v) for k, v in sorted(drift.items())))
+        return "%s, inside the normal %s deg: no count drift" % (raw, ranges)
+    return "%s, outside the normal %s deg: count drift %s" % (
+        raw, ranges, ", ".join("%s %+.1f deg" % (k, v) for k, v in sorted(drift.items())))
 _homing_report_logged_utc = 0
 
 
@@ -659,14 +668,14 @@ def assess_homing_report(report, due_status: Optional[str] = None) -> Optional[d
                         + (("skipped" if skipped else "?") if s is None else f"{s:+.1f}"))
         if f is None:
             continue
-        error = beyond(f, HOMING_FIRST_NORMAL_DEG)        # counts lost or gained since the previous homing
+        error = beyond(f, HOMING_FIRST_NORMAL_DEG[axis])  # counts lost or gained since the previous homing
         landing = beyond(s, HOMING_SECOND_NORMAL_DEG) if s is not None else 0.0   # re-approach against its usual range
         if abs(f) >= HOMING_FALSE_STALL_DEG or (s is not None and abs(s) >= HOMING_FALSE_STALL_DEG):
             problems.append(f"{axis} false stall (first {f:+.1f}, re-approach "
                             + ("skipped" if s is None else f"{s:+.1f}") + ")")
         elif abs(error) > HOMING_WARN_DEG:
             problems.append(f"{axis} first approach {f:+.1f}, {abs(error):.1f} beyond its normal "
-                            f"{HOMING_FIRST_NORMAL_DEG[0]:+.1f}..{HOMING_FIRST_NORMAL_DEG[1]:+.1f}: counts "
+                            f"{HOMING_FIRST_NORMAL_DEG[axis][0]:+.1f}..{HOMING_FIRST_NORMAL_DEG[axis][1]:+.1f}: counts "
                             f"{'gained' if error > 0 else 'lost'} since the previous homing")
         elif abs(landing) > HOMING_WARN_DEG:
             problems.append(f"{axis} re-approach {s:+.1f}, {abs(landing):.1f} beyond its normal "
@@ -1703,8 +1712,11 @@ def horizon_visible_window(obs: dict, profile=None, margin_deg=None):
     # through a configured sector. A horizon scan is the thing that *measures*
     # the horizon - trimming it against the last measurement would stop it
     # re-measuring wherever the sky was previously found blocked, which is
-    # exactly where a pruning most needs re-measuring.
-    if obs.get('coord_system') in ('satellite', 'calibration', 'horizon'):
+    # exactly where a pruning most needs re-measuring. An H I pointing
+    # session moves between fields, each chosen clear of the profile when the
+    # session starts (hi_pointing.plan_session); its entry's coordinates are
+    # only the first of them.
+    if obs.get('coord_system') in ('satellite', 'calibration', 'horizon') or obs.get('hi_pointing'):
         return start, duration, None
     profile = horizon_store.load_active() if profile is None else profile
     if not profile or not horizon_store.profile_floors(profile):
@@ -2516,6 +2528,16 @@ def start_observation(obs: dict, duration_override: int = None) -> bool:
     if obs.get('coord_system') == 'horizon':
         return _start_horizon_observation(obs, duration_override)
 
+    # An H I pointing session is an ordinary tracked recording whose fields
+    # are chosen now, for the sky as it is at the start; the entry is pointed
+    # at the first and the sequencer takes it through the rest.
+    if obs.get('hi_pointing'):
+        obs = prepare_hi_pointing(obs, duration_override)
+        if obs is None:
+            return False
+        if duration_override:
+            duration_override = obs['duration_minutes']   # cut to the plan, as the entry is
+
     # An observation whose window has no part with the target clear of the
     # measured horizon does not run. This is the one place the horizon stops
     # something outright, and it is a decision taken when the schedule was
@@ -2686,6 +2708,10 @@ def start_observation(obs: dict, duration_override: int = None) -> bool:
             # and this is what puts them back together.
             'pulsar_monitor': bool(obs.get('pulsar_monitor')),
             'pulsar_session': obs.get('pulsar_session', ''),
+            # An H I pointing session: the coordinates below are only its
+            # first field; the fields and when each was taken are in
+            # data/hi_pointing/<recording>.steps.json.
+            'hi_pointing': bool(obs.get('hi_pointing')),
             # Free text from the schedule form. Lands as the `comment`
             # attribute - the receiver skips empty strings, so a recording
             # without one simply has no such attribute.
@@ -2814,6 +2840,8 @@ def start_observation(obs: dict, duration_override: int = None) -> bool:
                 'ends_at': observation_end_time.isoformat()
             }
             log.info("Started: %s (ends at %s)", obs.get('name'), observation_end_time.strftime('%H:%M:%S'))
+            if obs.get('hi_pointing'):
+                _start_hi_sequencer(output_file, obs.get('hi_pointing_plan') or [])
             # Tracking ownership passes to the running observation
             satellite_tracking_started = False
             return True
@@ -2851,22 +2879,33 @@ def _save_last_observation(info: dict):
         log.warning("Could not remember the last observation: %s", exc)
 
 
+_last_observation_gone_logged = set()
+
+
 def _load_last_observation():
-    """Recover the pointer, if the file it names is still there."""
+    """Recover the pointer, if the file it names is still there, and return
+    it (None if not). The pilot status polls this every few seconds, so a
+    missing file is reported once, not on every poll (2026-10-27: a deleted
+    recording put the line in the log every 2 s)."""
     global last_observation
     try:
         with open(LAST_OBSERVATION_FILE) as f:
             info = json.load(f)
     except (FileNotFoundError, json.JSONDecodeError, OSError):
-        return
+        return None
     if not isinstance(info, dict) or not info.get('output_file'):
-        return
+        return None
     if not os.path.exists(info['output_file']):
-        log.info("The last observation's file has gone: %s", info['output_file'])
-        return
+        if info['output_file'] not in _last_observation_gone_logged:
+            _last_observation_gone_logged.add(info['output_file'])
+            log.info("The last observation's file has gone: %s", info['output_file'])
+        return None
     with last_observation_lock:
+        recovered = last_observation is None or last_observation.get('output_file') != info['output_file']
         last_observation = info
-    log.info("Last observation recovered: %s", info.get('name') or info['output_file'])
+    if recovered:
+        log.info("Last observation recovered: %s", info.get('name') or info['output_file'])
+    return info
 
 
 # Where the running receiver's output is going, so its last words can be put
@@ -3079,6 +3118,12 @@ def stop_observation(halt: bool = False) -> bool:
             # ends; the result is adopted only if it meets beam_scan's bar.
             threading.Thread(target=_analyse_beam_scan,
                              args=(current_observation['output_file'],), daemon=True).start()
+        if current_observation and current_observation.get('hi_pointing') \
+                and current_observation.get('output_file'):
+            # An H I pointing session reduces itself when it ends: a record
+            # per field and the leave-one-out check, never adopted on its own.
+            threading.Thread(target=update_hi_pointing,
+                             args=(current_observation['output_file'],), daemon=True).start()
         if current_observation and current_observation.get('coord_system') == 'pulsar' \
                 and current_observation.get('output_file'):
             # Every pulsar run adds its TOAs to the .tim when it ends, rather
@@ -3143,6 +3188,14 @@ def _start_calibration_observation(obs: dict, duration_override: int = None) -> 
         "beam_fwhm_deg": beam_fwhm_deg(),
         "interval_minutes": obs.get("cal_interval_min", 30),
         "start_fresh": obs.get("cal_start_fresh", False),
+        # The entry's own tickbox, as for every other booking. Unticked, the
+        # rasters are driven whatever the measured horizon says - a check in a
+        # gap the profile is too coarse to see (az 190-194 in the southern
+        # trees, Sun alt 19, clean on 2026-10-31).
+        "respect_local_horizon": obs.get("respect_local_horizon", True),
+        # False keeps the scans for review instead of adding them to the
+        # pointing data (a check of the model in force, not a calibration).
+        "save": obs.get("cal_save", True),
     }
     try:
         params = _validate_sun_scan_params(raw_params, include_interval=True)
@@ -4349,6 +4402,7 @@ def _validate_sun_scan_params(raw: dict, include_interval: bool = False) -> dict
         # encoder). Done by the day itself so nobody has to be at the keyboard
         # at nine to press Clear Data first.
         params["start_fresh"] = bool(raw.get("start_fresh", False))
+        params["save"] = bool(raw.get("save", True))
     return params
 
 
@@ -4405,7 +4459,10 @@ def _run_sun_scan(params: dict):
             log.info("Sun scan using SRT controller at %s", controller_url)
             if params.get("home_before_scan"):
                 cal_day_state["phase"] = "homing"
-                srt_home_and_wait(
+                # With the report: the first-approach counters and the ignored
+                # edges go in the log, as for a booking's home_first. The 10-31
+                # raster's homing read alt -4.0 and nothing else was kept.
+                srt_home_with_report(
                     timeout=int(cfg.get("homing_timeout", 300)),
                     cancel_event=sun_scan_cancel)
                 cal_day_state["phase"] = "scanning"
@@ -4613,6 +4670,21 @@ def _horizon_clear_eta(lat, lon, elev, n, spacing, sectors,
     return None
 
 
+SUN_SCAN_CHECK_DIR = os.path.join(_SCRIPT_DIR, 'data', 'sun_scan_checks')
+
+
+def _keep_unsaved_sun_scan(result: dict) -> str:
+    """Write a scan a calibration booking was told not to save (cal_save
+    false) to data/sun_scan_checks/, named by its time, and return the path."""
+    os.makedirs(SUN_SCAN_CHECK_DIR, exist_ok=True)
+    stamp = re.sub(r'[^0-9T]', '', str(result.get("timestamp") or
+                                       datetime.now(timezone.utc).isoformat()))[:15]
+    path = os.path.join(SUN_SCAN_CHECK_DIR, 'sun_scan_%s.json' % stamp)
+    with open(path, 'w') as fh:
+        json.dump(result, fh, indent=1, default=str)
+    return path
+
+
 def _run_calibration_day(params: dict):
     """Run repeated sun scans at a fixed interval until sunset or cancelled."""
     from sun_scan import (get_sun_altaz, parse_obstruction_sectors,
@@ -4683,9 +4755,11 @@ def _run_calibration_day(params: dict):
             # Beam-only margin here, not the raster allowance: the raster's
             # reach is no longer an allowance to add, it is enumerated point by
             # point below. Adding both would count the extent twice.
+            # A booking with "respect local horizon" unticked drives them anyway,
+            # as /api/sunscan/start does.
             sectors = parse_obstruction_sectors(horizon_obstruction_sectors(cfg))
             # Now and at the end of the raster: the Sun moves ~0.6 deg over it.
-            bad = raster_obstruction_over_scan(
+            bad = params.get("respect_local_horizon", True) and raster_obstruction_over_scan(
                 float(cfg.get("observer_lat", SITE_LAT_DEG)),
                 float(cfg.get("observer_lon", SITE_LON_DEG)),
                 float(cfg.get("observer_elevation", 50)),
@@ -4745,8 +4819,16 @@ def _run_calibration_day(params: dict):
 
             # Save result to pointing data
             if sun_scan_state.get("result") and not sun_scan_state.get("error"):
-                save_scan_to_pointing_data(sun_scan_state["result"])
-                sun_scan_state["saved"] = True
+                if params.get("save", True):
+                    save_scan_to_pointing_data(sun_scan_state["result"])
+                    sun_scan_state["saved"] = True
+                else:
+                    # A check, not a calibration: the whole result is kept for
+                    # review and the pointing data is left alone. The latest
+                    # can still be added from the Sun Scan tab.
+                    kept = _keep_unsaved_sun_scan(sun_scan_state["result"])
+                    log.info("Calibration day: scan kept for review, not added to the "
+                             "pointing data: %s", kept)
                 cal_day_state["scans_completed"] += 1
                 cal_day_state["consecutive_failures"] = 0
                 cal_day_state["last_scan_error"] = None
@@ -6751,6 +6833,13 @@ _PLOT_DEPENDS = ('gain_calibration.json', 'bandpass_template.json', 'bandpass_te
                  'beam_calibration.json', 'scallop_reference.json', 'pointing_model.json',
                  'horizon_profile.json', 'ad9361_chain.json',
                  os.path.join('data', 'solar_reference_history.json'))
+# A pulsar plot reads only the T_sys and the beam (radiometer_scale, for a
+# file older than its own cal_* attributes), the template and the timing
+# folder. Keyed on the whole list, the morning's pre-rendered plot was lost
+# within the day: the solar reference is rewritten up to hourly and the
+# carried scallop parameters by any Sun plot (found 2026-11-04).
+_PULSAR_PLOT_DEPENDS = ('gain_calibration.json', 'beam_calibration.json')
+_PULSAR_PLOT_DIRS = ('pulsar_timing', 'pulsar_templates')
 
 
 def _code_fingerprint() -> str:
@@ -6774,9 +6863,11 @@ def plot_cache_key(path: str, mode: str, name: str, transit_minutes, log_y: bool
     import hashlib
     parts = [PLOT_CODE_FINGERPRINT, os.path.realpath(path), str(mode), str(name),
              repr(transit_minutes), str(bool(log_y))]
-    files = [path] + [os.path.join(_SCRIPT_DIR, f) for f in _PLOT_DEPENDS]
+    depends = _PULSAR_PLOT_DEPENDS if mode == 'pulsar' else _PLOT_DEPENDS
+    files = [path] + [os.path.join(_SCRIPT_DIR, f) for f in depends]
     if mode == 'pulsar':
-        files += sorted(glob.glob(os.path.join(_SCRIPT_DIR, 'pulsar_timing', '**', '*'), recursive=True))
+        for d in _PULSAR_PLOT_DIRS:
+            files += sorted(glob.glob(os.path.join(_SCRIPT_DIR, d, '**', '*'), recursive=True))
     for f in files:
         try:
             st = os.stat(f)
@@ -8521,6 +8612,373 @@ def prerender_observation_plot(path: str) -> bool:
                 pass
     log.info("Plot of %s drawn into the cache (%.0f s)", os.path.basename(path), time.time() - t0)
     return True
+
+
+# =============================================================================
+# H I pointing (hi_pointing.py): the pointing model from the H I sky
+# =============================================================================
+
+HI_POINTING_MINUTES = 60
+# The plan is made for this far ahead of the call: the homing the entry asks
+# for and the first slew come out of it.
+HI_POINTING_START_LEAD_S = 180
+HI_POINTING_SAMPLE_S = 5.0        # the drive position logged this often during a dwell
+HI_POINTING_TIMEOUT_S = 3600
+hi_pointing_state = {"running": False, "recording": None, "field": None, "done": 0, "of": 0,
+                     "analysing": False, "error": None}
+hi_pointing_cancel = threading.Event()
+_hi_sequencer = {"thread": None}
+
+
+def hi_pointing_entry(now: datetime, minutes: int = None) -> dict:
+    """An H I pointing session starting now: an ordinary tracked recording
+    whose fields are chosen when it starts (prepare_hi_pointing). Homes
+    first, since a count error is a pointing error, and stows at the end."""
+    import hi_pointing
+    return {
+        'name': 'H I pointing', 'hi_pointing': True,
+        'comment': 'H I pointing session (hi_pointing.py): a pointing record per field from the H I sky.',
+        'coord_system': 'galactic',
+        'coord1_deg': 0, 'coord1_min': 0, 'coord1_sec': 0.0,
+        'coord2_deg': 0, 'coord2_min': 0, 'coord2_sec': 0.0,
+        'start_date': now.strftime('%Y-%m-%d'), 'start_time': now.strftime('%H:%M'),
+        'duration_minutes': int(minutes or HI_POINTING_MINUTES),
+        'integration_time_s': hi_pointing.INTEGRATION_S,
+        'end_action': 'stow', 'sdr_type': 'b210', 'enabled': True,
+        'respect_local_horizon': True, 'home_first': True,
+    }
+
+
+def prepare_hi_pointing(obs: dict, duration_override: int = None) -> Optional[dict]:
+    """The session's fields for the sky as it is now, and the entry pointed
+    at the first of them; None, logged, when nothing usable is up."""
+    import hi_pointing
+    import horizon_store
+    minutes = duration_override or obs.get('duration_minutes', HI_POINTING_MINUTES)
+    start = datetime.now(timezone.utc) + timedelta(seconds=HI_POINTING_START_LEAD_S)
+    try:
+        plan = hi_pointing.plan_session(start, minutes, horizon_store.load_active())
+    except Exception as exc:                              # noqa: BLE001
+        log.error("H I pointing: the session could not be planned: %s", exc)
+        return None
+    if not plan:
+        log.warning("H I pointing: no field with enough H I structure is up and clear of the horizon; not started")
+        return None
+    first = plan[0]
+    # The minutes asked for are an upper limit: when the sky runs out of
+    # usable fields first, the session ends with its last field rather than
+    # sitting on it for the rest of the time (2026-10-27: a 60 min request
+    # planned 28 min of fields).
+    needed = hi_pointing_minutes_needed(plan)
+    log.info("H I pointing: %d fields, %d min%s: %s", len(plan), needed,
+             (" (of %d asked for; no more usable fields are up)" % int(minutes)) if needed < int(minutes) else "",
+             ", ".join("l=%.0f b=%+.0f (alt %.0f az %.0f)%s" % (f['l'], f['b'], f['alt'], f['az'],
+                                                                 " again" if f.get('repeat') else "")
+                       for f in plan))
+    return dict(obs, coord_system='galactic',
+                coord1_deg=first['l'], coord1_min=0, coord1_sec=0.0,
+                coord2_deg=first['b'], coord2_min=0, coord2_sec=0.0,
+                duration_minutes=min(int(minutes), needed),
+                hi_pointing_plan=plan)
+
+
+def hi_pointing_minutes_needed(plan: list) -> int:
+    """Recording minutes a plan takes: from the first field, which the
+    recording starts on, to the end of the last, with a minute in hand."""
+    if not plan:
+        return 0
+    span = plan[-1]['start_s'] + plan[-1]['dwell_s'] - plan[0]['start_s']
+    return int(math.ceil(span / 60.0)) + 1
+
+
+def hi_pointing_plan_summary(plan: list) -> dict:
+    """What the operator is shown before a session starts."""
+    if not plan:
+        return {'fields': 0, 'minutes': 0}
+    alts = [f['alt'] for f in plan]
+    azs = [f['az'] for f in plan]
+    return {'fields': len([f for f in plan if not f.get('repeat')]),
+            'repeat': any(f.get('repeat') for f in plan),
+            'minutes': hi_pointing_minutes_needed(plan),
+            'alt_range': [round(min(alts), 1), round(max(alts), 1)],
+            'az_range': [round(min(azs), 1), round(max(azs), 1)],
+            'plan': [{k: f.get(k) for k in ('l', 'b', 'alt', 'az', 'start_s', 'repeat')} for f in plan]}
+
+
+def _hi_session_alive(output_file: str) -> bool:
+    with process_lock:
+        return (current_observation is not None and current_observation.get('output_file') == output_file
+                and current_process is not None and current_process.poll() is None)
+
+
+def _start_hi_sequencer(output_file: str, plan: list) -> None:
+    hi_pointing_cancel.clear()
+    t = threading.Thread(target=run_hi_sequencer, args=(output_file, plan), daemon=True)
+    _hi_sequencer["thread"] = t
+    t.start()
+
+
+def run_hi_sequencer(output_file: str, plan: list) -> None:
+    """Take a running session through its fields: point, wait for the
+    slew, dwell, logging the drive position every few seconds - the D half of
+    each pointing record - and write the steps file the reduction splits the
+    recording by. The first field was pointed by start_observation. The
+    running observation's coordinates follow the field, so the controller
+    watchdog re-points to the current one if the controller drops it."""
+    import hi_pointing
+    path = hi_pointing.steps_path(output_file)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    steps = {"recording": os.path.basename(output_file), "plan": plan, "fields": []}
+    hi_pointing_state.update(running=True, recording=os.path.basename(output_file), done=0,
+                             of=len(plan), error=None, field=None)
+
+    def save():
+        tmp = path + ".tmp"
+        with open(tmp, "w") as fh:
+            json.dump(steps, fh, indent=1)
+        os.replace(tmp, path)
+
+    try:
+        for k, f in enumerate(plan):
+            if not _hi_session_alive(output_file) or hi_pointing_cancel.is_set():
+                break
+            hi_pointing_state["field"] = "l=%.0f b=%+.0f" % (f['l'], f['b'])
+            with process_lock:
+                if current_observation and current_observation.get('output_file') == output_file:
+                    current_observation.update(coord1_deg=f['l'], coord1_min=0, coord1_sec=0.0,
+                                               coord2_deg=f['b'], coord2_min=0, coord2_sec=0.0)
+            if k > 0:
+                target = {'name': 'H I pointing', 'coord_system': 'galactic',
+                          'coord1_deg': f['l'], 'coord1_min': 0, 'coord1_sec': 0.0,
+                          'coord2_deg': f['b'], 'coord2_min': 0, 'coord2_sec': 0.0}
+                if not srt_point_telescope(target):
+                    log.warning("H I pointing: the controller refused l=%.0f b=%+.0f; skipped", f['l'], f['b'])
+                    continue
+                srt_wait_for_slew(cancel_event=hi_pointing_cancel)
+            rec = {"l": f['l'], "b": f['b'], "repeat": bool(f.get('repeat')),
+                   "settle_s": float(f.get('settle_s', hi_pointing.SETTLE_S)),
+                   "arrived_unix": time.time(), "samples": []}
+            end = rec["arrived_unix"] + float(f.get('dwell_s', hi_pointing.FIELD_DWELL_S))
+            while time.time() < end and _hi_session_alive(output_file) and not hi_pointing_cancel.is_set():
+                st = srt_get_status()
+                if st and st.get('alt') is not None:
+                    rec["samples"].append({"unix": time.time(), "alt": float(st['alt']), "az": float(st['az']),
+                                           "true_alt": st.get('true_alt'), "true_az": st.get('true_az')})
+                hi_pointing_cancel.wait(HI_POINTING_SAMPLE_S)
+            rec["left_unix"] = time.time()
+            steps["fields"].append(rec)
+            hi_pointing_state["done"] = len(steps["fields"])
+            save()
+            log.info("H I pointing: l=%.0f b=%+.0f done (%d of %d)", f['l'], f['b'], k + 1, len(plan))
+        save()
+    except Exception as exc:                              # noqa: BLE001
+        hi_pointing_state["error"] = str(exc)
+        log.error("H I pointing sequencer failed: %s", exc, exc_info=True)
+        save()
+    finally:
+        hi_pointing_state.update(running=False, field=None)
+
+
+def hi_pointing_command(path: str) -> list:
+    cmd = [sys.executable, os.path.join(_SCRIPT_DIR, 'hi_pointing.py'), 'analyse', path]
+    if sys.platform != 'win32':
+        cmd = ['nice', '-n', '19'] + (['ionice', '-c', '3'] if shutil.which('ionice') else []) + cmd
+    return cmd
+
+
+def update_hi_pointing(path: str) -> Optional[dict]:
+    """Reduce a finished session (thread target, from stop_observation): a
+    subprocess at the lowest priority, the next run may already be
+    recording. The records are kept in data/hi_pointing/, never added to the
+    pointing store on their own - /api/hipointing/save does that."""
+    import hi_pointing
+    t = _hi_sequencer.get("thread")
+    hi_pointing_cancel.set()
+    if t is not None and t.is_alive():
+        t.join(timeout=30)
+    if not os.path.exists(hi_pointing.steps_path(path)):
+        log.warning("H I pointing: no steps file for %s; nothing to reduce", os.path.basename(path))
+        return None
+    hi_pointing_state.update(analysing=True, error=None)
+    try:
+        out = subprocess.run(hi_pointing_command(path), capture_output=True, text=True,
+                             cwd=_SCRIPT_DIR, timeout=HI_POINTING_TIMEOUT_S)
+        for ln in (out.stdout or "").splitlines():
+            if ln.strip():
+                log.info("%s", ln)
+        if out.returncode != 0:
+            hi_pointing_state["error"] = ((out.stderr or "").strip().splitlines() or ["failed"])[-1]
+            log.error("H I pointing analysis of %s failed (exit %s): %s", os.path.basename(path),
+                      out.returncode, (out.stderr or "").strip().splitlines()[-3:])
+        return {'returncode': out.returncode, 'output': out.stdout}
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        hi_pointing_state["error"] = str(exc)
+        log.error("H I pointing analysis of %s failed: %s", os.path.basename(path), exc)
+        return None
+    finally:
+        hi_pointing_state["analysing"] = False
+
+
+def hi_pointing_results() -> list:
+    """The reduced sessions on disk, newest first: a summary line each."""
+    import hi_pointing
+    out = []
+    for p in sorted(glob.glob(os.path.join(hi_pointing.OUT_DIR, '*.json')), reverse=True):
+        if p.endswith('.steps.json'):
+            continue
+        try:
+            with open(p) as fh:
+                s = json.load(fh)
+        except (OSError, ValueError):
+            continue
+        out.append({k: s.get(k) for k in ('recording', 'analysed_utc', 'n_fields', 'n_good', 'rms_in_force',
+                                          'mean_in_force', 'loo_rms', 'loo_n', 'repeat_difference', 'saved_utc')})
+    return out
+
+
+# Sidereal times worth a session (hi_pointing.py; the planner run at every
+# hour with the measured horizon, 2026-10-27): one session covers ~180 deg of
+# azimuth in two arcs, two a few hours apart ~300 deg and both tilt
+# components. LST 18 falls in B0329+54's hidden hours (~LST 12.8-18.9 behind
+# the northern obstruction), so it costs the pulsar monitor nothing; LST 7 is
+# its azimuth complement (302 deg together); LST 20 + 0 is the best pair for
+# high fields, both inside the pulsar's window.
+HI_POINTING_GOOD_LST = (
+    (18.0, "in the pulsar's hidden hours; pairs with LST 7"),
+    (7.0, "the azimuth complement of LST 18"),
+    (20.0, "the best pair with LST 0 for high fields"),
+    (0.0, "the best pair with LST 20"),
+)
+
+
+def next_lst_time(lst_h: float, after: Optional[datetime] = None) -> datetime:
+    """The next local time (naive, as the schedule keeps them) at which the
+    local sidereal time is `lst_h`. GMST to a second, which is ample."""
+    t = (after or datetime.now()).astimezone(timezone.utc)
+    jd = t.timestamp() / 86400.0 + 2440587.5
+    gmst = (18.697374558 + 24.06570982441908 * (jd - 2451545.0)) % 24.0
+    lst = (gmst + SITE_LON_DEG / 15.0) % 24.0
+    wait_h = ((lst_h - lst) % 24.0) / 1.00273790935
+    return (t + timedelta(hours=wait_h)).astimezone().replace(tzinfo=None, second=0, microsecond=0)
+
+
+@app.route('/api/hipointing/book', methods=['POST'])
+def api_hipointing_book():
+    """Book an H I pointing session: a schedule entry, which the monitors
+    plan around like any booking (the pulsar monitor ends its run short of
+    it and resumes after, as a piece of the same session)."""
+    body = request.get_json(silent=True) or {}
+    try:
+        when = datetime.strptime(str(body.get('start', '')).strip()[:16].replace(' ', 'T'), '%Y-%m-%dT%H:%M')
+        minutes = int(body.get('minutes') or HI_POINTING_MINUTES)
+    except (TypeError, ValueError):
+        return jsonify({'success': False, 'error': 'give start as YYYY-MM-DDTHH:MM (local) and minutes'}), 400
+    if not 10 <= minutes <= 240:
+        return jsonify({'success': False, 'error': 'a session is 10 to 240 minutes'}), 400
+    if when < datetime.now() - timedelta(minutes=1):
+        return jsonify({'success': False, 'error': 'that time has passed'}), 400
+    entry = hi_pointing_entry(when, minutes)
+    schedule = load_schedule() + [entry]
+    notes, clashes = _store_schedule(schedule)
+    if clashes:
+        return jsonify({'success': False, 'error': 'it clashes with %s' % clashes}), 409
+    log.info("H I pointing: session booked for %s, up to %d min", when.strftime('%Y-%m-%d %H:%M'), minutes)
+    return jsonify({'success': True, 'entry': entry})
+
+
+@app.route('/api/hipointing/status', methods=['GET'])
+def api_hipointing_status():
+    # A session is recording from its start until its stop, which outlasts
+    # the sequencer by up to its last minute; the page shows both.
+    with process_lock:
+        obs = current_observation if (current_observation and current_observation.get('hi_pointing')
+                                      and current_process is not None and current_process.poll() is None) else None
+        ends = obs.get('ends_at') if obs else None
+        starting = bool(observation_starting and (starting_observation or {}).get('hi_pointing'))
+    suggest = [{'lst': l, 'at': next_lst_time(l).strftime('%Y-%m-%dT%H:%M'), 'why': why}
+               for l, why in HI_POINTING_GOOD_LST]
+    booked = [{'start': '%sT%s' % (e.get('start_date', ''), e.get('start_time', '')),
+               'minutes': e.get('duration_minutes')}
+              for e in load_schedule() if e.get('hi_pointing') and e.get('enabled', True)
+              and _observation_start_datetime(e) and _observation_start_datetime(e) > datetime.now()]
+    return jsonify({'success': True, **hi_pointing_state, 'recording': obs is not None, 'ends_at': ends,
+                    'starting': starting, 'suggest': suggest, 'booked': booked,
+                    'results': hi_pointing_results()[:10], 'default_minutes': HI_POINTING_MINUTES})
+
+
+@app.route('/api/hipointing/plan', methods=['GET'])
+def api_hipointing_plan():
+    """The fields a session started now would take, for the operator to see
+    before starting one. Planned again at the start, so it can differ by a
+    field if the sky has moved on."""
+    import hi_pointing
+    import horizon_store
+    try:
+        minutes = int(request.args.get('minutes') or HI_POINTING_MINUTES)
+    except (TypeError, ValueError):
+        return jsonify({'success': False, 'error': 'minutes must be a number'}), 400
+    start = datetime.now(timezone.utc) + timedelta(seconds=HI_POINTING_START_LEAD_S)
+    try:
+        plan = hi_pointing.plan_session(start, minutes, horizon_store.load_active())
+    except Exception as exc:                              # noqa: BLE001
+        return jsonify({'success': False, 'error': str(exc)}), 500
+    return jsonify({'success': True, 'asked_minutes': minutes, **hi_pointing_plan_summary(plan)})
+
+
+@app.route('/api/hipointing/start', methods=['POST'])
+def api_hipointing_start():
+    """Start an H I pointing session now."""
+    body = request.get_json(silent=True) or {}
+    sun_monitor_yield("an H I pointing session was started")
+    with process_lock:
+        busy = (current_process is not None and current_process.poll() is None)
+        running = dict(current_observation) if busy and current_observation else None
+        starting = observation_starting
+    if busy or starting:
+        name = (running or {}).get('name') or starting_observation_name or 'an observation'
+        return jsonify({'success': False, 'error': "'%s' is already recording; stop it first" % name}), 409
+    held = hardware_in_use()
+    if held:
+        return jsonify({'success': False, 'error': 'Cannot start H I pointing: %s' % held}), 409
+    try:
+        minutes = int(body.get('minutes') or HI_POINTING_MINUTES)
+    except (TypeError, ValueError):
+        return jsonify({'success': False, 'error': 'minutes must be a number'}), 400
+    if not 10 <= minutes <= 240:
+        return jsonify({'success': False, 'error': 'a session is 10 to 240 minutes'}), 400
+    entry = hi_pointing_entry(datetime.now(), minutes)
+    log.info("H I pointing: starting a %d min session", minutes)
+    ok = start_observation(entry)
+    return jsonify({'success': ok, 'error': None if ok else 'Not started - no usable field is up, or see the Log tab'}), \
+        (200 if ok else 409)
+
+
+@app.route('/api/hipointing/save', methods=['POST'])
+def api_hipointing_save():
+    """Add a reduced session's usable fields to the pointing data, as records
+    the model fit takes beside the Sun scans. Each is added once."""
+    import hi_pointing
+    import sun_scan
+    name = os.path.basename(str((request.get_json(silent=True) or {}).get('recording') or ''))
+    path = hi_pointing.result_path(name)
+    if not name or not os.path.exists(path):
+        return jsonify({'success': False, 'error': 'no reduced session for %r' % name}), 404
+    with open(path) as fh:
+        summary = json.load(fh)
+    data = sun_scan.load_pointing_data()
+    have = {(d.get('source'), d.get('timestamp')) for d in data}
+    new = [f['record'] for f in summary.get('fields', [])
+           if f.get('ok') and f.get('record') and ('hi', f['record']['timestamp']) not in have]
+    for r in new:
+        r['recording'] = name
+    data.extend(new)
+    with open(sun_scan._POINTING_DATA_FILE, 'w') as fh:
+        json.dump(data, fh, indent=2)
+    summary['saved_utc'] = datetime.now(timezone.utc).isoformat(timespec='seconds')
+    with open(path, 'w') as fh:
+        json.dump(summary, fh, indent=1)
+    log.info("H I pointing: %d field(s) of %s added to the pointing data (%d entries now)", len(new), name, len(data))
+    return jsonify({'success': True, 'added': len(new), 'total': len(data)})
 
 
 SOLAR_EXPORT_TIMEOUT_S = 600

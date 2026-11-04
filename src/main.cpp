@@ -1203,7 +1203,7 @@ static bool homingServiceSerial() {
     return true;
 }
 
-static bool driveToLimits(bool slowFinal) {
+static bool driveToLimits(bool slowFinal, int32_t bandLow = -HOMING_SLOW_APPROACH_PULSES) {
     azCutEdgePosition = INT32_MIN;
     azCutToEdgeMs = 0;
     azArrivedCreeping = false;
@@ -1250,14 +1250,15 @@ static bool driveToLimits(bool slowFinal) {
             // creep, so the switch is met at creep speed and not at whatever
             // friction has left of full speed. The stall timer restarts at
             // the end of the pause so it measures the creep, not the pause.
-            // The zone is a band around zero: on the re-approach the counter
-            // descends from the back-off distance, on the first approach from
-            // the previous zero, and the switch may sit a pulse past it. A
-            // boot-home starts at counter 0 wherever the mount is, creeps its
-            // first 1.5 deg and then runs at speed - harmless, and precision
-            // is not expected of it.
-            if (positionAz <= HOMING_SLOW_APPROACH_PULSES
-                && positionAz >= -HOMING_SLOW_APPROACH_PULSES) {
+            // The zone runs from +HOMING_SLOW_APPROACH_PULSES down to bandLow:
+            // on the re-approach the counter descends from the back-off
+            // distance to its own stop, ±5 pulses; on the first approach from
+            // the previous zero to the switch, whose offset moves with the
+            // mechanics, so the zone reaches HOMING_FIRST_CREEP_FLOOR_PULSES
+            // below. A boot-home starts at counter 0 wherever the mount is,
+            // keeps the ±5 band, creeps through it and then runs at speed -
+            // harmless, and precision is not expected of it.
+            if (positionAz <= HOMING_SLOW_APPROACH_PULSES && positionAz >= bandLow) {
                 if (azBrakeStart == 0) azBrakeStart = now;
                 if (now - azBrakeStart < HOMING_SLOW_BRAKE_MS) {
                     azPwm = PWM_STOP;
@@ -1266,8 +1267,7 @@ static bool driveToLimits(bool slowFinal) {
                     azPwm = PWM_MIN_SPEED;
                 }
             }
-            if (positionAlt <= HOMING_SLOW_APPROACH_PULSES
-                && positionAlt >= -HOMING_SLOW_APPROACH_PULSES) {
+            if (positionAlt <= HOMING_SLOW_APPROACH_PULSES && positionAlt >= bandLow) {
                 if (altBrakeStart == 0) altBrakeStart = now;
                 if (now - altBrakeStart < HOMING_SLOW_BRAKE_MS) {
                     altPwm = PWM_STOP;
@@ -1735,8 +1735,9 @@ void performHoming() {
     homingStopRequested = false;
     homingLineUsbLen = homingLineS1Len = 0;
     measureHomingCurrentZero();
-    const char *start = positionKnown ? "Homing: Drive to limits..."
-                                      : "Homing: Drive to limits... (from an unknown position)";
+    const bool fromKnown = positionKnown;
+    const char *start = fromKnown ? "Homing: Drive to limits..."
+                                  : "Homing: Drive to limits... (from an unknown position)";
     positionKnown = false;               // until this homing completes
     printAllLn(start);
     Serial1.println(start);
@@ -1752,7 +1753,7 @@ void performHoming() {
         printAllLn(m.c_str());
         Serial1.println(m);
     }
-    if (!driveToLimits(true)) return;
+    if (!driveToLimits(true, fromKnown ? -HOMING_FIRST_CREEP_FLOOR_PULSES : -HOMING_SLOW_APPROACH_PULSES)) return;
 
     // The re-approach exists for the case where the first approach could not
     // slow down - a counter that was wrong (a boot-home starts at 0 wherever

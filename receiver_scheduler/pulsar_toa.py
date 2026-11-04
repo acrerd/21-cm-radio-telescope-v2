@@ -29,6 +29,7 @@ import json
 import math
 import os
 import re
+import time
 
 import numpy as np
 
@@ -252,7 +253,7 @@ def toas_for_recording(path, segments=1, tmpl=None, pulsar=None, analysis=None):
     toa = r["toa"]
     tm = tmpl if tmpl is not None else template(TOA_BINS, toa["dt_s"], toa["bw_hz"] or 8e6, toa["freq_hz"])
     base = os.path.basename(path)
-    pps = int(str(attrs.get("time_source", "host")) == "pps" and int(attrs.get("time_pps_verified", 0)) == 1)
+    pps = PF.pps_timed(attrs)
     spans = [(None, None, base)]
     if segments and segments > 1:
         edges = np.linspace(toa["t_first"], toa["t_last"], segments + 1)
@@ -474,7 +475,7 @@ def cache_profile(path, toa, attrs=None):
              freq_hz=toa["freq_hz"], bw_hz=toa["bw_hz"] or 0.0, dt_s=toa["dt_s"],
              time_source=str(a.get("time_source", "host")), obs_name=str(a.get("obs_name", "")),
              session=str(a.get("pulsar_session", "") or ""),
-             pps=int(str(a.get("time_source", "host")) == "pps" and int(a.get("time_pps_verified", 0)) == 1),
+             pps=PF.pps_timed(a),
              time_marks_exact=int(a.get("time_marks_exact", 0)),
              cal_t_sys_k=float(cal.get("cal_t_sys_k", float("nan"))),
              cal_effective_area_m2=float(cal.get("cal_effective_area_m2", float("nan"))),
@@ -502,7 +503,99 @@ def _rotated(x, dphase):
     return np.fft.irfft(np.fft.rfft(x) * np.exp(-2j * np.pi * k * dphase), n=len(x))
 
 
-def accumulated_profile(fold_missing=True, calibrated=False):
+# The stack's drift alignment: nights that may anchor the line, and the
+# least span of time it must cover before it is trusted.
+DRIFT_MIN_NIGHTS = 3
+DRIFT_MIN_SPAN_DAYS = 7.0
+DRIFT_MIN_HOURS = 1.0
+
+
+def _store_mid_unix(d, store):
+    """A stored profile's mid-time: its own stamps, else the recording's
+    name plus half its length; None when neither is there."""
+    import calendar
+    if "t_first_unix" in d.files and "t_last_unix" in d.files:
+        return 0.5 * (float(d["t_first_unix"]) + float(d["t_last_unix"]))
+    m = re.match(r"(\d{8}_\d{6})_pulsar", os.path.basename(store))
+    if not m:
+        return None
+    t0 = calendar.timegm(time.strptime(m.group(1), "%Y%m%d_%H%M%S"))
+    return t0 + float(d["hours"]) * 1800.0
+
+
+def stack_drift(nights):
+    """The pulse's drift in phase from night to night, as a straight line
+    fitted to each night's own template shift (weighted 1/sigma^2): the hard-
+    wired ephemeris is not exact, and by 2026-11-04 the nights sat 7 ms
+    apart, which smeared the stack from the template's 8.4 ms half-max width
+    to 11.2. `nights` is [(t_mid_unix, profile, template, hours)]. Returns
+    (slope cycles/day, t_ref_unix, n used), or None when too few nights or
+    too short a span to trust a line. A line rather than a quadratic: the
+    curvature is not detected (0.38 against 0.40 ms rms), and two parameters
+    over dozens of nights barely align a night on its own noise."""
+    t, y, w = [], [], []
+    for tmid, prof, tm, hours in nights:
+        if tmid is None or hours < DRIFT_MIN_HOURS:
+            continue
+        f = fit_shift(prof, tm)
+        if not (f["snr"] >= MIN_TOA_SNR and f["sigma_tau"] > 0):
+            continue
+        t.append(tmid / 86400.0); y.append(f["tau"]); w.append(1.0 / f["sigma_tau"] ** 2)
+    if len(t) < DRIFT_MIN_NIGHTS or max(t) - min(t) < DRIFT_MIN_SPAN_DAYS:
+        return None
+    t, y, w = np.array(t), np.array(y), np.array(w)
+    y = np.unwrap(y * 2 * np.pi) / (2 * np.pi)        # a night across the +-0.5 wrap
+    slope, _ = np.polyfit(t - t.min(), y, 1, w=np.sqrt(w))
+    return float(slope), float(t.min() * 86400.0), len(t)
+
+
+def timing_alignment(timing):
+    """From a PINT fit (`timing_fit`'s dict), a function giving the phase by
+    which to move a night so it sits where the fitted model and its own
+    residual put it, or None when the fit has no model. A night folded on the
+    hard-wired ephemeris lands at that ephemeris's phase less the fitted
+    model's, plus its residual; both are taken out. Anchored on the model at
+    the first whole-run TOA, so the stack keeps that night's absolute phase.
+    The function takes (TOA name, mid-time MJD) and returns cycles; a night
+    with no TOA in the fit (below S/N 6, or too short) gets the model alone."""
+    if not timing or "error" in timing or not all(k in timing for k in ("F0", "F1", "pepoch")):
+        return None
+    c = PF.B0329
+    f0p, f1p, pep = float(timing["F0"]), float(timing["F1"]), float(timing["pepoch"])
+    dtc = (pep - c["pepoch_mjd"]) * 86400.0
+    f0c = c["f0"] + c["f1"] * dtc + 0.5 * c.get("f2", 0.0) * dtc ** 2
+    f1c = c["f1"] + c.get("f2", 0.0) * dtc
+    resid = {n: (m, r * 1e-6) for n, m, r, w in zip(timing.get("names", []), timing.get("mjd", []),
+                                                    timing.get("resid_us", []), timing.get("whole", [])) if w}
+
+    def model(mjd):
+        x = (mjd - pep) * 86400.0
+        return (f0c - f0p) * x + 0.5 * (f1c - f1p) * x * x
+    if not resid:
+        return None
+    ref = model(min(m for m, _ in resid.values()))
+
+    def back(name, mjd):
+        if name in resid:
+            mjd, r = resid[name]
+            return -(model(mjd) - ref + r * f0p)
+        return -(model(mjd) - ref)
+    back.n_resid = len(resid)
+    back.P, back.Pdot = 1.0 / f0p, -f1p / f0p ** 2
+    return back
+
+
+def _toa_name(d, store):
+    """The whole-run TOA a stored profile belongs to: its pulsar-monitor
+    session's, else its recording's."""
+    sess = str(d["session"]) if "session" in d.files else ""
+    if sess:
+        return "session_" + sess
+    rec = str(d["recording"]) if "recording" in d.files else ""
+    return rec or os.path.basename(store)[:-4] + ".h5"
+
+
+def accumulated_profile(fold_missing=True, calibrated=False, timing=None):
     """Every stored profile, summed with its own noise weights (the
     per-second 1/sigma^2 the fold applied, so a noisier 8 MHz run counts
     for less). Recordings on disk whose profile is missing or stale are
@@ -516,9 +609,7 @@ def accumulated_profile(fold_missing=True, calibrated=False):
             except Exception:                            # noqa: BLE001 - an unreadable file is skipped
                 continue
             cache_profile(path, r["toa"], attrs)
-    S = np.zeros(TOA_BINS); C = np.zeros(TOA_BINS); hours = 0.0; used = []
-    SK = np.zeros(TOA_BINS); SJ = np.zeros(TOA_BINS); TC = 0.0; CT = 0.0; all_cal = True
-    now = PF.calibration_in_force() if calibrated else {}
+    nights = []
     for store in sorted(glob.glob(os.path.join(PROFILE_CACHE_DIR, "*.npz"))):
         d = np.load(store)
         if int(d["nbins"]) != TOA_BINS or float(d["row_centre"]) != PF.ROW_CENTRE:
@@ -527,6 +618,31 @@ def accumulated_profile(fold_missing=True, calibrated=False):
         shift = PF.B0329["phase_offset"] - float(d["phase_offset"])
         if shift:
             s_, c_ = _rotated(s_, shift), _rotated(c_, shift)
+        nights.append((store, d, s_, c_, _store_mid_unix(d, store)))
+
+    def _tm(d):
+        f = lambda k, v: float(d[k]) if k in d.files and float(d[k]) > 0 else v
+        return template(TOA_BINS, f("dt_s", PF.DT_S), f("bw_hz", 8e6), f("freq_hz", 1413e6))
+    # The nights are lined up on the timing fit - its P and Pdot, and each
+    # night's own residual - when one is given; without it (no PINT, too
+    # few TOAs) on a straight line through their phases, anchored at the
+    # first that fixes it. Either way the stack keeps the first detection's
+    # absolute phase.
+    align = timing_alignment(timing)
+    drift = None if align else stack_drift(
+        [(tm_, np.where(c_ > 0, s_ / np.maximum(c_, 1e-300), 0.0), _tm(d), float(d["hours"]))
+         for _, d, s_, c_, tm_ in nights])
+    S = np.zeros(TOA_BINS); C = np.zeros(TOA_BINS); hours = 0.0; used = []
+    SK = np.zeros(TOA_BINS); SJ = np.zeros(TOA_BINS); TC = 0.0; CT = 0.0; all_cal = True
+    now = PF.calibration_in_force() if calibrated else {}
+    for store, d, s_, c_, tmid in nights:
+        back = 0.0
+        if align and tmid is not None:
+            back = align(_toa_name(d, store), tmid / 86400.0 + 40587.0)
+        elif drift is not None and tmid is not None:
+            back = -drift[0] * (tmid - drift[1]) / 86400.0
+        if back:
+            s_, c_ = _rotated(s_, back), _rotated(c_, back)
         S += s_; C += c_; hours += float(d["hours"]); used.append(os.path.basename(store)[:-4])
         if calibrated:
             # this run's own calibration, else the one in force now
@@ -545,7 +661,10 @@ def accumulated_profile(fold_missing=True, calibrated=False):
     # Weighted sums of each run converted first, with the same weights: the
     # stack in kelvin and in janskys even when runs differ in T_sys or A_e.
     ok = all_cal and CT > 0
-    return {"profile": prof, "hours": hours, "used": used,
+    aligned = ({"method": "timing", "P": align.P, "Pdot": align.Pdot, "n_resid": align.n_resid} if align
+               else {"method": "drift", "slope": drift[0], "t_ref": drift[1], "n": drift[2]} if drift
+               else None)
+    return {"profile": prof, "hours": hours, "used": used, "drift": drift, "aligned": aligned,
             "kelvin": np.where(C > 0, SK / np.maximum(C, 1e-300), 0.0) if ok else None,
             "jansky": np.where(C > 0, SJ / np.maximum(C, 1e-300), 0.0) if ok else None,
             "t_sys_mean_k": TC / CT if ok else None}

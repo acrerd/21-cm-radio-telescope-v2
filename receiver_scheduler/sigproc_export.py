@@ -141,7 +141,7 @@ def export(path, out_path=None, chunk_rows=CHUNK_ROWS):
         power = hf["power"]
         n_rows, nchan = power.shape
         freq = np.asarray(hf["frequency_hz"][:], float)
-        marks = np.asarray(hf["time_marks"][:], float) if "time_marks" in hf else None
+        marks = pulsar_fold.read_time_marks(hf, a) if "time_marks" in hf else None
         dt = float(a.get("dt_s", pulsar_fold.DT_S))
         t0 = float(marks[0, 1] - dt * marks[0, 0]) if marks is not None and len(marks) else float(a["t0_unix"])
         psr = pulsar_fold.lookup(a.get("pulsar_name") or a.get("object_name"))

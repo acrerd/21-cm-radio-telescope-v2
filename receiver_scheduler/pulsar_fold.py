@@ -238,6 +238,48 @@ def row_times(n_rows, dt_s, t0_unix, time_marks=None):
     return t
 
 
+def pps_second_error_s(attrs):
+    """Whole seconds the radio's clock was set wrong by at the start, or 0.
+
+    A PPS-timed recording whose start check failed with the radio a whole
+    number of seconds from the host (to 0.05 s) has the right sub-second -
+    the PPS latched it - and the wrong second: the receiver named the edge
+    from floor(host), and a host a fraction of a millisecond behind the PPS
+    named the second before (2026-11-02: radio - host -0.9995 s, the fold
+    0.40 of a period off; set_device_time rounds since 11-04). The host
+    names the second to its NTP error, a few ms, so the integer is certain.
+    Anything else - a check that failed by a fraction of a second, a host-
+    timed file - is not corrected."""
+    if str(attrs.get("time_source", "")) != "pps" or int(attrs.get("time_pps_verified", 1)):
+        return 0.0
+    d = attrs.get("time_device_minus_host_s")
+    if d is None:
+        return 0.0
+    k = round(float(d))
+    return float(k) if k != 0 and abs(float(d) - k) < 0.05 else 0.0
+
+
+def pps_timed(attrs):
+    """Whether a recording's times are PPS times: verified at the start, or
+    off by a whole second that pps_second_error_s takes out."""
+    return int(str(attrs.get("time_source", "host")) == "pps"
+               and (int(attrs.get("time_pps_verified", 0)) == 1 or pps_second_error_s(attrs) != 0))
+
+
+def read_time_marks(hf, attrs):
+    """The file's (row, device time) marks, sorted, with any whole-second
+    error of the radio's clock taken out (pps_second_error_s). Every reader
+    of the marks goes through this, so a fold, its TOA, prepfold's -phs and
+    the .fil export cannot disagree about when a row was."""
+    marks = np.asarray(hf["time_marks"][:], float).reshape(-1, 2) if "time_marks" in hf else np.empty((0, 2))
+    marks = marks[np.argsort(marks[:, 0])] if len(marks) else marks
+    err = pps_second_error_s(attrs)
+    if err and len(marks):
+        marks = marks.copy()
+        marks[:, 1] -= err
+    return marks
+
+
 def read_recording(path):
     """(t_unix, freq_hz, power[N, nchan], attrs) from a pulsar-mode file."""
     import observation_plot
@@ -245,7 +287,7 @@ def read_recording(path):
         attrs = {k: (v.item() if hasattr(v, "item") else v) for k, v in hf.attrs.items()}
         power = np.asarray(hf["power"][:], dtype=np.float32)
         freq = np.asarray(hf["frequency_hz"][:], float)
-        marks = np.asarray(hf["time_marks"][:], float) if "time_marks" in hf else None
+        marks = read_time_marks(hf, attrs) if "time_marks" in hf else None
         if "overflow_marks" in hf and hf["overflow_marks"].shape[0]:
             attrs["overflows_total"] = int(np.asarray(hf["overflow_marks"][:])[:, 1].sum())
     t0 = float(attrs.get("t0_unix", 0.0))
@@ -440,8 +482,7 @@ def analyse_file(path, pulsar=None, nbins=NBINS, block_rows=BLOCK_ROWS, toa_bins
         ds = hf["power"]
         n, nchan = ds.shape
         freq = np.asarray(hf["frequency_hz"][:], float)
-        marks = np.asarray(hf["time_marks"][:], float).reshape(-1, 2) if "time_marks" in hf else np.empty((0, 2))
-        marks = marks[np.argsort(marks[:, 0])] if len(marks) else marks
+        marks = read_time_marks(hf, attrs)
         if "overflow_marks" in hf and hf["overflow_marks"].shape[0]:
             attrs["overflows_total"] = int(np.asarray(hf["overflow_marks"][:])[:, 1].sum())
         attrs["n_time_marks"] = int(len(marks))
@@ -603,7 +644,7 @@ def run_topocentric_period(path):
     with observation_plot.open_readonly(path) as hf:
         a = dict(hf.attrs)
         n = int(hf["power"].shape[0])
-        marks = np.asarray(hf["time_marks"][:], float) if "time_marks" in hf else np.empty((0, 2))
+        marks = read_time_marks(hf, a)
     dt = float(a.get("dt_s", DT_S))
     t0 = float(marks[0, 1] - dt * marks[0, 0]) if len(marks) else float(a.get("t0_unix", 0.0))
     t = np.linspace(t0, t0 + n * dt, 400)
@@ -621,7 +662,7 @@ def presto_phase_offset(path):
     import observation_plot
     with observation_plot.open_readonly(path) as hf:
         a = dict(hf.attrs)
-        marks = np.asarray(hf["time_marks"][:], float) if "time_marks" in hf else np.empty((0, 2))
+        marks = read_time_marks(hf, a)
     dt = float(a.get("dt_s", DT_S))
     t0 = float(marks[0, 1] - dt * marks[0, 0]) if len(marks) else float(a.get("t0_unix", 0.0))
     ph, _ = absolute_phase(np.array([t0, t0 + 60.0]), B0329, float(a.get("center_freq_hz") or 1413e6))
@@ -756,6 +797,15 @@ def _utc_span(t0, t1):
     return "%s - %s UTC" % (a.strftime("%Y-%m-%d %H:%M"), b.strftime("%Y-%m-%d %H:%M"))
 
 
+def _stack_alignment_label(aligned):
+    """The legend's second line: how the nights of the stack were lined up."""
+    if not aligned:
+        return ""
+    if aligned["method"] == "timing":
+        return "\naligned on the timing fit and %d residuals" % aligned["n_resid"]
+    return "\naligned for %+.2f ms/day of drift" % (aligned["slope"] * period_at(aligned["t_ref"]) * 1e3)
+
+
 def plot_recording(path, out_path, pulsar=None, pdf_path=None):
     """Reduce a pulsar-mode recording and draw it.
 
@@ -787,8 +837,8 @@ def plot_recording(path, out_path, pulsar=None, pdf_path=None):
             toas = T.writable(T.timing_toas(path, (r, attrs), segments=4))
             if toas:
                 T.write_tim(toas)
-            acc = T.accumulated_profile(fold_missing=True, calibrated=True)
             fitres = T.timing_fit()
+            acc = T.accumulated_profile(fold_missing=True, calibrated=True, timing=fitres)
         except Exception as exc:                          # noqa: BLE001 - the plot still draws
             fitres = {"error": str(exc)}
     toa = r.pop("toa")
@@ -905,7 +955,8 @@ def plot_recording(path, out_path, pulsar=None, pdf_path=None):
         pk = (acc["kelvin"] - np.median(acc["kelvin"][off])) * 1e3 if cal else prof * ysc2
         shown = pk.reshape(-1, g).mean(axis=1)
         a2.stairs(shown, np.linspace(0, 1, T.TOA_BINS // g + 1),
-                  color="C0", lw=1.2, baseline=None, label="all runs (%d, %.1f h)" % (len(used), hours))
+                  color="C0", lw=1.2, baseline=None, label="all runs (%d, %.1f h)" % (len(used), hours)
+                  + _stack_alignment_label(acc.get("aligned")))
         a2.axhline(0, color="k", lw=0.5)
         a2.plot(ph, model * ysc2, color="C3", lw=1.0, alpha=0.4, label="EPN 1410 MHz, fitted")
         a2.axvline(0.5, color="0.5", lw=0.6, ls=":")

@@ -209,6 +209,28 @@
                             <button title="Reduce a Sun drift already on file and adopt it if it passes." class="btn btn-secondary" onclick="analyseBeamFile()">Analyse</button>
                         </div>
                         <div id="beamPlot" style="text-align:center;"></div>
+                        <div class="section-title" style="margin-top:15px;">H I pointing (whole sky)</div>
+                        <div style="color:#888; font-size:12px; margin-bottom:8px;">
+                            Pointing records from the H I sky instead of the Sun, for the months the Sun is too low and
+                            for the elevations it never reaches. One recording, three minutes on each of a dozen or so
+                            plane fields chosen for strong H I structure in both directions; each field's spectrum is
+                            fitted against the HI4PI model through the beam for where the beam was. Reduced when the
+                            session ends; added to the pointing data only when you press Add.
+                        </div>
+                        <div id="hiCard" style="background:#0f0f23; border:1px solid #333; border-radius:8px; padding:15px; margin-bottom:10px;">
+                            <span style="color:#888;">No H I pointing session reduced yet.</span>
+                        </div>
+                        <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:center; margin-bottom:10px;">
+                            <label title="How long the session runs; the fields are chosen for the sky at the start.">Minutes <input autocomplete="off" type="number" id="hiMinutes" min="10" max="240" step="5" value="60" style="width:70px;"></label>
+                            <button title="Home, then step through the plane fields that are up now, three minutes each, the first again at the end. Reduces itself when it ends." class="btn btn-success" id="hiStartBtn" onclick="startHiPointing()">Start H I pointing</button>
+                            <select autocomplete="off" id="hiResult" style="flex:1; min-width:260px;" title="Reduced sessions, newest first"></select>
+                            <button title="Add the chosen session's usable fields to the pointing data, beside the Sun scans, for the next model fit." class="btn btn-secondary" onclick="saveHiPointing()">Add to pointing data</button>
+                        </div>
+                        <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:center; margin-bottom:6px;">
+                            <label title="Local time, as the schedule keeps it. A booking is planned for the sky at its own start; the monitors plan around it like any booking.">Book for <input autocomplete="off" type="datetime-local" id="hiBookAt"></label>
+                            <button title="Add an H I pointing session to the schedule at this time, for the minutes above (an upper limit: it ends with its last field)." class="btn btn-secondary" onclick="bookHiPointing()">Book</button>
+                        </div>
+                        <div id="hiSuggest" style="color:#888; font-size:12px; margin-bottom:10px;"></div>
                     </div>
                 </div>
             </div>
@@ -1241,6 +1263,9 @@
                             </div>
                             <div class="form-group">
                                 <label title="Before the first raster, archive the stored Sun scans and erase the controller's model, so the day's fit comes from new scans only. For a new feed or a re-zeroed encoder."><input autocomplete="off" type="checkbox" id="obsCalStartFresh"> Start fresh (archive old scans, clear the controller's model first)</label>
+                            </div>
+                            <div class="form-group">
+                                <label title="A check of the model in force, not a calibration: each scan is written to data/sun_scan_checks/ and left out of the pointing data. The latest can still be added from the Sun Scan tab."><input autocomplete="off" type="checkbox" id="obsCalKeepForReview"> Keep for review (don't add the scans to the pointing data)</label>
                             </div>
                         </div>
                     </div>

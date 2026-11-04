@@ -100,36 +100,50 @@ def set_device_time(usrp, requested=None):
 
     With a PPS: the time source goes external, we wait for an edge (up to
     2.5 s), and just after it set the whole second the NEXT edge will be,
-    floor(host) + 1 - the host's NTP clock supplies the second, the PPS the
+    round(host) + 1 - the host's NTP clock supplies the second, the PPS the
     sub-second, so the host need only be right to well under half a second.
     Then check: the last PPS reads a whole second, and the radio agrees with
-    the host to within NTP's error. Without one: the host's time, copied
-    once, good to the NTP error (a few ms), as before (issue #48).
+    the host to within NTP's error; a failed check is set again once. Without
+    one: the host's time, copied once, good to the NTP error (a few ms), as
+    before (issue #48).
+
+    Round, not floor: the edge has only just passed, so the true time is a
+    whole second to within the detection delay, and the host only has to name
+    which. It was floor until 2026-11-04, which let a host a millisecond
+    behind the PPS name the second before: on 11-02 the radio ran exactly one
+    second slow all night (radio - host -0.9995 s, check failed but recorded),
+    and the fold sat 0.40 of a period off - 1 s is 1.3995 periods of B0329.
     """
     from gnuradio import uhd
     req = (requested or TIME_SOURCE)
     info = {'time_source': 'host', 'time_pps_verified': 0}
+
+    def wait_for_edge():
+        last = usrp.get_time_last_pps(0).get_real_secs()
+        deadline = time.time() + 2.5
+        while time.time() < deadline:
+            time.sleep(0.005)
+            if usrp.get_time_last_pps(0).get_real_secs() != last:
+                return
+        raise RuntimeError("no PPS edge in 2.5 s")
+
     if req != 'internal':
         try:
             usrp.set_time_source('external', 0)
-            last = usrp.get_time_last_pps(0).get_real_secs()
-            deadline = time.time() + 2.5
-            edge = False
-            while time.time() < deadline:
-                time.sleep(0.005)
-                if usrp.get_time_last_pps(0).get_real_secs() != last:
-                    edge = True
+            for attempt in (1, 2):
+                wait_for_edge()
+                usrp.set_time_next_pps(uhd.time_spec(float(round(time.time()) + 1)))
+                time.sleep(1.2)
+                lp = usrp.get_time_last_pps(0).get_real_secs()
+                dev = usrp.get_time_now(0).get_real_secs()
+                host = time.time()
+                whole = abs(lp - round(lp)) < 1e-6
+                info = {'time_source': 'pps', 'time_pps_verified': int(whole and abs(dev - host) < 0.5),
+                        'time_device_minus_host_s': float(dev - host), 'time_last_pps': float(lp)}
+                if info['time_pps_verified']:
                     break
-            if not edge:
-                raise RuntimeError("no PPS edge in 2.5 s")
-            usrp.set_time_next_pps(uhd.time_spec(float(math.floor(time.time()) + 1)))
-            time.sleep(1.2)
-            lp = usrp.get_time_last_pps(0).get_real_secs()
-            dev = usrp.get_time_now(0).get_real_secs()
-            host = time.time()
-            whole = abs(lp - round(lp)) < 1e-6
-            info = {'time_source': 'pps', 'time_pps_verified': int(whole and abs(dev - host) < 0.5),
-                    'time_device_minus_host_s': float(dev - host), 'time_last_pps': float(lp)}
+                print("  Time: PPS check failed on attempt %d (radio - host %+.4f s)%s"
+                      % (attempt, dev - host, "; setting it again" if attempt == 1 else ""), flush=True)
             print("  Time: PPS, radio - host %+.4f s%s" % (dev - host, "" if info['time_pps_verified']
                                                             else "  (CHECK FAILED)"), flush=True)
             if req == 'external' and not info['time_pps_verified']:

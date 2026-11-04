@@ -1,0 +1,23 @@
+{
+ "name": "session_2026-11-01T1628",
+ "recording": "session_2026-11-01T1628",
+ "session": "2026-11-01T1628",
+ "pieces": 2,
+ "t_unix": 1793582870.0360148,
+ "mjd": "61346.0609957872083",
+ "err_us": 396.91283783303095,
+ "freq_mhz": 1411.93,
+ "band_centre_mhz": 1412.9999999999982,
+ "snr": 13.38064077132569,
+ "tau": -0.006831473543393862,
+ "sigma_tau": 0.0005555134379895046,
+ "chi2_red": 1.0,
+ "tobs_s": 63943.1210000515,
+ "bw_mhz": 32.0,
+ "pps": 1,
+ "time_source": "pps",
+ "time_marks_exact": 1,
+ "template": "epn_hx97b_1410",
+ "toa_bins": 1024,
+ "phase_offset": 0.3105
+}

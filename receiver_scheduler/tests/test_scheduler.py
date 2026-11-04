@@ -294,6 +294,80 @@ class TestCalibrationDayRetry:
             sched.cal_day_cancel.clear()
 
 
+class TestCalibrationBookingAsACheck:
+    """A calibration booking can check the model in force rather than add to
+    it: its own "respect local horizon" tickbox is honoured (a gap the profile
+    is too coarse to see, as on 2026-10-31), and cal_save false keeps the
+    scans in data/sun_scan_checks/ instead of the pointing data."""
+
+    PROFILE = {"entries": [
+        {"az_deg": az, "fit": {"success": True, "alt_clear": alt}}
+        for az, alt in [(0.0, 5.0), (90.0, 20.0), (110.0, 20.0),
+                        (180.0, 5.0), (270.0, 5.0)]]}
+    RESULT = {"timestamp": "2026-11-02T12:39:30+00:00", "fit": {"success": True},
+              "sun_alt_deg": 25.0, "sun_az_deg": 100.0}
+
+    def _run(self, params, tmp_path):
+        original_scan_state = dict(sched.sun_scan_state)
+        original_cal_state = dict(sched.cal_day_state)
+
+        def fake_run_scan(_params):
+            sched.sun_scan_state.update(running=False, result=dict(self.RESULT), error=None)
+
+        try:
+            with patch('sun_scan.get_sun_altaz', return_value=(25.0, 100.0)), \
+                 patch('horizon_store.load_active', return_value=self.PROFILE), \
+                 patch.object(sched, 'load_config', return_value={
+                     "observer_lat": 55.9, "observer_lon": -4.3, "observer_elevation": 50}), \
+                 patch.object(sched, 'SUN_SCAN_CHECK_DIR', str(tmp_path)), \
+                 patch('sun_scan.save_scan_to_pointing_data') as save, \
+                 patch.object(sched, '_run_sun_scan', side_effect=fake_run_scan) as run_scan, \
+                 patch.object(sched.cal_day_cancel, 'wait',
+                              side_effect=lambda _t: sched.cal_day_cancel.set() or True), \
+                 patch.object(sched.time, 'sleep',
+                              side_effect=lambda _t: sched.cal_day_cancel.set()):
+                sched._run_calibration_day(dict({"sdr_type": "b210", "interval_minutes": 30},
+                                                **params))
+            return run_scan, save
+        finally:
+            sched.sun_scan_state.clear()
+            sched.sun_scan_state.update(original_scan_state)
+            sched.cal_day_state.clear()
+            sched.cal_day_state.update(original_cal_state)
+            sched.cal_day_cancel.clear()
+
+    def test_an_unticked_horizon_drives_the_raster_behind_an_obstruction(self, tmp_path):
+        run_scan, save = self._run({"respect_local_horizon": False}, tmp_path)
+        run_scan.assert_called_once()
+        save.assert_called_once()
+
+    def test_a_ticked_horizon_still_waits(self, tmp_path):
+        run_scan, _save = self._run({"respect_local_horizon": True}, tmp_path)
+        run_scan.assert_not_called()
+
+    def test_kept_for_review_is_written_and_not_saved(self, tmp_path):
+        run_scan, save = self._run({"respect_local_horizon": False, "save": False}, tmp_path)
+        run_scan.assert_called_once()
+        save.assert_not_called()
+        kept = list(tmp_path.glob("sun_scan_*.json"))
+        assert [p.name for p in kept] == ["sun_scan_20261102T123930.json"]
+        assert json.loads(kept[0].read_text())["sun_az_deg"] == 100.0
+
+    def test_the_booking_carries_both_choices(self):
+        captured = {}
+        with patch.object(sched, 'stop_booted_receiver'), \
+             patch.object(sched.threading, 'Thread') as thread, \
+             patch.object(sched, 'current_observation', None), \
+             patch.object(sched, 'observation_end_time', None):
+            thread.side_effect = lambda target, args, daemon: captured.update(args[0]) or MagicMock()
+            assert sched._start_calibration_observation(
+                {"coord_system": "calibration", "name": "check", "duration_minutes": 15,
+                 "respect_local_horizon": False, "cal_save": False}, None)
+        assert captured["respect_local_horizon"] is False
+        assert captured["save"] is False
+        assert sched._validate_sun_scan_params({"n": 5}, include_interval=True)["save"] is True
+
+
 # =============================================================================
 # parse_tle
 # =============================================================================
@@ -1046,6 +1120,13 @@ class TestFlaskAPI:
                                            "utc": 1788867839})
         assert lost["level"] == "warn"
         assert "alt first approach -4.0, 2.0 beyond its normal -2.0..+0.5: counts lost" in lost["summary"]
+        # Each axis is judged against its own range (2026-10-30).
+        az_lost = sched.assess_homing_report({"alt_error_first_deg": -1.0, "az_error_first_deg": -3.0,
+                                              "alt_error_second_deg": -0.5, "az_error_second_deg": -0.5,
+                                              "utc": 1788867839})
+        assert az_lost["level"] == "warn"
+        assert "az first approach -3.0, 1.0 beyond its normal -2.0..+0.5" in az_lost["summary"]
+        assert "alt first approach" not in az_lost["summary"]
         # A re-approach two pulses past its range.
         off = sched.assess_homing_report({"alt_error_first_deg": -1.0, "az_error_first_deg": -1.5,
                                           "alt_error_second_deg": -1.0, "az_error_second_deg": -2.0,
@@ -3387,6 +3468,42 @@ def test_the_log_tab_asks_for_100_500_or_1000_lines(tmp_path, monkeypatch):
         assert len(lines) == n and lines[-1].endswith("line 1199")
     assert len(client.get("/api/log?lines=99999").get_json()["lines"]) == 1200     # capped at the file
     assert len(client.get("/api/log?lines=abc").get_json()["lines"]) == 100
+
+
+def test_a_pulsar_plot_is_keyed_only_on_what_it_reads(tmp_path, monkeypatch):
+    """The morning's pre-rendered pulsar plot must survive the day: the solar
+    reference (rewritten up to hourly) and the carried scallop parameters
+    (rewritten by any Sun plot) are not read by a pulsar plot, the T_sys and
+    the timing folder are. A Sun plot still follows both."""
+    import os
+    monkeypatch.setattr(sched, "_SCRIPT_DIR", str(tmp_path))
+    (tmp_path / "data").mkdir()
+    (tmp_path / "pulsar_timing").mkdir()
+    rec = tmp_path / "20261103_162216_pulsar.h5"
+    rec.write_bytes(b"recording")
+    files = {n: tmp_path / n for n in ("gain_calibration.json", "scallop_reference.json",
+                                       os.path.join("data", "solar_reference_history.json"),
+                                       os.path.join("pulsar_timing", "b0329.tim"))}
+    for f in files.values():
+        f.write_text("x")
+    stamp = [1.7e9]
+
+    def touch(name):
+        stamp[0] += 10
+        os.utime(files[name], (stamp[0], stamp[0]))
+
+    def key(mode):
+        return sched.plot_cache_key(str(rec), mode, "B0329+54", None, False)
+    pulsar, solar = key("pulsar"), key("solar")
+    touch(os.path.join("data", "solar_reference_history.json"))
+    touch("scallop_reference.json")
+    assert key("pulsar") == pulsar
+    assert key("solar") != solar
+    touch("gain_calibration.json")
+    assert key("pulsar") != pulsar
+    pulsar = key("pulsar")
+    touch(os.path.join("pulsar_timing", "b0329.tim"))
+    assert key("pulsar") != pulsar
 
 
 def test_an_unchanged_plot_is_served_from_the_cache(tmp_path, monkeypatch):

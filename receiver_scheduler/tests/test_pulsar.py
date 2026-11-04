@@ -280,3 +280,99 @@ def test_two_nights_fold_to_the_same_phase(tmp_path):
         r, _ = PF.analyse_file(path, pulsar=p, block_rows=100_000)
         got.append(r["matched_phase"])
     assert got[0] == pytest.approx(0.5, abs=2.0 / 256) and got[1] == pytest.approx(0.5, abs=2.0 / 256)
+
+
+class _VirtualClock:
+    """True time T, advanced only by sleep; the host reads T + host_offset."""
+
+    def __init__(self, t0, host_offset):
+        self.T, self.host_offset = t0, host_offset
+
+    def time(self):
+        return self.T + self.host_offset
+
+    def sleep(self, s):
+        self.T += s
+
+
+class _Spec:
+    def __init__(self, s):
+        self.s = s
+
+    def get_real_secs(self):
+        return self.s
+
+
+class _PpsRadio:
+    """A radio with a PPS on whole seconds of true time: the time register
+    latches at each edge, and set_time_next_pps names the next edge."""
+
+    def __init__(self, clock, offset=1234.0):
+        self.clock, self.offset, self.pending = clock, offset, None
+        self.edge = math.floor(clock.T)
+
+    def _advance(self):
+        while self.edge < math.floor(self.clock.T):
+            self.edge += 1
+            if self.pending is not None:
+                self.offset, self.pending = self.pending - self.edge, None
+
+    def set_time_source(self, *_a):
+        pass
+
+    def get_time_last_pps(self, _i):
+        self._advance()
+        return _Spec(self.edge + self.offset)
+
+    def get_time_now(self, _i):
+        self._advance()
+        return _Spec(self.clock.T + self.offset)
+
+    def set_time_next_pps(self, spec):
+        self._advance()
+        self.pending = spec.get_real_secs()
+
+    def set_time_now(self, spec):
+        self.offset = spec.get_real_secs() - self.clock.T
+
+
+@pytest.mark.parametrize("host_offset", [-0.004, -0.0005, 0.0, 0.003, 0.3, -0.3])
+def test_the_pps_names_the_right_second_whichever_side_the_host_is(monkeypatch, host_offset):
+    """2026-11-02: floor(host) + 1 let a host a fraction of a millisecond
+    behind the PPS name the second before, so the radio ran exactly one
+    second slow (radio - host -0.9995 s) and the fold sat 0.40 of a period
+    off. Rounding takes any host error under half a second."""
+    import b210_h1_receiver as R
+    clock = _VirtualClock(1793636774.6, host_offset)
+    monkeypatch.setattr(R.time, "time", clock.time)
+    monkeypatch.setattr(R.time, "sleep", clock.sleep)
+    radio = _PpsRadio(clock)
+    info = R.set_device_time(radio, "auto")
+    assert info["time_source"] == "pps" and info["time_pps_verified"] == 1
+    # The radio reads true time: the host's own error is all that is left.
+    assert info["time_device_minus_host_s"] == pytest.approx(-host_offset, abs=1e-6)
+    assert radio.get_time_now(0).get_real_secs() == pytest.approx(clock.T, abs=1e-6)
+
+
+@pytest.mark.parametrize("attrs, err", [
+    ({"time_source": "pps", "time_pps_verified": 0, "time_device_minus_host_s": -0.9995}, -1.0),  # 11-02
+    ({"time_source": "pps", "time_pps_verified": 0, "time_device_minus_host_s": 2.003}, 2.0),
+    ({"time_source": "pps", "time_pps_verified": 1, "time_device_minus_host_s": 0.0011}, 0.0),
+    ({"time_source": "pps", "time_pps_verified": 0, "time_device_minus_host_s": -0.7}, 0.0),   # not a whole second
+    ({"time_source": "host", "time_pps_verified": 0, "time_device_minus_host_s": -1.0}, 0.0),
+    ({"time_source": "pps", "time_pps_verified": 0}, 0.0),
+])
+def test_a_whole_second_clock_error_is_taken_out_of_the_marks(tmp_path, attrs, err):
+    """The 11-02 run's PPS timed every row to the millisecond under the wrong
+    second label; the marks come back corrected, and the run counts as PPS-
+    timed. A fractional failure or a host-timed file is left as it is."""
+    assert PF.pps_second_error_s(attrs) == err
+    path = str(tmp_path / "marks.h5")
+    with h5py.File(path, "w") as hf:
+        hf.create_dataset("time_marks", data=np.array([[5000.0, 1793636780.25], [0.0, 1793636775.2]]))
+    with h5py.File(path, "r") as hf:
+        marks = PF.read_time_marks(hf, attrs)
+    assert marks[:, 0].tolist() == [0.0, 5000.0]
+    assert marks[:, 1].tolist() == pytest.approx([1793636775.2 - err, 1793636780.25 - err])
+    assert PF.pps_timed(attrs) == int(attrs["time_source"] == "pps"
+                                      and (attrs["time_pps_verified"] == 1 or err != 0))

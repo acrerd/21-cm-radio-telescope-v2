@@ -507,6 +507,129 @@
                 }).catch(e => { document.getElementById('beamCard').innerHTML = '<span style="color:#ff4757;">Request failed: ' + e + '</span>'; });
         }
 
+        // --- H I pointing (hi_pointing.py): pointing records from the H I sky ---
+        var hiPollTimer = null;
+        function renderHiPointing(d) {
+            const card = document.getElementById('hiCard');
+            const sel = document.getElementById('hiResult');
+            if (!card || !sel) return;
+            const two = (v) => v ? (v[0] >= 0 ? '+' : '') + v[0].toFixed(2) + ' / ' + (v[1] >= 0 ? '+' : '') + v[1].toFixed(2) : '-';
+            let html = '';
+            if (d.running) html += '<div style="color:#00ff88;">Session running: field ' + (d.done + 1) + ' of ' + d.of + (d.field ? ' (' + d.field + ')' : '') + '.</div>';
+            else if (d.recording) html += '<div style="color:#00ff88;">Session recording' + (d.ends_at ? ' until ' + d.ends_at.slice(11, 16) + ' local' : '') + '; it reduces itself when it stops.</div>';
+            else if (d.starting) html += '<div style="color:#ffaa00;">Session starting: homing, then the first field...</div>';
+            if (d.analysing) html += '<div style="color:#ffaa00;">Reducing the session (a few minutes)...</div>';
+            // Refreshed while anything is happening, and only while this tab
+            // is open: the page used to fetch this once, when the tab opened.
+            clearTimeout(hiPollTimer);
+            const tab = document.getElementById('tab-sunscan');
+            if ((d.running || d.recording || d.starting || d.analysing) && tab && tab.classList.contains('active')) {
+                hiPollTimer = setTimeout(loadHiPointing, 5000);
+            }
+            if (d.error) html += '<div style="color:#ff4757;">' + d.error + '</div>';
+            const results = d.results || [];
+            if (results.length) {
+                const r = results[0];
+                html += '<div><span style="color:#00d4ff;">Last session:</span> <span style="color:#ccc;">' + r.recording
+                    + ', ' + r.n_good + ' of ' + r.n_fields + ' fields usable'
+                    + '; against the model in force rms <b>' + two(r.rms_in_force) + '&deg;</b> (mean ' + two(r.mean_in_force) + ')'
+                    + (r.loo_rms ? '; a model fitted to them predicts each left-out field to ' + two(r.loo_rms) + '&deg;' : '')
+                    + (r.repeat_difference ? '; first field again at the end moved ' + two(r.repeat_difference) + '&deg;' : '')
+                    + '</span> <span style="color:#888; font-size:12px;">(alt / cross-el' + (r.saved_utc ? '; added to the pointing data ' + r.saved_utc.slice(0, 16).replace('T', ' ') + ' UTC' : '') + ')</span></div>';
+            } else if (!html) {
+                html = '<span style="color:#888;">No H I pointing session reduced yet.</span>';
+            }
+            card.innerHTML = html;
+            const current = sel.value;
+            sel.innerHTML = '';
+            results.forEach(r => {
+                const o = document.createElement('option');
+                o.value = r.recording;
+                o.textContent = r.recording + '  ' + r.n_good + '/' + r.n_fields + ' fields' + (r.saved_utc ? '  (added)' : '');
+                sel.appendChild(o);
+            });
+            if (!results.length) {
+                const o = document.createElement('option'); o.value = ''; o.textContent = 'no reduced sessions'; sel.appendChild(o);
+            }
+            if (current && results.some(r => r.recording === current)) sel.value = current;
+            const minutes = document.getElementById('hiMinutes');
+            if (minutes && d.default_minutes && !minutes.dataset.set) { minutes.value = d.default_minutes; minutes.dataset.set = '1'; }
+            // the next clock times for the sidereal times worth a session;
+            // a click puts one in the booking box
+            const sug = document.getElementById('hiSuggest');
+            if (sug) {
+                let s = 'Good times (local): ' + (d.suggest || []).map(x =>
+                    '<a href="#" style="color:#00d4ff;" onclick="document.getElementById(\'hiBookAt\').value=\'' + x.at + '\'; return false;" title="' + x.why + '">LST ' + x.lst.toFixed(0) + ' at ' + x.at.replace('T', ' ') + '</a>').join(', ')
+                    + '. LST 18 costs the pulsar monitor nothing; LST 7 is its azimuth complement; LST 20 + 0 is the best pair for high fields.';
+                if ((d.booked || []).length) s += '<br>Booked: ' + d.booked.map(b => b.start.replace('T', ' ') + ' (up to ' + b.minutes + ' min)').join(', ');
+                sug.innerHTML = s;
+            }
+        }
+
+        function bookHiPointing() {
+            const start = (document.getElementById('hiBookAt').value || '').trim();
+            const minutes = parseInt(document.getElementById('hiMinutes').value, 10) || 60;
+            if (!start) { alert('Choose a time to book, or click one of the good times below.'); return; }
+            fetch('/api/hipointing/book', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({start, minutes})})
+                .then(r => r.json()).then(d => {
+                    if (!d.success) { alert('Not booked: ' + (d.error || 'unknown error')); return; }
+                    alert('Booked for ' + start.replace('T', ' ') + ', up to ' + minutes + ' min. It is on the Scheduler tab and plans its fields when it starts.');
+                    loadHiPointing();
+                }).catch(e => alert('Request failed: ' + e));
+        }
+
+        function loadHiPointing() {
+            fetch('/api/hipointing/status').then(r => r.json()).then(renderHiPointing).catch(() => {});
+        }
+
+        // The plan first, so the operator sees what the sky allows before
+        // starting: the minutes asked for are an upper limit, and in the
+        // afternoon the plane may give only half of them.
+        function startHiPointing() {
+            const minutes = parseInt(document.getElementById('hiMinutes').value, 10) || 60;
+            const btn = document.getElementById('hiStartBtn'); btn.disabled = true;
+            const card = document.getElementById('hiCard');
+            card.innerHTML = '<div style="color:#ffaa00;">Choosing the fields for the sky now (about 10 s)...</div>';
+            fetch('/api/hipointing/plan?minutes=' + minutes).then(r => r.json()).then(p => {
+                if (!p.success || !p.fields) {
+                    btn.disabled = false; loadHiPointing();
+                    alert(p.success ? 'No field with enough H I structure is up and clear of the horizon now.' : 'Planning failed: ' + p.error);
+                    return;
+                }
+                const list = p.plan.map(f => 'l=' + f.l.toFixed(0) + ' b=' + (f.b >= 0 ? '+' : '') + f.b.toFixed(0)
+                    + ' (alt ' + f.alt.toFixed(0) + ', az ' + f.az.toFixed(0) + ')' + (f.repeat ? ' again' : '')).join('\n');
+                const msg = p.fields + ' fields' + (p.repeat ? ' and the first again at the end' : '')
+                    + ', ' + p.minutes + ' min after the homing'
+                    + (p.minutes < minutes ? ' (of ' + minutes + ' asked for: no more usable fields are up)' : '')
+                    + '.\nAltitude ' + p.alt_range[0].toFixed(0) + '-' + p.alt_range[1].toFixed(0)
+                    + ' deg, azimuth ' + p.az_range[0].toFixed(0) + '-' + p.az_range[1].toFixed(0) + ' deg.\n\n' + list
+                    + '\n\nStart it? The mount homes first.';
+                if (!confirm(msg)) { btn.disabled = false; loadHiPointing(); return; }
+                card.innerHTML = '<div style="color:#ffaa00;">Homing, then the first field...</div>';
+                // the start returns once the homing and the first slew are
+                // done, which can be minutes; the card follows it meanwhile
+                setTimeout(loadHiPointing, 5000);
+                return fetch('/api/hipointing/start', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({minutes})})
+                    .then(r => r.json()).then(d => {
+                        btn.disabled = false;
+                        if (!d.success) { alert('H I pointing not started: ' + (d.error || 'unknown error')); }
+                        loadHiPointing();
+                    });
+            }).catch(e => { btn.disabled = false; alert('H I pointing request failed: ' + e); });
+        }
+
+        function saveHiPointing() {
+            const recording = (document.getElementById('hiResult').value || '').trim();
+            if (!recording) { alert('No reduced session selected.'); return; }
+            if (!confirm('Add the usable fields of ' + recording + ' to the pointing data? The next model fit will use them beside the Sun scans.')) return;
+            fetch('/api/hipointing/save', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({recording})})
+                .then(r => r.json()).then(d => {
+                    if (!d.success) { alert('Not added: ' + (d.error || 'unknown error')); return; }
+                    alert(d.added + ' field(s) added; the pointing data now holds ' + d.total + ' records.');
+                    loadHiPointing(); loadCalModel();
+                }).catch(e => alert('Request failed: ' + e));
+        }
+
         function loadCalModel() {
             fetch('/api/calday/model').then(r => r.json()).then(m => {
                 if (m.success) {

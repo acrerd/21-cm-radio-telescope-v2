@@ -95,6 +95,18 @@
 // cut scales with speed squared), which made the first-edge zero land on one
 // magnet or the next by luck - the bistable azimuth zero of 2026-09-08 (#32).
 #define HOMING_SLOW_APPROACH_PULSES 5   // Creep from this many pulses out (2.5 deg): enough that a fast first approach's overshoot still leaves the switch inside the creep
+// How far below the last zero the first approach keeps creeping before it
+// decides the switch is not coming and returns to full speed. The switch
+// offset is not a fixed number: on 2026-10-29 the dish was turned on its alt
+// shaft and the alt first approach moved from a steady -1.0 deg to -2.5 (at
+// creep, the old band's edge) and -3.0 (past it, met at speed, which forced a
+// re-approach). A band from +HOMING_SLOW_APPROACH_PULSES down to -this meets
+// any offset to -7 deg at creep with nothing to re-tune; a switch further down
+// than that is a real count loss and is met at speed and re-approached, as
+// before. Only when the position is known: a homing from an unknown position
+// (counter 0 wherever the mount is) keeps the symmetric band, so it does not
+// creep 7.5 deg from an arbitrary start.
+#define HOMING_FIRST_CREEP_FLOOR_PULSES 15
 // Merely commanding creep PWM from full speed leaves the mount decelerating
 // on friction alone through most of that zone, so on entering it each axis
 // is stopped for this long first, then creeps: the switch is met at true
