@@ -3542,3 +3542,50 @@ def test_an_unchanged_plot_is_served_from_the_cache(tmp_path, monkeypatch):
     os.utime(rec, (now, now))                                                 # live: drawn, not kept
     client.get("/api/observe/plot?file=x")
     assert client.get("/api/observe/plot?file=x").headers["X-Plot-Cache"] == "miss"
+
+
+def test_a_homings_due_printout_is_kept(tmp_path, monkeypatch, caplog):
+    """Every captured line goes to a file per homing; only the Due's own
+    Homing: lines are repeated into the scheduler log, not the status flood."""
+    monkeypatch.setattr(sched, "HOMING_LOG_DIR", str(tmp_path / "homing_logs"))
+    lines = ["Alt:0.5 Az:0.0 Ialt:0.9A Iaz:1.0A Status:Homing -> Alt:0.0 Az:0.0 *3A",
+             "Homing: Az zero on the first edge after the current cut (cut 0.95->0.20 A, "
+             "cut->edge 412 ms, coast 1 pulses beyond it, reed HIGH at rest)",
+             "Homing: Alt zero on first edge (reed LOW at rest, edge after 380 ms, levels L>H@380)"]
+    with caplog.at_level(logging.INFO, logger=sched.log.name):
+        path = sched.save_homing_printout(lines, datetime(2026, 11, 10, 12, 37, 5, tzinfo=timezone.utc))
+    assert os.path.basename(path) == "homing_20261110T123705Z.txt"
+    with open(path) as fh:
+        assert fh.read().splitlines() == lines
+    logged = [r.getMessage() for r in caplog.records if r.getMessage().startswith("Due: ")]
+    assert logged == ["Due: " + lines[1], "Due: " + lines[2]]
+    assert sched.save_homing_printout([]) is None
+
+
+def test_a_restart_redraws_the_newest_pulsar_plot_only_if_missing(tmp_path, monkeypatch):
+    """A restart after a code edit changes every cache key; the newest finished
+    pulsar run's plot is drawn again then, not on the operator's first click."""
+    obs, cache = tmp_path / "obs", tmp_path / "cache"
+    obs.mkdir(); cache.mkdir()
+    old, new = obs / "20261108_160213_pulsar.h5", obs / "20261109_155811_pulsar.h5"
+    for f in (old, new):
+        f.write_bytes(b"x")
+        os.utime(f, (time.time() - 3600, time.time() - 3600))
+    monkeypatch.setattr(sched, "observations_folder", lambda: str(obs))
+    monkeypatch.setattr(sched, "PLOT_CACHE_DIR", str(cache))
+    monkeypatch.setattr(sched, "_observation_info",
+                        lambda name: {"output_file": str(obs / name), "mode": "pulsar", "name": "P"})
+    monkeypatch.setattr(sched, "plot_cache_key", lambda path, *a: os.path.basename(path))
+    drawn = []
+    monkeypatch.setattr(sched, "prerender_observation_plot", lambda p: drawn.append(p) or True)
+
+    assert sched.prerender_latest_pulsar_plot() is True
+    assert drawn == [str(new)]
+
+    (cache / (new.name + ".png")).write_bytes(b"png")              # now in the cache
+    assert sched.prerender_latest_pulsar_plot() is False
+    assert drawn == [str(new)]
+
+    os.utime(new, None)                                             # recording now: left alone
+    assert sched.prerender_latest_pulsar_plot() is True
+    assert drawn == [str(new), str(old)]

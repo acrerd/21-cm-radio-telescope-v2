@@ -65,6 +65,18 @@ def _keep_tests_out_of_the_last_observation_pointer(tmp_path_factory):
 
 
 @pytest.fixture(autouse=True, scope="session")
+def _keep_tests_out_of_the_homing_logs(tmp_path_factory):
+    """Redirect the per-homing Due printouts, which are the operational record
+    of where the reed edges sit; a test homing must not add a file there."""
+    import h1_web_scheduler as scheduler
+
+    real = scheduler.HOMING_LOG_DIR
+    scheduler.HOMING_LOG_DIR = str(tmp_path_factory.mktemp("homing_logs"))
+    yield
+    scheduler.HOMING_LOG_DIR = real
+
+
+@pytest.fixture(autouse=True, scope="session")
 def _keep_tests_out_of_the_scallop_reference(tmp_path_factory):
     """Redirect the carried scallop parameters for the whole session.
 

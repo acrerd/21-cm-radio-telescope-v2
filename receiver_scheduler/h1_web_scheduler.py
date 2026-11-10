@@ -1317,6 +1317,39 @@ def _homing_counters(messages: list) -> dict:
     return out
 
 
+# Every line the Due sent during each homing the scheduler runs, one file per
+# homing. The counters alone are kept on /status, but the zeroing lines say
+# where the azimuth reed edge sits against the switch's current cut ("cut->edge
+# N ms") and the reed's level sequence on the creep, which is the only record of
+# whether the encoder's edges are moving (2026-11-10: a cross-elevation offset
+# growing 0.08 -> 0.17 deg over nine days, every homing normal).
+HOMING_LOG_DIR = os.path.join(_SCRIPT_DIR, 'data', 'homing_logs')
+
+
+def save_homing_printout(messages: list, when: Optional[datetime] = None) -> Optional[str]:
+    """Write a homing's captured Due lines to HOMING_LOG_DIR and log its own
+    `Homing:` lines; return the file's path, or None if nothing was written.
+
+    Status lines are kept in the file (they carry the counter up to each
+    stall) but not repeated into scheduler.log.
+    """
+    if not messages:
+        return None
+    for m in messages:
+        if m.startswith("Homing"):
+            log.info("Due: %s", m)
+    when = when or datetime.now(timezone.utc)
+    path = os.path.join(HOMING_LOG_DIR, "homing_%s.txt" % when.strftime("%Y%m%dT%H%M%SZ"))
+    try:
+        os.makedirs(HOMING_LOG_DIR, exist_ok=True)
+        with open(path, "w") as fh:
+            fh.write("\n".join(messages) + "\n")
+    except OSError as e:
+        log.warning("Homing printout not saved: %s", e)
+        return None
+    return path
+
+
 def srt_home_with_report(timeout: int = 300,
                          cancel_event: Optional[threading.Event] = None) -> dict:
     """Run the physical homing and report what the counters read at the stops.
@@ -1367,6 +1400,7 @@ def srt_home_with_report(timeout: int = 300,
                 started = True
             elif started and state == "ready" and not status.get("is_slewing", False):
                 poll_serial()
+                save_homing_printout(messages)
                 # The controller latches the reported error on /status
                 # (issue #24), which survives the status flood scrolling the
                 # log; prefer it, and fall back to scraping the log for a
@@ -8614,6 +8648,38 @@ def prerender_observation_plot(path: str) -> bool:
     return True
 
 
+def prerender_latest_pulsar_plot() -> bool:
+    """At start-up, draw the newest finished pulsar recording's plot if the
+    cache has none for it under the code just loaded.
+
+    The cache key carries the fingerprint of every module, so a restart after
+    any code edit orphans the plot drawn when the run ended, and the first
+    Plot Result after it waited half a minute (2026-11-04, 11-05 and 11-10:
+    every pre-rendered plot that was missed was missed this way). A recording
+    still being written is left to the end of its run. True if a plot was drawn.
+    """
+    try:
+        files = sorted(glob.glob(os.path.join(observations_folder(), '*_pulsar.h5')))
+    except OSError:
+        return False
+    for path in reversed(files):
+        try:
+            if time.time() - os.path.getmtime(path) < PLOT_CACHE_LIVE_S:
+                continue                      # recording now: drawn when it ends
+            info = _observation_info(os.path.basename(path))
+            key = plot_cache_key(info['output_file'], info.get('mode', 'spectrum'),
+                                 info.get('name', ''), info.get('transit_minutes'), False)
+        except (ValueError, OSError) as exc:
+            log.warning("Plot pre-render at start-up: %s", exc)
+            return False
+        if os.path.exists(os.path.join(PLOT_CACHE_DIR, key + '.png')):
+            return False
+        log.info("Plot of %s not in the cache under this code; drawing it",
+                 os.path.basename(path))
+        return prerender_observation_plot(path)
+    return False
+
+
 # =============================================================================
 # H I pointing (hi_pointing.py): the pointing model from the H I sky
 # =============================================================================
@@ -10244,6 +10310,7 @@ def main():
     # Start background scheduler thread
     sched_thread = threading.Thread(target=scheduler_thread, daemon=True)
     sched_thread.start()
+    threading.Thread(target=prerender_latest_pulsar_plot, daemon=True).start()
 
     try:
         app.run(host=args.host, port=args.port, debug=False, use_reloader=False)
