@@ -1,6 +1,6 @@
-# Small Radio Telescope controller, scheduler and data manager
+# Small Radio Telescope system
 
-A complete control system for a Small Radio Telescope (SRT) for 21cm hydrogen line observations at Acre Road Observatory, Glasgow.
+A complete control system for a Small Radio Telescope (SRT) for 21cm hydrogen line observations at Acre Road Observatory, Glasgow. It includes the low-level Arduino-based alt/az driver, a drive controller that to track sources that uses a derived telescope pointing model, and a scheduler/manager that performs and analyses observations made by a software defined radio (Ettus B210 preferred).  
 
 ## System Overview
 
