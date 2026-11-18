@@ -1,4 +1,4 @@
-# SRT Motor Driver
+# Small Radio Telescope controller, scheduler and data manager
 
 A complete control system for a Small Radio Telescope (SRT) for 21cm hydrogen line observations at Acre Road Observatory, Glasgow.
 
